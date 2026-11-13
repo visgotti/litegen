@@ -10,14 +10,19 @@ models:
   # @see https://developers.openai.com/api/docs/deprecations
   # @see https://developers.openai.com/api/docs/guides/image-generation
   #
-  # GPT Image 2.5 is token-priced like GPT Image 2 ($8 in / $30 out per 1M
-  # image tokens), and both 2.5 models share one entry in OpenAI's token
-  # calculator. base_cost_usd is that calculator's image-output cost for
+  # GPT Image 2.5 is token-priced like GPT Image 2 ("Both GPT Image 2.5 models
+  # use the same token rates: $8 per million image input tokens, … $30 per
+  # million image output tokens"), and both 2.5 models share one entry
+  # ("gpt-image-2.5") in OpenAI's token calculator, the guide's "Calculating
+  # costs" section. base_cost_usd is that calculator's image-output cost for
   # 1024x1024 at `medium` (the explicit-quality anchor gpt-image-2 uses; the
   # default `auto` depends on the generated image): 439 output tokens x $30/1M
-  # = $0.01317, re-read 2026-09-11. The adapter scales it by quality
-  # (image/openai.rs `estimate_cost`).
-  # @see https://developers.openai.com/api/docs/guides/image-generation (GPT Image 2.5 and GPT Image 2 output tokens)
+  # = $0.01317. The calculator is a client-rendered component, so its counts
+  # are not page text; they were re-derived 2026-11-09 from its script's grid
+  # (medium 24 for "gpt-image-2.5") and formula. The adapter scales the base
+  # by quality (image/openai.rs `estimate_cost`).
+  # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (2026-11-09)
+  # @see https://developers.openai.com/_astro/GptImageTokenCalculator.react.Ul9pMTwf.js (2026-11-09)
   # @see https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst (image tokens: $8 input, $30 output per 1M)
   - id: openai/gpt-image-2.5-sunburst
     provider: openai
@@ -32,11 +37,11 @@ models:
     pricing:
       base_cost_usd: 0.0132
       # Output tokens by quality, relative to the medium image the base is
-      # for — OpenAI's token calculator ("GPT Image 2.5 (Sunburst and
-      # Flare)"): 196 / 439 / 1,756 / 3,122 / 7,024 tokens for low / medium /
-      # high / xhigh / max at 1024x1024; `auto` stays at medium — and by size
-      # past 1024x1024.
-      # @see https://developers.openai.com/api/docs/guides/image-generation ("GPT Image 2.5 and GPT Image 2 output tokens", re-read 2026-09-11)
+      # for — OpenAI's token calculator ("gpt-image-2.5", the guide's
+      # "Calculating costs" component): 196 / 439 / 1,756 / 3,122 / 7,024
+      # tokens for low / medium / high / xhigh / max at 1024x1024; `auto`
+      # stays at medium — and by size past 1024x1024.
+      # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (counts re-derived from the component's script, 2026-11-09)
       variable_pricing:
         - { when: { quality: low }, multiply: 0.446469 }
         - { when: { quality: high }, multiply: 4.0 }
@@ -51,8 +56,10 @@ models:
     # (CreateImageRequest.prompt / CreateImageEditRequest.prompt).
     prompt: { required: true, max_length: 32000 }
     params:
-      # PixelGenie L9; "png, jpeg, or webp" (default png) and "transparent, opaque or auto"
-      # (default auto: litegen sends none when the caller names none).
+      # PixelGenie L9; "The default format is `png`, but you can also request
+      # `jpeg` or `webp`." (guide, "Output format"); background "Must be one of
+      # `transparent`, `opaque`, or `auto` (default value)" (reference): litegen
+      # sends none when the caller names none. (2026-11-09)
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       background: { kind: string, enum_values: [transparent, opaque] }
       # Same custom-size rules as gpt-image-2 ("Both models also support custom
@@ -69,8 +76,9 @@ models:
         min_height: 480
         max_height: 3840
         multiple_of: 16
-        # "655,360 to 8,294,400 total pixels" and "Long edge to short edge
-        # ratio must not exceed 3:1" — refused before billing, not snapped.
+        # "The total pixel count must be between 655,360 and 8,294,400 (4K)."
+        # and "Long edge to short edge ratio must not exceed `3:1`" (guide,
+        # 2026-11-09) — refused before billing, not snapped.
         min_pixels: 655360
         max_pixels: 8294400
         max_aspect: 3.0
@@ -81,20 +89,36 @@ models:
         enum_values: [auto, low, medium, high, xhigh, max]
         default: auto
       # 3D doc §4: "A mask-only vendor receives the box drawn as a mask".
-      region: { kind: region, input: mask, label: Region, description: The rectangle to edit, sent drawn as the mask. }
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
+    # "You can use one or more images as a reference to generate a new image":
+    # `image` is "an array of images" (maxItems 16), sent as repeated image[]
+    # parts, and "If you provide multiple input images, the mask will be
+    # applied to the first image" — so the edited image (`init`) goes first.
+    # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-03)
     ref_inputs:
-      max_total: 2
+      max_total: 17
       default_role: init
-      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      provider_format: { form: multipart, field_map: { init: image, reference: image, mask: mask } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 15 }
         mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
     # background supports opaque and transparent for both 2.5 models;
     # output_format png|jpeg|webp; output_compression 0-100 (CreateImageRequest).
-    # `user` is deprecated in favour of `safety_identifier` ("Send the same
-    # identifier as safety_identifier instead"), and still accepted.
-    # @see https://developers.openai.com/api/docs/guides/image-generation (2026-10-30)
+    # `user` is deprecated in favour of `safety_identifier` (guide: "Send the
+    # same identifier as `safety_identifier` instead."; reference: "Deprecated:
+    # use `safety_identifier` instead. This parameter remains accepted for
+    # backward compatibility and is used when `safety_identifier` is omitted,
+    # null, or empty."), and still accepted.
+    # @see https://developers.openai.com/api/docs/guides/image-generation (2026-11-09)
+    # @see https://developers.openai.com/api/reference/resources/images/methods/generate (2026-11-09)
     extra_allowlist: [output_compression, moderation, user, safety_identifier]
+    extra_params:
+      # From OpenAI's OpenAPI (drift snapshot openai/openapi.txt).
+      output_compression: { kind: int, min: 0, max: 100, default: 100 }
+      moderation: { kind: string, enum_values: ["low", "auto"], default: "auto" }
+      user: { kind: string }
+      safety_identifier: { kind: string, max_length: 128 }
     tags: [text-to-image, image-to-image, inpainting, premium]
 
   - id: openai/gpt-image-2.5-flare
@@ -111,11 +135,11 @@ models:
     pricing:
       base_cost_usd: 0.0132
       # Output tokens by quality, relative to the medium image the base is
-      # for — OpenAI's token calculator ("GPT Image 2.5 (Sunburst and
-      # Flare)"): 196 / 439 / 1,756 / 3,122 / 7,024 tokens for low / medium /
-      # high / xhigh / max at 1024x1024; `auto` stays at medium — and by size
-      # past 1024x1024.
-      # @see https://developers.openai.com/api/docs/guides/image-generation ("GPT Image 2.5 and GPT Image 2 output tokens", re-read 2026-09-11)
+      # for — OpenAI's token calculator ("gpt-image-2.5", the guide's
+      # "Calculating costs" component): 196 / 439 / 1,756 / 3,122 / 7,024
+      # tokens for low / medium / high / xhigh / max at 1024x1024; `auto`
+      # stays at medium — and by size past 1024x1024.
+      # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (counts re-derived from the component's script, 2026-11-09)
       variable_pricing:
         - { when: { quality: low }, multiply: 0.446469 }
         - { when: { quality: high }, multiply: 4.0 }
@@ -126,8 +150,10 @@ models:
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 32000 }
     params:
-      # PixelGenie L9; "png, jpeg, or webp" (default png) and "transparent, opaque or auto"
-      # (default auto: litegen sends none when the caller names none).
+      # PixelGenie L9; "The default format is `png`, but you can also request
+      # `jpeg` or `webp`." (guide, "Output format"); background "Must be one of
+      # `transparent`, `opaque`, or `auto` (default value)" (reference): litegen
+      # sends none when the caller names none. (2026-11-09)
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       background: { kind: string, enum_values: [transparent, opaque] }
       # Same size rules as Sunburst and gpt-image-2 (see above).
@@ -139,8 +165,9 @@ models:
         min_height: 480
         max_height: 3840
         multiple_of: 16
-        # "655,360 to 8,294,400 total pixels" and "Long edge to short edge
-        # ratio must not exceed 3:1" — refused before billing, not snapped.
+        # "The total pixel count must be between 655,360 and 8,294,400 (4K)."
+        # and "Long edge to short edge ratio must not exceed `3:1`" (guide,
+        # 2026-11-09) — refused before billing, not snapped.
         min_pixels: 655360
         max_pixels: 8294400
         max_aspect: 3.0
@@ -149,18 +176,34 @@ models:
         enum_values: [auto, low, medium, high, xhigh, max]
         default: auto
       # 3D doc §4: "A mask-only vendor receives the box drawn as a mask".
-      region: { kind: region, input: mask, label: Region, description: The rectangle to edit, sent drawn as the mask. }
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
+    # "You can use one or more images as a reference to generate a new image":
+    # `image` is "an array of images" (maxItems 16), sent as repeated image[]
+    # parts, and "If you provide multiple input images, the mask will be
+    # applied to the first image" — so the edited image (`init`) goes first.
+    # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-03)
     ref_inputs:
-      max_total: 2
+      max_total: 17
       default_role: init
-      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      provider_format: { form: multipart, field_map: { init: image, reference: image, mask: mask } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 15 }
         mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
-    # `user` is deprecated in favour of `safety_identifier` ("Send the same
-    # identifier as safety_identifier instead"), and still accepted.
-    # @see https://developers.openai.com/api/docs/guides/image-generation (2026-10-30)
+    # `user` is deprecated in favour of `safety_identifier` (guide: "Send the
+    # same identifier as `safety_identifier` instead."; reference: "Deprecated:
+    # use `safety_identifier` instead. This parameter remains accepted for
+    # backward compatibility and is used when `safety_identifier` is omitted,
+    # null, or empty."), and still accepted.
+    # @see https://developers.openai.com/api/docs/guides/image-generation (2026-11-09)
+    # @see https://developers.openai.com/api/reference/resources/images/methods/generate (2026-11-09)
     extra_allowlist: [output_compression, moderation, user, safety_identifier]
+    extra_params:
+      # From OpenAI's OpenAPI (drift snapshot openai/openapi.txt).
+      output_compression: { kind: int, min: 0, max: 100, default: 100 }
+      moderation: { kind: string, enum_values: ["low", "auto"], default: "auto" }
+      user: { kind: string }
+      safety_identifier: { kind: string, max_length: 128 }
     tags: [text-to-image, image-to-image, inpainting, fast]
 
   - id: openai/gpt-image-2
@@ -171,18 +214,19 @@ models:
     description: OpenAI GPT Image 2. Text-to-image plus prompt-driven editing
       and inpainting via the images/edits endpoint. Arbitrary resolutions
       (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).
-    # $0.053 per image at medium quality, 1024x1024 (the guide's "Calculating
-    # costs" table, GPT Image 2 row), re-read 2026-09-11.
-    # @see https://developers.openai.com/api/docs/guides/image-generation (Calculating costs)
+    # GPT Image 2 at 1024 × 1024, "Low $0.006", "Medium $0.053", "High
+    # $0.211" (the guide's "Historical output costs" table). The default
+    # quality is `auto`, which OpenAI picks per image, so it bills at the
+    # medium anchor: OpenAI publishes no price for `auto`.
+    # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-09)
     pricing:
       base_cost_usd: 0.053
-      # By quality, relative to the medium image the base is for — low half,
-      # high twice; `auto` stays at medium — and by size past 1024x1024, as
-      # GPT Image bills its output tokens.
-      # @see https://developers.openai.com/api/docs/guides/image-generation (Calculating costs)
+      # By quality, OpenAI's own 1024 × 1024 prices, then by size past
+      # 1024 × 1024, as GPT Image bills its output tokens.
+      # @see https://developers.openai.com/api/docs/guides/image-generation.md (Historical output costs, 2026-11-09)
       variable_pricing:
-        - { when: { quality: low }, multiply: 0.5 }
-        - { when: { quality: high }, multiply: 2.0 }
+        - { when: { quality: low }, usd: 0.006 }
+        - { when: { quality: high }, usd: 0.211 }
         - { multiply_per_megapixel_above: 1.048576 }
     # The model page lists images/edits as "Supported" and inpainting as a
     # supported feature; the adapter routes a reference image to images/edits.
@@ -190,8 +234,10 @@ models:
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 32000 }
     params:
-      # PixelGenie L9; "png, jpeg, or webp" (default png) and "transparent, opaque or auto"
-      # (default auto: litegen sends none when the caller names none).
+      # PixelGenie L9; "The default format is `png`, but you can also request
+      # `jpeg` or `webp`." (guide, "Output format"); background "Must be one of
+      # `transparent`, `opaque`, or `auto` (default value)" (reference): litegen
+      # sends none when the caller names none. (2026-11-09)
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       background: { kind: string, enum_values: [transparent, opaque] }
       # gpt-image-2 size constraints: max edge <= 3840, both edges multiples of
@@ -208,8 +254,9 @@ models:
         min_height: 480
         max_height: 3840
         multiple_of: 16
-        # "655,360 to 8,294,400 total pixels" and "Long edge to short edge
-        # ratio must not exceed 3:1" — refused before billing, not snapped.
+        # "The total pixel count must be between 655,360 and 8,294,400 (4K)."
+        # and "Long edge to short edge ratio must not exceed `3:1`" (guide,
+        # 2026-11-09) — refused before billing, not snapped.
         min_pixels: 655360
         max_pixels: 8294400
         max_aspect: 3.0
@@ -218,16 +265,32 @@ models:
         enum_values: [auto, low, medium, high]
         default: auto
       # 3D doc §4: "A mask-only vendor receives the box drawn as a mask".
-      region: { kind: region, input: mask, label: Region, description: The rectangle to edit, sent drawn as the mask. }
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
+    # "You can use one or more images as a reference to generate a new image":
+    # `image` is "an array of images" (maxItems 16), sent as repeated image[]
+    # parts, and "If you provide multiple input images, the mask will be
+    # applied to the first image" — so the edited image (`init`) goes first.
+    # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-03)
     ref_inputs:
-      max_total: 2
+      max_total: 17
       default_role: init
-      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      provider_format: { form: multipart, field_map: { init: image, reference: image, mask: mask } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 15 }
         mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
-    # `user` is deprecated in favour of `safety_identifier` ("Send the same
-    # identifier as safety_identifier instead"), and still accepted.
-    # @see https://developers.openai.com/api/docs/guides/image-generation (2026-10-30)
+    # `user` is deprecated in favour of `safety_identifier` (guide: "Send the
+    # same identifier as `safety_identifier` instead."; reference: "Deprecated:
+    # use `safety_identifier` instead. This parameter remains accepted for
+    # backward compatibility and is used when `safety_identifier` is omitted,
+    # null, or empty."), and still accepted.
+    # @see https://developers.openai.com/api/docs/guides/image-generation (2026-11-09)
+    # @see https://developers.openai.com/api/reference/resources/images/methods/generate (2026-11-09)
     extra_allowlist: [output_compression, moderation, user, safety_identifier]
+    extra_params:
+      # From OpenAI's OpenAPI (drift snapshot openai/openapi.txt).
+      output_compression: { kind: int, min: 0, max: 100, default: 100 }
+      moderation: { kind: string, enum_values: ["low", "auto"], default: "auto" }
+      user: { kind: string }
+      safety_identifier: { kind: string, max_length: 128 }
     tags: [text-to-image, image-to-image, inpainting]

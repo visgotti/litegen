@@ -31,8 +31,8 @@ Open **http://localhost:4100/docs** for the Swagger UI.
 | --- | --- | --- | --- |
 | GET | `/v1/providers` | public | Providers with mode, cron, last-scraped, freshness |
 | GET | `/v1/providers/:id` | public | Provider + all its models & prices |
-| GET | `/v1/models` | public | Models + current prices (filter: `provider`, `mediaType`, `freshness`) |
-| GET | `/v1/models/:provider/:name` | public | One model (e.g. `/v1/models/openai/dall-e-3`) |
+| GET | `/v1/models` | public | Models + current prices (filter: `provider`, `mediaType` = `image`/`video`/`model3d`, `freshness`) |
+| GET | `/v1/models/:provider/:name` | public | One model (e.g. `/v1/models/openai/gpt-image-2`), retired ones included |
 | GET | `/v1/models/:provider/:name/history` | public | Price-change history |
 | GET | `/v1/pricing` | public | Flat, filterable pricing table (primary consumer endpoint) |
 | POST | `/oauth/token` | public | Client-credentials → JWT |
@@ -59,26 +59,44 @@ Each model has one or more **price components**: a `unit`
 `amountUsd` per `unitAmount`, an optional `tier` (e.g. `{resolution:"1080p"}`),
 plus `source` (`scraped`/`manual`/`fallback`) and `freshness`
 (`fresh`/`stale`/`failed`) with `lastUpdatedAt` / `lastCheckedAt` timestamps.
+The seeded baseline is one component per model: its default request's price,
+per image, per video, or per request for a 3D model.
+
+A model litegen's catalog no longer carries is **retired** on the next boot
+(`active: false`): it drops out of every list and the pricing table, and stays
+resolvable by id with its price history.
 
 ## Providers
 
-Add or change a provider in `src/providers/<id>/`:
+There is one provider per provider in litegen's catalog (20), each in
+`src/providers/<id>/`:
 
 - `*.config.ts` — `mode` (`scraped`/`manual`), `cronSchedule`, `pricingUrl`, notes.
-- `*.seed.ts` — baseline prices for every model (the manual source of truth).
+- `*.seed.ts` — **generated** from litegen's `models/*.yaml` by
+  `npm run coverage:fix`: every model at its default request's price
+  (`base_cost_usd`). Change the catalog, not this file.
 - `*.scraper.ts` — a `BaseProviderScraper` subclass (real) or a `StubScraper`.
+  A real scraper lists the model ids it reports (`modelIds`); the registry pins
+  every other model of its provider to `manual`, so a scrape never marks a
+  price it doesn't read stale.
 
-Then register it in `src/providers/registry.ts`. Currently scraped: **openai**,
-**fal** (image models; their video models and the other five providers are
-curated `manual`). Scrapers parse the public pricing page with a fixture-tested
-generic table parser and degrade gracefully if the page structure changes.
+A new provider is registered in `src/providers/registry.ts`. Currently scraped:
+**fal**'s classic image models. Everything else is curated `manual`, OpenAI
+included: GPT Image is billed per token, which a pricing-table scrape can't
+turn into a per-image price. Scrapers parse the public pricing page with a
+fixture-tested generic table parser and degrade gracefully if the page
+structure changes.
 
 ## Coverage guarantee
 
 ```bash
-npm run coverage:check   # CI gate: fails if any litegen model lacks a config/seed/scraper
-npm run coverage:fix     # scaffold stub folders for any missing providers
+npm run coverage:check   # CI gate: fails unless the registry mirrors the catalog
+npm run coverage:fix     # scaffold missing providers and regenerate every seed
 ```
+
+The check fails on a catalog provider with no registry entry, a catalog model
+no seed carries, and a seeded model the catalog dropped. After `coverage:fix`,
+fill in a scaffolded provider's display name and pricing URL and register it.
 
 The canonical set is read from `LITEGEN_MODELS_DIR` (default `../../models`).
 
@@ -97,4 +115,14 @@ npm run migration:run
 ```bash
 npm test                 # unit tests (no DB needed)
 npm run test:e2e         # e2e (needs Postgres; point TEST_DATABASE_URL at a scratch DB)
+npm run lint
+```
+
+A throwaway database for the e2e suite:
+
+```bash
+docker run -d --rm --name price-api-e2e-pg -e POSTGRES_USER=price -e POSTGRES_PASSWORD=price \
+  -e POSTGRES_DB=price_api_test -p 127.0.0.1:55452:5432 postgres:16-alpine
+docker exec price-api-e2e-pg psql -U price -d price_api_test -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
+TEST_DATABASE_URL=postgres://price:price@127.0.0.1:55452/price_api_test npm run test:e2e
 ```

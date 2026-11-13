@@ -7,7 +7,7 @@
 //! measured from its keyframes.
 
 use super::math::Mat4;
-use super::scene::{Scene, TextureSlot};
+use super::scene::{Scene, TextureSlot, Topology};
 use super::{pose, MeshError};
 
 /// A clip moves its root less than this (horizontally, start to end) to count
@@ -16,9 +16,11 @@ pub const IN_PLACE_TOLERANCE_M: f32 = 0.01;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneFacts {
-    /// World-space bounds at rest (the bind pose for a skinned mesh).
+    /// World-space bounds at rest (the bind pose for a skinned mesh), of
+    /// everything drawn: points and lines count ([`pose::world_bounds`]).
     pub bounds: Option<([f32; 3], [f32; 3])>,
     pub vertex_count: usize,
+    /// Triangles only: lines and points are not counted.
     pub triangle_count: usize,
     /// Most texture-coordinate sets on any primitive.
     pub uv_sets: usize,
@@ -31,7 +33,11 @@ pub struct SceneFacts {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterialFacts {
     pub name: Option<String>,
-    /// `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`.
+    /// `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`,
+    /// and the layer maps `clearcoat`, `clearcoat_roughness`,
+    /// `clearcoat_normal`, `transmission`, `volume_thickness`, `specular`,
+    /// `specular_color`, `sheen_color`, `sheen_roughness`, `iridescence`,
+    /// `iridescence_thickness`, `anisotropy`.
     pub maps: Vec<&'static str>,
 }
 
@@ -70,15 +76,58 @@ pub struct SkinFacts {
 pub struct ClipFacts {
     pub name: Option<String>,
     pub duration_s: f32,
-    /// World-space displacement of the skin's root joint, first key to last.
+    /// World-space displacement of the motion joint ([`motion_joint`]),
+    /// first key to last.
     pub root_travel_m: [f32; 3],
+    /// The farthest the motion joint gets from where it starts,
+    /// horizontally, at any time in the clip: a clip that goes out and comes
+    /// back travels nowhere but is not in place.
+    pub excursion_m: f32,
 }
 
 impl ClipFacts {
-    /// Whether the root ends where it started, horizontally.
+    /// Whether the motion joint stays where it starts, horizontally, for
+    /// the whole clip.
     pub fn in_place(&self) -> bool {
-        self.root_travel_m[0].hypot(self.root_travel_m[2]) < IN_PLACE_TOLERANCE_M
+        self.excursion_m < IN_PLACE_TOLERANCE_M
     }
+}
+
+/// Samples [`clip_times`] takes between keys, per second.
+const MOTION_SAMPLE_HZ: f64 = 30.0;
+/// Most grid samples [`clip_times`] adds, whatever the clip's length.
+const MAX_MOTION_SAMPLES: usize = 4096;
+
+/// Every key time of clip `anim`, plus a grid between (`MOTION_SAMPLE_HZ`,
+/// at most `MAX_MOTION_SAMPLES`), sorted and distinct: where a joint's motion
+/// is measured and held, so it follows its ancestors' curves, not just their
+/// keys.
+pub fn clip_times(scene: &Scene, anim: usize) -> Vec<f32> {
+    let Some(a) = scene.animations.get(anim) else { return Vec::new() };
+    let Some((lo, hi)) = a.time_range() else { return Vec::new() };
+    let mut times: Vec<f32> = a.channels.iter().flat_map(|c| c.times.iter().copied()).collect();
+    let span = f64::from(hi) - f64::from(lo);
+    let steps = ((span * MOTION_SAMPLE_HZ).ceil() as usize).min(MAX_MOTION_SAMPLES);
+    for i in 0..=steps {
+        times.push((f64::from(lo) + span * (i as f64 / steps.max(1) as f64)) as f32);
+    }
+    times.sort_by(|a, b| a.total_cmp(b));
+    times.dedup_by(|a, b| a.to_bits() == b.to_bits());
+    times
+}
+
+/// The joint a clip's root motion is measured and held on: the humanoid
+/// hips when the rig reads as a humanoid ("Usually only this bone moves",
+/// VRM 1.0 humanoid.md; Mixamo's In Place holds `mixamorig:Hips`), else the
+/// skin's topmost joint.
+pub fn motion_joint(scene: &Scene) -> Option<usize> {
+    let skin = scene.skins.first()?;
+    let names: Vec<String> = skin.joints.iter().map(|&j| scene.nodes[j].name.clone().unwrap_or_default()).collect();
+    let hips = super::humanoid::humanoid_map(&names).and_then(|(_, map)| {
+        let joint = map.into_iter().find(|(bone, _)| bone == "hips")?.1;
+        skin.joints.iter().copied().find(|&j| scene.nodes[j].name.as_deref() == Some(joint.as_str()))
+    });
+    hips.or_else(|| root_joint(scene, &skin.joints, skin.skeleton))
 }
 
 fn slot_name(slot: TextureSlot) -> &'static str {
@@ -88,6 +137,18 @@ fn slot_name(slot: TextureSlot) -> &'static str {
         TextureSlot::Normal => "normal",
         TextureSlot::Occlusion => "occlusion",
         TextureSlot::Emissive => "emissive",
+        TextureSlot::Clearcoat => "clearcoat",
+        TextureSlot::ClearcoatRoughness => "clearcoat_roughness",
+        TextureSlot::ClearcoatNormal => "clearcoat_normal",
+        TextureSlot::Transmission => "transmission",
+        TextureSlot::VolumeThickness => "volume_thickness",
+        TextureSlot::Specular => "specular",
+        TextureSlot::SpecularColor => "specular_color",
+        TextureSlot::SheenColor => "sheen_color",
+        TextureSlot::SheenRoughness => "sheen_roughness",
+        TextureSlot::Iridescence => "iridescence",
+        TextureSlot::IridescenceThickness => "iridescence_thickness",
+        TextureSlot::Anisotropy => "anisotropy",
     }
 }
 
@@ -141,9 +202,16 @@ fn upper_arm_angle(scene: &Scene, skin: usize, humanoid: &[(String, String)]) ->
     None
 }
 
-/// Centre of the bind-pose vertices whose strongest influence is skin joint
-/// `joint_index`. At bind pose a skinned vertex sits where it is stored.
+/// Centre, where they are drawn at rest, of the vertices whose strongest
+/// influence is skin joint `joint_index`: Σ wᵢ · world(jointᵢ) · IBMᵢ · v
+/// (glTF 2.0 §3.7.3). The stored vertices are in bind space, which matches
+/// the joints' world positions only when nothing sits above the joints — a
+/// height or placement root tilted the angle by tens of degrees.
 fn driven_centroid(scene: &Scene, skin: usize, joint_index: usize) -> Option<[f64; 3]> {
+    let world = scene.world_matrices();
+    let sk = &scene.skins[skin];
+    let joint_mats: Vec<super::math::Mat4> =
+        sk.joints.iter().zip(&sk.inverse_bind_matrices).map(|(&j, ibm)| super::math::mat_mul(&world[j], ibm)).collect();
     let mut sum = [0.0f64; 3];
     let mut n = 0usize;
     for node in scene.nodes.iter().filter(|n| n.skin == Some(skin)) {
@@ -153,12 +221,22 @@ fn driven_centroid(scene: &Scene, skin: usize, joint_index: usize) -> Option<[f6
             for (v, p) in prim.positions.iter().enumerate() {
                 let (js, ws) = sw.vertex(v);
                 let strongest = js.iter().zip(ws).max_by(|a, b| a.1.total_cmp(b.1)).map(|(j, _)| *j as usize);
-                if strongest == Some(joint_index) {
-                    for k in 0..3 {
-                        sum[k] += f64::from(p[k]);
-                    }
-                    n += 1;
+                if strongest != Some(joint_index) {
+                    continue;
                 }
+                let local = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
+                let mut drawn = [0.0f64; 3];
+                for (j, w) in js.iter().zip(ws) {
+                    let Some(m) = joint_mats.get(*j as usize) else { continue };
+                    let q = super::math::transform_point_f64(m, local);
+                    for k in 0..3 {
+                        drawn[k] += f64::from(*w) * q[k];
+                    }
+                }
+                for k in 0..3 {
+                    sum[k] += drawn[k];
+                }
+                n += 1;
             }
         }
     }
@@ -175,7 +253,16 @@ fn classify(angle: Option<f64>) -> BindPose {
 
 /// Measure `scene`.
 pub fn inspect(scene: &Scene) -> Result<SceneFacts, MeshError> {
-    let flat = pose::flatten(scene)?;
+    let rest = pose::default_pose(scene);
+    let bounds = match pose::world_bounds(scene, &rest) {
+        // Positions are `f32`, so the `f64` bounds hold them exactly.
+        Some((lo, hi)) => Some((lo.map(|v| v as f32), hi.map(|v| v as f32))),
+        None => {
+            // No positions; or a scene too big to pose, which is an error.
+            pose::world_primitives(scene, &rest)?;
+            None
+        }
+    };
     let mut uv_sets = 0;
     let mut vertex_colors = false;
     for prim in scene.meshes.iter().flat_map(|m| &m.primitives) {
@@ -196,7 +283,7 @@ pub fn inspect(scene: &Scene) -> Result<SceneFacts, MeshError> {
         SkinFacts { joints, root, bind_pose, humanoid }
     });
 
-    let root = scene.skins.first().and_then(|s| root_joint(scene, &s.joints, s.skeleton));
+    let root = motion_joint(scene);
     let animations = scene
         .animations
         .iter()
@@ -214,12 +301,33 @@ pub fn inspect(scene: &Scene) -> Result<SceneFacts, MeshError> {
                 }
                 None => [0.0; 3],
             };
-            ClipFacts { name: anim.name.clone(), duration_s: end - start, root_travel_m }
+            // From t = 0, where a clip begins (glTF 2.0 §3.11: sampler inputs
+            // are relative to the start of the animation): a clip keyed from
+            // 0.5 s lasts to its last key, as FBX and Collada, which start
+            // every take at 0, also say.
+            let excursion_m = match root {
+                Some(r) => {
+                    let place = |t: f32| {
+                        let world = super::scene::world_from_locals(scene, &pose::sample_pose(scene, i, t).locals());
+                        translation_of(&world[r])
+                    };
+                    let from = place(start);
+                    clip_times(scene, i)
+                        .into_iter()
+                        .map(|t| {
+                            let p = place(t);
+                            (p[0] - from[0]).hypot(p[2] - from[2]) as f32
+                        })
+                        .fold(0.0f32, f32::max)
+                }
+                None => 0.0,
+            };
+            ClipFacts { name: anim.name.clone(), duration_s: end - start.min(0.0), root_travel_m, excursion_m }
         })
         .collect();
 
     Ok(SceneFacts {
-        bounds: flat.bounds(),
+        bounds,
         vertex_count: scene.vertex_count(),
         triangle_count: scene.triangle_count(),
         uv_sets,
@@ -235,8 +343,9 @@ pub fn inspect(scene: &Scene) -> Result<SceneFacts, MeshError> {
 pub struct PartFacts {
     pub node: usize,
     pub name: Option<String>,
+    /// Triangles only: lines and points are not counted.
     pub triangle_count: usize,
-    /// World-space bounds at rest.
+    /// World-space bounds at rest, of everything the part draws.
     pub bounds: Option<([f32; 3], [f32; 3])>,
 }
 
@@ -251,7 +360,9 @@ pub fn parts(scene: &Scene) -> Result<Vec<PartFacts>, MeshError> {
         .collect();
     for wp in pose::world_primitives(scene, &pose::default_pose(scene))? {
         let Some(part) = out.iter_mut().find(|p| p.node == wp.node) else { continue };
-        part.triangle_count += wp.indices.len() / 3;
+        if wp.topology == Topology::Triangles {
+            part.triangle_count += wp.indices.len() / 3;
+        }
         for p in &wp.positions {
             let (lo, hi) = part.bounds.get_or_insert((*p, *p));
             for k in 0..3 {
@@ -280,6 +391,8 @@ mod tests {
             mesh: Some(mesh),
             skin: None,
             weights: None,
+            light: None,
+            camera: None,
         };
         scene.nodes = vec![at(-5.0, "left"), at(5.0, "right")];
         scene.roots = vec![0, 1];
@@ -288,6 +401,35 @@ mod tests {
         assert_eq!(parts.iter().map(|p| (p.node, p.name.as_deref(), p.triangle_count)).collect::<Vec<_>>(), [(0, Some("left"), cube), (1, Some("right"), cube)]);
         let (l, r) = (parts[0].bounds.unwrap(), parts[1].bounds.unwrap());
         assert!(l.1[0] < 0.0 && r.0[0] > 0.0, "each part's own world bounds: {l:?} {r:?}");
+    }
+
+    /// The counts are of triangles and the bounds are of everything drawn: a
+    /// loop and a grid beside the cube add no triangles, to the scene or to
+    /// the part that draws them, and widen the bounds, the scene's and their
+    /// own part's.
+    #[test]
+    fn a_loop_and_a_grid_add_no_triangles_but_widen_the_bounds() {
+        use super::super::scene::Topology;
+        let wire = fixtures::wire();
+        let mut cube = wire.clone();
+        for m in cube.meshes.iter_mut() {
+            m.primitives.retain(|p| p.topology == Topology::Triangles);
+        }
+        let (with, without) = (inspect(&wire).unwrap(), inspect(&cube).unwrap());
+        assert_eq!((with.triangle_count, without.triangle_count), (12, 12));
+        assert_eq!(with.bounds, Some(([-1.0; 3], [1.0; 3])));
+        assert_eq!(without.bounds, Some(([-0.5; 3], [0.5; 3])));
+
+        let parts = parts(&wire).unwrap();
+        let per_part: Vec<_> = parts.iter().map(|p| (p.name.as_deref(), p.triangle_count, p.bounds)).collect();
+        assert_eq!(
+            per_part,
+            [
+                (Some("wire_cube_node"), 12, Some(([-0.5; 3], [0.5; 3]))),
+                (Some("wire_loop_node"), 0, Some(([-0.75, 1.0, -0.75], [0.75, 1.0, 0.75]))),
+                (Some("wire_points_node"), 0, Some(([-1.0, -1.0, -1.0], [1.0, -1.0, 1.0]))),
+            ]
+        );
     }
 
     #[test]
@@ -308,6 +450,43 @@ mod tests {
         let f = inspect(&fixtures::textured()).unwrap();
         assert!(f.uv_sets >= 1);
         assert!(f.materials.iter().any(|m| m.maps.contains(&"base_color")), "{:?}", f.materials);
+    }
+
+    #[test]
+    fn layer_maps_are_named_like_base_ones() {
+        use super::super::scene::{Anisotropy, Clearcoat, Iridescence, Material, Sheen, Specular, TextureRef, Transmission, Volume};
+        let mut scene = fixtures::textured();
+        let t = || Some(TextureRef { texture: 0, uv_set: 0, transform: None });
+        scene.materials[1] = Material {
+            name: Some("layers".into()),
+            clearcoat: Some(Clearcoat { texture: t(), roughness_texture: t(), normal_texture: t(), ..Default::default() }),
+            transmission: Some(Transmission { texture: t(), ..Default::default() }),
+            volume: Some(Volume { thickness_texture: t(), ..Default::default() }),
+            specular: Some(Specular { texture: t(), color_texture: t(), ..Default::default() }),
+            sheen: Some(Sheen { color_texture: t(), roughness_texture: t(), ..Default::default() }),
+            iridescence: Some(Iridescence { texture: t(), thickness_texture: t(), ..Default::default() }),
+            anisotropy: Some(Anisotropy { texture: t(), ..Default::default() }),
+            ..Default::default()
+        };
+        let f = inspect(&scene).unwrap();
+        let m = f.materials.iter().find(|m| m.name.as_deref() == Some("layers")).expect("the layered material");
+        assert_eq!(
+            m.maps,
+            [
+                "clearcoat",
+                "clearcoat_roughness",
+                "clearcoat_normal",
+                "transmission",
+                "volume_thickness",
+                "specular",
+                "specular_color",
+                "sheen_color",
+                "sheen_roughness",
+                "iridescence",
+                "iridescence_thickness",
+                "anisotropy",
+            ]
+        );
     }
 
     #[test]

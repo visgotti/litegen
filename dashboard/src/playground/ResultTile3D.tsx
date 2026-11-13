@@ -1,4 +1,5 @@
 import ModelViewer from '../components/ModelViewer';
+import PackageDownloads from '../components/PackageDownloads';
 import { meshOf, previewOf, validAssets } from '../components/model3d-assets';
 import type { ResultTileState } from './types';
 
@@ -43,6 +44,9 @@ export default function ResultTile3D({ tile, onRerun, rerunDisabled }: Props) {
           <ModelViewer src={mesh} poster={poster} format={meshAsset?.format} testId={`pg-tile-mesh-${tile.modelId}`} style={{ height: 240 }} />
         ) : null}
       </div>
+      {tile.status === 'done' && mesh && (
+        <PackageDownloads assets={assets} testId={`pg-tile-packages-${tile.modelId}`} />
+      )}
       <div className="pg-tile-meta">
         {tile.costUsd != null && <span>${tile.costUsd.toFixed(3)}</span>}
         {tile.latencyMs != null && <span>{tile.latencyMs}ms</span>}

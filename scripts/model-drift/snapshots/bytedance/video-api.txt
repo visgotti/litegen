@@ -9,6 +9,8 @@ type `string` `Required`
   value: `image_url`
 image_url `object` `Required`
 url `string` `Required`
+  - > Aspect ratio (width/height): `[0.4, 2.5]`
+  - > Width and height (px): `[300, 6000]`
 role `string` `Required under certain conditions`
   [Image-to-video (first frame)] supported models: All models
   [Image-to-video (first and last frames)] supported models: Dreamina Seedance 2.0 series, Seedance 1.0 pro
@@ -20,7 +22,10 @@ type `string` `Required`
   value: `video_url`
 video_url `object` `Required`
 url `string` `Required`
-role `string` `conditionally required`
+  - > Aspect ratio (width/height): `[0.4, 2.5]`
+  - > Width and height (px): `[300, 6000]`
+  - > Frame rate (FPS): `[24, 60]`
+role `string` `Required`
   value: `reference_video`
   supported models: Dreamina Seedance 2.0 series
 Audio `object`
@@ -28,16 +33,16 @@ type `string` `Required`
   value: `audio_url`
 audio_url `object` `Required`
 url `string` `Required`
-role `string` `conditionally required`
+role `string` `Required`
   value: `reference_audio`
   Dreamina Seedance 2.0 series: Audio-only input is not supported; include at least one reference image or video.
 Draft information `object`
   supported models: (none of ours)
-draft_task `object` `Required`
-id `string` `Required`
 type `string` `Required`
   value: `draft_task`
-omni_reference_task_type `string` `Default value: auto`
+draft_task `object` `Required`
+id `string` `Required`
+omni_reference_task_typenew `string` `Default value: auto`
   values: `auto`, `reference`, `edit`, `extend`
   supported models: (none of ours)
 resolution `string`
@@ -93,7 +98,7 @@ generate_audio `boolean` `Default: true`
   supported models: Dreamina Seedance 2.0 series
 watermark `boolean` `Default value: false`
   values: `true`, `false`
-output_format `string` `Default value: mp4`
+output_formatnew `string` `Default value: mp4`
   values: `mp4`, `mov`
   supported models: (none of ours)
 seed `integer` `Default value: -1`

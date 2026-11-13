@@ -12,10 +12,13 @@ from ...types import UNSET, Response, Unset
 def _get_kwargs(
     *,
     media_type: Union[Unset, str] = UNSET,
+    all_: Union[Unset, bool] = UNSET,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {}
 
     params["media_type"] = media_type
+
+    params["all"] = all_
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -56,11 +59,13 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     media_type: Union[Unset, str] = UNSET,
+    all_: Union[Unset, bool] = UNSET,
 ) -> Response[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    """GET /v1/models — The models the caller may use (`?all=true`: every model the gateway serves).
 
     Args:
         media_type (Union[Unset, str]):
+        all_ (Union[Unset, bool]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -72,6 +77,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         media_type=media_type,
+        all_=all_,
     )
 
     response = client.get_httpx_client().request(
@@ -85,11 +91,13 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     media_type: Union[Unset, str] = UNSET,
+    all_: Union[Unset, bool] = UNSET,
 ) -> Optional[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    """GET /v1/models — The models the caller may use (`?all=true`: every model the gateway serves).
 
     Args:
         media_type (Union[Unset, str]):
+        all_ (Union[Unset, bool]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -102,6 +110,7 @@ def sync(
     return sync_detailed(
         client=client,
         media_type=media_type,
+        all_=all_,
     ).parsed
 
 
@@ -109,11 +118,13 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     media_type: Union[Unset, str] = UNSET,
+    all_: Union[Unset, bool] = UNSET,
 ) -> Response[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    """GET /v1/models — The models the caller may use (`?all=true`: every model the gateway serves).
 
     Args:
         media_type (Union[Unset, str]):
+        all_ (Union[Unset, bool]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -125,6 +136,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         media_type=media_type,
+        all_=all_,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -136,11 +148,13 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     media_type: Union[Unset, str] = UNSET,
+    all_: Union[Unset, bool] = UNSET,
 ) -> Optional[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    """GET /v1/models — The models the caller may use (`?all=true`: every model the gateway serves).
 
     Args:
         media_type (Union[Unset, str]):
+        all_ (Union[Unset, bool]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -154,5 +168,6 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             media_type=media_type,
+            all_=all_,
         )
     ).parsed

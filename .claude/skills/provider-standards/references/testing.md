@@ -238,9 +238,12 @@ cargo test --manifest-path $M
 # Lint the files you touched (the branch has pre-existing warnings elsewhere)
 cargo clippy --manifest-path $M --all-targets
 
-# Drift definition: tests, then the two-pass check (temp snapshots; leave snapshots/ alone)
+# Drift definition: tests, then the two-pass check into ONE temp folder (leave snapshots/ alone).
+# Run 1 exits 1 with every source under `no baseline`; run 2 shows no `changed` and no `no baseline`.
 node --test 'scripts/model-drift/test/*.test.mjs'
-node scripts/model-drift/check.mjs --provider <p> --snapshots "$(mktemp -d)"
+D="$(mktemp -d)"
+node scripts/model-drift/check.mjs --provider <p> --snapshots "$D"
+node scripts/model-drift/check.mjs --provider <p> --snapshots "$D"
 
 # Landing
 (cd apps/landing && node scripts/sync-models.mjs && node --test scripts/*.test.mjs)
@@ -259,8 +262,8 @@ fails in a file you didn't touch, check `git status` before you debug it.
 - [ ] `catalog_conformance` passes, or the only failure is a date-driven
       shutdown you've reported. For 3D, `model3d_conformance` passes too.
 - [ ] `proxy::registry`, `providers::auth` and `capabilities` lib tests pass.
-- [ ] The drift tests pass, and the two-pass check shows no `FAILED` and no
-      `changed` on its second run.
+- [ ] The drift tests pass, and the two-pass check shows no `FAILED`, and
+      nothing `changed` or under `no baseline` on its second run.
 - [ ] The landing sync has run and the landing tests pass.
 - [ ] The consistency sweep is done (see touchpoints.md).
 - [ ] The live run is done with its output inspected, or "not verified live"

@@ -45,6 +45,14 @@ fn error_resp_clear_state(code: StatusCode, error_code: &str, message: &str) -> 
     resp
 }
 
+/// A 500 from a callback (SEC-DBERR): the class stays in `error_code`, the
+/// detail goes to the server log, never to the visitor, and the state cookie
+/// is cleared as on every callback error.
+fn internal_clear_state(error_code: &str, detail: &dyn std::fmt::Display) -> Response {
+    tracing::error!(error = %detail, code = error_code, "OAuth callback failed");
+    error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, error_code, "internal server error")
+}
+
 /// Build a `Set-Cookie` header value that clears the `litegen_oauth_state` cookie.
 fn clear_oauth_state_cookie() -> axum::http::HeaderValue {
     axum::http::HeaderValue::from_static(
@@ -125,17 +133,90 @@ fn clear_oauth_provider_cookie() -> axum::http::HeaderValue {
     )
 }
 
-/// Resolve the post-login redirect target. Reads the `litegen_oauth_next`
-/// cookie set at `start`; only accepts same-origin relative paths (must start
-/// with `/`, not `//`, and contain no backslash — browsers normalize `\` to
-/// `/`, so `/\evil.com` would otherwise escape the origin), defaulting to `/`.
-fn resolve_next_target(headers: &HeaderMap) -> String {
-    let raw = cookie_value(headers, "litegen_oauth_next")
-        .and_then(|v| urlencoding::decode(&v).ok().map(|c| c.into_owned()));
-    match raw {
-        Some(n) if n.starts_with('/') && !n.starts_with("//") && !n.contains('\\') => n,
-        _ => "/".to_string(),
+/// Resolve the post-login redirect target: the `litegen_oauth_next` cookie
+/// set at `start`, judged again by [`safe_next`], else `/`.
+fn resolve_next_target(headers: &HeaderMap, api_mounts: &[String]) -> String {
+    cookie_value(headers, "litegen_oauth_next")
+        .and_then(|v| urlencoding::decode(&v).ok().map(|c| c.into_owned()))
+        .and_then(|n| safe_next(&n, api_mounts))
+        .unwrap_or_else(|| "/".to_string())
+}
+
+/// Where the gateway's own API is mounted on the origin a `next` lands on.
+/// Two settings can say so, and either may be the one that's set:
+/// - `oauth.callback_base`: the callback answers there, so the relative
+///   `Location` resolves on its origin. It must be the API's public base,
+///   since GitHub and Google check it, so it's right wherever social sign-in
+///   works.
+/// - `public_base_url` (`/api` in production): needed only for MCP, and the
+///   production compose file leaves it empty.
+///
+/// A setting at the root gives no mount.
+fn api_mounts(state: &AppState) -> Vec<String> {
+    let mut mounts = Vec::new();
+    for base in [state.oauth.callback_base.clone(), Some(state.router.config.server.public_base_url())].into_iter().flatten() {
+        let mount = api_mount_of(&base);
+        if !mount.is_empty() && !mounts.contains(&mount) {
+            mounts.push(mount);
+        }
     }
+    mounts
+}
+
+/// The path of a base URL, decoded (so it compares with the decoded path
+/// [`safe_next`] judges) and without its trailing `/`, or "" at the root.
+fn api_mount_of(base_url: &str) -> String {
+    reqwest::Url::parse(base_url)
+        .map(|u| String::from_utf8_lossy(&urlencoding::decode_binary(u.path().as_bytes())).trim_end_matches('/').to_string())
+        .unwrap_or_default()
+}
+
+/// The post-sign-in path a `next` value may name, normalized, or `None`.
+/// Both start routes (the cookie) and the callback (the `Location` header)
+/// use it.
+///
+/// Browsers resolve some values that look like paths to another host:
+/// `/\evil.example`, because they read `\` as `/`, and
+/// `/<TAB>/evil.example`, because they strip tab, line feed and carriage
+/// return before parsing, which leaves `//evil.example`. So `\`, every control
+/// character, space and DEL are refused outright. The value must then resolve
+/// on a fixed origin, and what goes out is its normalized path, never a `//`
+/// one: `/.//evil.example` would normalize to that.
+///
+/// Nor may it point into the gateway's own API, under any of `api_mounts`
+/// ([`api_mounts`]). Its routes answer with redirects of their own (MCP's
+/// authorize sends errors to a client's registered URI), so a `next` there
+/// could still end off site after a genuine sign-in. No dashboard page lives
+/// under it. The path is judged decoded and case-folded, as a proxy might
+/// route it.
+fn safe_next(raw: &str, api_mounts: &[String]) -> Option<String> {
+    if !raw.starts_with('/') || raw.starts_with("//") || raw.bytes().any(|b| b < 0x21 || b == 0x7f || b == b'\\') {
+        return None;
+    }
+    let base = reqwest::Url::parse("https://litegen.invalid/").ok()?;
+    let url = base.join(raw).ok()?;
+    if url.origin() != base.origin() || url.path().starts_with("//") {
+        return None;
+    }
+    if !api_mounts.is_empty() {
+        let page = urlencoding::decode(url.path()).ok()?.to_ascii_lowercase();
+        for mount in api_mounts {
+            let mount = mount.to_ascii_lowercase();
+            if page == mount || page.starts_with(&format!("{mount}/")) {
+                return None;
+            }
+        }
+    }
+    let mut path = url.path().to_string();
+    if let Some(query) = url.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    if let Some(fragment) = url.fragment() {
+        path.push('#');
+        path.push_str(fragment);
+    }
+    Some(path)
 }
 
 /// Resolve an OAuth identity to a `User`, auto-creating in hosted mode.
@@ -218,7 +299,7 @@ async fn resolve_or_create_user(
 /// Create a session for `user_id`, set the session + csrf cookies, clear the
 /// OAuth state + next cookies, and redirect (302) to the resolved `next` target.
 async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &HeaderMap) -> Response {
-    let next = resolve_next_target(headers);
+    let next = resolve_next_target(headers, &api_mounts(state));
     match create_session_cookies(&state.db, user_id, None, None).await {
         Ok((_st, _ct, sc, cc)) => {
             let mut resp = StatusCode::FOUND.into_response();
@@ -235,7 +316,7 @@ async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &Head
             resp.headers_mut().append("set-cookie", clear_oauth_invite_cookie());
             resp
         }
-        Err(e) => error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
+        Err(e) => internal_clear_state("session_error", &e),
     }
 }
 
@@ -269,7 +350,7 @@ async fn apply_invitation_oauth(
     let inv = match state.db.get_invitation(invite_token).await {
         Ok(Some(i)) => i,
         Ok(None) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
-        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+        Err(e) => return Err(internal_clear_state("db_error", &e)),
     };
     if inv.used_at.is_some() || inv.expires_at < chrono::Utc::now() {
         return Err(invite_error_redirect(invite_token, "invitation_invalid"));
@@ -311,13 +392,13 @@ async fn apply_invitation_oauth(
                     is_active: true,
                 };
                 if let Err(e) = state.db.create_user(&u).await {
-                    return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()));
+                    return Err(internal_clear_state("db_error", &e));
                 }
                 u
             }
-            Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+            Err(e) => return Err(internal_clear_state("db_error", &e)),
         },
-        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+        Err(e) => return Err(internal_clear_state("db_error", &e)),
     };
 
     if !user.is_active {
@@ -332,13 +413,13 @@ async fn apply_invitation_oauth(
     match state.db.mark_invitation_used(invite_token).await {
         Ok(true) => {}
         Ok(false) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
-        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+        Err(e) => return Err(internal_clear_state("db_error", &e)),
     }
 
     // Add membership (idempotent).
     if state.db.get_membership(&inv.org_id, &user.id).await.ok().flatten().is_none() {
         if let Err(e) = state.db.add_org_member(&inv.org_id, &user.id, inv.role).await {
-            return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()));
+            return Err(internal_clear_state("db_error", &e));
         }
     }
 
@@ -410,17 +491,22 @@ pub async fn github_start(
         .append("set-cookie", make_oauth_state_cookie(&oauth_state));
     resp.headers_mut()
         .append("set-cookie", make_oauth_provider_cookie("github"));
-    if let Some(next) = params
-        .next
-        .as_deref()
-        .filter(|n| n.starts_with('/') && !n.starts_with("//") && !n.contains('\\'))
-    {
+    let mounts = api_mounts(&state);
+    if let Some(next) = params.next.as_deref().and_then(|n| safe_next(n, &mounts)) {
         resp.headers_mut()
-            .append("set-cookie", make_oauth_next_cookie(next));
+            .append("set-cookie", make_oauth_next_cookie(&next));
+    } else {
+        // No target, or a refused one: an earlier flow's must not stand in.
+        resp.headers_mut().append("set-cookie", clear_oauth_next_cookie());
     }
-    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty()) {
+    // Invitation tokens are hex; anything else could add attributes to the
+    // cookie it's written into.
+    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric())) {
         resp.headers_mut()
             .append("set-cookie", make_oauth_invite_cookie(invite));
+    } else {
+        // Nor may an earlier flow's invitation.
+        resp.headers_mut().append("set-cookie", clear_oauth_invite_cookie());
     }
     resp
 }
@@ -615,7 +701,7 @@ pub async fn handle_github_callback(
                 "An account with this email already exists. Sign in with your password, then link this provider from account settings.",
             );
         }
-        Err(e) => return error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
+        Err(e) => return internal_clear_state("session_error", &e),
     };
 
     if !user.is_active {
@@ -678,17 +764,22 @@ pub async fn google_start(
         .append("set-cookie", make_oauth_state_cookie(&oauth_state));
     resp.headers_mut()
         .append("set-cookie", make_oauth_provider_cookie("google"));
-    if let Some(next) = params
-        .next
-        .as_deref()
-        .filter(|n| n.starts_with('/') && !n.starts_with("//") && !n.contains('\\'))
-    {
+    let mounts = api_mounts(&state);
+    if let Some(next) = params.next.as_deref().and_then(|n| safe_next(n, &mounts)) {
         resp.headers_mut()
-            .append("set-cookie", make_oauth_next_cookie(next));
+            .append("set-cookie", make_oauth_next_cookie(&next));
+    } else {
+        // No target, or a refused one: an earlier flow's must not stand in.
+        resp.headers_mut().append("set-cookie", clear_oauth_next_cookie());
     }
-    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty()) {
+    // Invitation tokens are hex; anything else could add attributes to the
+    // cookie it's written into.
+    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric())) {
         resp.headers_mut()
             .append("set-cookie", make_oauth_invite_cookie(invite));
+    } else {
+        // Nor may an earlier flow's invitation.
+        resp.headers_mut().append("set-cookie", clear_oauth_invite_cookie());
     }
     resp
 }
@@ -866,7 +957,7 @@ pub async fn handle_google_callback(
                 "An account with this email already exists. Sign in with your password, then link this provider from account settings.",
             );
         }
-        Err(e) => return error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
+        Err(e) => return internal_clear_state("session_error", &e),
     };
 
     if !user.is_active {
@@ -963,9 +1054,19 @@ mod tests {
     }
 
     pub async fn build_state_with_oauth(oauth: OAuthConfig) -> Arc<AppState> {
+        build_state_with_oauth_and_config(oauth, AppConfig::default()).await
+    }
+
+    /// `build_state_with_oauth` with `config` in place of the defaults.
+    pub async fn build_state_with_oauth_and_config(oauth: OAuthConfig, config: AppConfig) -> Arc<AppState> {
         let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory db"));
+        build_state_over(db, oauth, config).await
+    }
+
+    /// The state over a database the test keeps, to break it with raw SQL.
+    async fn build_state_over(db: Arc<SqliteDatabase>, oauth: OAuthConfig, config: AppConfig) -> Arc<AppState> {
         let registry = Arc::new(ProviderRegistry::new());
-        let config = Arc::new(AppConfig::default());
+        let config = Arc::new(config);
         let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
         let image_store = Arc::new(LocalStore);
         let router = Arc::new(ProxyRouter::new(registry, cache, config, image_store));
@@ -1244,6 +1345,59 @@ mod tests {
             google_userinfo_base: Some(uri),
             ..Default::default()
         }
+    }
+
+    /// What a failed callback answered: its status, body and Set-Cookie values.
+    async fn failed_callback(state: Arc<AppState>, cookie: &str) -> (StatusCode, String, Vec<String>) {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/oauth/google/callback?code=c&state=s")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+        let resp = build_google_router(state).oneshot(req).await.unwrap();
+        let status = resp.status();
+        let cookies = resp.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap_or("").to_string()).collect();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&body).to_string(), cookies)
+    }
+
+    /// SEC-DBERR: the OAuth callbacks need no sign-in, so a database error in
+    /// one must not reach the visitor: a fixed 500 that still clears the
+    /// state cookie.
+    #[tokio::test]
+    async fn a_database_error_in_a_sign_in_callback_is_not_shown() {
+        let server = MockServer::start().await;
+        let oauth = google_mock(&server, "alice-sub", "alice@x.com", true).await;
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let state = build_state_over(db.clone(), oauth, AppConfig::default()).await;
+        create_user(&state, "alice@x.com", None, Some("alice-sub")).await;
+        sqlx::query("CREATE TRIGGER refuse_sessions BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'disk full'); END;")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let (status, body, cookies) = failed_callback(state, "litegen_oauth_state=s").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["error"]["code"], "session_error", "{body}");
+        assert!(!body.contains("disk full") && !body.contains("database"), "{body}");
+        assert!(cookies.iter().any(|c| c.starts_with("litegen_oauth_state=;")), "the state cookie is cleared: {cookies:?}");
+    }
+
+    /// SEC-DBERR, the invitation arm of a callback (`apply_invitation_oauth`).
+    #[tokio::test]
+    async fn a_database_error_applying_an_invitation_is_not_shown() {
+        let server = MockServer::start().await;
+        let oauth = google_mock(&server, "alice-sub", "alice@x.com", true).await;
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let state = build_state_over(db.clone(), oauth, AppConfig::default()).await;
+        sqlx::query("ALTER TABLE invitations RENAME TO invitations_away").execute(db.pool()).await.unwrap();
+        let (status, body, cookies) = failed_callback(state, "litegen_oauth_state=s; litegen_oauth_invite=invtok").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["error"]["code"], "db_error", "{body}");
+        assert!(!body.contains("no such table") && !body.contains("invitations"), "{body}");
+        assert!(cookies.iter().any(|c| c.starts_with("litegen_oauth_state=;")), "the state cookie is cleared: {cookies:?}");
     }
 
     #[tokio::test]
@@ -2051,5 +2205,262 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FOUND);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert_eq!(location, "/", "backslash `next` must fall back to `/`, not redirect off-origin");
+    }
+
+    // ─── Security fix 6 (2026-11-05): control characters in `next` ──────────
+
+    /// Browsers strip tab, line feed and carriage return before parsing a
+    /// URL, so `/<TAB>/evil.example` becomes `//evil.example`, another host.
+    #[test]
+    fn safe_next_keeps_only_same_origin_paths() {
+        for (raw, want) in [
+            ("/", "/"),
+            ("/keys", "/keys"),
+            ("/generations?id=g1&tab=files#x", "/generations?id=g1&tab=files#x"),
+            ("/a/../b", "/b"),
+        ] {
+            assert_eq!(safe_next(raw, &[]).as_deref(), Some(want), "{raw:?}");
+        }
+        for raw in [
+            "", "keys", "//evil.example", "/\\evil.example", "/\t/evil.example", "/\n/evil.example",
+            "/\r/evil.example", "/\r\n/evil.example", "\t//evil.example", " /keys", "/keys\u{0}", "/a b",
+            "/keys\u{7f}", "/.//evil.example", "/%2e//evil.example", "https://evil.example", "javascript:alert(1)",
+        ] {
+            assert_eq!(safe_next(raw, &[]), None, "{raw:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn next_with_a_control_character_is_rejected() {
+        let server = MockServer::start().await;
+        let oauth = github_mock_oauth(&server, 7778, "ctl@example.com").await;
+        let state = build_hosted_state_with_oauth(oauth).await;
+        let app = build_redirect_router(state);
+        for raw in ["/\t/evil.example", "/\n/evil.example", "/\r/evil.example"] {
+            let next = urlencoding::encode(raw).into_owned();
+            let req = Request::builder()
+                .method("GET")
+                .uri("/auth/redirect?code=testcode&state=teststate")
+                .header(
+                    "cookie",
+                    format!("litegen_oauth_state=teststate; litegen_oauth_provider=github; litegen_oauth_next={next}"),
+                )
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::FOUND, "{raw:?}");
+            let location = resp.headers().get("location").unwrap().to_str().unwrap();
+            assert_eq!(location, "/", "{raw:?} must fall back to `/`, not redirect off-origin");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_start_route_keeps_no_next_with_a_control_character() {
+        let oauth = OAuthConfig {
+            github: Some(ProviderConfig { client_id: "gh-id".into(), client_secret: "gh-secret".into() }),
+            callback_base: Some("https://app.example.com".into()),
+            ..Default::default()
+        };
+        let app = build_github_router(build_state_with_oauth(oauth).await);
+        for (query, kept) in [("next=%2F%09%2Fevil.example", false), ("next=%2F%0A%2Fevil.example", false), ("next=%2Fkeys", true)] {
+            let req = Request::builder()
+                .method("GET")
+                .uri(format!("/v1/auth/oauth/github/start?{query}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::FOUND, "{query}");
+            let cookies: Vec<String> = resp.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap_or("").to_string()).collect();
+            // A kept `next` sets the cookie; a refused one only clears it.
+            let next_cookie = cookies.iter().any(|c| c.starts_with("litegen_oauth_next=") && !c.starts_with("litegen_oauth_next=;"));
+            assert_eq!(next_cookie, kept, "{query}: {cookies:?}");
+        }
+    }
+
+    // ─── Security fix 6, review: the API mount, stale cookies, invite tokens ──
+
+    /// The gateway's own API (`/api` in production) answers with redirects of
+    /// its own: MCP's authorize sends errors to a client's registered URI, so
+    /// a `next` there could still end off site after a genuine sign-in. No
+    /// dashboard page lives under it.
+    #[test]
+    fn safe_next_never_points_into_the_api_mount() {
+        let api = ["/api".to_string()];
+        for raw in ["/api", "/api/", "/api/oauth/authorize?client_id=lgc_x", "/API/oauth/authorize", "/%61pi/oauth/authorize", "/./api/x", "/x/../api/x"] {
+            assert_eq!(safe_next(raw, &api), None, "{raw:?}");
+        }
+        for raw in ["/apis", "/apikeys", "/keys", "/oauth/consent?request=r1"] {
+            assert_eq!(safe_next(raw, &api).as_deref(), Some(raw), "{raw:?}");
+        }
+        // With the API at the root there's no mount to keep out.
+        assert_eq!(safe_next("/api/x", &[]).as_deref(), Some("/api/x"));
+        // Every mount is kept out, and each is compared decoded.
+        let two = ["/api".to_string(), api_mount_of("https://app.litegen.ai/my%20api")];
+        for raw in ["/api/x", "/my%20api/x", "/MY%20API"] {
+            assert_eq!(safe_next(raw, &two), None, "{raw:?}");
+        }
+        assert_eq!(safe_next("/my%20apis", &two).as_deref(), Some("/my%20apis"));
+    }
+
+    #[test]
+    fn the_api_mount_is_a_base_urls_decoded_path() {
+        assert_eq!(api_mount_of("https://app.litegen.ai/api"), "/api");
+        assert_eq!(api_mount_of("https://app.litegen.ai/api/"), "/api");
+        assert_eq!(api_mount_of("http://127.0.0.1:4000"), "");
+        assert_eq!(api_mount_of("not a url"), "");
+        // Decoded, as the path it's compared with is.
+        assert_eq!(api_mount_of("https://app.litegen.ai/my%20api"), "/my api");
+    }
+
+    #[test]
+    fn safe_next_more_shapes() {
+        assert_eq!(safe_next("/a/..//evil.example", &[]), None);
+        assert_eq!(safe_next("/\u{ff0f}/evil.example", &[]).as_deref(), Some("/%EF%BC%8F/evil.example"));
+    }
+
+    #[tokio::test]
+    async fn the_start_routes_keep_only_a_normalized_safe_next_and_a_hex_invite() {
+        let oauth = OAuthConfig {
+            github: Some(ProviderConfig { client_id: "gh-id".into(), client_secret: "gh-secret".into() }),
+            google: Some(ProviderConfig { client_id: "g-id".into(), client_secret: "g-secret".into() }),
+            callback_base: Some("https://app.example.com".into()),
+            ..Default::default()
+        };
+        let state = build_state_with_oauth(oauth).await;
+        for start in ["/v1/auth/oauth/github/start", "/v1/auth/oauth/google/start"] {
+            let app = Router::new()
+                .route("/v1/auth/oauth/github/start", get(github_start))
+                .route("/v1/auth/oauth/google/start", get(google_start))
+                .with_state(state.clone());
+            let cookies = |resp: &axum::response::Response| -> Vec<String> {
+                resp.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap_or("").to_string()).collect()
+            };
+            for (query, want_next) in [
+                ("next=%2Fa%2F..%2Fb", Some("litegen_oauth_next=%2Fb;")),
+                ("next=%2F%0D%2Fevil.example", None),
+                ("next=%2F%09%2Fevil.example", None),
+            ] {
+                let req = Request::builder().uri(format!("{start}?{query}")).body(Body::empty()).unwrap();
+                let resp = app.clone().oneshot(req).await.unwrap();
+                let got = cookies(&resp);
+                let next = got.iter().find(|c| c.starts_with("litegen_oauth_next="));
+                match want_next {
+                    Some(prefix) => assert!(next.is_some_and(|c| c.starts_with(prefix)), "{start}?{query}: {got:?}"),
+                    // A refused `next` clears an earlier flow's cookie.
+                    None => assert!(next.is_some_and(|c| c.starts_with("litegen_oauth_next=;") && c.contains("Max-Age=0")), "{start}?{query}: {got:?}"),
+                }
+            }
+            // An invite token is hex: anything else never reaches the cookie,
+            // so it can't add attributes to it.
+            let req = Request::builder().uri(format!("{start}?invite=x%3B%20Domain%3Dlitegen.ai")).body(Body::empty()).unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert!(!cookies(&resp).iter().any(|c| c.starts_with("litegen_oauth_invite=x")), "{start}: {:?}", cookies(&resp));
+        }
+    }
+
+    // ─── Security fix 6, review round 2: whichever setting names the mount ──
+
+    /// The settings that can say where the API is mounted, as (name,
+    /// `public_base_url`, `oauth.callback_base`). `public_base_url` is needed
+    /// only for MCP, and the production compose file leaves it empty. The
+    /// callback base must be the API's public base, because GitHub and Google
+    /// check it, so it's right wherever social sign-in works. Either one alone
+    /// must keep `next` out of the API.
+    fn mount_settings() -> Vec<(&'static str, Option<String>, String)> {
+        vec![
+            ("public_base_url", Some("https://app.example.com/api".into()), "https://app.example.com".into()),
+            ("callback_base", None, "https://app.example.com/api".into()),
+        ]
+    }
+
+    fn set_cookies(resp: &axum::response::Response) -> Vec<String> {
+        resp.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap_or("").to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn the_start_routes_keep_the_api_mount_out_whichever_setting_names_it() {
+        for (named_by, public_base_url, callback_base) in mount_settings() {
+            let mut config = AppConfig::default();
+            config.server.public_base_url = public_base_url;
+            let oauth = OAuthConfig {
+                github: Some(ProviderConfig { client_id: "gh-id".into(), client_secret: "gh-secret".into() }),
+                google: Some(ProviderConfig { client_id: "g-id".into(), client_secret: "g-secret".into() }),
+                callback_base: Some(callback_base),
+                ..Default::default()
+            };
+            let app = Router::new()
+                .route("/v1/auth/oauth/github/start", get(github_start))
+                .route("/v1/auth/oauth/google/start", get(google_start))
+                .with_state(build_state_with_oauth_and_config(oauth, config).await);
+            for start in ["/v1/auth/oauth/github/start", "/v1/auth/oauth/google/start"] {
+                for (next, kept) in [
+                    ("%2Fapi%2Foauth%2Fauthorize%3Fclient_id%3Dlgc_x", false),
+                    ("%2FAPI%2Fx", false),
+                    ("%2Fapis", true),
+                    ("%2Fkeys", true),
+                ] {
+                    let req = Request::builder().uri(format!("{start}?next={next}")).body(Body::empty()).unwrap();
+                    let got = set_cookies(&app.clone().oneshot(req).await.unwrap());
+                    let set = got.iter().any(|c| c.starts_with(&format!("litegen_oauth_next={next};")));
+                    let cleared = got.iter().any(|c| c.starts_with("litegen_oauth_next=;") && c.contains("Max-Age=0"));
+                    assert_eq!((set, cleared), (kept, !kept), "{named_by}: {start}?next={next}: {got:?}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_callback_keeps_the_api_mount_out_whichever_setting_names_it() {
+        for (i, (named_by, public_base_url, callback_base)) in mount_settings().into_iter().enumerate() {
+            let server = MockServer::start().await;
+            let mut oauth = github_mock_oauth(&server, 7790 + i as i64, &format!("mount{i}@example.com")).await;
+            oauth.callback_base = Some(callback_base);
+            let mut config = AppConfig::default();
+            config.server.public_base_url = public_base_url;
+            let mut state = build_state_with_oauth_and_config(oauth, config).await;
+            Arc::get_mut(&mut state).expect("unique Arc").mode = crate::config::Mode::Hosted;
+            let app = build_redirect_router(state);
+            for (next, want) in [("/api/oauth/authorize?client_id=lgc_x", "/"), ("/apis", "/apis")] {
+                let req = Request::builder()
+                    .uri("/auth/redirect?code=testcode&state=teststate")
+                    .header(
+                        "cookie",
+                        format!(
+                            "litegen_oauth_state=teststate; litegen_oauth_provider=github; litegen_oauth_next={}",
+                            urlencoding::encode(next)
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap();
+                let resp = app.clone().oneshot(req).await.unwrap();
+                assert_eq!(resp.status(), StatusCode::FOUND, "{named_by}: {next}");
+                assert_eq!(resp.headers().get("location").unwrap().to_str().unwrap(), want, "{named_by}: {next}");
+            }
+        }
+    }
+
+    /// Each start sets every round-trip cookie or clears it, so an abandoned
+    /// flow's invitation (valid ten minutes) never carries into the next one.
+    #[tokio::test]
+    async fn a_start_with_no_usable_invite_clears_an_earlier_one() {
+        let oauth = OAuthConfig {
+            github: Some(ProviderConfig { client_id: "gh-id".into(), client_secret: "gh-secret".into() }),
+            google: Some(ProviderConfig { client_id: "g-id".into(), client_secret: "g-secret".into() }),
+            callback_base: Some("https://app.example.com".into()),
+            ..Default::default()
+        };
+        let app = Router::new()
+            .route("/v1/auth/oauth/github/start", get(github_start))
+            .route("/v1/auth/oauth/google/start", get(google_start))
+            .with_state(build_state_with_oauth(oauth).await);
+        for start in ["/v1/auth/oauth/github/start", "/v1/auth/oauth/google/start"] {
+            for (query, kept) in [("next=%2F", false), ("invite=x%3B%20Domain%3Dlitegen.ai", false), ("invite=0a1b2c", true)] {
+                let req = Request::builder().uri(format!("{start}?{query}")).body(Body::empty()).unwrap();
+                let got = set_cookies(&app.clone().oneshot(req).await.unwrap());
+                let set = got.iter().any(|c| c.starts_with("litegen_oauth_invite=0a1b2c;"));
+                let cleared = got.iter().any(|c| c.starts_with("litegen_oauth_invite=;") && c.contains("Max-Age=0"));
+                assert_eq!((set, cleared), (kept, !kept), "{start}?{query}: {got:?}");
+            }
+        }
     }
 }

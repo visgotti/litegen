@@ -10,7 +10,8 @@ import { parse } from 'yaml';
 export interface LitegenModel {
   id: string;
   provider: string;
-  mediaType: 'image' | 'video' | string;
+  displayName: string;
+  mediaType: 'image' | 'video' | 'model3d' | string;
   baseCostUsd: number | null;
 }
 
@@ -18,6 +19,7 @@ interface RawYaml {
   models?: Array<{
     id: string;
     provider: string;
+    display_name?: string;
     media_type?: string;
     pricing?: { base_cost_usd?: number };
   }>;
@@ -47,6 +49,7 @@ export function readLitegenModels(modelsDir: string): LitegenModel[] {
       out.push({
         id: m.id,
         provider: m.provider,
+        displayName: m.display_name ?? m.id,
         mediaType: m.media_type ?? 'image',
         baseCostUsd: m.pricing?.base_cost_usd ?? null,
       });

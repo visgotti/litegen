@@ -9,13 +9,16 @@
 
 models:
   # ─── Rigging (PixelGenie 3D doc §3B) ───────────────────────────────────────
-  # @see https://docs.meshy.ai/en/api/rigging (2026-10-30): model_url ("a GLB
+  # @see https://docs.meshy.ai/en/api/rigging (2026-11-09): model_url ("a GLB
   #   (`.glb`) file of at most 400 MB from an `http` or `https` URL, or 100 MB
   #   as a data URI") or input_task_id; height_meters (default 1.7); "The
-  #   model can have at most 320,000 faces"; "Rigging isn't suitable for these
-  #   models: - Untextured meshes - Non-humanoid assets"; "The character's
-  #   face must point toward the +Z axis". animation_type (biped | quadruped,
-  #   default biped) is in the OpenAPI spec only.
+  #   model can have at most 380,000 triangles (a quad counts as 2), and a
+  #   model with more returns `400`." (max_faces below stays at 320,000, the
+  #   limit Meshy published before; a test pins it); "Rigging isn't suitable
+  #   for these models: - Untextured meshes - Non-humanoid assets - Humanoid
+  #   assets with an unclear limb and body structure"; "The character's face
+  #   must point toward the +Z axis". animation_type (biped | quadruped,
+  #   default biped) is in the OpenAPI spec only (2026-11-09).
   - id: meshy/rig
     provider: meshy
     media_type: model3d

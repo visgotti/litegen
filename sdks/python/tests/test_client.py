@@ -15,7 +15,52 @@ from litegen import (
     LiteGenClient,
     LiteGenTimeoutError,
     LiteGenValidationError,
+    is_accepted,
 )
+
+
+@respx.mock
+def test_images_submit_asks_not_to_wait_and_says_what_came_back() -> None:
+    route = respx.post("http://localhost:4000/v1/images/generations").mock(
+        return_value=Response(
+            202,
+            json={"id": "litegen-img-1", "object": "image.generation", "status": "processing", "model": "m", "created": 1},
+        )
+    )
+    client = LiteGenClient(api_key="lg-test")
+    resp = client.images.submit(prompt="a cat", model="m", wait_seconds=5)
+    assert route.calls[0].request.headers["prefer"] == "respond-async, wait=5"
+    assert is_accepted(resp) and resp["id"] == "litegen-img-1"
+    client.images.submit(prompt="a cat", model="m")
+    assert route.calls[1].request.headers["prefer"] == "respond-async"
+    assert not is_accepted({"created": 1, "data": [], "model": "m", "provider": "p", "id": "img-1"})
+
+
+@respx.mock
+def test_generations_wait_for_completion_polls_the_row() -> None:
+    answers = iter([{"id": "litegen-img-1", "status": "processing"}, {"id": "litegen-img-1", "status": "completed"}])
+    respx.get("http://localhost:4000/v1/generations/litegen-img-1").mock(side_effect=lambda _req: Response(200, json=next(answers)))
+    client = LiteGenClient(api_key="lg-test")
+    done = client.generations.wait_for_completion("litegen-img-1", interval=0.01, timeout=5)
+    assert done["status"] == "completed"
+
+
+@respx.mock
+def test_async_images_submit_and_wait() -> None:
+    respx.post("http://localhost:4000/v1/images/generations").mock(
+        return_value=Response(202, json={"id": "litegen-img-2", "object": "image.generation", "status": "processing", "model": "m", "created": 1})
+    )
+    answers = iter([{"id": "litegen-img-2", "status": "completed"}])
+    respx.get("http://localhost:4000/v1/generations/litegen-img-2").mock(side_effect=lambda _req: Response(200, json=next(answers)))
+
+    async def run() -> None:
+        client = AsyncLiteGenClient(api_key="lg-test")
+        accepted = await client.images.submit(prompt="a cat", model="m")
+        assert is_accepted(accepted)
+        done = await client.generations.wait_for_completion(accepted["id"], interval=0.01, timeout=5)
+        assert done["status"] == "completed"
+
+    asyncio.run(run())
 
 
 @respx.mock
@@ -103,6 +148,73 @@ def test_a_vendor_rejection_carries_the_vendors_answer_and_whether_to_retry() ->
         client.images.generate(prompt="x", model="fal/flux-dev")
     assert (exc.value.code, exc.value.retryable) == ("vendor_rejected", False)
     assert exc.value.provider_error["code"] == "content_policy_violation"
+
+
+def _error(status: int, error: dict[str, Any], retry_after: str | None = None) -> Response:
+    return Response(status, json={"error": error}, headers={"Retry-After": retry_after} if retry_after else None)
+
+
+# The router's and storage's answers from the 2026-11 review, as the SDK raises them.
+_ROUTER_ANSWERS = [
+    pytest.param(
+        # Every deployment of a model route has its circuit breaker open.
+        "POST", "/v1/images/generations", lambda c: c.images.generate(model="fal/flux-dev", prompt="x"),
+        _error(503, {"message": "every deployment is cooling down", "type": "service_unavailable",
+                     "code": "circuit_open", "retryable": True}, "12"),
+        LiteGenAPIError, {"status": 503, "code": "circuit_open", "retryable": True, "retry_after": 12.0},
+        id="circuit_open",
+    ),
+    pytest.param(
+        # Only this replica's cache was emptied; the shared one in Redis was not.
+        "DELETE", "/v1/cache", lambda c: c.cache.clear(),
+        _error(503, {"message": "Only this replica's cache was emptied.", "type": "cache_clear_incomplete",
+                     "code": "cache_clear_incomplete"}, "1"),
+        LiteGenAPIError, {"status": 503, "code": "cache_clear_incomplete", "retryable": None, "retry_after": 1.0},
+        id="cache_clear_incomplete",
+    ),
+    pytest.param(
+        # The adapter refused the request before any vendor call.
+        "POST", "/v1/videos/cost", lambda c: c.videos.estimate_cost(model="minimax/MiniMax-Hailuo-02", prompt="x"),
+        _error(400, {"message": "10 s at 1080P is not offered", "type": "validation_error", "code": "request_unsupported",
+                     "model": "minimax/MiniMax-Hailuo-02", "retryable": False}),
+        LiteGenValidationError, {"status": 400, "code": "request_unsupported", "retryable": False, "model": "minimax/MiniMax-Hailuo-02"},
+        id="request_unsupported",
+    ),
+    pytest.param(
+        "POST", "/v1/images/generations", lambda c: c.images.generate(model="vidu/viduq2", prompt="x"),
+        _error(400, {"message": "Provider 'vidu' is not configured for this application.",
+                     "type": "provider_not_configured", "code": "provider_not_configured"}),
+        LiteGenAPIError, {"status": 400, "code": "provider_not_configured", "retryable": None},
+        id="provider_not_configured",
+    ),
+    pytest.param(
+        # A text-to-video request with no prompt, on a model whose vendor needs one.
+        "POST", "/v1/videos/cost", lambda c: c.videos.estimate_cost(model="runway/veo3.1"),
+        _error(400, {"message": "prompt is required", "type": "validation_error", "code": "prompt_required",
+                     "param": "prompt", "model": "runway/veo3.1"}),
+        LiteGenValidationError, {"status": 400, "code": "prompt_required", "param": "prompt"},
+        id="prompt_required",
+    ),
+    pytest.param(
+        "GET", "/v1/generations/litegen-vid-1/assets/0", lambda c: c.generations.download_asset("litegen-vid-1", 0),
+        _error(416, {"message": "the requested range lies outside the file", "type": "invalid_request_error",
+                     "code": "range_not_satisfiable"}),
+        LiteGenAPIError, {"status": 416, "code": "range_not_satisfiable"},
+        id="range_not_satisfiable",
+    ),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "call", "response", "cls", "want"), _ROUTER_ANSWERS)
+def test_router_and_storage_answers_reach_the_caller(
+    method: str, path: str, call: Any, response: Response, cls: type, want: dict[str, Any]
+) -> None:
+    with respx.mock:
+        respx.route(method=method, url=f"http://localhost:4000{path}").mock(return_value=response)
+        with pytest.raises(LiteGenAPIError) as exc:
+            call(LiteGenClient())
+    assert type(exc.value) is cls
+    assert {name: getattr(exc.value, name) for name in want} == want
 
 
 @respx.mock
@@ -381,6 +493,30 @@ def test_models_list_unwraps_envelope() -> None:
 
 
 @respx.mock
+def test_models_list_all_asks_for_every_served_model() -> None:
+    route = respx.get("http://localhost:4000/v1/models").mock(
+        return_value=Response(200, json={"object": "list", "data": []})
+    )
+    client = LiteGenClient()
+    client.models.list(all=True, media_type="video")
+    params = route.calls.last.request.url.params
+    assert (params.get("all"), params.get("media_type")) == ("true", "video")
+    client.models.list()
+    assert "all" not in route.calls.last.request.url.params
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_models_list_all_asks_for_every_served_model() -> None:
+    route = respx.get("http://localhost:4000/v1/models").mock(
+        return_value=Response(200, json={"object": "list", "data": []})
+    )
+    async with AsyncLiteGenClient() as client:
+        await client.models.list(all=True)
+    assert route.calls.last.request.url.params.get("all") == "true"
+
+
+@respx.mock
 def test_keys_create_posts_name() -> None:
     route = respx.post("http://localhost:4000/v1/keys").mock(
         return_value=Response(
@@ -556,3 +692,72 @@ async def test_async_images_segment_posts_the_prompts() -> None:
         resp = await client.images.segment(model="mock/segment-image", image="x", prompts=[{"type": "text", "text": "visor"}])
     assert resp["id"] == "litegen-seg-1"
     assert "idempotency-key" not in route.calls[0].request.headers
+
+
+# ─── Keeping nothing, deleting and revoking (docs/storage-access.md) ─────────
+
+
+@respx.mock
+def test_keep_outputs_false_is_sent_on_every_generate_submit() -> None:
+    img = respx.post("http://localhost:4000/v1/images/generations").mock(
+        return_value=Response(200, json={"created": 1, "data": [], "model": "m", "provider": "p", "id": "i"})
+    )
+    m3d = respx.post("http://localhost:4000/v1/models3d/generations").mock(return_value=Response(200, json=_JOB_3D))
+    vid = respx.post("http://localhost:4000/v1/videos/generations").mock(return_value=Response(200, json=_JOB_VID))
+    respx.get("http://localhost:4000/v1/models3d/litegen-3d-1").mock(return_value=Response(200, json=_JOB_3D))
+    respx.get("http://localhost:4000/v1/videos/litegen-vid-1").mock(return_value=Response(200, json=_JOB_VID))
+    client = LiteGenClient()
+    client.images.generate(model="mock/image-gen", prompt="x", keep_outputs=False)
+    client.models3d.generate(model="mock/mesh-3d", prompt="x", keep_outputs=False, interval=0).result()
+    client.videos.generate(model="mock/video-gen", prompt="x", keep_outputs=False, interval=0).result()
+    for route in (img, m3d, vid):
+        assert route.calls[0].request.headers["x-litegen-keep-outputs"] == "false"
+        assert b"keep_outputs" not in route.calls[0].request.content, "never part of the body"
+    client.images.generate(model="mock/image-gen", prompt="x")
+    assert "x-litegen-keep-outputs" not in img.calls[1].request.headers
+    with pytest.raises(ValueError):
+        client.images.generate(model="mock/image-gen", prompt="x", keep_outputs=True)
+
+
+@respx.mock
+def test_deleting_and_revoking_use_their_routes() -> None:
+    revoked = {"revoked_at": "2026-11-03T12:00:00.000Z"}
+    gen = respx.post("http://localhost:4000/v1/generations/g1/revoke-links").mock(return_value=Response(200, json=revoked))
+    app = respx.post("http://localhost:4000/v1/apps/a1/access/revoke-links").mock(return_value=Response(200, json=revoked))
+    gateway = respx.post("http://localhost:4000/v1/admin/revoke-links").mock(return_value=Response(200, json=revoked))
+    delete = respx.delete("http://localhost:4000/v1/generations/g1").mock(
+        return_value=Response(200, json={"id": "g1", "files_deleted_at": "2026-11-03T12:00:00Z"})
+    )
+    client = LiteGenClient()
+    assert client.generations.revoke_links("g1") == revoked
+    assert client.file_access.revoke_app_links("a1") == revoked
+    assert client.admin.revoke_links() == revoked
+    assert client.generations.delete("g1")["files_deleted_at"]
+    assert gen.called and app.called and gateway.called and delete.called
+
+
+@respx.mock
+def test_download_asset_follows_a_signed_redirect_without_the_key() -> None:
+    # In signed mode the file route answers 307 to a presigned bucket URL.
+    respx.get("http://localhost:4000/v1/generations/g1/assets/0").mock(
+        return_value=Response(307, headers={"location": "https://bucket.example/litegen/g1/image.png?sig=x"})
+    )
+    bucket = respx.get("https://bucket.example/litegen/g1/image.png").mock(
+        return_value=Response(200, content=b"\x89PNG-bytes", headers={"content-type": "image/png"})
+    )
+    client = LiteGenClient(api_key="lg-secret")
+    assert client.generations.download_asset("g1", 0) == b"\x89PNG-bytes"
+    assert "authorization" not in bucket.calls.last.request.headers
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_download_asset_follows_a_signed_redirect() -> None:
+    respx.get("http://localhost:4000/v1/generations/g1/assets/0").mock(
+        return_value=Response(307, headers={"location": "https://bucket.example/litegen/g1/image.png?sig=x"})
+    )
+    respx.get("https://bucket.example/litegen/g1/image.png").mock(
+        return_value=Response(200, content=b"bytes", headers={"content-type": "image/png"})
+    )
+    async with AsyncLiteGenClient(api_key="lg-secret") as client:
+        assert await client.generations.download_asset("g1", 0) == b"bytes"

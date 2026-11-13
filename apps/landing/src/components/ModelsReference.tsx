@@ -3,26 +3,31 @@
 /**
  * Browsable per-model capability reference. Renders the build-generated
  * `MODELS` catalog (from models/*.yaml) grouped by provider, with a search box
- * and expandable rows that reveal each model's full spec — sizes, aspect
- * ratios, reference-image roles, prompt limits, parameters, and pricing.
+ * and expandable rows. A row's head says what the model does and its exact
+ * price per unit; its details give the full spec — the vendor's lifecycle,
+ * sizes (listed, or freeform bounds), aspect ratios (and the frame images
+ * that set the shape instead), reference-image roles,
+ * prompt limits, parameters with their limits, and the price with its rules.
+ * The wording lives in src/lib/{price,model}-format.mjs, tested in scripts/.
  */
 import { useMemo, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { MODELS, type ModelEntry } from '@/config/models.generated';
+import { formatUsd, priceDefaultText, priceText, ruleText } from '@/lib/price-format.mjs';
+import { aspectRatioFramesText, lifecycleText, paramLimitsText, presetText, sizeRangeText } from '@/lib/model-format.mjs';
 import styles from './ModelsReference.module.css';
 
-function modalities(c: ModelEntry['capabilities']): string[] {
-  const out: string[] = [];
-  if (c.textToImage) out.push('text→image');
-  if (c.imageToImage) out.push('image→image');
-  if (c.inpainting) out.push('inpainting');
-  if (c.textToVideo) out.push('text→video');
-  if (c.imageToVideo) out.push('image→video');
-  return out;
-}
+/** The prompt line of a model that takes none, by what it works on instead. */
+const NO_PROMPT: Record<NonNullable<ModelEntry['worksOn']> | 'image', string> = {
+  image: 'noPrompt',
+  sourceModel: 'noPromptSourceModel',
+  sourceVideo: 'noPromptSourceVideo',
+  segmentation: 'noPromptSegmentation',
+};
 
 export function ModelsReference() {
   const t = useTranslations('reference');
+  const locale = useLocale();
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState<Set<string>>(new Set());
 
@@ -71,6 +76,7 @@ export function ModelsReference() {
           onChange={(e) => setQuery(e.target.value)}
           aria-label={t('searchPlaceholder')}
         />
+        <p className={styles.note}>{t('priceNote')}</p>
 
         {groups.length === 0 ? (
           <p className={styles.empty}>{t('noResults')}</p>
@@ -97,22 +103,21 @@ export function ModelsReference() {
                         </span>
                         <code className={styles.id}>{m.id}</code>
                         <span className={styles.badges}>
-                          {modalities(m.capabilities).map((mod) => (
+                          {m.modalities.map((mod) => (
                             <span key={mod} className={styles.badge}>
-                              {mod}
+                              {t(`modality.${mod}`)}
                             </span>
                           ))}
-                          <span
-                            className={`${styles.badge} ${
-                              m.output === 'video' ? styles.video : styles.image
-                            }`}
-                          >
-                            {m.output}
-                          </span>
+                          <span className={`${styles.badge} ${styles[m.output]}`}>{m.output}</span>
                           {m.task !== 'generate' && (
                             <span className={`${styles.badge} ${styles.task}`} data-task={m.task}>
                               {m.task}
                             </span>
+                          )}
+                          {/* Deprecated from deprecated_at on, or once a shutdown date is
+                              announced (schema.rs status_on); the dates are in the details. */}
+                          {(m.lifecycle?.deprecatedAt || m.lifecycle?.retiresAt) && (
+                            <span className={`${styles.badge} ${styles.deprecated}`}>{t('deprecated')}</span>
                           )}
                         </span>
                         <span className={styles.metaRow}>
@@ -123,7 +128,10 @@ export function ModelsReference() {
                           )}
                           {m.pricing && (
                             <span className={styles.price}>
-                              ${m.pricing.baseCostUsd.toFixed(2)}
+                              {priceText(m.pricing, t, locale)}
+                              {m.pricing.rules.length > 0 && (
+                                <span className={styles.varies}> · {t('priceVaries')}</span>
+                              )}
                             </span>
                           )}
                         </span>
@@ -148,16 +156,34 @@ export function ModelsReference() {
                                 </dd>
                               </>
                             )}
-                            {m.sizes.length > 0 && (
+                            {m.lifecycle && (
                               <>
-                                <dt>{t('sizes')}</dt>
-                                <dd>{m.sizes.join(' · ')}</dd>
+                                <dt>{t('lifecycle')}</dt>
+                                <dd>{lifecycleText(m.lifecycle, t)}</dd>
+                              </>
+                            )}
+                            {(m.sizes.length > 0 || m.sizeRange) && (
+                              <>
+                                <dt title={m.sizeLabel}>{t('sizes')}</dt>
+                                <dd>
+                                  {m.sizeRange ? sizeRangeText(m.sizeRange, t, locale) : m.sizes.join(' · ')}
+                                  {m.sizeDescription && <p className={styles.paramDesc}>{m.sizeDescription}</p>}
+                                </dd>
                               </>
                             )}
                             {m.aspectRatios.length > 0 && (
                               <>
-                                <dt>{t('aspectRatios')}</dt>
-                                <dd>{m.aspectRatios.join(' · ')}</dd>
+                                <dt title={m.aspectRatioLabel}>{t('aspectRatios')}</dt>
+                                <dd>
+                                  {m.aspectRatios.join(' · ')}
+                                  {/* A frame image sets the shape instead (validator.rs check_frame_shape). */}
+                                  {m.aspectRatioFrames && (
+                                    <p className={styles.paramDesc}>{aspectRatioFramesText(m.aspectRatioFrames, t, locale)}</p>
+                                  )}
+                                  {m.aspectRatioDescription && (
+                                    <p className={styles.paramDesc}>{m.aspectRatioDescription}</p>
+                                  )}
+                                </dd>
                               </>
                             )}
                             <dt>{t('referenceImages')}</dt>
@@ -171,10 +197,11 @@ export function ModelsReference() {
                             </dd>
                             <dt>{t('prompt')}</dt>
                             <dd>
-                              {/* max_length 0 is the catalog's "takes no prompt at all"
-                                  (an image-only model), not a zero-character limit. */}
+                              {/* max_length 0 is the catalog's "takes no prompt at all",
+                                  not a zero-character limit: the model works from its input
+                                  image, its source mesh or clip, or the prompts it segments by. */}
                               {m.promptLimits.maxLength === 0 ? (
-                                t('noPrompt')
+                                t(NO_PROMPT[m.worksOn ?? 'image'])
                               ) : (
                                 <>
                                   {m.promptLimits.required ? t('required') : t('optional')}
@@ -189,31 +216,71 @@ export function ModelsReference() {
                                 <dt>{t('params')}</dt>
                                 <dd>
                                   <ul className={styles.params}>
-                                    {m.params.map((p) => (
-                                      <li key={p.name}>
-                                        <code>{p.name}</code>{' '}
-                                        <span className={styles.kind}>{p.kind}</span>
-                                        {p.enum && <> {p.enum.join(' | ')}</>}
-                                        {p.name === 'output_formats' && (
-                                          <span className={styles.default}> · {t('formatsNote')}</span>
-                                        )}
-                                        {(p.min !== undefined || p.max !== undefined) && (
-                                          <>
-                                            {' '}
-                                            [{p.min ?? '−∞'}, {p.max ?? '∞'}]
-                                          </>
-                                        )}
-                                        {p.default !== undefined && (
-                                          <span className={styles.default}>
-                                            {' '}
-                                            {t('defaultEq', {
-                                              v: Array.isArray(p.default) ? p.default.join(', ') : String(p.default),
-                                            })}
-                                          </span>
-                                        )}
-                                      </li>
-                                    ))}
+                                    {m.params.map((p) => {
+                                      const limits = paramLimitsText(p, t, locale);
+                                      return (
+                                        <li key={p.name}>
+                                          <code title={p.label}>{p.name}</code>{' '}
+                                          <span className={styles.kind}>{p.kind}</span>
+                                          {p.enum && <> {p.enum.join(' | ')}</>}
+                                          {/* A number that takes a list takes only those values:
+                                              the validator refuses anything between them. */}
+                                          {p.values && <> {p.values.join(' | ')}</>}
+                                          {p.name === 'output_formats' && (
+                                            <span className={styles.default}> · {t('formatsNote')}</span>
+                                          )}
+                                          {!p.values && (p.min !== undefined || p.max !== undefined) && (
+                                            <>
+                                              {' '}
+                                              [{p.min ?? '−∞'}, {p.max ?? '∞'}]
+                                            </>
+                                          )}
+                                          {p.default !== undefined && (
+                                            <span className={styles.default}>
+                                              {' '}
+                                              {t('defaultEq', {
+                                                v: Array.isArray(p.default) ? p.default.join(', ') : String(p.default),
+                                              })}
+                                            </span>
+                                          )}
+                                          {limits.length > 0 && (
+                                            <span className={styles.default}> · {limits.join(' · ')}</span>
+                                          )}
+                                          {p.description && <p className={styles.paramDesc}>{p.description}</p>}
+                                          {p.presets && p.presets.length > 0 && (
+                                            <>
+                                              <p className={styles.paramDesc}>{t('presets', { n: p.presets.length })}</p>
+                                              <ul className={styles.presets}>
+                                                {p.presets.map((preset) => (
+                                                  <li key={preset.id}>{presetText(preset)}</li>
+                                                ))}
+                                              </ul>
+                                            </>
+                                          )}
+                                        </li>
+                                      );
+                                    })}
                                   </ul>
+                                </dd>
+                              </>
+                            )}
+                            {m.pricing && (
+                              <>
+                                <dt>{t('price')}</dt>
+                                <dd>
+                                  <p className={styles.priceLine}>{priceDefaultText(m, t, locale)}</p>
+                                  {m.pricing.rules.length > 0 && (
+                                    <>
+                                      <p className={styles.priceLine}>
+                                        {t('priceRulesIntro', { zero: formatUsd(0, locale) })}
+                                      </p>
+                                      <ol className={styles.priceRules}>
+                                        {m.pricing.rules.map((rule, i) => (
+                                          <li key={i}>{ruleText(rule, t, locale)}</li>
+                                        ))}
+                                      </ol>
+                                    </>
+                                  )}
                                 </dd>
                               </>
                             )}

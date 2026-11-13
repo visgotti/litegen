@@ -3,6 +3,7 @@ import { client } from '../sdk-client';
 import type { ImageGenerationRequest, Model3dGenerationRequest } from '@litegen/sdk';
 import type { ResultTileState } from './types';
 import { fanOutJobs } from './params';
+import { runErrorText } from './run-error';
 
 const MAX_CONCURRENCY = 4;
 
@@ -192,7 +193,8 @@ export function useFanOut(): FanOut {
             }
           } catch (e) {
             if (ctrl.signal.aborted) return;
-            keys.forEach(k => patch(k, { status: 'error', error: (e as Error).message }));
+            // The server's words, and when to try again if it said (circuit_open).
+            keys.forEach(k => patch(k, { status: 'error', error: runErrorText(e) }));
           } finally {
             // Settled one way or another; a later Cancel has nothing to stop.
             // (A cancelled job was already taken off by cancelAll.)
@@ -214,7 +216,7 @@ export function useFanOut(): FanOut {
           }));
         } catch (e) {
           if (ctrl.signal.aborted) return;
-          const msg = (e as Error).message;
+          const msg = runErrorText(e);
           keys.forEach(k => patch(k, { status: 'error', error: msg }));
         }
       }

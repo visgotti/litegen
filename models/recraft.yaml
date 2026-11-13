@@ -9,6 +9,8 @@ models:
     display_name: Recraft V3
     description: Recraft V3 raster image generation.
     docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
+    # "| V3 | $0.04 | $0.08 | — | — |" (Model | Raster | Vector | …): raster $0.04.
+    # @see https://www.recraft.ai/docs/api-reference/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -16,17 +18,29 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
       negative_prompt: { kind: string, max_length: 1000 }
       style:
         kind: string
-        # No icon: "`icon` — V2 models only" (endpoints.md, 2026-10-30).
+        # No icon: "`icon` — V2 models only" is the base `style` of the Create
+        # style endpoint (endpoints.md "## Create style", 2026-11-09); for
+        # Generate, agents.md (2026-11-09): "`Icon` (V2 vector only)".
         enum_values: [realistic_image, digital_illustration, vector_illustration, any]
         default: realistic_image
       size:
         kind: size
         mode: enum
         # V2/V3 sizes incl. 16:9 1820x1024 / 9:16 1024x1820: https://www.recraft.ai/docs/api-reference/appendix.md
-        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
+        # The Appendix's V2/V3 column, 14 sizes ("any other value is rejected");
+        # the OpenAPI enum's 1707x1024 is not in it (2026-11-03).
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
       # Text layout (PixelGenie 3D doc §4): "supported by Recraft V3 and
       # Recraft V3 Vector models only"; "Each text element consists of an
       # individual word and its bounding box", 4 relative points.
@@ -40,6 +54,9 @@ models:
         description: Words to render, one per box, as fractions of the canvas.
     # No substyle: Generate has no such field (endpoints.md, 2026-10-30).
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image]
 
   - id: recraft/recraftv3_vector
@@ -48,6 +65,8 @@ models:
     display_name: Recraft V3 Vector
     description: Recraft V3 vector (SVG) image generation.
     docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
+    # "| V3 | $0.04 | $0.08 | — | — |" (Model | Raster | Vector | …): vector $0.08.
+    # @see https://www.recraft.ai/docs/api-reference/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.08 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -55,10 +74,20 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
       negative_prompt: { kind: string, max_length: 1000 }
       style:
         kind: string
-        # No icon: "`icon` — V2 models only" (endpoints.md, 2026-10-30).
+        # No icon: "`icon` — V2 models only" is the base `style` of the Create
+        # style endpoint (endpoints.md "## Create style", 2026-11-09); for
+        # Generate, agents.md (2026-11-09): "`Icon` (V2 vector only)".
         enum_values: [vector_illustration]
         default: vector_illustration
       # No size: "Vector models (every `_vector` model) accept the same 14
@@ -77,6 +106,9 @@ models:
         description: Words to render, one per box, as fractions of the canvas.
     # No substyle: Generate has no such field (endpoints.md, 2026-10-30).
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image, vector]
 
   - id: recraft/recraftv2
@@ -85,6 +117,8 @@ models:
     display_name: Recraft V2
     description: Recraft V2 raster image generation.
     docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
+    # "| V2 | $0.022 | $0.044 | — | — |" (Model | Raster | Vector | …): raster $0.022.
+    # @see https://www.recraft.ai/docs/api-reference/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.022 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -92,6 +126,14 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
       # negative_prompt: "V2 / V3 models": https://www.recraft.ai/docs/api-reference/endpoints.md
       negative_prompt: { kind: string, max_length: 1000 }
       style:
@@ -102,9 +144,14 @@ models:
         kind: size
         mode: enum
         # V2/V3 sizes incl. 16:9 1820x1024 / 9:16 1024x1820: https://www.recraft.ai/docs/api-reference/appendix.md
-        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
+        # The Appendix's V2/V3 column, 14 sizes ("any other value is rejected");
+        # the OpenAPI enum's 1707x1024 is not in it (2026-11-03).
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
     # No substyle: Generate has no such field (endpoints.md, 2026-10-30).
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image]
 
   - id: recraft/recraftv4_1
@@ -126,13 +173,65 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
       size:
         kind: size
         mode: enum
         # V4 / V4.1 sizes: https://www.recraft.ai/docs/api-reference/appendix.md
         values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image]
+
+  # Recraft V4.1 Flash (new 2026-11-03): "The fastest and cheapest Recraft
+  # API model … Raster only, no styles" — `model: recraftv4_1_flash` on POST
+  # /v1/images/generations, the V4.1 1K size table, `random_seed` and
+  # `controls.colors`; "Not supported by Flash: `style`, `style_id`,
+  # `style_match`, style references, `negative_prompt`, and `text_layout`";
+  # "Image to image, create style | No"; raster as WebP or PNG (litegen asks
+  # for png, as for every raster model).
+  # @see https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash.md (2026-11-03)
+  - id: recraft/recraftv4_1_flash
+    provider: recraft
+    media_type: image
+    display_name: Recraft V4.1 Flash
+    description: Recraft V4.1 Flash — fast, low-cost raster image generation (no styles).
+    docs_url: https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash
+    # "| [V4.1 Flash](…) | $0.007 | — | — | — |" (raster, per image).
+    # @see https://www.recraft.ai/docs/api-reference/pricing.md (2026-11-03)
+    pricing: { base_cost_usd: 0.007 }
+    capabilities: { text_to_image: true }
+    # "What to generate. Up to 10,000 characters."
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # PixelGenie L16, a hint: controls.colors, "Preferred colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
+      # "`random_seed` | integer | Seed for reproducible results."
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # "Aspect ratio (`1:1`, `16:9`, `3:4`, ...) or exact size" — sent as
+      # `size`; an exact `size` the caller also sends wins.
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md (2026-11-03)
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
+      size:
+        kind: size
+        mode: enum
+        # "1K models: recraftv4_1, recraftv4_1_utility, recraftv4_1_flash": the V4.1 sizes.
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    extra_allowlist: [controls]
+    tags: [text-to-image, fast]
 
   - id: recraft/recraftv4_1_pro
     provider: recraft
@@ -153,12 +252,23 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
       size:
         kind: size
         mode: enum
         # V4 Pro / V4.1 Pro (2K) sizes: https://www.recraft.ai/docs/api-reference/appendix.md
         values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image]
 
   # ─── Vector (SVG) models (added 2026-09-11, model-drift) ───────────────────
@@ -187,7 +297,18 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image, vector]
 
   - id: recraft/recraftv4_1_pro_vector
@@ -206,7 +327,18 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image, vector]
 
   - id: recraft/recraftv2_vector
@@ -224,6 +356,14 @@ models:
       # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
       palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md ("Image sizes", 2026-11-03):
+      #   "**Aspect ratio** `w:h`, for example `16:9`. Works with every model.
+      #   Prefer it." Sent as `size`; an exact `size` the caller also sends wins.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
       # negative_prompt: "V2 / V3 models": https://www.recraft.ai/docs/api-reference/endpoints.md
       negative_prompt: { kind: string, max_length: 1000 }
       style:
@@ -235,6 +375,9 @@ models:
         default: "Vector art"
     # No text_layout ("V3 models only").
     extra_allowlist: [style_id, controls]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a uuid); controls (an object) stays untyped.
+      style_id: { kind: string }
     tags: [text-to-image, vector]
 
   # PixelGenie L8. POST /v1/images/removeBackground: image_url (JSON) or file
@@ -299,4 +442,7 @@ models:
       roles:
         init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [style]
+    extra_params:
+      # From Recraft's OpenAPI (drift snapshot recraft/openapi.txt: a string).
+      style: { kind: string }
     tags: [image-to-image, background-swap]

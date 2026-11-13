@@ -208,7 +208,9 @@ pub fn generate_timed_keyframes_gif(keyframes: &[(f64, Vec<u8>)], duration_s: f6
     use image::imageops::FilterType;
 
     let fps = fps.max(1);
-    let decoded: Option<Vec<(usize, ImageBuffer<Rgba<u8>, Vec<u8>>)>> = keyframes
+    /// Each keyframe at its frame index.
+    type Pinned = Vec<(usize, ImageBuffer<Rgba<u8>, Vec<u8>>)>;
+    let decoded: Option<Pinned> = keyframes
         .iter()
         .map(|(t, bytes)| image::load_from_memory(bytes).ok().map(|img| ((t * fps as f64).round() as usize, img.to_rgba8())))
         .collect();

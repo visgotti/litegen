@@ -22,17 +22,31 @@
 //!   whose `FileId`, `CreationTime` and footer id disagree; the triple below
 //!   is the one Blender and Assimp have shipped in every file for years.
 //!
-//! Content mapping: one `Model` per node (`LimbNode` for skin joints, `Null`
-//! otherwise, `Mesh` when it holds geometry), one `Geometry` per mesh (one per
-//! node when skinned or morphed, since FBX hangs deformers off the geometry),
-//! primitives as per-polygon materials, Phong materials in Blender's
-//! metallic-roughness encoding plus Stingray-style `Maya|…` factors, embedded
-//! textures, and animation resampled at 30 fps plus every source key.
+//! Content mapping: one `Model` per node (`LimbNode` for skin joints, `Mesh`
+//! when it holds geometry, `Light` or `Camera` when it holds one, `Null`
+//! otherwise), one `Geometry` per mesh (one per node when skinned or
+//! morphed, since FBX hangs deformers off the geometry), primitives as
+//! per-polygon materials, Phong materials in Blender's metallic-roughness
+//! encoding plus Stingray-style `Maya|…` factors, embedded textures, each
+//! light and camera as a `NodeAttribute` of its own on its model, and
+//! animation resampled at 30 fps plus every source key.
+//!
+//! # Lights and cameras
+//!
+//! In FBX's frames first ([`write_with`]: `fbx::separate_lights_and_cameras`,
+//! then `fbx::reframe` with each node's `fbx::Turn`), so a light model's −Y
+//! and a camera model's +X point where the scene's −Z does, and in the
+//! units ufbx v0.23.1 and Blender 5.2.3 read back (a light's strength in
+//! `LightUnits::Photometric`, the default, or `LightUnits::Blender`;
+//! [`Writer::light_attribute`],
+//! [`Writer::camera_attribute`]). Each attribute is named after its light or
+//! camera, so the name comes back.
 
-use super::fbx::{srgb_encode, unsupported, TICKS_PER_SECOND, WRITE_VERSION};
+use super::fbx::{encode_color, srgb_encode, unsupported, TICKS_PER_SECOND, WRITE_VERSION};
+use super::{FbxColorSpace, LightUnits};
 use super::fbx_dom::{write_records, WProp, WRec, BINARY_MAGIC};
 use super::math::{self, EulerOrder, Mat4};
-use super::scene::{AnimPath, Interpolation, Primitive, Scene, Transform, Wrap};
+use super::scene::{blender_energy, AnimPath, Interpolation, LightKind, Primitive, Projection, Scene, Wrap};
 use super::{pose, MeshError};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -50,13 +64,6 @@ const CREATION_TIME: &str = "1970-01-01 10:00:00:000";
 const FOOTER_ID: [u8; 16] = [0xFA, 0xBC, 0xAB, 0x09, 0xD0, 0xC8, 0xD4, 0x66, 0xB1, 0x76, 0xFB, 0x83, 0x1C, 0xF7, 0x26, 0x7E];
 const FOOTER_MAGIC: [u8; 16] = [0xF8, 0x5A, 0x8C, 0x6A, 0xDE, 0xF5, 0xD9, 0x7E, 0xEC, 0xE9, 0x0C, 0xE3, 0x75, 0x8F, 0x29, 0x0B];
 
-/// Resampling rate for animation: FBX rotation curves interpolate Euler
-/// angles componentwise (and three.js slerps between whatever keys it gets),
-/// so the source's own interpolation has to be pinned down at a rate where
-/// the two cannot drift apart visibly. 30 fps is Mixamo's and the SDK's
-/// default `TimeMode`. Near gimbal lock no fixed rate is enough; see
-/// [`refine_euler_times`].
-const RESAMPLE_FPS: f32 = 30.0;
 /// How far, in degrees, a rotation curve interpolated per Euler angle may
 /// stray between two keys from the rotation the scene has there before
 /// [`refine_euler_times`] keys the midpoint.
@@ -85,6 +92,14 @@ const DEFAULT_KEY_WEIGHTS: u32 = 0x0D05_0D05;
 /// cap is what keeps a scene with millions of keys on thousands of nodes
 /// (possible from a hostile source file) from stalling the writer.
 const MAX_RESAMPLE_WORK: usize = 200_000_000;
+
+/// Most sample times one clip is written with, given the curves keyed at
+/// each time and the pose evaluations (nodes + channels) each time costs.
+/// Every curve gets a key at every time, so times × curves stays within the
+/// keys our own reader accepts: a file this writer makes must read back.
+fn time_budget(curves: usize, per_time: usize) -> usize {
+    (super::scene::MAX_ANIMATION_KEYS / curves.max(1)).min(MAX_RESAMPLE_WORK / per_time.max(1))
+}
 
 /// Max candidates compared when welding a vertex into a control point. Welding
 /// is a courtesy to DCC users (a cube becomes 8 control points, not 24); a
@@ -192,6 +207,9 @@ fn three_js_key(name: &str) -> String {
 #[derive(Default)]
 struct Names {
     used: HashSet<String>,
+    /// Where each base's numbering resumes, so repeats cost one probe each
+    /// rather than a count up from `_1`.
+    next: HashMap<String, usize>,
 }
 
 impl Names {
@@ -199,11 +217,12 @@ impl Names {
         let clean: String = raw.unwrap_or("").chars().map(|c| if c.is_control() { '_' } else { c }).collect();
         let base = if clean.trim().is_empty() { fallback.to_string() } else { clean };
         let mut name = base.clone();
-        let mut n = 1;
+        let mut n = self.next.get(&base).copied().unwrap_or(1);
         loop {
             let key = three_js_key(&name);
             if !key.is_empty() && !self.used.contains(&key) {
                 self.used.insert(key);
+                self.next.insert(base, n);
                 return name;
             }
             name = format!("{base}_{n}");
@@ -222,6 +241,37 @@ struct GeomOut {
     cp_rep: Vec<(usize, usize)>,
     /// Blend shape channel ids, one per morph target.
     channels: Vec<i64>,
+}
+
+/// A per-corner layer element's vectors, each distinct one stored once, and
+/// every corner's index into them: `IndexToDirect`, as UVs and colours are
+/// written. Stored `Direct`, normals, tangents and binormals cost 24 bytes a
+/// corner each, and our own reader's decode budget refused our own textured
+/// FBX above ~1.92M triangles (2026-10-12 review #30). Every reader the
+/// matrix checks takes the indexed form: the FBX SDK (`eIndexToDirect`),
+/// Blender (`NormalsIndex`), ufbx, assimp and three.js.
+#[derive(Default)]
+struct Indexed3 {
+    values: Vec<f64>,
+    index: Vec<i32>,
+    seen: HashMap<[u32; 3], i32>,
+}
+
+impl Indexed3 {
+    fn push(&mut self, v: [f32; 3]) {
+        let next = (self.values.len() / 3) as i32;
+        let values = &mut self.values;
+        let at = *self.seen.entry(bits3(v)).or_insert_with(|| {
+            values.extend(v.iter().map(|x| *x as f64));
+            next
+        });
+        self.index.push(at);
+    }
+
+    /// `el` with the values under `values` and the index under `index`.
+    fn element(self, el: WRec, values: &'static str, index: &'static str) -> WRec {
+        el.child(rec(values, vec![WProp::ArrF64(self.values)])).child(rec(index, vec![WProp::ArrI32(self.index)]))
+    }
 }
 
 fn bits3(v: [f32; 3]) -> [u32; 3] {
@@ -260,6 +310,12 @@ fn influences(p: &Primitive, v: usize) -> Vec<(u16, f32)> {
 struct Writer<'s> {
     s: &'s Scene,
     embed: bool,
+    /// The rate clips are keyed at between source keys, and declared at.
+    fps: f32,
+    /// How material and light colours are stored.
+    colors: FbxColorSpace,
+    /// The units light strengths are stored in.
+    light_units: LightUnits,
     next_id: i64,
     objects: Vec<WRec>,
     conns: Vec<WRec>,
@@ -285,6 +341,13 @@ struct Writer<'s> {
     video_names: HashSet<String>,
     /// BindPose entries: (model id, global matrix), first wins.
     bind_pose: Vec<(i64, Mat4)>,
+    /// Model ids already in `bind_pose`, so each is added once rather than
+    /// once per joint below it (2,000 joints under 2,000 nulls were 4M
+    /// entries before the final dedup).
+    bind_pose_listed: HashSet<i64>,
+    /// Every node's global matrix, computed once: per skinned node it made
+    /// writing quadratic in the node count.
+    world: Vec<Mat4>,
 }
 
 impl<'s> Writer<'s> {
@@ -325,10 +388,16 @@ impl<'s> Writer<'s> {
                 )));
             };
             let name = self.names.unique(node.name.as_deref(), &format!("node{i}"));
+            // A node holds one of these at most once
+            // `fbx::separate_lights_and_cameras` has run (`write_with`).
             let class = if joints[i] {
                 "LimbNode"
             } else if node.mesh.is_some() {
                 "Mesh"
+            } else if node.light.is_some() {
+                "Light"
+            } else if node.camera.is_some() {
+                "Camera"
             } else {
                 "Null"
             };
@@ -336,8 +405,11 @@ impl<'s> Writer<'s> {
             let anim = animated.get(i).copied().unwrap_or([false; 3]);
             let r = model_record(id, &name, class, t, q, sc, anim);
             self.object("Model", r);
-            if class != "Mesh" {
-                self.node_attribute(id, &name, joints[i]);
+            match (class, node.light, node.camera) {
+                ("Mesh", _, _) => {}
+                ("Light", Some(l), _) => self.light_attribute(id, l),
+                ("Camera", _, Some(c)) => self.camera_attribute(id, c),
+                _ => self.node_attribute(id, &name, joints[i]),
             }
             self.holder[i] = id;
             self.holder_name[i] = name.clone();
@@ -369,6 +441,173 @@ impl<'s> Writer<'s> {
             .child(leaf_str("TypeFlags", flags));
         self.object("NodeAttribute", r);
         self.oo(id, model);
+    }
+
+    /// A light or camera `NodeAttribute` on `model`, named for the scene's
+    /// light or camera (a control character, which a reader could take for
+    /// the name's end, as `_`), holding `ps`; with `TypeFlags` and
+    /// `GeometryVersion` 124, as Blender's exporter writes a camera's
+    /// (export_fbx_bin.py L715-L716) and assimp's a light's
+    /// (FBXExporter.cpp L2308-L2309 at v6.0.5).
+    fn attribute(&mut self, model: i64, name: Option<&str>, class: &str, ps: Vec<WRec>) {
+        let id = self.id();
+        let name: String = name.unwrap_or("").chars().map(|c| if c.is_control() { '_' } else { c }).collect();
+        let r = rec("NodeAttribute", vec![WProp::I64(id), obj_name(&name, "NodeAttribute"), ws(class)])
+            .child(props70(ps))
+            .child(leaf_str("TypeFlags", class))
+            .child(leaf_i32("GeometryVersion", 124));
+        self.object("NodeAttribute", r);
+        self.oo(id, model);
+    }
+
+    /// A light, as ufbx v0.23.1 and Blender 5.2.3 read one back:
+    /// - `LightType` 0 point, 1 directional, 2 spot (ufbx.h L1381-L1395;
+    ///   Blender's `FBX_LIGHT_TYPES`, fbx_utils.py L88-L94);
+    /// - `Color` in the caller's `FbxColorSpace`, as material colours are
+    ///   (Ruling R14): sRGB by default, as three.js's `FBXLoader` decodes it
+    ///   (L1196 at r183), or the scene's linear colour as it is, as Blender
+    ///   writes and reads `lamp.color` (export_fbx_bin.py L617, import_fbx.py
+    ///   L2250) and ufbx and assimp read it;
+    /// - `Intensity`, 100 × the candela or lux: ufbx divides it by 100 ("FBX
+    ///   seems to store intensities 100x", ufbx.c L23049-L23052), as
+    ///   Blender's importer does (import_fbx.py L2251). Blender then takes
+    ///   the quotient as its own radiometric watts (a sun's as W/m²), where
+    ///   its glTF importer converts candela and lux at 683 lm/W, with 4π for
+    ///   a point or spot light (io_scene_gltf2 v5.2.39, `blender/imp/light.py`
+    ///   L58-L71, in its default `SPEC` mode). So these lights open in
+    ///   Blender about 54× (683/4π) brighter for a point or spot light, and
+    ///   683× for a sun, than the same scene's glTF does, and Blender's own
+    ///   FBX lights read that much dimmer here: `staged`'s 3 lux sun came
+    ///   back from Blender's FBX export as 0.0044 (Ruling R28). That is
+    ///   `LightUnits::Photometric`, the default and today's output. With
+    ///   `WriteOptions::fbx_light_units` = `LightUnits::Blender`, `Intensity`
+    ///   is instead 100 × `scene::blender_energy`, the `energy` Blender's
+    ///   glTF importer gives the light (lux / 683 for a sun, candela × 4π /
+    ///   683 for a point or spot light), so it opens in Blender as bright as
+    ///   the same scene's glTF does;
+    /// - `DecayType` 2, the inverse square that glTF's lights fall off by,
+    ///   as Blender writes it (export_fbx_bin.py L619);
+    /// - a spot's `InnerAngle` and `OuterAngle`, full cones in degrees,
+    ///   twice the scene's half-angles: Blender writes its `spot_size`, the
+    ///   full cone, as `OuterAngle` (export_fbx_bin.py L624-L626);
+    /// - a point or spot light's range as the SDK's far attenuation,
+    ///   `EnableFarAttenuation` 1 and `FarAttenuationEnd` (its names and
+    ///   defaults as assimp's FBX document lists them, FBXDocument.h
+    ///   L315-L317 at v6.0.5), fading linearly from the light itself
+    ///   (`FarAttenuationStart` 0, the SDK's default) to nothing at the
+    ///   range. That only approximates glTF's range, a cutoff that renderers
+    ///   reach smoothly over the inverse square (KHR_lights_punctual's README
+    ///   recommends a window of 1 − (d / range)⁴). Neither ufbx nor Blender
+    ///   reads one; this module's reader does. A directional light has none,
+    ///   as in glTF.
+    fn light_attribute(&mut self, model: i64, li: usize) {
+        let s = self.s;
+        let l = &s.lights[li];
+        let kind = match l.kind {
+            LightKind::Point => 0,
+            LightKind::Directional => 1,
+            LightKind::Spot { .. } => 2,
+        };
+        // With `LightUnits::Blender`, the same 100× multiplies the `energy`
+        // Blender's glTF importer gives this light (`blender_energy`), so
+        // Blender's FBX importers (`energy = Intensity / 100`) land on it.
+        // `Intensity` is an f64 here, so even 100 × the energy of the largest
+        // f32 candela (6.3e38) is finite, and there is nothing to clamp.
+        let strength = match self.light_units {
+            LightUnits::Photometric => f64::from(l.intensity),
+            LightUnits::Blender => blender_energy(&l.kind, f64::from(l.intensity)),
+        };
+        let mut ps = vec![
+            p_int("LightType", "enum", kind),
+            p_int("CastLight", "bool", 1),
+            p_color("Color", l.color.map(|c| encode_color(c, self.colors))),
+            p_num("Intensity", strength * 100.0),
+            p_int("DecayType", "enum", 2),
+        ];
+        if let LightKind::Spot { inner_cone, outer_cone } = l.kind {
+            ps.push(p_num("InnerAngle", 2.0 * f64::from(inner_cone).to_degrees()));
+            ps.push(p_num("OuterAngle", 2.0 * f64::from(outer_cone).to_degrees()));
+        }
+        if let (Some(range), false) = (l.range, l.kind == LightKind::Directional) {
+            ps.push(p_int("EnableFarAttenuation", "bool", 1));
+            ps.push(p_num("FarAttenuationStart", 0.0));
+            ps.push(p_num("FarAttenuationEnd", f64::from(range)));
+        }
+        let name = l.name.clone();
+        self.attribute(model, name.as_deref(), "Light", ps);
+    }
+
+    /// A camera, as ufbx v0.23.1 and Blender 5.2.3 read one back. The file's
+    /// unit is the metre (`global_settings`), so `NearPlane` and `FarPlane`
+    /// are the scene's own numbers. `fbx::held_projection` has given a
+    /// perspective camera its aspect ratio and far plane.
+    /// - Perspective: `ApertureMode` 3, focal length, and `GateFit` 2, the
+    ///   gate fitted across, as Blender writes them (export_fbx_bin.py
+    ///   L689-L690); a film 35 mm across its wider side, so that three.js's
+    ///   35 mm film gauge, which it puts on the wider side, gives the same
+    ///   yfov (`docs/superpowers/research/research-consumers.md` Q8, its
+    ///   "FBX camera writer"); the aspect ratio as
+    ///   `AspectWidth` over an `AspectHeight` of 1, `AspectRatioMode` 1, a
+    ///   fixed ratio (ufbx.h L1467-L1477); and `FocalLength`, in mm, from
+    ///   yfov = 2·atan(25.4·`FilmHeight` / (2·`FocalLength`)), which ufbx
+    ///   computes back (ufbx.c L23240-L23245). `FieldOfView` holds the
+    ///   horizontal angle beside the horizontal gate fit, as Blender's does
+    ///   (export_fbx_bin.py L691), with `FieldOfViewX` and `FieldOfViewY`.
+    /// - Orthographic: `OrthoZoom` = full width / 30, since ufbx takes 30
+    ///   file units per `OrthoZoom` from any exporter but Blender's (ufbx.c
+    ///   L21353-L21357, L23109), across a gate fitted horizontally to the
+    ///   aspect ratio xmag : ymag (ufbx.c L23198-L23203).
+    fn camera_attribute(&mut self, model: i64, ci: usize) {
+        let s = self.s;
+        let c = &s.cameras[ci];
+        // 35 mm across the wider side, in inches.
+        let film = |aspect: f64| {
+            let gauge = 35.0 / 25.4;
+            if aspect >= 1.0 {
+                (gauge, gauge / aspect)
+            } else {
+                (gauge * aspect, gauge)
+            }
+        };
+        let gate = |aspect: f64| {
+            let (w, h) = film(aspect);
+            vec![
+                p_int("GateFit", "enum", 2),
+                p_int("AspectRatioMode", "enum", 1),
+                p_double("AspectWidth", aspect),
+                p_double("AspectHeight", 1.0),
+                p_double("FilmWidth", w),
+                p_double("FilmHeight", h),
+            ]
+        };
+        let ps = match super::fbx::held_projection(c.projection) {
+            Projection::Perspective { yfov, aspect, znear, zfar } => {
+                let aspect = f64::from(aspect.unwrap_or(super::fbx::UNSET_ASPECT));
+                let half = (f64::from(yfov) / 2.0).tan();
+                let focal = 25.4 * film(aspect).1 / (2.0 * half);
+                let across = 2.0 * (aspect * half).atan();
+                let mut ps = vec![p_int("CameraProjectionType", "enum", 0), p_int("ApertureMode", "enum", 3)];
+                ps.extend(gate(aspect));
+                ps.extend([
+                    p_double("FocalLength", focal),
+                    p("FieldOfView", "FieldOfView", "", "A", vec![WProp::F64(across.to_degrees())]),
+                    p("FieldOfViewX", "FieldOfViewX", "", "A", vec![WProp::F64(across.to_degrees())]),
+                    p("FieldOfViewY", "FieldOfViewY", "", "A", vec![WProp::F64(f64::from(yfov).to_degrees())]),
+                    p_double("NearPlane", f64::from(znear)),
+                    p_double("FarPlane", f64::from(zfar.unwrap_or_else(|| super::fbx::unset_far(znear)))),
+                ]);
+                ps
+            }
+            Projection::Orthographic { xmag, ymag, znear, zfar } => {
+                let (width, height) = (2.0 * f64::from(xmag), 2.0 * f64::from(ymag));
+                let mut ps = vec![p_int("CameraProjectionType", "enum", 1)];
+                ps.extend(gate(width / height));
+                ps.extend([p_double("OrthoZoom", width / 30.0), p_double("NearPlane", f64::from(znear)), p_double("FarPlane", f64::from(zfar))]);
+                ps
+            }
+        };
+        let name = c.name.clone();
+        self.attribute(model, name.as_deref(), "Camera", ps);
     }
 
     // ── geometry ────────────────────────────────────────────────────────────
@@ -446,9 +685,9 @@ impl<'s> Writer<'s> {
         let any_colors = mesh.primitives.iter().any(|p| p.colors.is_some());
 
         let mut pvi: Vec<i32> = Vec::new();
-        let mut normals: Vec<f64> = Vec::new();
-        let mut tangents: Vec<f64> = Vec::new();
-        let mut binormals: Vec<f64> = Vec::new();
+        let mut normals = Indexed3::default();
+        let mut tangents = Indexed3::default();
+        let mut binormals = Indexed3::default();
         let mut uv_values: Vec<Vec<f64>> = vec![Vec::new(); uv_sets];
         let mut uv_index: Vec<Vec<i32>> = vec![Vec::new(); uv_sets];
         let mut uv_seen: Vec<HashMap<[u32; 2], i32>> = vec![HashMap::new(); uv_sets];
@@ -486,10 +725,10 @@ impl<'s> Writer<'s> {
                             (None, Some(d)) => d[v],
                             _ => [0.0, 0.0, 1.0],
                         };
-                        normals.extend(n.iter().map(|x| *x as f64));
+                        normals.push(n);
                         if all_tangents {
                             let t = prim.tangents.as_ref().map_or([1.0, 0.0, 0.0, 1.0], |t| t[v]);
-                            tangents.extend(t[..3].iter().map(|x| *x as f64));
+                            tangents.push([t[0], t[1], t[2]]);
                             // FBX keeps handedness in the binormal: N × T, signed.
                             let w = if t[3] < 0.0 { -1.0 } else { 1.0 };
                             let b = [
@@ -497,7 +736,7 @@ impl<'s> Writer<'s> {
                                 (n[2] * t[0] - n[0] * t[2]) * w,
                                 (n[0] * t[1] - n[1] * t[0]) * w,
                             ];
-                            binormals.extend(b.iter().map(|x| *x as f64));
+                            binormals.push(b);
                         }
                     }
                     for set in 0..uv_sets {
@@ -541,12 +780,12 @@ impl<'s> Writer<'s> {
         };
         let mut layer0: Vec<&'static str> = Vec::new();
         if any_normals {
-            g = g.child(element("LayerElementNormal", 0, "", "ByPolygonVertex", "Direct").child(rec("Normals", vec![WProp::ArrF64(normals)])));
+            g = g.child(normals.element(element("LayerElementNormal", 0, "", "ByPolygonVertex", "IndexToDirect"), "Normals", "NormalsIndex"));
             layer0.push("LayerElementNormal");
         }
         if all_tangents {
-            g = g.child(element("LayerElementBinormal", 0, "", "ByPolygonVertex", "Direct").child(rec("Binormals", vec![WProp::ArrF64(binormals)])));
-            g = g.child(element("LayerElementTangent", 0, "", "ByPolygonVertex", "Direct").child(rec("Tangents", vec![WProp::ArrF64(tangents)])));
+            g = g.child(binormals.element(element("LayerElementBinormal", 0, "", "ByPolygonVertex", "IndexToDirect"), "Binormals", "BinormalsIndex"));
+            g = g.child(tangents.element(element("LayerElementTangent", 0, "", "ByPolygonVertex", "IndexToDirect"), "Tangents", "TangentsIndex"));
             layer0.push("LayerElementBinormal");
             layer0.push("LayerElementTangent");
         }
@@ -736,7 +975,7 @@ impl Writer<'_> {
         let name = m.name.clone().unwrap_or_default().replace(|c: char| c.is_control(), "_");
         let alpha = (m.base_color[3] as f64).clamp(0.0, 1.0);
         let base = if m.base_color_texture.is_some() { [1.0; 3] } else { [m.base_color[0], m.base_color[1], m.base_color[2]] };
-        let rgb = base.map(srgb_encode);
+        let rgb = base.map(|c| encode_color(c, self.colors));
         // Emission above 1 rides in the factor, as KHR_materials_emissive_strength
         // does; under a map, all of it does (prepare has made it grey).
         let peak = m.emissive.iter().cloned().fold(0.0f32, f32::max);
@@ -747,7 +986,7 @@ impl Writer<'_> {
         } else {
             (m.emissive, 1.0)
         };
-        let e_srgb = [srgb_encode(e_lin[0]), srgb_encode(e_lin[1]), srgb_encode(e_lin[2])];
+        let e_srgb = e_lin.map(|c| encode_color(c, self.colors));
         let roughness = (m.roughness as f64).clamp(0.0, 1.0);
         let shininess = (10.0 * (1.0 - roughness)).powi(2);
         let mut ps = vec![
@@ -762,8 +1001,11 @@ impl Writer<'_> {
             p_color("TransparentColor", [1.0; 3]),
             p_num("TransparencyFactor", 1.0 - alpha),
             p_num("Opacity", alpha),
-            p_color("SpecularColor", [1.0; 3]),
-            p_num("SpecularFactor", 0.25),
+            // The highlight as a Phong reader draws it, whole in the colour:
+            // three.js reads SpecularColor and not SpecularFactor, and a white
+            // one at shininess 0 (full roughness) washed the surface white.
+            p_color("SpecularColor", m.phong_specular().map(|c| encode_color(c, self.colors))),
+            p_num("SpecularFactor", 1.0),
             p_num("ShininessExponent", shininess),
             p_num("Shininess", shininess),
             p_num("ReflectionFactor", m.metallic as f64),
@@ -884,7 +1126,7 @@ impl Writer<'_> {
         let Some(si) = s.nodes[ni].skin else { return Ok(()) };
         let Some(mi) = s.nodes[ni].mesh else { return Ok(()) };
         let skin = &s.skins[si];
-        let world = s.world_matrices();
+        let world = std::mem::take(&mut self.world);
         let mesh = &s.meshes[mi];
         // M: the mesh model's global matrix at bind time. Skinned meshes are
         // hoisted to identity roots, so this is the identity in practice; the
@@ -910,7 +1152,7 @@ impl Writer<'_> {
                 }
             }
         }
-        self.bind_pose.push((self.holder[ni], m));
+        self.list_in_bind_pose(self.holder[ni], m);
         for (ji, (idx, wts)) in per_joint.into_iter().enumerate() {
             let joint = skin.joints[ji];
             let ibm = skin.inverse_bind_matrices[ji];
@@ -932,25 +1174,33 @@ impl Writer<'_> {
             self.oo(cid, skin_id);
             let jm = self.model[joint];
             self.oo(jm, cid);
-            self.bind_pose.push((jm, link));
+            self.list_in_bind_pose(jm, link);
         }
-        // Maya also lists every non-joint ancestor of a joint.
+        // Maya also lists every non-joint ancestor of a joint: each once, and
+        // a walk stops where an earlier one already went.
         let parents = s.parents();
+        let joint_set: HashSet<usize> = skin.joints.iter().copied().collect();
+        let mut walked: HashSet<usize> = HashSet::new();
         for &j in &skin.joints {
             let mut cur = parents[j];
-            let mut steps = 0;
             while let Some(a) = cur {
-                steps += 1;
-                if steps > s.nodes.len() {
+                if !walked.insert(a) {
                     break;
                 }
-                if !skin.joints.contains(&a) {
-                    self.bind_pose.push((self.model[a], world[a]));
+                if !joint_set.contains(&a) {
+                    self.list_in_bind_pose(self.model[a], world[a]);
                 }
                 cur = parents[a];
             }
         }
+        self.world = world;
         Ok(())
+    }
+
+    fn list_in_bind_pose(&mut self, model: i64, global: Mat4) {
+        if self.bind_pose_listed.insert(model) {
+            self.bind_pose.push((model, global));
+        }
     }
 
     fn bind_pose_object(&mut self) {
@@ -984,7 +1234,7 @@ impl Writer<'_> {
             // Every source key, 30 fps between, and for STEP channels a key
             // just before each step, so readers that ignore the constant flag
             // (three.js) still see a step and not a ramp.
-            let mut times = pose::resample_times(s, ai, RESAMPLE_FPS);
+            let mut times = pose::resample_times(s, ai, self.fps);
             for ch in &anim.channels {
                 if ch.interpolation == Interpolation::Step {
                     for k in 1..ch.times.len() {
@@ -997,15 +1247,6 @@ impl Writer<'_> {
             }
             times.sort_by(|a, b| a.total_cmp(b));
             times.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-            let per_time = s.nodes.len() + anim.channels.len();
-            let too_many = |times: &[f32]| times.len() > super::scene::MAX_ANIMATION_KEYS || times.len().saturating_mul(per_time) > MAX_RESAMPLE_WORK;
-            if too_many(&times) {
-                return Err(unsupported(format!(
-                    "animation {ai} would resample to {} keys on {} nodes, more than this converter evaluates",
-                    times.len(),
-                    s.nodes.len()
-                )));
-            }
             // What each node animates, and whether every channel of a path
             // steps (only then is the curve constant-interpolated).
             let mut paths: BTreeMap<usize, [Option<bool>; 4]> = BTreeMap::new();
@@ -1020,8 +1261,23 @@ impl Writer<'_> {
                 let e = paths.entry(ch.node).or_insert([None; 4]);
                 e[slot] = Some(e[slot].map_or(step, |prev| prev && step));
             }
+            // Three curves per animated T, R or S, one per morph target.
+            let curves: usize = paths
+                .iter()
+                .map(|(&node, p)| {
+                    3 * p[..3].iter().filter(|x| x.is_some()).count()
+                        + p[3].map_or(0, |_| s.nodes.get(node).and_then(|n| n.mesh).map_or(0, |m| s.meshes[m].target_count()))
+                })
+                .sum();
+            let per_time = s.nodes.len() + anim.channels.len();
+            let budget = time_budget(curves, per_time);
+            if times.len() > budget {
+                return Err(unsupported(format!(
+                    "animation {ai} would resample to {} keys on each of {curves} curves, more than this converter writes",
+                    times.len(),
+                )));
+            }
             let interpolated: Vec<usize> = paths.iter().filter(|(_, p)| p[1] == Some(false)).map(|(n, _)| *n).collect();
-            let budget = (MAX_RESAMPLE_WORK / per_time.max(1)).min(super::scene::MAX_ANIMATION_KEYS);
             refine_euler_times(s, ai, &interpolated, &mut times, budget);
             // Sample once per time; keep only the animated values.
             let mut tracks: BTreeMap<(usize, usize), Vec<f64>> = BTreeMap::new();
@@ -1232,12 +1488,16 @@ struct Built {
     stacks: Vec<(String, i64, i64)>,
     has_joints: bool,
     has_nulls: bool,
+    fps: f32,
 }
 
-fn build(scene: &Scene, embed: bool) -> Result<Built, MeshError> {
+fn build(scene: &Scene, embed: bool, fps: f32, colors: FbxColorSpace, light_units: LightUnits) -> Result<Built, MeshError> {
     let mut w = Writer {
         s: scene,
         embed,
+        fps,
+        colors,
+        light_units,
         next_id: FIRST_ID,
         objects: Vec::new(),
         conns: Vec::new(),
@@ -1255,6 +1515,8 @@ fn build(scene: &Scene, embed: bool) -> Result<Built, MeshError> {
         video_ids: HashMap::new(),
         video_names: HashSet::new(),
         bind_pose: Vec::new(),
+        bind_pose_listed: HashSet::new(),
+        world: scene.world_matrices(),
     };
     // Which TRS paths each node animates, for the "A+" flags.
     let mut animated = vec![[false; 3]; scene.nodes.len()];
@@ -1301,9 +1563,9 @@ fn build(scene: &Scene, embed: bool) -> Result<Built, MeshError> {
     let stacks = w.animations()?;
     let joints = scene.joint_nodes();
     let has_joints = joints.iter().any(|j| *j);
-    let has_nulls = scene.nodes.iter().zip(&joints).any(|(n, j)| !j && n.mesh.is_none());
+    let has_nulls = scene.nodes.iter().zip(&joints).any(|(n, j)| !j && n.mesh.is_none() && n.light.is_none() && n.camera.is_none());
     let Writer { objects, conns, counts, .. } = w;
-    Ok(Built { objects, conns, counts, stacks, has_joints, has_nulls })
+    Ok(Built { objects, conns, counts, stacks, has_joints, has_nulls, fps })
 }
 
 // ─── document ───────────────────────────────────────────────────────────────
@@ -1358,7 +1620,32 @@ fn header_extension() -> WRec {
 
 /// Y-up, right-handed, +Z front, metres declared as 100 cm per unit: glTF's
 /// frame, spelled as FBX's "Maya Y-up" preset.
-fn global_settings(span: (i64, i64)) -> WRec {
+/// `GlobalSettings.TimeMode` and `CustomFrameRate` for a rate: the SDK's
+/// named modes (`FbxTime::EMode`, SDK 2020; research-fbx.md), else 14,
+/// eCustom, with the rate itself.
+fn time_mode(fps: f32) -> (i32, f64) {
+    let named = match fps {
+        f if f == 120.0 => Some(1),
+        f if f == 100.0 => Some(2),
+        f if f == 60.0 => Some(3),
+        f if f == 50.0 => Some(4),
+        f if f == 48.0 => Some(5),
+        f if f == 30.0 => Some(6),
+        f if f == 25.0 => Some(10),
+        f if f == 24.0 => Some(11),
+        f if f == 1000.0 => Some(12),
+        f if f == 96.0 => Some(15),
+        f if f == 72.0 => Some(16),
+        _ => None,
+    };
+    match named {
+        Some(m) => (m, -1.0),
+        None => (14, f64::from(fps)),
+    }
+}
+
+fn global_settings(span: (i64, i64), fps: f32) -> WRec {
+    let (mode, custom) = time_mode(fps);
     WRec::new("GlobalSettings").child(leaf_i32("Version", 1000)).child(props70(vec![
         p_int("UpAxis", "int", 1),
         p_int("UpAxisSign", "int", 1),
@@ -1372,12 +1659,12 @@ fn global_settings(span: (i64, i64)) -> WRec {
         p_double("OriginalUnitScaleFactor", 100.0),
         p_vec3("AmbientColor", "ColorRGB", "Color", "", [0.0; 3]),
         p_str("DefaultCamera", "KString", "", "Producer Perspective"),
-        p_int("TimeMode", "enum", 6),
+        p_int("TimeMode", "enum", mode),
         p_int("TimeProtocol", "enum", 2),
         p_int("SnapOnFrameMode", "enum", 0),
         p_ktime("TimeSpanStart", span.0),
         p_ktime("TimeSpanStop", span.1),
-        p_double("CustomFrameRate", -1.0),
+        p_double("CustomFrameRate", custom),
         p("TimeMarker", "Compound", "", "", vec![]),
         p_int("CurrentTimeMarker", "int", -1),
     ]))
@@ -1585,7 +1872,7 @@ fn serialize(b: Built) -> Result<Vec<u8>, MeshError> {
         rec("FileId", vec![WProp::Raw(FILE_ID.to_vec())]),
         leaf_str("CreationTime", CREATION_TIME),
         leaf_str("Creator", CREATOR),
-        global_settings(span.unwrap_or((0, 0))),
+        global_settings(span.unwrap_or((0, 0)), b.fps),
         documents(&active),
         WRec { force_null: true, ..WRec::new("References") },
         definitions(&b.counts, b.has_joints, b.has_nulls),
@@ -1610,25 +1897,33 @@ fn serialize(b: Built) -> Result<Vec<u8>, MeshError> {
 }
 
 /// Write a scene as binary FBX 7400.
-pub(super) fn write(scene: &Scene) -> Result<Vec<u8>, MeshError> {
-    write_with(scene, true)
+pub(super) fn write(scene: &Scene, fps: f32, colors: FbxColorSpace, light_units: LightUnits) -> Result<Vec<u8>, MeshError> {
+    write_with(scene, true, fps, colors, light_units)
 }
 
-fn write_with(scene: &Scene, embed: bool) -> Result<Vec<u8>, MeshError> {
+fn write_with(scene: &Scene, embed: bool, fps: f32, colors: FbxColorSpace, light_units: LightUnits) -> Result<Vec<u8>, MeshError> {
     scene.validate()?;
+    // `fbx::prepare` strips the points and lines FBX does not write, so a
+    // scene that still has one was not prepared: a debug build says so.
+    super::pose::debug_assert_holds("fbx", scene, &super::fbx::capabilities());
     if scene.triangle_count() == 0 {
         return Err(MeshError::Empty);
     }
-    for (i, n) in scene.nodes.iter().enumerate() {
-        if matches!(n.transform, Transform::Matrix(_)) && n.transform.trs().is_none() {
-            return Err(unsupported(format!(
-                "node {i} ({:?}) has a sheared transform; FBX transforms are translation, rotation and scale",
-                n.name.as_deref().unwrap_or("")
-            )));
-        }
-    }
-    let hoisted = super::glb::hoist_skinned_meshes(scene);
-    serialize(build(&hoisted, embed)?)
+    let mut hoisted = super::glb::hoist_skinned_meshes(scene);
+    // `fbx::prepare` has already done this for `write_scene`; a direct caller
+    // gets the same file.
+    super::pose::bake_shear(&mut hoisted);
+    super::fbx::separate_lights_and_cameras(&mut hoisted);
+    // Lights and cameras in FBX's frames: each light or camera node's turn
+    // on the right of its transform and keys, its inverse on the left of its
+    // children's (`fbx::reframe`). Blender's exporter turns a light's or
+    // camera's own matrix (fbx_utils.py L1786-L1789) but leaves its
+    // children's as they are, which moves them in every FBX reader,
+    // Blender's importer included (it takes the turn off them again:
+    // import_fbx.py L2379-L2380, L2476-L2478).
+    let turns: Vec<Option<super::fbx::Turn>> = hoisted.nodes.iter().map(super::fbx::turn_of).collect();
+    super::fbx::reframe(&mut hoisted, &turns);
+    serialize(build(&hoisted, embed, fps, colors, light_units)?)
 }
 
 #[cfg(test)]
@@ -1639,7 +1934,7 @@ pub(super) mod tests_support {
     /// file that references its textures.
     pub(in super::super) fn strip_video_content(scene: &Scene) -> Result<Vec<u8>, MeshError> {
         let p = super::super::fbx::prepare(scene, super::super::WriteOptions::default())?;
-        write_with(&p, false)
+        write_with(&p, false, super::super::WriteOptions::default().key_rate(), FbxColorSpace::default(), LightUnits::default())
     }
 
     /// A one-triangle ASCII FBX for hostile-input tests.
@@ -1699,4 +1994,19 @@ Connections:  {
 "#
         .to_string()
     }
+
+    /// Every curve gets a key at every sample time, so the times a clip is
+    /// written with, times its curves, must stay within the keys our own
+    /// reader accepts: a 300k-key rotation refined toward 20M times became a
+    /// 141 MB FBX that `read_scene` refused (2026-10-12 review, finding 3).
+    #[test]
+    fn a_clip_is_never_written_with_more_keys_than_our_reader_accepts() {
+        for (curves, per_time) in [(3, 2), (9, 4), (1024, 3), (9 * 200, 400)] {
+            let times = time_budget(curves, per_time);
+            assert!(times.saturating_mul(curves) <= super::super::scene::MAX_ANIMATION_KEYS, "{curves} curves × {times} times");
+            assert!(times.saturating_mul(per_time) <= MAX_RESAMPLE_WORK);
+            assert!(times > 0);
+        }
+    }
+
 }

@@ -9,7 +9,6 @@ import {
   mergeExtras,
   mergeParams,
   mergeRefRoles,
-  requestProblems,
 } from './params';
 import { useModelSchemas } from './useModelSchemas';
 
@@ -29,8 +28,6 @@ interface UnifiedParams {
   /** Forget the user's value so the model's own default applies again. */
   resetParam: (name: string) => void;
   schemasById: Record<string, ModelSchema>;
-  /** Per selected model, why it cannot run yet (empty array when it can). */
-  problems: (modelIds: string[]) => Array<{ modelId: string; problems: string[] }>;
   buildRequests: (modelIds: string[]) => Array<{ modelId: string; request: ImageGenerationRequest }>;
 }
 
@@ -67,9 +64,6 @@ export function useUnifiedParams(selectedIds: string[], skip?: ReadonlySet<strin
       return { ...prev, params: rest };
     });
 
-  const problems = (modelIds: string[]) =>
-    modelIds.map(id => ({ modelId: id, problems: schemasById[id] ? requestProblems(schemasById[id], form) : [] }));
-
   const buildRequests: UnifiedParams['buildRequests'] = (modelIds) =>
     modelIds
       .filter(id => schemasById[id])
@@ -78,5 +72,5 @@ export function useUnifiedParams(selectedIds: string[], skip?: ReadonlySet<strin
         request: buildRequestForModel(id, schemasById[id], form),
       }));
 
-  return { merged, roles, maxRefs, extras, form, params, setForm, setParam, resetParam, schemasById, problems, buildRequests };
+  return { merged, roles, maxRefs, extras, form, params, setForm, setParam, resetParam, schemasById, buildRequests };
 }

@@ -6,10 +6,11 @@
 // Request fields: model, prompt, seconds (4|8|12), size (e.g. 1280x720); image-to-video
 //   uploads the first frame as a multipart `input_reference` part.
 
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 
 use crate::capabilities::ModelSchema;
@@ -30,17 +31,23 @@ pub struct OpenAiVideoProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
 }
 
 impl OpenAiVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(600), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::auth::AuthSpec::bearer(),
         }
     }
 
@@ -65,8 +72,8 @@ impl OpenAiVideoProvider {
     /// @see <https://developers.openai.com/api/reference/resources/videos/methods/create> — `model` field
     fn resolve_model(&self, model: &str) -> String {
         if let Some(cfg) = &self.config {
-            if let Some(mapped) = cfg.model_mapping.get(model) {
-                return mapped.clone();
+            if let Some(mapped) = cfg.mapped_model(model) {
+                return mapped.to_string();
             }
         }
         match model {
@@ -135,6 +142,7 @@ impl VideoProvider for OpenAiVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -192,7 +200,7 @@ impl VideoProvider for OpenAiVideoProvider {
                 .part("input_reference", part);
             self.client
                 .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .multipart(form)
         } else {
             // Text-to-video: JSON body.
@@ -205,16 +213,17 @@ impl VideoProvider for OpenAiVideoProvider {
                 "seconds": seconds.to_string(),
                 "size": size,
             });
-            if let Some(Value::Object(extra_map)) = &extras.extra {
-                if let Some(body_obj) = body.as_object_mut() {
-                    for (k, v) in extra_map {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
+            // `extra` cannot replace what litegen sends: the model it bills and
+            // the length and size it prices (rule 11, N1).
+            if let Some(body_obj) = body.as_object_mut() {
+                let owned = |k: &str| matches!(k, "model" | "prompt" | "seconds" | "size" | "input_reference");
+                for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+                    body_obj.insert(k.clone(), v.clone());
                 }
             }
             self.client
                 .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("Content-Type", "application/json")
                 .json(&body)
         };
@@ -229,27 +238,9 @@ impl VideoProvider for OpenAiVideoProvider {
                 retryable: crate::providers::may_resend_after(&e, true),
             })?;
 
-        let status = resp.status();
-        let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Sora response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-
-        if !status.is_success() {
-            let err = resp_json["error"]["message"]
-                .as_str()
-                .or_else(|| resp_json["message"].as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
-            return Err(ProviderError::RequestFailed {
-                message: format!("Sora API error: {err}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(resp_json),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        // The status first (a gateway's 5xx page is retried), and a 429's
+        // `Retry-After` reaches the retry policy.
+        let resp_json = crate::providers::read_vendor_json(resp, "Sora").await?;
 
         let job_id = resp_json["id"]
             .as_str()
@@ -277,6 +268,15 @@ impl VideoProvider for OpenAiVideoProvider {
         &self,
         handle: &VideoGenerationHandle,
     ) -> Result<VideoGenerationPollResult, ProviderError> {
+        self.poll_status_gated(handle, &crate::providers::AlwaysFetch).await
+    }
+
+    /// The MP4 is downloaded only once `gate` says this observer keeps it.
+    async fn poll_status_gated(
+        &self,
+        handle: &VideoGenerationHandle,
+        gate: &dyn crate::providers::FetchGate,
+    ) -> Result<VideoGenerationPollResult, ProviderError> {
         let api_key = self.api_key()?;
 
         // GET /v1/videos/{id}
@@ -287,7 +287,7 @@ impl VideoProvider for OpenAiVideoProvider {
                     self.api_base(),
                     handle.provider_job_id
                 ))
-                .header("Authorization", format!("Bearer {api_key}")),
+                .authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -306,7 +306,7 @@ impl VideoProvider for OpenAiVideoProvider {
             Some("failed") => GenerationStatus::Failed,
             Some("in_progress") | Some("processing") => GenerationStatus::Processing,
             Some("queued") => GenerationStatus::Pending,
-            _ => GenerationStatus::Pending,
+            other => return Ok(super::unknown_state("openai", other)),
         };
 
         // On completion the MP4 lives at the /content sub-resource, which is an
@@ -322,10 +322,13 @@ impl VideoProvider for OpenAiVideoProvider {
         let mut video_url = None;
         let mut video_data = None;
         if status == GenerationStatus::Completed {
-            let content_resp = crate::providers::inject_trace_headers(
+            if gate.ask().await == crate::providers::Fetch::StandAside {
+                return Ok(super::standing_aside());
+            }
+            let mut content_resp = crate::providers::inject_trace_headers(
                 self.client
                     .get(&content_url)
-                    .header("Authorization", format!("Bearer {api_key}")),
+                    .authorized(&self.auth, &api_key)?,
             )
             .send()
             .await
@@ -343,19 +346,37 @@ impl VideoProvider for OpenAiVideoProvider {
                     ),
                     status_code: Some(content_resp.status().as_u16()),
                     provider_error: None,
-                    retryable: content_resp.status().as_u16() >= 500,
+                    retryable: content_resp.status().is_server_error() || matches!(content_resp.status().as_u16(), 408 | 429),
                 });
             }
-            let bytes = content_resp
-                .bytes()
-                .await
-                .map_err(|e| ProviderError::RequestFailed {
-                    message: format!("Failed to read Sora video bytes: {e}"),
-                    status_code: None,
-                    provider_error: None,
-                    retryable: false,
-                })?;
-            video_data = Some(bytes.to_vec());
+            // At most a video's cap, as Veo's and Bedrock's downloads: a
+            // declared length past it is refused before reading, and the body
+            // is counted as it arrives. Read into one buffer of the declared
+            // length, as `download_capped` reads theirs, so it never grows
+            // and is copied (payloads review #5).
+            const MAX_VIDEO_BYTES: u64 = 1024 * 1024 * 1024;
+            let too_large = || ProviderError::RequestFailed {
+                message: format!("Sora video is over {MAX_VIDEO_BYTES} bytes"),
+                status_code: None,
+                provider_error: None,
+                retryable: false,
+            };
+            if content_resp.content_length().is_some_and(|n| n > MAX_VIDEO_BYTES) {
+                return Err(too_large());
+            }
+            let mut bytes = Vec::with_capacity(content_resp.content_length().unwrap_or(0) as usize);
+            while let Some(chunk) = content_resp.chunk().await.map_err(|e| ProviderError::RequestFailed {
+                message: format!("Failed to read Sora video bytes: {e}"),
+                status_code: None,
+                provider_error: None,
+                retryable: false,
+            })? {
+                if (bytes.len() + chunk.len()) as u64 > MAX_VIDEO_BYTES {
+                    return Err(too_large());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            video_data = Some(bytes);
             video_url = Some(content_url);
         }
 
@@ -394,7 +415,7 @@ impl VideoProvider for OpenAiVideoProvider {
 
     /// Validate the API key via `GET {api_base}/models`.
     ///
-    /// @see <https://platform.openai.com/docs/api-reference/models/list> — Models: list
+    /// @see <https://developers.openai.com/api/reference/resources/models/methods/list> — Models: list (2026-11-09)
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -415,14 +436,11 @@ impl VideoProvider for OpenAiVideoProvider {
                 }
             }
         };
-        match self
-            .client
-            .get(format!("{}/models", self.api_base()))
-            .header("Authorization", format!("Bearer {api_key}"))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
+        let request = match self.client.get(format!("{}/models", self.api_base())).authorized(&self.auth, &api_key) {
+            Ok(request) => request,
+            Err(e) => return HealthCheckResult { healthy: false, message: format!("OpenAI health check failed: {e}"), latency_ms: None },
+        };
+        match request.timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => HealthCheckResult {
                 healthy: true,
                 message: "OpenAI API key valid".into(),
@@ -445,6 +463,7 @@ impl VideoProvider for OpenAiVideoProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
 
@@ -474,6 +493,107 @@ mod tests {
             options: None,
         });
         p
+    }
+
+    /// A gate that always says another observer keeps the video.
+    struct Refuse;
+
+    #[async_trait::async_trait]
+    impl crate::providers::FetchGate for Refuse {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::StandAside
+        }
+    }
+
+    fn sora_handle() -> VideoGenerationHandle {
+        VideoGenerationHandle { provider_job_id: "video_1".into(), provider: "openai".into(), model: "openai/sora-2".into() }
+    }
+
+    /// Review 2026-11-11 P4: an observer that does not keep the video
+    /// downloads none of it.
+    #[tokio::test]
+    async fn a_gate_that_says_stand_aside_downloads_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/videos/video_1/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"MP4BYTES".to_vec()))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/videos/video_1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "video_1", "status": "completed" })))
+            .mount(&server).await;
+        let poll = make_provider(&server.uri()).poll_status_gated(&sora_handle(), &Refuse).await.unwrap();
+        assert_eq!((poll.status, poll.video_data.is_none(), poll.error.is_none()), (GenerationStatus::Processing, true, true));
+        let content = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/videos/video_1/content").count();
+        assert_eq!(content, 0);
+    }
+
+    /// Review 2026-11-11 P4, NEW 1: Sora's video is capped at 1 GiB as Veo's
+    /// and Bedrock's are. One that says it is larger is refused before any of
+    /// it is read, not read to the end into memory.
+    #[tokio::test]
+    async fn a_sora_video_over_a_gib_is_refused_before_it_is_read() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut seen = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let Ok(n) = sock.read(&mut buf).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        seen.extend_from_slice(&buf[..n]);
+                        let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                        let head = String::from_utf8_lossy(&seen[..end]).to_string();
+                        seen.drain(..end + 4);
+                        if head.starts_with("GET /videos/video_1/content") {
+                            let big = format!("HTTP/1.1 200 OK\r\ncontent-type: video/mp4\r\ncontent-length: {}\r\n\r\n", 1024u64 * 1024 * 1024 + 1);
+                            let _ = sock.write_all(big.as_bytes()).await;
+                            let _ = sock.write_all(&[0u8; 65536]).await;
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                            return;
+                        }
+                        let body = r#"{"id":"video_1","status":"completed"}"#;
+                        let ok = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}", body.len());
+                        if sock.write_all(ok.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let provider = make_provider(&format!("http://{addr}"));
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), provider.poll_status(&sora_handle()))
+            .await
+            .expect("a video over the cap is refused at once, not read to the end");
+        let err = got.expect_err("over the cap");
+        assert!(err.to_string().contains("over 1073741824 bytes") && !err.is_retryable(), "{err}");
+    }
+
+    /// Payloads review #5: a Sora video is read into one buffer of the
+    /// length the vendor declared, as `download_capped` reads Veo's and
+    /// Bedrock's. Grown as it arrives, the buffer doubled and was copied at
+    /// each step, and ended up to twice the video's size.
+    #[tokio::test]
+    async fn a_sora_video_is_read_into_a_buffer_of_its_declared_length() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/videos/video_1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "video_1", "status": "completed" })))
+            .mount(&server)
+            .await;
+        let video: Vec<u8> = (0..3 * 1024 * 1024 + 1).map(|i| (i % 251) as u8).collect();
+        Mock::given(method("GET"))
+            .and(path("/videos/video_1/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(video.clone(), "video/mp4"))
+            .mount(&server)
+            .await;
+        let polled = make_provider(&server.uri()).poll_status(&sora_handle()).await.unwrap();
+        let data = polled.video_data.expect("the video's bytes");
+        assert!(data == video, "the video arrived whole ({} of {} bytes)", data.len(), video.len());
+        assert_eq!(data.capacity(), video.len(), "the buffer is sized from the declared length");
     }
 
     fn make_base(prompt: &str, model: &str) -> BaseGenerationRequest {
@@ -541,6 +661,30 @@ mod tests {
         // VideoSeconds is a string enum ("4" | "8" | "12"), not a number.
         assert_eq!(body["seconds"], json!("4"));
         assert_eq!(body["size"], "1280x720");
+    }
+
+    /// N1 (rule 11): `extra` cannot replace what litegen sends, the model it
+    /// bills and the length and size it prices included; other keys still go.
+    #[tokio::test]
+    async fn extra_cannot_replace_what_litegen_sends() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/videos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "video_1", "status": "queued" })))
+            .mount(&server)
+            .await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "model": "sora-2-pro", "seconds": "12", "size": "1792x1024", "prompt": "other", "knob": 1 }));
+        let base = make_base("a kite over dunes", "openai/sora");
+        make_provider(&server.uri()).generate(&ref_schema("openai/sora"), &base, &extras, &empty_materialized()).await.expect("generate");
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        // What litegen sends with no `extra` (`submits_sora_job_and_returns_handle`):
+        // the model it bills, the clip length it priced and the default size.
+        assert_eq!(
+            (&body["model"], &body["seconds"], &body["size"], &body["prompt"], &body["knob"]),
+            (&json!("sora-2"), &json!("4"), &json!("1280x720"), &json!("a kite over dunes"), &json!(1)),
+            "{body}"
+        );
     }
 
     /// `CreateVideoJsonBody.seconds` is `$ref: VideoSeconds`, which is

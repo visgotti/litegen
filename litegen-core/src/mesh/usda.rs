@@ -13,19 +13,22 @@
 //! inherits, apiSchemas, variantSets, relationship targets and connections;
 //! `over` and `class` prims; `variantSet` blocks; `.timeSamples`, `.connect` and
 //! `.default` property suffixes; dictionaries; value blocks (`None`).
-//! Unrecognised metadata is parsed and ignored — USD itself round-trips
+//! Unrecognised prim metadata is parsed and ignored — USD itself round-trips
 //! unknown layer metadata — but a token the grammar does not allow is an error
-//! with a line number, never a skipped line.
+//! with a line number, never a skipped line. An attribute's metadata is kept
+//! (`AttrSpec::metadata`), up to [`MAX_ATTR_METADATA`] fields.
 //!
 //! # Hostile input
 //!
 //! The prim hierarchy is walked with an explicit stack, values nest at most
-//! [`MAX_VALUE_DEPTH`] deep, every array is charged to a value budget before it
-//! grows, and error messages quote at most a short snippet.
+//! [`MAX_VALUE_DEPTH`] deep, every array (and every attribute metadata entry)
+//! is charged to a value budget before it grows, an attribute holds at most
+//! [`MAX_ATTR_METADATA`] metadata fields, and error messages quote at most a
+//! short snippet.
 
 use super::usd_stage::{
-    absolutize, child_path, Layer, ListOp, PrimSpec, Reference, Specifier, Value, MAX_LIST_OP_ITEMS,
-    MAX_PATH_LEN,
+    absolutize, child_path, AttrSpec, Layer, ListOp, PrimSpec, Prop, Reference, RelSpec, Specifier, Value, Variability,
+    MAX_LIST_OP_ITEMS, MAX_PATH_LEN,
 };
 use super::{MeshError, MeshFormat};
 
@@ -38,6 +41,12 @@ const MAX_VALUE_DEPTH: usize = 32;
 pub const MAX_VALUES: usize = 48_000_000;
 /// Open prims and variant blocks at once.
 const MAX_NESTING: usize = 1024;
+/// Metadata fields one attribute may carry, over all the statements that
+/// declare it. Real attributes hold fewer than 30 (`documentation`,
+/// `displayName`, `customData`, ...). The cap bounds [`put`], which scans the
+/// list for the key: a file listing a hundred thousand distinct keys on one
+/// attribute made that scan quadratic.
+const MAX_ATTR_METADATA: usize = 64;
 
 fn not_usda(detail: impl Into<String>) -> MeshError {
     MeshError::NotThisFormat { expected: MeshFormat::Usda, detail: detail.into() }
@@ -207,8 +216,11 @@ impl<'a> Lexer<'a> {
         let triple: String = std::iter::repeat_n(quote, 3).collect();
         let (body_start, terminator) = if r.starts_with(&triple) { (3, triple.as_str()) } else { (1, &r[..1]) };
         let body = &r[body_start..];
-        let mut out = String::new();
+        // Bytes: `\xNN` and `\NNN` escapes are bytes of the UTF-8 string
+        // (OpenUSD's TfEscapeString), decoded once the string ends.
+        let mut out: Vec<u8> = Vec::new();
         let mut chars = body.char_indices();
+        let push = |out: &mut Vec<u8>, c: char| out.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
         loop {
             let Some((i, ch)) = chars.next() else {
                 return Err(self.err("an unterminated string"));
@@ -216,7 +228,7 @@ impl<'a> Lexer<'a> {
             if body[i..].starts_with(terminator) {
                 self.line += body[..i].matches('\n').count();
                 self.pos += body_start + i + terminator.len();
-                return Ok(Tok::Str(out));
+                return Ok(Tok::Str(String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())));
             }
             if ch == '\n' && terminator.len() == 1 {
                 return Err(self.err("a single-quoted string runs across a line break"));
@@ -224,29 +236,38 @@ impl<'a> Lexer<'a> {
             if ch == '\\' {
                 let Some((_, e)) = chars.next() else { return Err(self.err("a string ends in a backslash")) };
                 match e {
-                    'n' => out.push('\n'),
-                    't' => out.push('\t'),
-                    'r' => out.push('\r'),
-                    'a' => out.push('\u{7}'),
-                    'b' => out.push('\u{8}'),
-                    'f' => out.push('\u{c}'),
-                    'v' => out.push('\u{b}'),
-                    '0' => out.push('\0'),
+                    'n' => out.push(b'\n'),
+                    't' => out.push(b'\t'),
+                    'r' => out.push(b'\r'),
+                    'a' => out.push(7),
+                    'b' => out.push(8),
+                    'f' => out.push(12),
+                    'v' => out.push(11),
+                    // Up to two hex digits, up to three octal ones: a byte.
                     'x' => {
-                        let hex: String = chars.clone().take(2).map(|(_, c)| c).collect();
-                        match u8::from_str_radix(&hex, 16) {
-                            Ok(v) if hex.len() == 2 => {
-                                chars.next();
-                                chars.next();
-                                out.push(v as char);
+                        let digits: String = chars.clone().take(2).map(|(_, c)| c).take_while(char::is_ascii_hexdigit).collect();
+                        match u8::from_str_radix(&digits, 16) {
+                            Ok(v) => {
+                                for _ in 0..digits.len() {
+                                    chars.next();
+                                }
+                                out.push(v);
                             }
-                            _ => out.push('x'),
+                            Err(_) => out.push(b'x'),
                         }
                     }
-                    other => out.push(other),
+                    '0'..='7' => {
+                        let more: String = chars.clone().take(2).map(|(_, c)| c).take_while(|c| ('0'..='7').contains(c)).collect();
+                        for _ in 0..more.len() {
+                            chars.next();
+                        }
+                        let v = u32::from_str_radix(&format!("{e}{more}"), 8).unwrap_or(0);
+                        out.push((v & 0xFF) as u8);
+                    }
+                    other => push(&mut out, other),
                 }
             } else {
-                out.push(ch);
+                push(&mut out, ch);
             }
         }
     }
@@ -274,7 +295,10 @@ enum Base {
     F32,
     /// `double` storage.
     F64,
+    /// `string`.
     Str,
+    /// `token`.
+    Token,
     Asset,
     /// A type the grammar names but the scene never reads (`opaque`,
     /// `pathExpression`, ...): parsed generically.
@@ -307,7 +331,8 @@ pub(crate) fn type_of(name: &str) -> Type {
         "int4" => t(Base::Int, 4),
         "half" | "float" => t(Base::F32, 1),
         "double" | "timecode" => t(Base::F64, 1),
-        "string" | "token" => t(Base::Str, 1),
+        "string" => t(Base::Str, 1),
+        "token" => t(Base::Token, 1),
         "asset" => t(Base::Asset, 1),
         "quath" | "quatf" => Type { quat: true, ..t(Base::F32, 4) },
         "quatd" => Type { quat: true, ..t(Base::F64, 4) },
@@ -349,9 +374,18 @@ struct Parser<'a> {
     lx: Lexer<'a>,
     layer: Layer,
     values: usize,
+    /// Where each (prim path, property name) sits in its spec's `props`: a
+    /// scan of the list per property was quadratic in a prim's properties.
+    prop_at: std::collections::HashMap<(String, String), usize>,
 }
 
 /// Parse a USDA layer. `id` is its path inside the package.
+///
+/// The text format as OpenUSD v26.11.1's PEGTL grammar reads it: strings in
+/// all four quotings (https://github.com/PixarAnimationStudios/OpenUSD/blob/v26.11.1/pxr/usd/sdf/textFileFormatParser.h#L315-L360) with
+/// `Sdf_EvalQuotedString`'s escapes (parserHelpers.cpp#L679-L732: `\x` takes up
+/// to two hex digits, octal up to three), and dictionaries
+/// (textFileFormatParser.h#L504-L547).
 pub fn parse(bytes: &[u8], id: &str) -> Result<Layer, MeshError> {
     if !looks_like_usda(bytes) {
         return Err(not_usda("a USDA layer starts with `#usda 1.0`"));
@@ -368,7 +402,7 @@ pub fn parse(bytes: &[u8], id: &str) -> Result<Layer, MeshError> {
             super::usd_stage::short(version)
         )));
     }
-    let mut p = Parser { lx: Lexer::new(text, header_end), layer: Layer { id: id.to_string(), ..Default::default() }, values: 0 };
+    let mut p = Parser { lx: Lexer::new(text, header_end), layer: Layer { id: id.to_string(), ..Default::default() }, values: 0, prop_at: std::collections::HashMap::new() };
     p.layer_metadata()?;
     p.body()?;
     Ok(p.layer)
@@ -428,14 +462,15 @@ impl<'a> Parser<'a> {
             match self.lx.next()? {
                 Tok::Punct(b')') => return Ok(()),
                 Tok::Punct(b';') => {}
-                Tok::Str(doc) => self.layer.meta.push(("doc".into(), Value::Str(doc))),
+                // A bare string in the metadata is Sdf's `comment`; `doc = ` is `documentation`.
+                Tok::Str(comment) => self.layer.meta.push(("comment".into(), Value::Str(comment))),
                 Tok::Ident(key) => {
                     self.expect(b'=')?;
                     if key == "subLayers" {
                         self.sublayers()?;
                     } else {
                         let v = self.generic(0)?;
-                        self.layer.meta.push((key.to_string(), v));
+                        self.layer.meta.push((field_name(key).to_string(), schema_typed(key, v)));
                     }
                 }
                 other => return Err(self.err(format!("unexpected {} in layer metadata", describe(&other)))),
@@ -678,7 +713,13 @@ impl<'a> Parser<'a> {
         if word == "custom" {
             word = self.ident("a property declaration")?;
         }
+        let mut variability = None;
         if matches!(word, "uniform" | "config" | "varying") {
+            variability = Some(match word {
+                "uniform" => Variability::Uniform,
+                "config" => Variability::Config,
+                _ => Variability::Varying,
+            });
             word = self.ident("a property type")?;
         }
         let anchor = strip_variants(prim);
@@ -696,8 +737,11 @@ impl<'a> Parser<'a> {
                 self.lx.next()?;
                 self.skip_property_metadata()?;
             }
-            let spec = self.spec_mut(prim)?;
-            let rel = spec.rel_mut(&name)?;
+            let at = self.prop_slot(prim, &name, || Prop::Rel(RelSpec::default()))?;
+            let rel = match &mut self.spec_mut(prim)?.props[at].1 {
+                Prop::Rel(r) => r,
+                _ => return Err(MeshError::Malformed(format!("usda: property {name:?} is both an attribute and a relationship"))),
+            };
             if let Some(t) = targets {
                 edit(&mut rel.targets, op, t);
             }
@@ -734,29 +778,45 @@ impl<'a> Parser<'a> {
         }
         let mut interpolation = None;
         let mut element_size = None;
+        let mut metadata: Vec<(String, Value)> = Vec::new();
         if *self.lx.peek()? == Tok::Punct(b'(') {
             self.lx.next()?;
             loop {
                 match self.lx.next()? {
                     Tok::Punct(b')') => break,
-                    Tok::Punct(b';') | Tok::Str(_) => {}
+                    Tok::Punct(b';') => {}
+                    // A bare string in the metadata is Sdf's `comment`; `doc = ` is `documentation`.
+                    Tok::Str(comment) => {
+                        self.charge(1)?;
+                        put(&mut metadata, "comment", Value::Str(comment), &name)?;
+                    }
                     Tok::Ident(k) => {
+                        self.charge(1)?;
                         self.expect(b'=')?;
                         let v = self.generic(0)?;
                         match k {
                             "interpolation" => interpolation = v.as_str().map(str::to_string),
                             "elementSize" => element_size = v.as_i64(),
-                            _ => {}
+                            _ => put(&mut metadata, field_name(k), schema_typed(k, v), &name)?,
                         }
                     }
                     other => return Err(self.err(format!("unexpected {} in attribute metadata", describe(&other)))),
                 }
             }
         }
-        let spec = self.spec_mut(prim)?;
-        let a = spec.attr_mut(&name)?;
+        let at = self.prop_slot(prim, &name, || Prop::Attr(AttrSpec::default()))?;
+        let a = match &mut self.spec_mut(prim)?.props[at].1 {
+            Prop::Attr(a) => a,
+            _ => return Err(MeshError::Malformed(format!("usda: property {name:?} is both an attribute and a relationship"))),
+        };
         if a.type_name.is_empty() {
             a.type_name = type_name;
+        }
+        if let Some(v) = variability {
+            a.variability = v;
+        }
+        for (k, v) in metadata {
+            put(&mut a.metadata, &k, v, &name)?;
         }
         if default.is_some() {
             a.default = default;
@@ -788,6 +848,20 @@ impl<'a> Parser<'a> {
                 other => return Err(self.err(format!("unexpected {} in property metadata", describe(&other)))),
             }
         }
+    }
+
+    /// The position of property `name` in prim `prim`'s spec, appended as
+    /// `fresh()` when the prim has none of that name yet.
+    fn prop_slot(&mut self, prim: &str, name: &str, fresh: impl FnOnce() -> Prop) -> Result<usize, MeshError> {
+        let key = (prim.to_string(), name.to_string());
+        if let Some(&at) = self.prop_at.get(&key) {
+            return Ok(at);
+        }
+        let spec = self.spec_mut(prim)?;
+        spec.props.push((name.to_string(), fresh()));
+        let at = spec.props.len() - 1;
+        self.prop_at.insert(key, at);
+        Ok(at)
     }
 
     fn spec_mut(&mut self, path: &str) -> Result<&mut PrimSpec, MeshError> {
@@ -988,12 +1062,20 @@ impl<'a> Parser<'a> {
 
     /// A value of a declared type.
     fn typed(&mut self, ty: &Type) -> Result<Value, MeshError> {
+        self.typed_at(ty, 0)
+    }
+
+    /// A value of a declared type, `depth` values deep. An untyped value
+    /// continues the count: restarting it here let `{a b = {a b = …}}`
+    /// recurse through `dictionary` → `typed` → `generic` until the stack
+    /// overflowed.
+    fn typed_at(&mut self, ty: &Type, depth: usize) -> Result<Value, MeshError> {
         if *self.lx.peek()? == Tok::Ident("None") {
             self.lx.next()?;
             return Ok(Value::Block);
         }
         if ty.base == Base::Other {
-            return self.generic(0);
+            return self.generic(depth);
         }
         if !ty.array {
             return match ty.base {
@@ -1014,12 +1096,15 @@ impl<'a> Parser<'a> {
                     self.element_f64(ty, &mut v)?;
                     Ok(Value::Tuple(v))
                 }
-                Base::Str => match self.lx.next()? {
-                    Tok::Str(s) => Ok(Value::Str(s)),
-                    // Tokens are quoted, but a bareword is unambiguous here.
-                    Tok::Ident(s) => Ok(Value::Str(s.to_string())),
-                    other => Err(self.err(format!("expected a string, found {}", describe(&other)))),
-                },
+                Base::Str | Base::Token => {
+                    let s = match self.lx.next()? {
+                        Tok::Str(s) => s,
+                        // Tokens are quoted, but a bareword is unambiguous here.
+                        Tok::Ident(s) => s.to_string(),
+                        other => return Err(self.err(format!("expected a string, found {}", describe(&other)))),
+                    };
+                    Ok(if ty.base == Base::Token { Value::Token(s) } else { Value::Str(s) })
+                }
                 Base::Asset => match self.lx.next()? {
                     Tok::Asset(a) => Ok(Value::Asset(a)),
                     other => Err(self.err(format!("expected an @asset@ path, found {}", describe(&other)))),
@@ -1072,7 +1157,7 @@ impl<'a> Parser<'a> {
                 }
                 Value::Ints(v)
             }
-            Base::Str | Base::Asset => {
+            Base::Str | Base::Token | Base::Asset => {
                 let mut v: Vec<String> = Vec::new();
                 array!(v, {
                     match self.lx.next()? {
@@ -1081,10 +1166,10 @@ impl<'a> Parser<'a> {
                         other => return Err(self.err(format!("expected a string, found {}", describe(&other)))),
                     }
                 });
-                if ty.base == Base::Asset {
-                    Value::Assets(v)
-                } else {
-                    Value::Strs(v)
+                match ty.base {
+                    Base::Asset => Value::Assets(v),
+                    Base::Token => Value::Tokens(v),
+                    _ => Value::Strs(v),
                 }
             }
             Base::Other => unreachable!("handled above"),
@@ -1222,7 +1307,7 @@ impl<'a> Parser<'a> {
                 self.expect(b'{')?;
                 Value::Dict(self.dictionary(depth + 1)?)
             } else {
-                self.typed(&type_of(&type_name))?
+                self.typed_at(&type_of(&type_name), depth)?
             };
             self.charge(1)?;
             out.push((key, v));
@@ -1245,9 +1330,52 @@ fn edit<T: Clone + PartialEq>(target: &mut Option<ListOp<T>>, op: Option<&str>, 
     }
 }
 
+/// Set metadata `key` of attribute `attr`, replacing an earlier value for it
+/// in place. A new key past [`MAX_ATTR_METADATA`] is refused.
+fn put(list: &mut Vec<(String, Value)>, key: &str, v: Value, attr: &str) -> Result<(), MeshError> {
+    match list.iter().position(|(k, _)| k == key) {
+        Some(at) => list[at].1 = v,
+        None if list.len() >= MAX_ATTR_METADATA => {
+            return Err(MeshError::Unsupported(format!(
+                "usda: attribute {:?} has more than {MAX_ATTR_METADATA} metadata fields; no real attribute does",
+                super::usd_stage::short(attr)
+            )))
+        }
+        None => list.push((key.to_string(), v)),
+    }
+    Ok(())
+}
+
+/// The Sdf field a metadata key in the text format sets, which is the name a
+/// crate stores it under: `doc` is the `documentation` field.
+fn field_name(key: &str) -> &str {
+    if key == "doc" {
+        "documentation"
+    } else {
+        key
+    }
+}
+
+/// A metadata value as the text format reads it, which gives it no type, typed
+/// the way the Sdf schema types the field: these are `token`s, not `string`s,
+/// and these are `double`s, so `metersPerUnit = 1` is a 1.0 (a crate stores it
+/// as a double, and `usdcat` reads it as one).
+fn schema_typed(key: &str, v: Value) -> Value {
+    match (key, v) {
+        ("defaultPrim" | "upAxis" | "colorSpace" | "symmetryFunction", Value::Str(s)) => Value::Token(s),
+        ("metersPerUnit" | "timeCodesPerSecond" | "framesPerSecond" | "startTimeCode" | "endTimeCode", Value::Int(i)) => {
+            Value::Float(i as f64)
+        }
+        ("allowedTokens", Value::List(items)) if items.iter().all(|i| matches!(i, Value::Str(_))) => {
+            Value::Tokens(items.into_iter().filter_map(|i| i.as_str().map(str::to_string)).collect())
+        }
+        (_, v) => v,
+    }
+}
+
 fn string_list(v: &Value) -> Option<Vec<String>> {
     match v {
-        Value::Str(s) => Some(vec![s.clone()]),
+        Value::Str(s) | Value::Token(s) => Some(vec![s.clone()]),
         Value::Block => Some(Vec::new()),
         Value::List(items) => items.iter().map(|i| i.as_str().map(str::to_string)).collect(),
         _ => None,
@@ -1441,6 +1569,186 @@ over "OverOnly" { def Xform "AddedByOver" { } }
         assert_eq!(l.specs["/_Proto"].specifier, Specifier::Class);
     }
 
+    /// What a crate has to carry and the layer used to drop: an attribute's
+    /// variability, every metadata key beside `interpolation` and
+    /// `elementSize`, and which dictionary entries and defaults are tokens
+    /// and which are strings. `typed.usda` is also the text behind
+    /// `typed.usdc` (`usdc::tests::usdc_reader_fills_the_same_fields`).
+    #[test]
+    fn usda_keeps_variability_metadata_and_token_types() {
+        let l = parse(include_bytes!("testdata/usd/typed.usda"), "typed.usda").unwrap();
+        let s = |v: &str| Value::Str(v.to_string());
+        let t = |v: &str| Value::Token(v.to_string());
+        let strs = |v: &[&str]| Value::Strs(v.iter().map(|x| x.to_string()).collect());
+        let tokens = |v: &[&str]| Value::Tokens(v.iter().map(|x| x.to_string()).collect());
+
+        // Layer metadata: the schema's token fields are tokens, `doc = ` is the
+        // `documentation` field and a bare string the `comment` field, and a
+        // dictionary keeps its entry types.
+        assert_eq!(l.meta("defaultPrim"), Some(&t("Root")));
+        assert_eq!(l.meta("upAxis"), Some(&t("Y")));
+        assert_eq!(l.meta("metersPerUnit"), Some(&Value::Float(1.0)), "a double, though the text writes `1`");
+        assert_eq!(l.meta("documentation"), Some(&s("what a layer says about itself")));
+        assert_eq!(l.meta("comment"), Some(&s("a bare string in a layer's metadata is its comment")), "a bare string is the comment");
+        assert_eq!(l.meta("customLayerData"), Some(&Value::Dict(vec![("author".into(), s("litegen")), ("flavour".into(), t("plain"))])));
+
+        let root = &l.specs["/Root"];
+        assert_eq!(
+            root.custom_data,
+            Some(vec![
+                ("note".into(), s("a string")),
+                ("tag".into(), t("a token")),
+                ("count".into(), Value::Int(3)),
+                ("scale".into(), Value::Float(1.5)),
+                (
+                    "nested".into(),
+                    Value::Dict(vec![
+                        ("inner".into(), t("deep")),
+                        ("labels".into(), strs(&["x", "y"])),
+                        ("kinds".into(), tokens(&["a", "b"])),
+                        ("again".into(), Value::Dict(vec![("level".into(), Value::Int(2))])),
+                    ])
+                ),
+            ])
+        );
+
+        // Variability: `uniform` is kept, and an attribute that says nothing is
+        // varying.
+        for name in ["bindTransforms", "documented", "doubleSided", "offsets", "purpose", "xformOpOrder"] {
+            assert_eq!(root.attr(name).unwrap().variability, Variability::Uniform, "{name}");
+        }
+        for name in ["animated", "commented", "constantWeight", "mode", "modes", "title", "titles", "xformOp:translate"] {
+            assert_eq!(root.attr(name).unwrap().variability, Variability::Varying, "{name}");
+        }
+
+        // `token` and `string`, scalar and array, in defaults and in samples.
+        let default = |n: &str| root.attr(n).unwrap().default.clone();
+        assert_eq!(default("mode"), Some(t("fast")));
+        assert_eq!(default("modes"), Some(tokens(&["fast", "slow"])));
+        assert_eq!(default("purpose"), Some(t("render")));
+        assert_eq!(default("xformOpOrder"), Some(tokens(&["xformOp:translate"])));
+        assert_eq!(default("title"), Some(s("a title")));
+        assert_eq!(default("titles"), Some(strs(&["one", "two"])));
+        assert_eq!(root.attr("animated").unwrap().samples, Some(vec![(0.0, t("start")), (1.0, t("end"))]));
+
+        // Attribute metadata: every key, in authored order, `doc = ` as the
+        // `documentation` field and a bare string as `comment`, dictionary
+        // entries typed.
+        assert_eq!(
+            root.attr("documented").unwrap().metadata,
+            vec![
+                ("documentation".to_string(), s("what it is")),
+                ("displayName".to_string(), s("Documented")),
+                ("hidden".to_string(), Value::Bool(true)),
+                (
+                    "customData".to_string(),
+                    Value::Dict(vec![
+                        ("note".into(), s("attribute data")),
+                        ("tag".into(), t("attr token")),
+                        ("count".into(), Value::Int(7)),
+                        ("ratio".into(), Value::Float(0.25)),
+                        ("nested".into(), Value::Dict(vec![("inner".into(), t("deep"))])),
+                    ])
+                ),
+            ]
+        );
+        // `interpolation` and `elementSize` keep their own fields, so a writer
+        // re-emits each one once: they are not in `metadata` as well.
+        let weight = root.attr("constantWeight").unwrap();
+        assert_eq!((weight.interpolation.as_deref(), weight.element_size), (Some("constant"), Some(1)));
+        assert_eq!(weight.metadata, vec![("documentation".to_string(), s("kept beside the two that have fields of their own"))]);
+        assert!(root.attr("mode").unwrap().metadata.is_empty());
+        assert_eq!(
+            root.attr("commented").unwrap().metadata,
+            vec![("comment".to_string(), s("a bare string in an attribute's metadata is its comment"))],
+            "a bare string is the comment, `doc = ` the documentation"
+        );
+
+        // `config` and an explicit `varying`; a later statement for the same
+        // attribute that names no variability does not reset it.
+        let l = layer(
+            "#usda 1.0\ndef \"A\"\n{\n    config int knob = 4\n    varying float plain = 2\n    uniform token both = \"a\"\n    token both.timeSamples = { 0: \"b\" }\n    float noted = 1 (\"a bare string is the comment\")\n}\n",
+        );
+        let a = &l.specs["/A"];
+        assert_eq!(a.attr("knob").unwrap().variability, Variability::Config);
+        assert_eq!(a.attr("plain").unwrap().variability, Variability::Varying);
+        assert_eq!(a.attr("both").unwrap().variability, Variability::Uniform);
+        assert_eq!(a.attr("both").unwrap().default, Some(t("a")));
+        assert_eq!(a.attr("both").unwrap().samples, Some(vec![(0.0, t("b"))]));
+        assert_eq!(a.attr("noted").unwrap().metadata, vec![("comment".to_string(), s("a bare string is the comment"))]);
+    }
+
+    /// `put` scans an attribute's metadata for each key, so a file with a
+    /// hundred thousand distinct keys on one attribute cost a quadratic scan
+    /// (15 s for 1.4 MB). The list is capped, over all the statements that
+    /// declare the attribute; a key already in it never counts again.
+    #[test]
+    fn an_attribute_holds_at_most_the_capped_number_of_metadata_fields() {
+        let field = |i: usize, v: i64| format!("        k{i} = {v}\n");
+        let attr = |decl: &str, fields: String| format!("    {decl} (\n{fields}    )\n");
+        let text = |attrs: String| format!("#usda 1.0\ndef \"A\"\n{{\n{attrs}}}\n");
+        let capped = format!("more than {MAX_ATTR_METADATA} metadata fields");
+
+        // At the cap: all of them, in authored order.
+        let l = layer(&text(attr("float x = 1", (0..MAX_ATTR_METADATA).map(|i| field(i, i as i64)).collect())));
+        let kept = &l.specs["/A"].attr("x").unwrap().metadata;
+        assert_eq!(kept.len(), MAX_ATTR_METADATA);
+        for (i, (k, v)) in kept.iter().enumerate() {
+            assert_eq!((k.as_str(), v), (format!("k{i}").as_str(), &Value::Int(i as i64)));
+        }
+
+        // One past it: refused, naming the cap.
+        let over = text(attr("float x = 1", (0..=MAX_ATTR_METADATA).map(|i| field(i, 0)).collect()));
+        match parse(over.as_bytes(), "t.usda") {
+            Err(MeshError::Unsupported(m)) => assert!(m.contains(&capped), "{m}"),
+            other => panic!("65 distinct metadata fields: {other:?}"),
+        }
+
+        // The cap counts across statements: 40 + 40 distinct is 80.
+        let split = text(
+            attr("float x = 1", (0..40).map(|i| field(i, 0)).collect()) + &attr("float x.timeSamples = { 0: 1 }", (40..80).map(|i| field(i, 0)).collect()),
+        );
+        match parse(split.as_bytes(), "t.usda") {
+            Err(MeshError::Unsupported(m)) => assert!(m.contains(&capped), "{m}"),
+            other => panic!("80 distinct metadata fields over two statements: {other:?}"),
+        }
+
+        // A key that is already there replaces its value in place and does not
+        // count: the same 40 again, then 24 new ones, is 64.
+        let repeated = text(
+            attr("float x = 1", (0..40).map(|i| field(i, 0)).collect())
+                + &attr("float x.timeSamples = { 0: 1 }", (0..64).map(|i| field(i, 1)).collect()),
+        );
+        let l = layer(&repeated);
+        let kept = &l.specs["/A"].attr("x").unwrap().metadata;
+        assert_eq!(kept.len(), 64);
+        assert!(kept.iter().all(|(_, v)| *v == Value::Int(1)), "the later statement's values win");
+        assert_eq!(kept[0].0, "k0", "in the first statement's position");
+    }
+
+    /// An attribute's metadata entries cost the values budget, as a
+    /// dictionary's entries do: the budget is what bounds a file whose
+    /// attributes each carry a few.
+    #[test]
+    fn attribute_metadata_is_charged_to_the_values_budget() {
+        let parse_with_left = |text: &str, left: usize| -> Result<Layer, MeshError> {
+            let mut p = Parser {
+                lx: Lexer::new(text, text.find('\n').unwrap()),
+                layer: Layer::default(),
+                values: MAX_VALUES - left,
+                prop_at: std::collections::HashMap::new(),
+            };
+            p.layer_metadata()?;
+            p.body()?;
+            Ok(p.layer)
+        };
+        let two = "#usda 1.0\ndef \"A\"\n{\n    float x = 1 (\n        a = 1\n        b = 2\n    )\n}\n";
+        let bare = "#usda 1.0\ndef \"A\"\n{\n    float x = 1 (\"doc\"\n        a = 1\n    )\n}\n";
+        assert!(parse_with_left(two, 2).is_ok(), "two entries fit a budget of two");
+        assert!(matches!(parse_with_left(two, 1), Err(MeshError::Unsupported(_))), "the second entry is over a budget of one");
+        assert!(matches!(parse_with_left(bare, 1), Err(MeshError::Unsupported(_))), "a bare doc string is an entry too");
+    }
+
     #[test]
     fn rejects_what_is_not_usda() {
         assert!(matches!(parse(b"glTF....", "x"), Err(MeshError::NotThisFormat { .. })));
@@ -1516,5 +1824,39 @@ def Xform "Root" (prepend references = @a.usda@</X> (offset = 1))
             v.push('[');
         }
         assert!(parse(v.as_bytes(), "x").is_err());
+    }
+
+    /// `customLayerData = {a b = {a b = … 1}}`: each untyped entry's value
+    /// went to `generic(0)`, resetting the depth, so `MAX_VALUE_DEPTH` was
+    /// never reached (2026-10-12 review, finding 1).
+    fn nested_dictionaries(levels: usize) -> String {
+        let mut t = String::from("#usda 1.0\n(\n    customLayerData = ");
+        for _ in 0..levels {
+            t.push_str("{a b = ");
+        }
+        t.push('1');
+        for _ in 0..levels {
+            t.push('}');
+        }
+        t.push_str("\n)\ndef Mesh \"M\" {\n    int[] faceVertexCounts = [3]\n    int[] faceVertexIndices = [0, 1, 2]\n    point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]\n}\n");
+        t
+    }
+
+    #[test]
+    fn dictionaries_nested_through_untyped_entries_count_toward_the_depth_cap() {
+        assert!(parse(nested_dictionaries(MAX_VALUE_DEPTH / 2).as_bytes(), "x").is_ok());
+        assert!(parse(nested_dictionaries(MAX_VALUE_DEPTH + 8).as_bytes(), "x").is_err());
+    }
+
+    /// The reproduction itself: 18 KB that overflowed a 2 MiB stack (SIGABRT,
+    /// the whole process) as USDA or inside a USDZ.
+    #[test]
+    fn a_deep_dictionary_chain_is_refused_not_overflowed() {
+        let text = nested_dictionaries(3000);
+        assert!(parse(text.as_bytes(), "x").is_err());
+        let mut w = super::super::zip::Writer::new();
+        w.add("model.usda", text.as_bytes(), super::super::zip::Store::Stored { align: 64 }).unwrap();
+        let usdz = w.finish();
+        assert!(super::super::usd::read_usdz(&usdz, &super::super::package::NoSidecars).is_err());
     }
 }

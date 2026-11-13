@@ -8,14 +8,66 @@ use crate::types::VideoMedia;
 /// Everything the bytes say; a field litegen cannot read stays `None`.
 pub fn probe(bytes: &[u8]) -> VideoMedia {
     if bytes.starts_with(b"GIF8") {
-        return gif(bytes).unwrap_or_default();
+        return gif(std::io::Cursor::new(bytes)).unwrap_or_default();
     }
     mp4(bytes).unwrap_or_default()
 }
 
-fn gif(bytes: &[u8]) -> Option<VideoMedia> {
+/// The most of an MP4's `moov` box [`probe_file`] reads into memory: far
+/// more than any real one (its sample tables), and still a bounded read.
+const MAX_MOOV_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What the video file at `path` says, as [`probe`] would of its bytes,
+/// without reading the file into memory: an MP4/MOV's top-level boxes are
+/// walked by seeking, and only its `moov` is read (wherever it sits, before
+/// or after the media); a GIF is decoded a frame at a time. Blocking: run it
+/// on a blocking thread.
+pub fn probe_file(path: &std::path::Path) -> VideoMedia {
+    probe_path(path).unwrap_or_default()
+}
+
+fn probe_path(path: &std::path::Path) -> Option<VideoMedia> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut head = [0u8; 16];
+    let mut at = 0u64;
+    while at + 8 <= len {
+        file.seek(SeekFrom::Start(at)).ok()?;
+        let got = file.by_ref().take(16).read(&mut head).ok()?;
+        if at == 0 && head.starts_with(b"GIF8") {
+            file.seek(SeekFrom::Start(0)).ok()?;
+            return gif(std::io::BufReader::new(file));
+        }
+        if got < 8 {
+            return None;
+        }
+        let (header, size) = match u32::from_be_bytes(head[..4].try_into().ok()?) {
+            0 => (8, len - at),
+            1 if got >= 16 => (16, u64::from_be_bytes(head[8..16].try_into().ok()?)),
+            1 => return None,
+            n => (8, u64::from(n)),
+        };
+        if size < header || size > len - at {
+            return None;
+        }
+        if &head[4..8] == b"moov" {
+            if size > MAX_MOOV_BYTES {
+                return None;
+            }
+            let mut moov = vec![0u8; usize::try_from(size).ok()?];
+            file.seek(SeekFrom::Start(at)).ok()?;
+            file.read_exact(&mut moov).ok()?;
+            return mp4(&moov);
+        }
+        at += size;
+    }
+    None
+}
+
+fn gif<R: std::io::BufRead + std::io::Seek>(reader: R) -> Option<VideoMedia> {
     use image::{AnimationDecoder, ImageDecoder};
-    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
+    let decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
     let (width, height) = decoder.dimensions();
     let (mut frames, mut ms) = (0u32, 0f64);
     for frame in decoder.into_frames() {
@@ -169,6 +221,28 @@ mod tests {
         let silent = [bx(b"moov", &[bx(b"mvhd", &header(1000, 2000)), trak(b"vide", Some((64, 64)), 10, 20, Some((20, 1)))].concat())].concat();
         assert_eq!(probe(&silent).has_audio, Some(false));
         assert_eq!(probe(&silent).fps, Some(10.0));
+    }
+
+    /// Review 2026-11-11 P4: a file probes as its bytes do, an MP4 whose
+    /// `moov` comes after its media included.
+    #[test]
+    fn a_file_probes_as_its_bytes_do() {
+        let moov = bx(b"moov", &[bx(b"mvhd", &header(1000, 2000)), trak(b"vide", Some((640, 360)), 12_288, 24_576, Some((48, 512))), trak(b"soun", None, 48_000, 96_000, None)].concat());
+        let fast_start = [bx(b"ftyp", b"isomiso2"), moov.clone(), bx(b"mdat", &[0; 4096])].concat();
+        let moov_last = [bx(b"ftyp", b"isomiso2"), bx(b"mdat", &[0; 4096]), moov].concat();
+        let gif = crate::providers::video::visual_mock::generate_sprite_gif(2.0, 4, true);
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [("fast.mp4", &fast_start), ("last.mp4", &moov_last), ("clip.gif", &gif)] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(probe_file(&path), probe(bytes), "{name}");
+            assert_ne!(probe_file(&path), VideoMedia::default(), "{name}: something was read");
+        }
+        assert_eq!(probe_file(&dir.path().join("last.mp4")).duration_s, Some(2.0));
+        let junk = dir.path().join("junk.bin");
+        std::fs::write(&junk, b"not a video").unwrap();
+        assert_eq!(probe_file(&junk), VideoMedia::default());
+        assert_eq!(probe_file(&dir.path().join("missing.mp4")), VideoMedia::default());
     }
 
     #[test]

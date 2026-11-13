@@ -102,19 +102,50 @@ const PRICING = `## Large language models
 |---|---|---|
 |\`seedream-4-0-250828\` |Free |$0.03 |
 |\`dola-seedream-5-0-flash-260915\` |Free |$0.018 |
+|\`seededit-3-0-i2i-250628\` |Free |$0.03 |
 `;
 
 test("prices are read from each medium's own Pricing section", () => {
   const ids = source('pricing').extract(page(PRICING));
-  assert.deepEqual([...ids].sort(), ['dola-seedream-5-0-flash-260915', 'dreamina-seedance-2-0-mini-260615', 'seedance-1-0-pro-250528', 'seedream-4-0-250828']);
+  assert.deepEqual([...ids].sort(), [
+    'dola-seedream-5-0-flash-260915', 'dreamina-seedance-2-0-mini-260615', 'seedance-1-0-pro-250528', 'seededit-3-0-i2i-250628', 'seedream-4-0-250828',
+  ]);
   const snap = source('pricing').snapshot(page(PRICING), '', { ours });
   assert.match(snap, /seedance-1-0-pro-250528 \| \$2\.5/);
   assert.match(snap, /\$0\.61/, 'the billing example our flat price comes from');
   assert.match(snap, /seedream-4-0-250828 \| Free \| \$0\.03/);
-  assert.doesNotMatch(snap, /seed-2-0-260128|flash/);
+  // Seedream 5.0 Flash is carried since 2026-11-03; SeedEdit is not.
+  assert.match(snap, /dola-seedream-5-0-flash-260915 \| Free \| \$0\.018/);
+  assert.doesNotMatch(snap, /seed-2-0-260128|seededit/);
 });
 
 test('a "new" badge glued to a bold name is not part of the name', () => {
   const md = '### Request body\n\n**layer_decompositionnew** `boolean` `Optional`\n\n**model** `string` `Required`\n';
-  assert.deepEqual(source('image-api').extract(page(md)), ['layer_decomposition', 'model']);
+  assert.deepEqual(source('video-api').extract(page(md)), ['layer_decomposition', 'model']);
+});
+
+// 2026-11-09: the image page renamed its request-body heading to "### Body
+// parameters" (under "## Request parameters") and appends a " | Title" to
+// each signature; the video page kept "### Request body".
+const IMAGE_API = `## Request parameters
+
+### Body parameters
+
+**prompt** \`string\`  |  Prompt
+
+**Image generation scenario ** **\`Required\`**
+
+**model** \`string\` \`Required\`  |  Model ID
+
+## Response parameters
+
+**model** \`string\`  |  Model ID
+`;
+
+test('the image page is read from its "### Body parameters" section, the video page from "### Request body"', () => {
+  assert.deepEqual(source('image-api').extract(page(IMAGE_API)), ['prompt', 'model']);
+  const snap = source('image-api').snapshot(page(IMAGE_API), '', { ours });
+  assert.equal(snap, 'prompt `string`\n  [Image generation scenario] Required\nmodel `string` `Required`\n');
+  assert.throws(() => source('video-api').extract(page(IMAGE_API)), /"### Request body" not found/);
+  assert.throws(() => source('image-api').extract(page(IMAGE_API.replace('### Body parameters', '### Request body'))), /"### Body parameters" not found/);
 });

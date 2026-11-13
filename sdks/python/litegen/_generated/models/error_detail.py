@@ -30,13 +30,20 @@ class ErrorDetail:
             `quota_exceeded`, `provider_not_configured`.
         code (Union[None, Unset, str]): Machine-readable reason within the family, e.g. `param_unsupported`,
             `param_enum_mismatch`, `prompt_required`, `ref_role_required`.
+        generation_id (Union[None, Unset, str]): On an image `vendor_timeout` whose job the vendor is still running:
+            the generation litegen delivers it to when it finishes
+            (`GET /v1/generations/{id}`, the key's webhook; docs/async-images.md).
         model (Union[None, Unset, str]): The model the rejected request named. Validation errors only.
         param (Union[None, Unset, str]): The request field that failed validation — `output_formats`, `prompt`,
             `reference_images`, `extra.<key>` — so a caller can tell which one to fix
             without parsing `message`. Validation errors only.
         provider_error (Union['VendorError', None, Unset]):
+        replaced_by (Union[None, Unset, str]): On `model_retired` (410): the model that replaces the retired one,
+            when the catalog names one.
         retryable (Union[None, Unset, bool]): Whether the same request may work later: a vendor's 5xx, 429 or
-            timeout, but not its refusal.
+            timeout, or a model route whose deployments were passed over (an open
+            circuit breaker), but not a refusal.
+        status (Union[None, Unset, str]): `processing`, with `generation_id`: the job runs on.
         vendor_job_id (Union[None, Unset, str]): The vendor's own job id, on `vendor_timeout` (the job the vendor had
             accepted when litegen stopped waiting, if it had; not re-sent) and on
             `generation_record_failed` (a job the vendor took that litegen could
@@ -46,10 +53,13 @@ class ErrorDetail:
     message: str
     type: str
     code: Union[None, Unset, str] = UNSET
+    generation_id: Union[None, Unset, str] = UNSET
     model: Union[None, Unset, str] = UNSET
     param: Union[None, Unset, str] = UNSET
     provider_error: Union["VendorError", None, Unset] = UNSET
+    replaced_by: Union[None, Unset, str] = UNSET
     retryable: Union[None, Unset, bool] = UNSET
+    status: Union[None, Unset, str] = UNSET
     vendor_job_id: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -65,6 +75,12 @@ class ErrorDetail:
             code = UNSET
         else:
             code = self.code
+
+        generation_id: Union[None, Unset, str]
+        if isinstance(self.generation_id, Unset):
+            generation_id = UNSET
+        else:
+            generation_id = self.generation_id
 
         model: Union[None, Unset, str]
         if isinstance(self.model, Unset):
@@ -86,11 +102,23 @@ class ErrorDetail:
         else:
             provider_error = self.provider_error
 
+        replaced_by: Union[None, Unset, str]
+        if isinstance(self.replaced_by, Unset):
+            replaced_by = UNSET
+        else:
+            replaced_by = self.replaced_by
+
         retryable: Union[None, Unset, bool]
         if isinstance(self.retryable, Unset):
             retryable = UNSET
         else:
             retryable = self.retryable
+
+        status: Union[None, Unset, str]
+        if isinstance(self.status, Unset):
+            status = UNSET
+        else:
+            status = self.status
 
         vendor_job_id: Union[None, Unset, str]
         if isinstance(self.vendor_job_id, Unset):
@@ -108,14 +136,20 @@ class ErrorDetail:
         )
         if code is not UNSET:
             field_dict["code"] = code
+        if generation_id is not UNSET:
+            field_dict["generation_id"] = generation_id
         if model is not UNSET:
             field_dict["model"] = model
         if param is not UNSET:
             field_dict["param"] = param
         if provider_error is not UNSET:
             field_dict["provider_error"] = provider_error
+        if replaced_by is not UNSET:
+            field_dict["replaced_by"] = replaced_by
         if retryable is not UNSET:
             field_dict["retryable"] = retryable
+        if status is not UNSET:
+            field_dict["status"] = status
         if vendor_job_id is not UNSET:
             field_dict["vendor_job_id"] = vendor_job_id
 
@@ -138,6 +172,15 @@ class ErrorDetail:
             return cast(Union[None, Unset, str], data)
 
         code = _parse_code(d.pop("code", UNSET))
+
+        def _parse_generation_id(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        generation_id = _parse_generation_id(d.pop("generation_id", UNSET))
 
         def _parse_model(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -174,6 +217,15 @@ class ErrorDetail:
 
         provider_error = _parse_provider_error(d.pop("provider_error", UNSET))
 
+        def _parse_replaced_by(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        replaced_by = _parse_replaced_by(d.pop("replaced_by", UNSET))
+
         def _parse_retryable(data: object) -> Union[None, Unset, bool]:
             if data is None:
                 return data
@@ -182,6 +234,15 @@ class ErrorDetail:
             return cast(Union[None, Unset, bool], data)
 
         retryable = _parse_retryable(d.pop("retryable", UNSET))
+
+        def _parse_status(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        status = _parse_status(d.pop("status", UNSET))
 
         def _parse_vendor_job_id(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -196,10 +257,13 @@ class ErrorDetail:
             message=message,
             type=type,
             code=code,
+            generation_id=generation_id,
             model=model,
             param=param,
             provider_error=provider_error,
+            replaced_by=replaced_by,
             retryable=retryable,
+            status=status,
             vendor_job_id=vendor_job_id,
         )
 

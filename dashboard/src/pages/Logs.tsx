@@ -14,6 +14,19 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+/** The list request for one page of the filters in the URL. */
+function listOpts(params: URLSearchParams, page: number) {
+  return {
+    page,
+    per_page: 25,
+    model: params.get('model') || undefined,
+    provider: params.get('provider') || undefined,
+    status: params.get('status') || undefined,
+    from: params.get('from') || undefined,
+    to: params.get('to') || undefined,
+  };
+}
+
 export default function Logs() {
   const [data, setData] = useState<PaginatedResponse<RequestLog> | null>(null);
   const [page, setPage] = useState(1);
@@ -39,24 +52,21 @@ export default function Logs() {
       .catch(() => {/* silently ignore */});
   }, []);
 
-  const buildOpts = (p: number) => ({
-    page: p,
-    per_page: 25,
-    model: searchParams.get('model') || undefined,
-    provider: searchParams.get('provider') || undefined,
-    status: searchParams.get('status') || undefined,
-    from: searchParams.get('from') || undefined,
-    to: searchParams.get('to') || undefined,
-  });
-
   const load = (p: number) => {
-    client.logs.list(buildOpts(p))
+    client.logs.list(listOpts(searchParams, p))
       .then(d => { setData(d); setPage(p); })
       .catch(e => setError(e.message));
   };
 
-  // Re-fetch when URL params change
-  useEffect(() => { load(1); }, [searchParams.toString()]);
+  // Back to page 1 whenever the URL's filters change.
+  const filters = searchParams.toString();
+  useEffect(() => {
+    let current = true;
+    client.logs.list(listOpts(new URLSearchParams(filters), 1))
+      .then(d => { if (current) { setData(d); setPage(1); } })
+      .catch(e => { if (current) setError(e.message); });
+    return () => { current = false; };
+  }, [filters]);
 
   const applyFilters = () => {
     const params: Record<string, string> = {};

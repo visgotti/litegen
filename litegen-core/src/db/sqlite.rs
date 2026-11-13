@@ -1,6 +1,10 @@
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::migrate::MigrateError;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::QueryBuilder;
 use tracing::info;
 use uuid::Uuid;
@@ -20,31 +24,103 @@ pub(crate) const REQUEST_LOG_COLS: &str =
 /// Full column list for generations selects.
 const GENERATION_COLS: &str = "id, key_id, model, provider, media_type, status, progress, \
     provider_job_id, result_url, error_message, cost_usd, created_at, completed_at, metadata, \
-    org_id, app_id";
+    org_id, app_id, files_deleted_at, files_deleted_reason";
 
 /// SQLite-backed database implementation.
 pub struct SqliteDatabase {
     pool: SqlitePool,
+    /// Tests only: how far "the database's clock" is set from this process's,
+    /// standing in for a replica whose own clock is off.
+    #[cfg(test)]
+    clock_offset: chrono::Duration,
 }
 
 impl SqliteDatabase {
     /// Connect to SQLite and run migrations.
+    ///
+    /// A SQLite URL (`sqlite:…`) with `mode=rwc` creates its database, and the
+    /// directory it goes in; without `mode=rwc` the file must exist, as SQLite
+    /// has it. A database litegen can't open, or that the first migration
+    /// can't write, is refused with an error that names its file and the fix.
+    ///
+    /// A URL for another database (`mysql://…`) is refused before sqlx reads
+    /// it, naming only its scheme. A value with no scheme at all is read as a
+    /// file name, as sqlx does, but it may be no path (a Postgres `host=…
+    /// password=…` string), so no directory is made for it and errors don't
+    /// repeat it.
     pub async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
+        refuse_other_schemes(database_url)?;
+        let options = SqliteConnectOptions::from_str(database_url)?;
+        let named = database_url.starts_with("sqlite:");
+        let file = DatabaseFile {
+            path: options.get_filename().to_path_buf(),
+            creates: named && asks_to_create(database_url),
+            named,
+        };
+        if file.creates {
+            // Empty for an in-memory database, and for a file in the working directory.
+            if let Some(dir) = file.path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+                tokio::fs::create_dir_all(dir).await.map_err(|e| file.cannot_open(&format!("cannot create {}: {e}", absolute(dir))))?;
+            }
+        }
         let pool = SqlitePoolOptions::new()
             .max_connections(10)
-            .connect(database_url)
-            .await?;
+            .connect_with(options)
+            .await
+            .map_err(|e| file.cannot_open(&cause(&e)))?;
 
-        sqlx::migrate!("./migrations/sqlite").run(&pool).await?;
+        sqlx::migrate!("./migrations/sqlite").run(&pool).await.map_err(|e| file.migration_failed(e))?;
         info!("SQLite database connected and migrations applied");
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            #[cfg(test)]
+            clock_offset: chrono::Duration::zero(),
+        })
+    }
+
+    /// Tests only: this database's clock, `offset` from this process's.
+    #[cfg(test)]
+    pub(crate) fn with_clock_offset(mut self, offset: chrono::Duration) -> Self {
+        self.clock_offset = offset;
+        self
+    }
+
+    /// The database's clock. SQLite runs in this process, on this host's
+    /// clock, so it is the process's own (moved by the tests' offset).
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now() + self.clock_offset()
+    }
+
+    #[cfg(test)]
+    fn clock_offset(&self) -> chrono::Duration {
+        self.clock_offset
+    }
+
+    #[cfg(not(test))]
+    fn clock_offset(&self) -> chrono::Duration {
+        chrono::Duration::zero()
     }
 
     /// The underlying pool: used by the management store
     /// (`crate::management::sql`) and by unit tests that stamp rows directly.
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Write `after` as generation `id`'s metadata only if it is still `before`
+    /// and the row is in flight: one compare-and-swap step. `true` when it took.
+    async fn swap_metadata(&self, id: &str, before: Option<&str>, after: &serde_json::Value) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            "UPDATE generations SET metadata = ? \
+                 WHERE id = ? AND status IN ('pending', 'processing') AND metadata IS ?",
+        )
+        .bind(serde_json::to_string(after).unwrap_or_else(|_| "{}".into()))
+        .bind(id)
+        .bind(before)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// A row's status and its `metadata` exactly as stored: the "before" a
@@ -54,6 +130,115 @@ impl SqliteDatabase {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
+    }
+}
+
+/// Whether a SQLite URL asks for its database to be created: `mode=rwc` in its
+/// query, which is how sqlx reads it.
+fn asks_to_create(url: &str) -> bool {
+    url.split_once('?').is_some_and(|(_, query)| query.split('&').any(|pair| pair == "mode=rwc"))
+}
+
+/// The database URLs litegen opens, as an error that refuses one says.
+const URL_FORMS: &str = "use sqlite:// for SQLite, or postgres:// (postgresql://) for Postgres";
+
+/// Refuse a URL for another database before sqlx reads it. sqlx takes all of
+/// a URL but a `sqlite:` prefix as a file name, so `mysql://user:password@host/db`
+/// would be a path: named in errors, password and all, and with `?mode=rwc`
+/// made into folders and a new, empty SQLite database. The error names the
+/// scheme only when RFC 3986 allows it (a letter, then letters, digits, `+`,
+/// `-` or `.`; 32 at most), and nothing after it, which may hold a password.
+fn refuse_other_schemes(url: &str) -> Result<(), sqlx::Error> {
+    if url.starts_with("sqlite:") {
+        return Ok(());
+    }
+    let Some((scheme, _)) = url.split_once("://") else { return Ok(()) };
+    let is_scheme = scheme.len() <= 32
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    let which = if is_scheme { format!("the database URL's scheme `{scheme}`") } else { "this database URL's scheme".to_string() };
+    Err(sqlx::Error::Configuration(format!("{which} is not one litegen opens: {URL_FORMS}").into()))
+}
+
+/// SQLITE_READONLY. Its extended codes share the low byte:
+/// SQLITE_READONLY_DIRECTORY (1544) is a directory where the journal can't be
+/// made.
+const SQLITE_READONLY: i32 = 8;
+
+/// The primary SQLite result code of `e`: the low byte of the extended code
+/// sqlx reports.
+fn primary_code(e: &sqlx::Error) -> Option<i32> {
+    e.as_database_error()?.code()?.parse::<i32>().ok().map(|code| code & 0xff)
+}
+
+/// What went wrong, without sqlx's "error returned from database" around it.
+fn cause(e: &sqlx::Error) -> String {
+    e.as_database_error().map_or_else(|| e.to_string(), |db| db.to_string())
+}
+
+/// `path`, absolute, as an operator finds it.
+fn absolute(path: &Path) -> String {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()).display().to_string()
+}
+
+/// The file of a SQLite database, as an error about it names it: SQLite's own
+/// errors ("unable to open database file") say neither which file nor what to
+/// do.
+struct DatabaseFile {
+    path: PathBuf,
+    /// A SQLite URL with `mode=rwc`: litegen creates the file and its directory.
+    creates: bool,
+    /// A SQLite URL (`sqlite:…`), so errors name its file. A value with no
+    /// scheme is read as a file name too, but it may be no path at all, so
+    /// errors never repeat it ([`READ_AS_A_FILE`]).
+    named: bool,
+}
+
+/// What an error says, in place of the file, about a database value that is
+/// read as a file name without being a SQLite URL.
+const READ_AS_A_FILE: &str = "the database URL starts with neither sqlite: nor postgres://, so litegen read it as a SQLite \
+     file name (not repeated here: it may hold a password)";
+
+impl DatabaseFile {
+    /// The file can't be opened, or its directory made.
+    fn cannot_open(&self, cause: &str) -> sqlx::Error {
+        if !self.named {
+            return sqlx::Error::Configuration(
+                format!("litegen cannot open its SQLite database ({cause}): {READ_AS_A_FILE}; {URL_FORMS}").into(),
+            );
+        }
+        let create = if self.creates { "" } else { "; add ?mode=rwc to the URL to have litegen create it" };
+        sqlx::Error::Configuration(
+            format!(
+                "litegen cannot open its SQLite database {} ({cause}); its directory must exist and be writable by the user \
+                 litegen runs as (uid 1000 in the Docker image){create}, or set LITEGEN_DATABASE_URL",
+                absolute(&self.path)
+            )
+            .into(),
+        )
+    }
+
+    /// A migration failed. SQLite opens a file it can't write read-only, so a
+    /// file or directory litegen can't write fails here, at the first write,
+    /// with SQLITE_READONLY: that is named like a file that can't be opened.
+    /// Any other failure is the migration's own.
+    fn migration_failed(&self, e: MigrateError) -> sqlx::Error {
+        let read_only = match &e {
+            MigrateError::Execute(inner) | MigrateError::ExecuteMigration(inner, _) => {
+                (primary_code(inner) == Some(SQLITE_READONLY)).then(|| cause(inner))
+            }
+            _ => None,
+        };
+        let Some(cause) = read_only else { return sqlx::Error::Migrate(Box::new(e)) };
+        let file = if self.named { format!(" {}", absolute(&self.path)) } else { String::new() };
+        let why = if self.named { String::new() } else { format!(": {READ_AS_A_FILE}") };
+        sqlx::Error::Configuration(
+            format!(
+                "litegen cannot write its SQLite database{file} ({cause}){why}; the file and its directory must be writable by \
+                 the user litegen runs as (uid 1000 in the Docker image), or set LITEGEN_DATABASE_URL"
+            )
+            .into(),
+        )
     }
 }
 
@@ -167,7 +352,8 @@ impl DatabaseStore for SqliteDatabase {
 
     async fn idempotency_begin(&self, scope: &str, key: &str, request_hash: &str) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
         use crate::db::IdempotencyBegin;
-        let now = chrono::Utc::now();
+        // The database's clock, as every replica's records are judged on it.
+        let now = self.now();
         // Opportunistic purge: the index on created_at keeps this cheap.
         sqlx::query("DELETE FROM idempotency_keys WHERE created_at < ?")
             .bind(now - crate::db::IDEMPOTENCY_TTL)
@@ -291,7 +477,7 @@ impl DatabaseStore for SqliteDatabase {
                 return Ok(false);
             }
             let mut claims = claims.filter(|c| c.is_object()).cloned().unwrap_or_else(|| serde_json::json!({}));
-            claims[stage] = crate::db::stage_claim_record(claimant);
+            claims[stage] = crate::db::stage_claim_record(claimant, self.now());
             let merged = crate::db::merge_metadata(meta.as_ref(), &serde_json::json!({ "stage_claims": claims }));
             let res = sqlx::query(
                 "UPDATE generations SET metadata = ? \
@@ -304,6 +490,41 @@ impl DatabaseStore for SqliteDatabase {
             .await?;
             if res.rows_affected() > 0 {
                 return Ok(true);
+            }
+        }
+        Err(metadata_cas_exhausted(id))
+    }
+
+    async fn lease_generation_work(&self, id: &str, work: &str, claimant: &str, ttl: chrono::Duration) -> Result<bool, sqlx::Error> {
+        for _ in 0..METADATA_CAS_ATTEMPTS {
+            let Some((status, before)) = self.status_and_metadata(id).await? else { return Ok(true) };
+            if !is_in_flight(&status) {
+                return Ok(false);
+            }
+            let meta = parse_metadata(before.as_deref());
+            let now = self.now();
+            if !crate::db::lease_is_free(meta.as_ref(), work, claimant, ttl, now) {
+                return Ok(false);
+            }
+            let merged = crate::db::merge_metadata(meta.as_ref(), &crate::db::leases_patch(meta.as_ref(), work, Some(claimant), now));
+            if self.swap_metadata(id, before.as_deref(), &merged).await? {
+                return Ok(true);
+            }
+        }
+        Err(metadata_cas_exhausted(id))
+    }
+
+    async fn release_generation_work(&self, id: &str, work: &str, claimant: &str) -> Result<(), sqlx::Error> {
+        for _ in 0..METADATA_CAS_ATTEMPTS {
+            let Some((status, before)) = self.status_and_metadata(id).await? else { return Ok(()) };
+            let meta = parse_metadata(before.as_deref());
+            let held = meta.as_ref().and_then(|m| m.get("leases")).and_then(|l| l.get(work)).and_then(|l| l.get("by")).and_then(|b| b.as_str());
+            if !is_in_flight(&status) || held != Some(claimant) {
+                return Ok(());
+            }
+            let merged = crate::db::merge_metadata(meta.as_ref(), &crate::db::leases_patch(meta.as_ref(), work, None, self.now()));
+            if self.swap_metadata(id, before.as_deref(), &merged).await? {
+                return Ok(());
             }
         }
         Err(metadata_cas_exhausted(id))
@@ -477,6 +698,85 @@ impl DatabaseStore for SqliteDatabase {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn claim_active_generations(
+        &self,
+        limit: u32,
+        claimant: &str,
+        hold: chrono::Duration,
+    ) -> Result<Vec<Generation>, sqlx::Error> {
+        // One statement, so SQLite's single writer makes the claim atomic.
+        // `poll_claimed_until` is only ever written and compared as
+        // strftime's millisecond text on SQLite's own clock (never one bound
+        // from the app), so both sides of the comparison share one format.
+        // The rows polled longest ago go first (a row never polled counts as
+        // claimed at its creation), so a replica with more active rows than
+        // `limit` takes them in turn instead of re-taking the oldest every
+        // tick; `julianday` reads both columns' text.
+        let sql = format!(
+            "UPDATE generations \
+             SET poll_claimed_by = ?1, \
+                 poll_claimed_until = strftime('%Y-%m-%d %H:%M:%f', 'now', ?2) \
+             WHERE id IN ( \
+                 SELECT id FROM generations \
+                 WHERE status IN ('pending', 'processing') \
+                   AND (poll_claimed_until IS NULL \
+                        OR poll_claimed_until < strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                        OR poll_claimed_by = ?1) \
+                 ORDER BY COALESCE(julianday(poll_claimed_until), julianday(created_at, ?2)) ASC, \
+                          created_at ASC \
+                 LIMIT ?3) \
+             RETURNING {}",
+            GENERATION_COLS
+        );
+        // A date-time modifier of fractional seconds, e.g. `+30.000 seconds`.
+        let hold = format!("{:+.3} seconds", hold.num_milliseconds() as f64 / 1000.0);
+        let rows = sqlx::query_as::<_, GenerationRow>(&sql)
+            .bind(claimant)
+            .bind(hold)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn release_poll_claims(&self, claimant: &str) -> Result<u64, sqlx::Error> {
+        // Only active rows: a claim is never cleared when its row turns
+        // terminal, so without the status clause every finished row this
+        // process ever polled would be rewritten and counted.
+        let freed = sqlx::query(
+            "UPDATE generations SET poll_claimed_by = NULL, poll_claimed_until = NULL \
+             WHERE poll_claimed_by = ? AND status IN ('pending', 'processing')",
+        )
+            .bind(claimant)
+            .execute(&self.pool)
+            .await?;
+        Ok(freed.rows_affected())
+    }
+
+    async fn renew_poll_claims(&self, claimant: &str, ids: &[String], hold: chrono::Duration) -> Result<u64, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        // On SQLite's own clock and in the claim's text format; the ids go in
+        // as one JSON array.
+        let hold = format!("{:+.3} seconds", hold.num_milliseconds() as f64 / 1000.0);
+        let renewed = sqlx::query(
+            "UPDATE generations SET poll_claimed_until = strftime('%Y-%m-%d %H:%M:%f', 'now', ?2) \
+             WHERE poll_claimed_by = ?1 AND status IN ('pending', 'processing') \
+               AND id IN (SELECT value FROM json_each(?3))",
+        )
+            .bind(claimant)
+            .bind(hold)
+            .bind(serde_json::Value::from(ids.to_vec()).to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(renewed.rows_affected())
+    }
+
+    async fn clock_now(&self) -> Result<chrono::DateTime<chrono::Utc>, sqlx::Error> {
+        Ok(self.now())
     }
 
     async fn log_request(
@@ -780,6 +1080,24 @@ impl DatabaseStore for SqliteDatabase {
         Ok(row.map(api_key_from_row))
     }
 
+    /// One statement: the key, its maker's `is_active`, and the maker's role
+    /// in the key's org (`null_org` for a key with none).
+    async fn lookup_api_key_with_owner(&self, key_hash: &str, null_org: Option<&str>) -> Result<Option<(ApiKey, crate::db::KeyOwner)>, sqlx::Error> {
+        let sql = format!(
+            "SELECT {}, u.is_active AS owner_active, m.role AS owner_role FROM api_keys k \
+             LEFT JOIN users u ON u.id = k.owner_user_id \
+             LEFT JOIN organization_members m ON m.user_id = k.owner_user_id AND m.org_id = COALESCE(k.org_id, ?) \
+             WHERE k.key_hash = ? AND k.is_active = 1",
+            key_cols_of_k()
+        );
+        let row = sqlx::query_as::<_, ApiKeyOwnerRow>(&sql)
+            .bind(null_org)
+            .bind(key_hash)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(api_key_owner_from_row))
+    }
+
     async fn atomic_charge_tokens(
         &self,
         id: &Uuid,
@@ -864,13 +1182,16 @@ impl DatabaseStore for SqliteDatabase {
         public_id: &str,
         key_hash: &str,
         key_prefix: &str,
+        owner: Option<&str>,
     ) -> Result<Option<ApiKey>, sqlx::Error> {
         let result = sqlx::query(
-            "UPDATE api_keys SET public_id = ?, key_hash = ?, key_prefix = ? WHERE id = ?",
+            "UPDATE api_keys SET public_id = ?, key_hash = ?, key_prefix = ?, \
+             owner_user_id = COALESCE(?, owner_user_id) WHERE id = ?",
         )
         .bind(public_id)
         .bind(key_hash)
         .bind(key_prefix)
+        .bind(owner)
         .bind(id.to_string())
         .execute(&self.pool)
         .await?;
@@ -1393,6 +1714,12 @@ impl DatabaseStore for SqliteDatabase {
         Ok(row.map(session_from_row))
     }
 
+    async fn get_session_with_user(&self, id: &str) -> Result<Option<(Session, Option<User>)>, sqlx::Error> {
+        let sql = format!("SELECT {SESSION_USER_COLS} FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE s.id = ?");
+        let row = sqlx::query_as::<_, SessionUserRow>(&sql).bind(id).fetch_optional(&self.pool).await?;
+        Ok(row.map(session_user_from_row))
+    }
+
     async fn delete_session(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(id)
@@ -1489,6 +1816,20 @@ impl DatabaseStore for SqliteDatabase {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn revoke_pending_invitations(&self, org_id: Option<&str>, email: Option<&str>, invited_by: Option<&str>) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM invitations WHERE used_at IS NULL AND (? IS NULL OR org_id = ?) \
+             AND (email = ? OR invited_by = ?)",
+        )
+        .bind(org_id)
+        .bind(org_id)
+        .bind(email)
+        .bind(invited_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
     }
 
     async fn list_invitations(&self) -> Result<Vec<Invitation>, sqlx::Error> {
@@ -1674,6 +2015,7 @@ impl DatabaseStore for SqliteDatabase {
             "DELETE FROM app_model_access_ids WHERE app_id IN (SELECT id FROM applications WHERE org_id = ?)",
             "DELETE FROM app_model_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = ?)",
             "DELETE FROM app_storage_credentials WHERE app_id IN (SELECT id FROM applications WHERE org_id = ?)",
+            "DELETE FROM app_file_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = ?)",
         ] {
             sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
         }
@@ -1781,6 +2123,37 @@ impl DatabaseStore for SqliteDatabase {
         tx.commit().await
     }
 
+    async fn transfer_deployment_owner(
+        &self,
+        org_id: &str,
+        new_owner_user_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = ? AND role = 'owner'")
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await?;
+        let promoted =
+            sqlx::query("UPDATE organization_members SET role = 'owner' WHERE org_id = ? AND user_id = ?")
+                .bind(org_id)
+                .bind(new_owner_user_id)
+                .execute(&mut *tx)
+                .await?;
+        if promoted.rows_affected() == 0 {
+            // Not a member: dropping the tx rolls the demotion back.
+            return Err(sqlx::Error::RowNotFound);
+        }
+        sqlx::query("UPDATE users SET role = 'admin', updated_at = datetime('now') WHERE role = 'owner' AND id <> ?")
+            .bind(new_owner_user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE users SET role = 'owner', updated_at = datetime('now') WHERE id = ?")
+            .bind(new_owner_user_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
     // ─── Applications ───────────────────────────────────────────────────
 
     async fn create_application(&self, a: &Application) -> Result<(), sqlx::Error> {
@@ -1858,6 +2231,7 @@ impl DatabaseStore for SqliteDatabase {
             "DELETE FROM app_model_access_ids WHERE app_id = ?",
             "DELETE FROM app_model_access WHERE app_id = ?",
             "DELETE FROM app_storage_credentials WHERE app_id = ?",
+            "DELETE FROM app_file_access WHERE app_id = ?",
         ] {
             sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
         }
@@ -1947,8 +2321,9 @@ impl DatabaseStore for SqliteDatabase {
             "INSERT INTO app_storage_credentials \
                 (app_id, backend, bucket_name, region, endpoint_url, custom_public_url, \
                  path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, \
+                 credential_mode, role_arn, fallback_to_litegen_store, \
                  created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
              ON CONFLICT (app_id) DO UPDATE SET \
                 backend = excluded.backend, \
                 bucket_name = excluded.bucket_name, \
@@ -1959,6 +2334,9 @@ impl DatabaseStore for SqliteDatabase {
                 access_key_id_hint = excluded.access_key_id_hint, \
                 secret_ciphertext = excluded.secret_ciphertext, \
                 secret_nonce = excluded.secret_nonce, \
+                credential_mode = excluded.credential_mode, \
+                role_arn = excluded.role_arn, \
+                fallback_to_litegen_store = excluded.fallback_to_litegen_store, \
                 updated_at = datetime('now')",
         )
         .bind(&input.app_id)
@@ -1971,6 +2349,9 @@ impl DatabaseStore for SqliteDatabase {
         .bind(&input.access_key_id_hint)
         .bind(&input.secret_ciphertext)
         .bind(&input.secret_nonce)
+        .bind(&input.credential_mode)
+        .bind(&input.role_arn)
+        .bind(input.fallback_to_litegen_store)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1979,7 +2360,8 @@ impl DatabaseStore for SqliteDatabase {
     async fn get_app_storage(&self, app_id: &str) -> Result<Option<AppStorageRow>, sqlx::Error> {
         let row = sqlx::query_as::<_, AppStorageRow>(
             "SELECT backend, bucket_name, region, endpoint_url, custom_public_url, \
-                    path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, updated_at \
+                    path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, updated_at, \
+                    credential_mode, role_arn, fallback_to_litegen_store \
              FROM app_storage_credentials WHERE app_id = ?",
         )
         .bind(app_id)
@@ -1994,6 +2376,165 @@ impl DatabaseStore for SqliteDatabase {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn get_app_file_access(&self, app_id: &str) -> Result<Option<crate::types::AppFileAccessRow>, sqlx::Error> {
+        sqlx::query_as::<_, crate::types::AppFileAccessRow>(
+            "SELECT app_id, mode, owner_scope, signed_url_ttl_seconds, keep_outputs, retention_days, signed_links, updated_at FROM app_file_access WHERE app_id = ?",
+        )
+        .bind(app_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    async fn generation_file_access(&self, id: &str) -> Result<Option<(Option<String>, Option<crate::types::AppFileAccessRow>)>, sqlx::Error> {
+        let sql = format!("SELECT {GENERATION_ACCESS_COLS} FROM generations g LEFT JOIN app_file_access a ON a.app_id = g.app_id WHERE g.id = ?");
+        let row = sqlx::query_as::<_, GenerationAccessRow>(&sql).bind(id).fetch_optional(&self.pool).await?;
+        Ok(row.map(generation_access_from_row))
+    }
+
+    async fn put_app_file_access(&self, input: &crate::types::AppFileAccessUpsert) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO app_file_access (app_id, mode, owner_scope, signed_url_ttl_seconds, keep_outputs, retention_days, signed_links, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+             ON CONFLICT (app_id) DO UPDATE SET \
+                mode = excluded.mode, \
+                owner_scope = excluded.owner_scope, \
+                signed_url_ttl_seconds = excluded.signed_url_ttl_seconds, \
+                keep_outputs = excluded.keep_outputs, \
+                retention_days = excluded.retention_days, \
+                signed_links = excluded.signed_links, \
+                updated_at = datetime('now')",
+        )
+        .bind(&input.app_id)
+        .bind(&input.mode)
+        .bind(&input.owner_scope)
+        .bind(input.signed_url_ttl_seconds)
+        .bind(input.keep_outputs)
+        .bind(input.retention_days)
+        .bind(&input.signed_links)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn apps_with_retention(&self) -> Result<Vec<(String, i64)>, sqlx::Error> {
+        sqlx::query_as("SELECT app_id, retention_days FROM app_file_access WHERE retention_days IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    async fn generations_due_for_retention(
+        &self,
+        app_id: Option<&str>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<Generation>, sqlx::Error> {
+        let rows = match app_id {
+            Some(app) => {
+                let sql = format!("SELECT {cols} FROM generations WHERE app_id = ? AND files_deleted_at IS NULL AND status IN ('completed', 'failed', 'cancelled') AND julianday(created_at) < julianday(?) ORDER BY files_delete_attempted_at ASC NULLS FIRST, created_at ASC LIMIT ?", cols = GENERATION_COLS);
+                sqlx::query_as::<_, GenerationRow>(&sql).bind(app).bind(cutoff.to_rfc3339()).bind(limit).fetch_all(&self.pool).await?
+            }
+            None => {
+                let sql = format!("SELECT {cols} FROM generations WHERE (app_id IS NULL OR app_id NOT IN (SELECT app_id FROM app_file_access WHERE retention_days IS NOT NULL)) AND files_deleted_at IS NULL AND status IN ('completed', 'failed', 'cancelled') AND julianday(created_at) < julianday(?) ORDER BY files_delete_attempted_at ASC NULLS FIRST, created_at ASC LIMIT ?", cols = GENERATION_COLS);
+                sqlx::query_as::<_, GenerationRow>(&sql).bind(cutoff.to_rfc3339()).bind(limit).fetch_all(&self.pool).await?
+            }
+        };
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn mark_files_deleted(&self, id: &str, at: chrono::DateTime<chrono::Utc>, reason: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE generations SET files_deleted_at = ?, files_deleted_reason = ? WHERE id = ? AND files_deleted_at IS NULL")
+            .bind(at)
+            .bind(reason)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn note_files_delete_failed(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE generations SET files_delete_attempted_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = ? AND files_deleted_at IS NULL")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn redact_generation_request(&self, id: &str) -> Result<(), sqlx::Error> {
+        let before: Option<Option<String>> = sqlx::query_scalar("SELECT metadata FROM generations WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(Some(text)) = before {
+            if let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(obj) = meta.as_object_mut() {
+                    obj.remove("request");
+                }
+                // Only over what was read: a write in between keeps its own.
+                sqlx::query("UPDATE generations SET metadata = ? WHERE id = ? AND metadata = ?")
+                    .bind(meta.to_string())
+                    .bind(id)
+                    .bind(&text)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        sqlx::query("DELETE FROM request_artifacts WHERE request_id = ?").bind(id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn generations_with_kept_files(&self, scope: &str, id: &str) -> Result<Vec<Generation>, sqlx::Error> {
+        let column = if scope == "org" { "org_id" } else { "app_id" };
+        let sql = format!("SELECT {} FROM generations WHERE {column} = ? AND files_deleted_at IS NULL", GENERATION_COLS);
+        let rows = sqlx::query_as::<_, GenerationRow>(&sql).bind(id).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn revoke_links(&self, scope: &str, scope_id: &str, at: chrono::DateTime<chrono::Utc>) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO link_revocations (scope, scope_id, revoked_at) VALUES (?, ?, ?) ON CONFLICT (scope, scope_id) DO UPDATE SET revoked_at = max(link_revocations.revoked_at, excluded.revoked_at)")
+            .bind(scope)
+            .bind(scope_id)
+            .bind(at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn links_revoked_at(&self, app_id: Option<&str>, generation_id: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+        // At most three rows; the latest is taken here rather than by the
+        // database, so stored timestamp text is never compared as text.
+        let times: Vec<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT revoked_at FROM link_revocations WHERE (scope = 'gateway' AND scope_id = '') OR (scope = 'app' AND scope_id = ?) OR (scope = 'generation' AND scope_id = ?)")
+            .bind(app_id.unwrap_or(""))
+            .bind(generation_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(times.into_iter().max())
+    }
+
+    async fn delete_app_file_access(&self, app_id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM app_file_access WHERE app_id = ?")
+            .bind(app_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ─── Server secrets ─────────────────────────────────────────────────
+
+    async fn server_secret(&self, name: &str, generate: &(dyn Fn() -> String + Send + Sync)) -> Result<String, sqlx::Error> {
+        // The insert keeps the first value ever stored, whoever races for it;
+        // the select then reads that value, which is the caller's own only if
+        // its insert won.
+        sqlx::query("INSERT INTO server_secrets (name, value) VALUES (?, ?) ON CONFLICT (name) DO NOTHING")
+            .bind(name)
+            .bind(generate())
+            .execute(&self.pool)
+            .await?;
+        sqlx::query_scalar("SELECT value FROM server_secrets WHERE name = ?")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await
     }
 
     // ─── Model Allowlists ───────────────────────────────────────────────────────
@@ -2127,6 +2668,21 @@ impl DatabaseStore for SqliteDatabase {
     }
 
     // ─── Tenant-scoped reads ────────────────────────────────────────────
+
+    async fn list_active_generations_for_tenant(&self, org_id: &str, app_id: Option<&str>) -> Result<Vec<Generation>, sqlx::Error> {
+        let sql = format!(
+            "SELECT {} FROM generations WHERE org_id = ? AND (? IS NULL OR app_id = ?) \
+             AND status IN ('pending', 'processing') ORDER BY created_at ASC",
+            GENERATION_COLS
+        );
+        let rows = sqlx::query_as::<_, GenerationRow>(&sql)
+            .bind(org_id)
+            .bind(app_id)
+            .bind(app_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
 
     async fn list_generations_for_tenant(
         &self,
@@ -2565,6 +3121,8 @@ pub(crate) struct GenerationRow {
     pub metadata: Option<String>,
     pub org_id: Option<String>,
     pub app_id: Option<String>,
+    pub files_deleted_at: Option<DateTime<Utc>>,
+    pub files_deleted_reason: Option<String>,
 }
 
 pub(crate) fn generation_from_row(r: GenerationRow) -> Generation {
@@ -2585,6 +3143,8 @@ pub(crate) fn generation_from_row(r: GenerationRow) -> Generation {
         metadata: r.metadata.as_deref().and_then(|s| serde_json::from_str(s).ok()),
         org_id: r.org_id,
         app_id: r.app_id,
+        files_deleted_at: r.files_deleted_at,
+        files_deleted_reason: r.files_deleted_reason,
     }
 }
 
@@ -2765,6 +3325,107 @@ pub(crate) fn session_from_row(r: SessionRow) -> Session {
     }
 }
 
+// ─── One-statement auth reads (review 2026-11-11, P14), both backends ────────
+
+/// [`API_KEY_COLS`] read from `api_keys k`: built once, not on every
+/// authenticated request (payloads review #12).
+pub(crate) fn key_cols_of_k() -> &'static str {
+    static COLS: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| API_KEY_COLS.split(',').map(|c| format!("k.{}", c.trim())).collect::<Vec<_>>().join(", "));
+    &COLS
+}
+
+/// A key and what the joined `users`/`organization_members` rows say about
+/// its maker (both NULL when nothing matched).
+#[derive(sqlx::FromRow)]
+pub(crate) struct ApiKeyOwnerRow {
+    #[sqlx(flatten)]
+    pub key: ApiKeyRow,
+    pub owner_active: Option<bool>,
+    pub owner_role: Option<String>,
+}
+
+pub(crate) fn api_key_owner_from_row(r: ApiKeyOwnerRow) -> (ApiKey, crate::db::KeyOwner) {
+    let owner = crate::db::trait_def::key_owner_of(r.key.owner_user_id.as_deref(), r.owner_active, r.owner_role.as_deref());
+    (api_key_from_row(r.key), owner)
+}
+
+/// The session columns, then the user's as `u_*` (NULL when the user is gone).
+pub(crate) const SESSION_USER_COLS: &str = "s.id, s.user_id, s.created_at, s.expires_at, s.ip, s.user_agent, s.csrf_token, \
+    u.id AS u_id, u.email AS u_email, u.password_hash AS u_password_hash, u.role AS u_role, \
+    u.oauth_github_id AS u_oauth_github_id, u.oauth_google_id AS u_oauth_google_id, u.created_at AS u_created_at, \
+    u.updated_at AS u_updated_at, u.last_login_at AS u_last_login_at, u.is_active AS u_is_active";
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct SessionUserRow {
+    #[sqlx(flatten)]
+    pub session: SessionRow,
+    pub u_id: Option<String>,
+    pub u_email: Option<String>,
+    pub u_password_hash: Option<String>,
+    pub u_role: Option<String>,
+    pub u_oauth_github_id: Option<String>,
+    pub u_oauth_google_id: Option<String>,
+    pub u_created_at: Option<DateTime<Utc>>,
+    pub u_updated_at: Option<DateTime<Utc>>,
+    pub u_last_login_at: Option<DateTime<Utc>>,
+    pub u_is_active: Option<bool>,
+}
+
+pub(crate) fn session_user_from_row(r: SessionUserRow) -> (Session, Option<User>) {
+    let user = match (r.u_id, r.u_email, r.u_role, r.u_created_at, r.u_updated_at, r.u_is_active) {
+        (Some(id), Some(email), Some(role), Some(created_at), Some(updated_at), Some(is_active)) => Some(user_from_row(UserRow {
+            id,
+            email,
+            password_hash: r.u_password_hash,
+            role,
+            oauth_github_id: r.u_oauth_github_id,
+            oauth_google_id: r.u_oauth_google_id,
+            created_at,
+            updated_at,
+            last_login_at: r.u_last_login_at,
+            is_active,
+        })),
+        _ => None,
+    };
+    (session_from_row(r.session), user)
+}
+
+/// A generation's app, then that app's `app_file_access` row (all NULL when
+/// it has none).
+pub(crate) const GENERATION_ACCESS_COLS: &str = "g.app_id AS g_app_id, a.app_id, a.mode, a.owner_scope, \
+    a.signed_url_ttl_seconds, a.keep_outputs, a.retention_days, a.signed_links, a.updated_at";
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct GenerationAccessRow {
+    pub g_app_id: Option<String>,
+    pub app_id: Option<String>,
+    pub mode: Option<String>,
+    pub owner_scope: Option<String>,
+    pub signed_url_ttl_seconds: Option<i64>,
+    pub keep_outputs: Option<bool>,
+    pub retention_days: Option<i64>,
+    pub signed_links: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+pub(crate) fn generation_access_from_row(r: GenerationAccessRow) -> (Option<String>, Option<crate::types::AppFileAccessRow>) {
+    let access = match (r.app_id, r.updated_at) {
+        (Some(app_id), Some(updated_at)) => Some(crate::types::AppFileAccessRow {
+            app_id,
+            mode: r.mode,
+            owner_scope: r.owner_scope,
+            signed_url_ttl_seconds: r.signed_url_ttl_seconds,
+            keep_outputs: r.keep_outputs,
+            retention_days: r.retention_days,
+            signed_links: r.signed_links,
+            updated_at,
+        }),
+        _ => None,
+    };
+    (r.g_app_id, access)
+}
+
 // ─── Invitation row type ─────────────────────────────────────────────────────
 
 #[derive(sqlx::FromRow)]
@@ -2928,6 +3589,13 @@ pub(crate) fn provider_credential_from_row(r: ProviderCredentialRow) -> Provider
     }
 }
 
+/// The JSON path to one `metadata` key. Keys are validated to letters,
+/// digits, `_`, `.` and `-` (`validator::is_metadata_key`), so quoting the
+/// key is enough to read a dotted one as a single key.
+fn metadata_path(key: &str) -> String {
+    format!("$.\"{key}\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2981,11 +3649,4 @@ mod tests {
         let dropped = sqlx::query("SELECT 1 FROM provider_credentials LIMIT 1").fetch_optional(pool).await;
         assert!(dropped.is_err(), "provider_credentials table should be dropped by migration 013");
     }
-}
-
-/// The JSON path to one `metadata` key. Keys are validated to letters,
-/// digits, `_`, `.` and `-` (`validator::is_metadata_key`), so quoting the
-/// key is enough to read a dotted one as a single key.
-fn metadata_path(key: &str) -> String {
-    format!("$.\"{key}\"")
 }

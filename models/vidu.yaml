@@ -7,12 +7,26 @@ models:
     display_name: Vidu Q1
     docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video
     description: Vidu Q1 text/image/reference/start-end to video.
-    # 80 credits ($0.40) for the 5s 1080p clip on every endpoint:
-    # https://platform.vidu.com/docs/pricing.md (2026-09-11)
+    # "| Text-to-video | viduq1 | 5S | 1080p | General | 80 |" and the same 80
+    # credits ($0.40) on image-to-video, reference-to-video and first-last frame:
+    # https://platform.vidu.com/docs/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.40 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L10: Vidu's `audio` switch, on text2video only ("Default:
+      # true"). start-end2video has none, nor does reference2video's `images`
+      # form (only its subjects form, which litegen does not send), so the
+      # adapter refuses `audio: true` there and sends nothing for false. No
+      # default: the vendor's differs by endpoint.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md (2026-11-09)
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md (2026-11-09)
+      audio: { kind: bool }
+      # "seed … When not passed or passed as 0, a random number will be used
+      # instead Manual setting uses the specified seed" — every endpoint; 0 is
+      # Vidu's random, so a seed starts at 1.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-03)
+      seed: { kind: seed, min: 1, max: 2147483647 }
       # Model Map: viduq1 is 5s only, 1080p only.
       duration_seconds: { kind: int, min: 5, max: 5, default: 5 }
       resolution:
@@ -23,6 +37,12 @@ models:
         # "Accepted values: 16:9, 9:16, 3:4, 4:3, 1:1" (Q1 text2video, read 2026-10-30)
         # https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md
         allowed: ["16:9","9:16","3:4","4:3","1:1"]
+        # start-end2video's "Body parameters" (model, images, prompt, duration,
+        # seed, resolution, ...) have no aspect_ratio; text2video and
+        # reference2video do, so a frame without a reference image sets the
+        # shape (E5).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 7
       default_role: first_frame
@@ -34,29 +54,67 @@ models:
     # No `style` (no current page documents it) and no `off_peak`: "Tasks
     # submitted in off-peak mode will be generated within 48 hours", while
     # litegen fails a job still running after 2 hours (and bills it).
-    extra_allowlist: [movement_amplitude, bgm, callback_url]
+    # `movement_amplitude` and `bgm` are fields of start-end2video and of
+    # reference2video's `images` form, not of text2video, so the adapter
+    # leaves them out of a text-only request.
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md (2026-11-09)
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md (2026-11-09)
+    extra_allowlist: [movement_amplitude, bgm]
+    extra_params:
+      # From Vidu's docs (drift snapshots vidu/q1-*.txt).
+      movement_amplitude: { kind: string, enum_values: ["auto", "small", "medium", "large"], default: "auto" }
+      bgm: { kind: bool }
     tags: [text-to-video, image-to-video, reference-to-video]
 
   - id: vidu/vidu2.0
     provider: vidu
     media_type: video
     display_name: Vidu 2.0
-    docs_url: https://platform.vidu.com/docs/model-map
+    docs_url: https://platform.vidu.com/docs/overview/model-map
     description: Vidu 2.0 image/reference to video (no text-to-video).
-    pricing: { base_cost_usd: 0.20 }
+    # @see https://platform.vidu.com/docs/pricing.md (re-read 2026-11-03); credits at $0.005, as viduq1's 80 credits = $0.40.
+    pricing:
+      base_cost_usd: 0.20
+      # Image-to-video and first-last frame: 4 s at 360p 20 credits, 720p 40,
+      # 1080p 100; 8 s (720p only) 100. Reference-to-video: 4 s 80.
+      variable_pricing:
+        - { when: { resolution: 360p }, usd: 0.10 }
+        - { when: { resolution: 1080p }, usd: 0.50 }
+        - { when: { duration_seconds: 8 }, usd: 0.50 }
+        - { when: { references.reference: '*' }, usd: 0.40 }
     # Model Map marks Text-to-Video as unsupported for vidu2.0.
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      duration_seconds: { kind: int, min: 4, max: 8, default: 4 }
+      # "seed … When not passed or passed as 0, a random number will be used
+      # instead Manual setting uses the specified seed" — every endpoint; 0 is
+      # Vidu's random, so a seed starts at 1.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-03)
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      # "Duration | 4s, 8s" (Model Map); the price table has 4 s at 360p, 720p
+      # and 1080p, 8 s at 720p only, and reference-to-video at 4 s, 360p or
+      # 720p only — pairs the catalog cannot hold, so the adapter refuses the
+      # rest before anything is sent (it used to snap 5-7 s to 4 or 8).
+      # @see https://platform.vidu.com/docs/pricing.md (2026-11-03)
+      duration_seconds: { kind: int, min: 4, max: 8, default: 4, values: [4, 8] }
+      # litegen sends 720p when none is named, so the price and the clip
+      # agree (Vidu's own default depends on the model and the duration).
       resolution:
         kind: string
         enum_values: [360p, 720p, 1080p]
+        default: 720p
       aspect_ratio:
         kind: aspect_ratio
-        # Only reference2video takes aspect_ratio for vidu2.0; "3:4&4:3 only support q2 model":
-        # https://platform.vidu.com/docs/reference-to-video.md
+        # Only reference2video takes aspect_ratio for vidu2.0 (its start-end2video
+        # page has none). No current endpoint page gives an aspect-ratio rule
+        # for vidu2.0 on reference2video: the legacy page's "3:4&4:3 only
+        # support q2 model" is gone (2026-11-09; that URL now serves the Q4
+        # Preview page), so the three ratios stand on that earlier reading.
+        # https://platform.vidu.com/docs/start-end-to-video.md (vidu2.0 only, 2026-11-09)
         allowed: ["16:9","9:16","1:1"]
+        # So img2video and start-end2video drop it: a frame without a reference
+        # image sets the shape (E5).
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 7
       default_role: first_frame
@@ -65,9 +123,14 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
         reference:   { required: false, min_count: 0, max_count: 7 }
-    # No `style`: it is a text2video-only field and vidu2.0 has no text2video.
-    # https://platform.vidu.com/docs/text-to-video.md
-    extra_allowlist: [movement_amplitude, bgm, callback_url]
+    # No `style`: no current page documents it (2026-11-09), and vidu2.0 has no
+    # text2video, where it used to live (Model Map: "| Text-to-video | - |").
+    # https://platform.vidu.com/docs/overview/model-map.md (2026-11-09)
+    extra_allowlist: [movement_amplitude, bgm]
+    extra_params:
+      # From Vidu's docs (drift snapshots vidu/q1-*.txt).
+      movement_amplitude: { kind: string, enum_values: ["auto", "small", "medium", "large"], default: "auto" }
+      bgm: { kind: bool }
     tags: [image-to-video, reference-to-video]
 
   - id: vidu/viduq2-pro
@@ -76,7 +139,31 @@ models:
     display_name: Vidu Q2 Pro
     docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video
     description: Vidu Q2 Pro high-quality image/reference to video (no text-to-video).
-    pricing: { base_cost_usd: 0.40 }
+    # @see https://platform.vidu.com/docs/pricing.md (re-read 2026-11-03); credits at $0.005, as viduq1's 80 credits = $0.40.
+    pricing:
+      base_cost_usd: 0.275
+      # Image-to-video and first-last frame: 720p 15 credits for the first
+      # second + 10 a second after; 1080p 55 + 15; 540p 8, 10, then 5 a
+      # second (8 + 5 a second from 2 s on). Reference-to-video: 720p 30 + 5;
+      # 540p 20 + 5; 1080p 85 + 10. As a rate a second plus a fixed part:
+      variable_pricing:
+        - { per_second_usd: 0.05 }
+        - { add_usd: 0.025 }
+        - { when: { resolution: 540p }, per_second_usd: 0.025 }
+        - { when: { resolution: 540p }, add_usd: 0.04 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.075 }
+        - { when: { resolution: 1080p }, add_usd: 0.2 }
+        - { when: { references.reference: '*' }, per_second_usd: 0.025 }
+        - { when: { references.reference: '*' }, add_usd: 0.125 }
+        - { when: { references.reference: '*', resolution: 540p }, per_second_usd: 0.025 }
+        - { when: { references.reference: '*', resolution: 540p }, add_usd: 0.075 }
+        - { when: { references.reference: '*', resolution: 1080p }, per_second_usd: 0.05 }
+        - { when: { references.reference: '*', resolution: 1080p }, add_usd: 0.375 }
+        # "The direct audio/video output feature for image-to-video/
+        # reference-to-video consumes an additional 15 credits on top of the
+        # corresponding task" ($0.075); the switch is img2video's only.
+        # @see https://platform.vidu.com/docs/pricing.md (2026-11-03)
+        - { when: { audio: true }, add_usd: 0.075 }
     # Model Map marks Text-to-Video as unsupported for viduq2-pro.
     capabilities: { image_to_video: true }
     # img2video (where a lone first frame routes) caps the prompt at 2000; the
@@ -84,16 +171,37 @@ models:
     # https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md (2026-10-12)
     prompt: { required: true, max_length: 2000 }
     params:
+      # PixelGenie L10: Vidu's `audio` switch, on img2video only ("Default:
+      # false"; "When this parameter is true, off-peak mode is not
+      # supported") — start-end2video and reference2video have none, so the
+      # adapter refuses `audio: true` there.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md (2026-11-03)
+      audio: { kind: bool, default: false }
+      # "seed … When not passed or passed as 0, a random number will be used
+      # instead Manual setting uses the specified seed" — every endpoint; 0 is
+      # Vidu's random, so a seed starts at 1.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-03)
+      seed: { kind: seed, min: 1, max: 2147483647 }
       # 1-10s and 540p hold on img2video, start-end2video and reference2video
       # (start-end2video went from 1-8s to 1-10s by 2026-10-12):
       # https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md
       duration_seconds: { kind: int, min: 1, max: 10, default: 5 }
+      # litegen sends 720p when none is named, so the price and the clip
+      # agree (Vidu's own default depends on the model and the duration).
       resolution:
         kind: string
         enum_values: [540p, 720p, 1080p]
+        default: 720p
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1","3:4","4:3"]
+        # img2video's "Body parameters" for viduq2-pro (model, images, prompt,
+        # audio, voice_id, is_rec, duration, seed, resolution, payload,
+        # off_peak, callback_url) have no aspect_ratio; text2video and
+        # reference2video do, so a frame without a reference image sets the
+        # shape (E5).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 7
       default_role: first_frame
@@ -104,7 +212,6 @@ models:
         reference:   { required: false, min_count: 0, max_count: 7 }
     # viduq2-pro's bodies (img2video, start-end2video, reference2video) have no
     # bgm or movement_amplitude; no off_peak (see viduq1).
-    extra_allowlist: [callback_url]
     tags: [image-to-video, reference-to-video, premium]
 
   # ─── Vidu Q3 / Q2 Pro Fast (added 2026-09-11, model-drift) ─────────────────
@@ -119,73 +226,33 @@ models:
     media_type: video
     display_name: Vidu Q3 Turbo
     docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video
-    description: Vidu Q3 Turbo text/image/reference/start-end to video with native audio (faster, cheaper Q3).
-    # 720p (the default) is $0.055/s on text2video/img2video/start-end2video
-    # ($0.05/s on reference2video), so a 5s clip is $0.275:
-    # https://platform.vidu.com/docs/pricing.md (2026-09-11)
+    description: Vidu Q3 Turbo text/image/start-end to video with native audio (faster, cheaper Q3).
+    # Image-to-video, text-to-video and first-last frame: "viduq3-turbo | 1-16
+    # seconds | 720p | 12 credits/second", 540p 7, 1080p 13. Credits at $0.005
+    # (Vidu publishes "1 | 0.03125" RMB a credit; viduq1's 80 credits = $0.40),
+    # so the default request (720p, 5 s) is 60 credits = $0.30.
+    # @see https://platform.vidu.com/docs/pricing.md (2026-11-09)
     pricing:
-      base_cost_usd: 0.275
+      base_cost_usd: 0.30
       variable_pricing:
-        - { per_second_usd: 0.055 }
+        - { per_second_usd: 0.06 }
+        - { when: { resolution: 540p }, per_second_usd: 0.035 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.065 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      # PixelGenie L10: audio is sent as Vidu's own `audio` (default true on q3).
+      # "seed … When not passed or passed as 0, a random number will be used
+      # instead Manual setting uses the specified seed" — every endpoint; 0 is
+      # Vidu's random, so a seed starts at 1.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-03)
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      # PixelGenie L10: audio is sent as Vidu's own `audio`, "Default: true" on
+      # all three endpoints.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-09)
       audio: { kind: bool, default: true }
-      # text2video / img2video / start-end2video take 1-16s, but reference2video
-      # takes 3-16s; one range serves every endpoint, so the floor is 3s.
-      # https://platform.vidu.com/docs/reference-to-video.md
-      duration_seconds: { kind: int, min: 3, max: 16, default: 5 }
-      resolution:
-        kind: string
-        enum_values: [540p, 720p, 1080p]
-        default: 720p
-      aspect_ratio:
-        kind: aspect_ratio
-        # "3:4 & 4:3 only support q2 & q3 model" (text2video); reference2video's
-        # subjects form: "q2、q3 model supports any aspect ratio" (its images form
-        # still says "3:4&4:3only support q2 model"). img2video / start-end2video
-        # take no aspect_ratio.
-        # https://platform.vidu.com/docs/text-to-video.md
-        allowed: ["16:9","9:16","1:1","3:4","4:3"]
-        default: "16:9"
-    ref_inputs:
-      max_total: 7
-      default_role: first_frame
-      provider_format: { form: url }
-      roles:
-        first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
-        # reference2video (images form) "accepts 1 to 7 images".
-        reference:   { required: false, min_count: 0, max_count: 7 }
-    # `audio`: native audio-video output, default true on q3. No bgm ("not
-    # available in q3 models"), style or movement_amplitude (no effect on q2/q3),
-    # voice_id ("The Q3 series model is not effective") or audio_type (q2/q1/2.0).
-    # https://platform.vidu.com/docs/image-to-video.md
-    extra_allowlist: [callback_url]
-    tags: [text-to-video, image-to-video, reference-to-video]
-
-  - id: vidu/viduq3-pro
-    provider: vidu
-    media_type: video
-    display_name: Vidu Q3 Pro
-    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video
-    description: Vidu Q3 Pro text/image/start-end to video with native audio (no reference-to-video).
-    # 720p (the default) is $0.10/s, so a 5s clip is $0.50:
-    # https://platform.vidu.com/docs/pricing.md (2026-09-11)
-    pricing:
-      base_cost_usd: 0.5
-      variable_pricing:
-        - { per_second_usd: 0.10 }
-    capabilities: { text_to_video: true, image_to_video: true }
-    # 20000 on text2video, img2video and start-end2video:
-    # https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-10-12)
-    prompt: { required: true, max_length: 20000 }
-    params:
-      # PixelGenie L10: audio is sent as Vidu's own `audio` (default true on q3).
-      audio: { kind: bool, default: true }
-      # 1-16s at 540p / 720p / 1080p on text2video, img2video and start-end2video.
-      # https://platform.vidu.com/docs/start-end-to-video.md
+      # text2video "available range: 1–16"; img2video and start-end2video
+      # "available: 1 - 16".
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md (2026-11-09)
       duration_seconds: { kind: int, min: 1, max: 16, default: 5 }
       resolution:
         kind: string
@@ -193,13 +260,98 @@ models:
         default: 720p
       aspect_ratio:
         kind: aspect_ratio
-        # text2video only; "3:4 & 4:3 only support q2 & q3 model":
-        # https://platform.vidu.com/docs/text-to-video.md
+        # text2video: "Default: `16:9`. Accepted values: `16:9`, `9:16`, `3:4`,
+        # `4:3`, `1:1`". img2video / start-end2video take no aspect_ratio.
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-09)
         allowed: ["16:9","9:16","1:1","3:4","4:3"]
         default: "16:9"
-    # No `reference` role: neither reference2video model list accepts viduq3-pro
-    # (and the Model Map marks its Reference-to-Video "-").
-    # https://platform.vidu.com/docs/reference-to-video.md
+        # img2video's "Body parameters": model, images, prompt, audio, is_rec,
+        # duration, seed, resolution, payload, off_peak, callback_url — no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
+    # No `reference` role: on reference2video Vidu documents viduq3-turbo only
+    # as "Subjects-Reference to Video", where `subjects` is "Required"; the
+    # `images` form the adapter sends names `viduq3` alone ("Accepted values:
+    # `viduq3`"). The adapter refuses a viduq3-turbo reference too.
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md (2026-11-09)
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    # `audio`: native audio-video output, default true on q3. No bgm ("Does not
+    # take effect for the q3 model") or movement_amplitude ("This parameter
+    # does not take effect when using the q2 & q3 model"), both Q1
+    # start-end2video fields the Q3 bodies lack; no `style` or `audio_type` (no
+    # current page documents them) and no `voice_id` (a `subjects` entry field
+    # on reference2video, which litegen does not send; the Q3 text2video,
+    # img2video and start-end2video bodies list none). The legacy image-to-video
+    # page's "not available in q3 models" and "The Q3 series model is not
+    # effective" are gone (2026-11-09).
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md (2026-11-09)
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md (2026-11-09)
+    tags: [text-to-video, image-to-video]
+
+  - id: vidu/viduq3-pro
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q3 Pro
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video
+    description: Vidu Q3 Pro text/image/start-end to video with native audio (no reference-to-video).
+    # "viduq3-pro | 1-16 seconds | 720p | 20 credits/second", 540p 9, 1080p 24
+    # (image-to-video, text-to-video and first-last frame). Credits at $0.005,
+    # so the default request (720p, 5 s) is 100 credits = $0.50.
+    # @see https://platform.vidu.com/docs/pricing.md (2026-11-09)
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+        - { per_second_usd: 0.10 }
+        - { when: { resolution: 540p }, per_second_usd: 0.045 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.12 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # 20000 on text2video, img2video and start-end2video:
+    # https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-10-12)
+    prompt: { required: true, max_length: 20000 }
+    params:
+      # "seed … When not passed or passed as 0, a random number will be used
+      # instead Manual setting uses the specified seed" — every endpoint; 0 is
+      # Vidu's random, so a seed starts at 1.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-03)
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      # PixelGenie L10: audio is sent as Vidu's own `audio` (default true on q3).
+      audio: { kind: bool, default: true }
+      # 1-16s at 540p / 720p / 1080p on text2video ("viduq3-pro: default 5s,
+      # optional: 1 - 16"; "default 720p, optional: 540p, 720p, 1080p"),
+      # img2video ("viduq3-pro 1-16s: default 720p, options: 540p, 720p, 1080p")
+      # and start-end2video ("viduq3-pro: default 5, available: 1 - 16").
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-09)
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md (2026-11-09)
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/start-end-to-video.md (2026-11-09)
+      duration_seconds: { kind: int, min: 1, max: 16, default: 5 }
+      resolution:
+        kind: string
+        enum_values: [540p, 720p, 1080p]
+        default: 720p
+      aspect_ratio:
+        kind: aspect_ratio
+        # text2video only: "Aspect ratio Default 16:9, optional values: 16:9,
+        # 9:16, 3:4, 4:3, 1:1" (img2video and start-end2video take none).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-09)
+        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+        default: "16:9"
+        # img2video's "Body parameters": model, images, prompt, audio, is_rec,
+        # duration, seed, resolution, payload, off_peak, callback_url — no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
+    # No `reference` role: no reference2video operation accepts viduq3-pro (the
+    # Q3 page's model rows name viduq3-turbo, viduq3, viduq3-mix, viduq3-ad and
+    # viduq3-drama), and the Model Map marks its Reference-to-video "-".
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md (2026-11-09)
+    # @see https://platform.vidu.com/docs/overview/model-map.md (2026-11-09)
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -208,7 +360,6 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # Same q3 field rules as viduq3-turbo.
-    extra_allowlist: [callback_url]
     tags: [text-to-video, image-to-video, premium]
 
   - id: vidu/viduq2-pro-fast
@@ -217,18 +368,28 @@ models:
     display_name: Vidu Q2 Pro Fast
     docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video
     description: Vidu Q2 Pro Fast image-to-video and start-end to video (fast, low price; no text-to-video).
-    # 720p (the default): "Starts at $0.04, +$0.01/sec" (the 1s price plus
-    # $0.01 per further second), so a 5s clip is $0.08:
-    # https://platform.vidu.com/docs/pricing.md (2026-09-11)
+    # "Q2-pro-fast | 720P | 8 credits for the 1st second, +2 credits/second
+    # thereafter" and "1080P | 16 credits for the 1st second, +4
+    # credits/second thereafter" (image-to-video and first-last frame).
+    # Credits at $0.005: 720p is $0.03 + $0.01 a second (5 s: 16 credits =
+    # $0.08), 1080p $0.06 + $0.02 a second (5 s: 32 credits = $0.16).
+    # @see https://platform.vidu.com/docs/pricing.md (2026-11-09)
     pricing:
       base_cost_usd: 0.08
       variable_pricing:
         - { per_second_usd: 0.01 }
         - { add_usd: 0.03 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.02 }
+        - { when: { resolution: 1080p }, add_usd: 0.06 }
     # Only img2video and start-end2video accept viduq2-pro-fast.
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # "seed … When not passed or passed as 0, a random number will be used
+      # instead Manual setting uses the specified seed" — every endpoint; 0 is
+      # Vidu's random, so a seed starts at 1.
+      # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-11-03)
+      seed: { kind: seed, min: 1, max: 2147483647 }
       # 1-10s on both endpoints (start-end2video went from 1-8s to 1-10s by
       # 2026-10-12). 720p / 1080p only (no 540p) on both.
       # https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md
@@ -247,9 +408,297 @@ models:
       roles:
         first_frame: { required: true, min_count: 1, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    # No movement_amplitude ("ineffective for q2, q3 models") and no `audio`
-    # (img2video audio on q2 adds 15 credits the price above does not cover).
-    # https://platform.vidu.com/docs/image-to-video.md
+    # No movement_amplitude: the viduq2-pro-fast start-end2video body has none,
+    # and where Q1 keeps it, "This parameter does not take effect when using
+    # the q2 & q3 model". No `audio` (img2video audio on q2 adds 15 credits the
+    # price above does not cover).
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md (2026-11-09)
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md (2026-11-09)
     # The start-end2video body has no bgm; no off_peak (see viduq1).
-    extra_allowlist: [callback_url]
     tags: [image-to-video, fast]
+
+  # Vidu Q4 Preview ("Next-gen flagship for expressive audio & video",
+  # 2026-10-07): POST /ent/v2/img2video (`images` "Only 1 image is accepted",
+  # the first frame) and POST /ent/v2/reference2video (`images` "supports
+  # uploading 1 to 15 images"); no text-to-video or first-last frame page, so
+  # a prompt-only request is refused before any call. Both: duration "3 - 16"
+  # (default 5; the Model Map's "1-16s" is not what the endpoints or the
+  # price table take), resolution `540p` / `720p` / `1080p` / `2K` / `4K`
+  # (default 720p), `audio` (default true), `seed` (0 is random), prompt up
+  # to 20000 characters. reference2video also takes aspect_ratio `1:1` /
+  # `9:16` / `16:9` / `3:4` / `4:3` (img2video follows its image) and
+  # `sounds` (reference audio, not carried).
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video.md (2026-11-03)
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/reference-to-video.md (2026-11-03)
+  - id: vidu/viduq4-preview
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q4 Preview
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video
+    description: Vidu Q4 Preview — image or reference (up to 15 images) to video with native audio, 3-16 s, up to 4K.
+    # "Reference-to-video - Image-to-video | Viduq4-preview | 3-16 seconds":
+    # 540p 9, 720p 19, 1080p 24, 2k 38, 4k 78 credits a second, at $0.005 a
+    # credit (as viduq1's 80 credits = $0.40). The default request (720p,
+    # 5 s) is 95 credits, $0.475; audio adds nothing.
+    # @see https://platform.vidu.com/docs/pricing.md (2026-11-03)
+    pricing:
+      base_cost_usd: 0.475
+      variable_pricing:
+        - { per_second_usd: 0.095 }
+        - { when: { resolution: 540p }, per_second_usd: 0.045 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.12 }
+        - { when: { resolution: 2K }, per_second_usd: 0.19 }
+        - { when: { resolution: 4K }, per_second_usd: 0.39 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 20000 }
+    params:
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      duration_seconds: { kind: int, min: 3, max: 16, default: 5 }
+      resolution:
+        kind: string
+        enum_values: [540p, 720p, 1080p, 2K, 4K]
+        default: 720p
+      # reference2video only; img2video follows its image.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+        # img2video takes no aspect_ratio, so a frame without a reference image
+        # sets the shape (E5).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 15
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        reference:   { required: false, min_count: 0, max_count: 15 }
+    tags: [image-to-video, reference-to-video, audio, premium]
+
+  # ─── Carried 2026-11-03 (skipped 2026-09-11 as "optional"): each on the
+  # endpoints its own operation documents and the modes Vidu prices; credits
+  # at $0.005 (as viduq1's 80 credits = $0.40).
+  # @see https://platform.vidu.com/docs/pricing.md (2026-11-03)
+
+  # viduq3: reference2video only ("The viduq3 series models support uploading
+  # 1 to 7 images"; prompt "cannot exceed 5000 characters"; duration "3-16";
+  # resolution "540p, 720p, 1080p"; aspect ratio 1:1 / 9:16 / 16:9 / 3:4 /
+  # 4:3; audio "Default is true").
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md (2026-11-03)
+  - id: vidu/viduq3
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q3
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video
+    description: Vidu Q3 reference-to-video (1-7 subject images) with native audio, 3-16 s.
+    # "Reference-to-video | viduq3 | 3-16 | 540p 7, 720p 12, 1080p 15
+    # credits/second": the default (720p, 5 s) is 60 credits, $0.30.
+    pricing:
+      base_cost_usd: 0.30
+      variable_pricing:
+        - { per_second_usd: 0.06 }
+        - { when: { resolution: 540p }, per_second_usd: 0.035 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.075 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      duration_seconds: { kind: int, min: 3, max: 16, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+    ref_inputs:
+      max_total: 7
+      default_role: reference
+      provider_format: { form: url }
+      roles:
+        reference: { required: true, min_count: 1, max_count: 7 }
+    tags: [reference-to-video, audio]
+
+  # viduq3-mix: reference2video only (1 to 7 images; `sounds`, reference
+  # audio, not carried); duration "available options: 3-15"; resolution
+  # "720p and 1080p"; aspect ratio as viduq3; no `audio` field.
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md (2026-11-03)
+  - id: vidu/viduq3-mix
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q3 Mix
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video
+    description: Vidu Q3 Mix reference-to-video (1-7 subject images), 3-15 s, 720p or 1080p.
+    # "Reference-to-video | viduq3-mix | 3-16 | 720p 24, 1080p 29
+    # credits/second": the default (720p, 5 s) is 120 credits, $0.60.
+    pricing:
+      base_cost_usd: 0.60
+      variable_pricing:
+        - { per_second_usd: 0.12 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.145 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+    ref_inputs:
+      max_total: 7
+      default_role: reference
+      provider_format: { form: url }
+      roles:
+        reference: { required: true, min_count: 1, max_count: 7 }
+    tags: [reference-to-video]
+
+  # viduq3-pro-fast: img2video ("Only 1 image is accepted"; prompt up to 20000
+  # characters; duration 1-16; audio "Default: true"). Vidu prices only
+  # "Image-to-video | viduq3-pro-fast | 1080p 15, 720p 12 credits/second", so
+  # the row offers those two resolutions and no last frame (its start-end2video
+  # operation has no price).
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md (2026-11-03)
+  - id: vidu/viduq3-pro-fast
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q3 Pro Fast
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video
+    description: Vidu Q3 Pro Fast image-to-video with native audio, 1-16 s, 720p or 1080p.
+    # The default (720p, 5 s) is 60 credits, $0.30.
+    pricing:
+      base_cost_usd: 0.30
+      variable_pricing:
+        - { per_second_usd: 0.06 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.075 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 20000 }
+    params:
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      duration_seconds: { kind: int, min: 1, max: 16, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: true, min_count: 1, max_count: 1 }
+    tags: [image-to-video, audio, fast]
+
+  # viduq2: text2video only — its reference2video operation takes `subjects`
+  # (named subject groups), not the `images` list the adapter sends. Prompt
+  # "Maximum length is 5000 characters"; duration 1-10; resolution 540p /
+  # 720p / 1080p; aspect ratio 16:9 / 9:16 / 3:4 / 4:3 / 1:1; audio
+  # "Default: true".
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video.md (2026-11-03)
+  - id: vidu/viduq2
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q2
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video
+    description: Vidu Q2 text-to-video with native audio, 1-10 s.
+    # "Text-to-video | Q2 | 540P 10 credits for the 1st second, +2 credits/
+    # second thereafter | 720P 15 … +5 | 1080P 20 … +10": a rate a second plus
+    # a fixed part (720p 5s + 10; 540p 2s + 8; 1080p 10s + 10). The default
+    # (720p, 5 s) is 35 credits, $0.175.
+    pricing:
+      base_cost_usd: 0.175
+      variable_pricing:
+        - { per_second_usd: 0.025 }
+        - { add_usd: 0.05 }
+        - { when: { resolution: 540p }, per_second_usd: 0.01 }
+        - { when: { resolution: 540p }, add_usd: 0.04 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.05 }
+        - { when: { resolution: 1080p }, add_usd: 0.05 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      duration_seconds: { kind: int, min: 1, max: 10, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","3:4","4:3","1:1"]
+    tags: [text-to-video, audio]
+
+  # viduq2-turbo: img2video (1 image; prompt "maximum length is 2000
+  # characters"; audio "Default: false") and start-end2video (2 images; no
+  # audio field). Duration: img2video takes 1-10 but gives its resolutions as
+  # "viduq2-turbo (2-8s): default 720p, options: 540p, 720p, 1080p", and one
+  # range serves both endpoints, so 2-8 s; start-end2video's 360p is unpriced.
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md (2026-11-03)
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md (2026-11-03)
+  - id: vidu/viduq2-turbo
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q2 Turbo
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video
+    description: Vidu Q2 Turbo image-to-video and first-last frame, 2-8 s.
+    # "Image-to-video & First-last frame | Q2-turbo | 540P 6 credits for the
+    # 1st second, +2 credits/second thereafter | 720P 8 credits for the 1st
+    # second, 10 credits for the 2nd second, +10 credits/second starting from
+    # the 3rd second | 1080P 35 … +10": 540p 2s + 4, 720p 10s - 2, 1080p
+    # 10s + 25. The default (720p, 5 s) is 48 credits, $0.24. "The direct
+    # audio/video output feature for image-to-video … consumes an additional
+    # 15 credits" ($0.075).
+    pricing:
+      base_cost_usd: 0.24
+      variable_pricing:
+        - { per_second_usd: 0.05 }
+        - { add_usd: -0.01 }
+        - { when: { resolution: 540p }, per_second_usd: 0.01 }
+        - { when: { resolution: 540p }, add_usd: 0.02 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.05 }
+        - { when: { resolution: 1080p }, add_usd: 0.125 }
+        - { when: { audio: true }, add_usd: 0.075 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      audio: { kind: bool, default: false }
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      duration_seconds: { kind: int, min: 2, max: 8, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: true, min_count: 1, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    tags: [image-to-video, fast]
+
+  # viduq1-classic: img2video (1 image; prompt "maximum length is 2000
+  # characters"; audio "Default: false"; movement_amplitude auto | small |
+  # medium | large) and start-end2video (2 images; no audio field): 5 s and
+  # 1080p only ("viduq1-classic 5s: default 1080p, options: 1080p").
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/image-to-video.md (2026-11-03)
+  # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md (2026-11-03)
+  - id: vidu/viduq1-classic
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q1 Classic
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/image-to-video
+    description: Vidu Q1 Classic image-to-video and first-last frame, 5 s at 1080p.
+    # "Image-to-video | viduq1-classic | 5S | 1080p | 80" and the same for
+    # first-last frame: $0.40.
+    pricing: { base_cost_usd: 0.40 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      audio: { kind: bool, default: false }
+      seed: { kind: seed, min: 1, max: 2147483647 }
+      duration_seconds: { kind: int, min: 5, max: 5, default: 5 }
+      resolution: { kind: string, enum_values: [1080p], default: 1080p }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: true, min_count: 1, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [movement_amplitude]
+    extra_params:
+      # From Vidu's docs (drift snapshots vidu/q1-*.txt).
+      movement_amplitude: { kind: string, enum_values: ["auto", "small", "medium", "large"], default: "auto" }
+    tags: [image-to-video]

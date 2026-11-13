@@ -9,14 +9,12 @@ interface Props {
 }
 
 export default function RequirePermission({ perm, children }: Props) {
-  const [status, setStatus] = useState<'loading' | 'ok' | 'unauth' | 'forbidden'>('loading');
+  // The API-key flow is granted access outright (master key = owner-level
+  // access); a session asks the server.
+  const [status, setStatus] = useState<'loading' | 'ok' | 'unauth' | 'forbidden'>(() => (getApiKey() ? 'ok' : 'loading'));
 
   useEffect(() => {
-    // If using the API-key flow, grant access (master key = owner-level access).
-    if (getApiKey()) {
-      setStatus('ok');
-      return;
-    }
+    if (getApiKey()) return;
     client.auth.me()
       .then(me => {
         const r = me as { user?: { role?: string } };

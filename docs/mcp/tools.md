@@ -2,32 +2,32 @@
 
 Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (run in `litegen-core/`). A test fails when this file is out of date, so don't edit it by hand. Connecting: [README](README.md). What each requirement means: [permissions](permissions.md).
 
-## `/mcp`: the AI API (22 tools)
+## `/mcp`: the AI API (24 tools)
 
 ### Toolset `images`
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`estimate_image_cost`](#estimate_image_cost) | Estimate image cost | `POST /v1/images/cost` | the `generate` scope | yes | no |
-| [`generate_image`](#generate_image) | Generate image | `POST /v1/images/generations` | the `generate` scope | no | no |
-| [`segment_image`](#segment_image) | Segment image | `POST /v1/images/segmentations` | the `generate` scope | no | no |
+| [`estimate_image_cost`](#estimate_image_cost) | Estimate image cost | `POST /v1/images/cost` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
+| [`generate_image`](#generate_image) | Generate image | `POST /v1/images/generations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`segment_image`](#segment_image) | Segment image | `POST /v1/images/segmentations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
 
 ### Toolset `videos`
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`estimate_video_cost`](#estimate_video_cost) | Estimate video cost | `POST /v1/videos/cost` | the `generate` scope | yes | no |
-| [`generate_video`](#generate_video) | Generate video | `POST /v1/videos/generations` | the `generate` scope | no | no |
-| [`get_video_status`](#get_video_status) | Get video status | `GET /v1/videos/{id}` | the `generate` scope | yes | no |
+| [`estimate_video_cost`](#estimate_video_cost) | Estimate video cost | `POST /v1/videos/cost` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
+| [`generate_video`](#generate_video) | Generate video | `POST /v1/videos/generations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`get_video_status`](#get_video_status) | Get video status | `GET /v1/videos/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
 
 ### Toolset `models3d`
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`convert_3d_model`](#convert_3d_model) | Convert 3D model | `POST /v1/utils/models3d/convert` | the `generate` scope | no | no |
-| [`estimate_3d_model_cost`](#estimate_3d_model_cost) | Estimate 3D model cost | `POST /v1/models3d/cost` | the `generate` scope | yes | no |
-| [`generate_3d_model`](#generate_3d_model) | Generate 3D model | `POST /v1/models3d/generations` | the `generate` scope | no | no |
-| [`get_3d_model_status`](#get_3d_model_status) | Get 3D model status | `GET /v1/models3d/{id}` | the `generate` scope | yes | no |
+| [`convert_3d_model`](#convert_3d_model) | Convert 3D model | `POST /v1/utils/models3d/convert` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`estimate_3d_model_cost`](#estimate_3d_model_cost) | Estimate 3D model cost | `POST /v1/models3d/cost` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
+| [`generate_3d_model`](#generate_3d_model) | Generate 3D model | `POST /v1/models3d/generations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`get_3d_model_status`](#get_3d_model_status) | Get 3D model status | `GET /v1/models3d/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
 | [`list_3d_convert_formats`](#list_3d_convert_formats) | List 3D convert formats | `GET /v1/utils/models3d/formats` | the `generate` or `read` scope | yes | no |
 
 ### Toolset `catalog`
@@ -42,11 +42,13 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`cancel_generation`](#cancel_generation) | Cancel generation | `PATCH /v1/generations/{id}` | the `generate` or `read` scope | no | no |
+| [`cancel_generation`](#cancel_generation) | Cancel generation | `PATCH /v1/generations/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`delete_generation`](#delete_generation) | Delete generation | `DELETE /v1/generations/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | no | yes |
 | [`get_generation`](#get_generation) | Get generation | `GET /v1/generations/{id}` | the `generate` or `read` scope | yes | no |
 | [`get_generation_asset`](#get_generation_asset) | Get generation asset | `GET /v1/generations/{id}/assets/{index}` | the `generate` or `read` scope | yes | no |
 | [`list_generation_assets`](#list_generation_assets) | List generation assets | `GET /v1/generations/{id}/assets` | the `generate` or `read` scope | yes | no |
 | [`list_generations`](#list_generations) | List generations | `GET /v1/generations` | the `generate` or `read` scope | yes | no |
+| [`revoke_generation_links`](#revoke_generation_links) | Revoke generation links | `POST /v1/generations/{id}/revoke-links` | the `generate` scope (a signed-in person also needs `generation:create`) | no | yes |
 | [`wait_for_generation`](#wait_for_generation) | Wait for generation | polls the job's status route | the `generate` or `read` scope | yes | no |
 
 ### Toolset `account`
@@ -56,7 +58,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`get_current_user`](#get_current_user) | Get current user | `GET /v1/auth/me` | a signed-in user | yes | no |
 | [`get_my_limits`](#get_my_limits) | Get my limits | `GET /v1/limits/me` | any credential | yes | no |
 
-## `/admin/mcp`: the management API (94 tools)
+## `/admin/mcp`: the management API (98 tools)
 
 ### Toolset `keys`
 
@@ -164,9 +166,12 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`delete_app`](#delete_app) | Delete app | `DELETE /v1/apps/{app_id}` | a signed-in member with `app:delete`, or the platform admin | no | yes |
 | [`delete_app_storage`](#delete_app_storage) | Delete app storage | `DELETE /v1/apps/{app_id}/storage` | a signed-in member with `storage_cred:delete`, or the platform admin | no | yes |
 | [`get_app`](#get_app) | Get app | `GET /v1/apps/{app_id}` | a signed-in member with `app:read`, or the platform admin | yes | no |
+| [`get_app_access`](#get_app_access) | Get app access | `GET /v1/apps/{app_id}/access` | a signed-in member with `storage_cred:read`, or the platform admin | yes | no |
 | [`get_app_allowed_models`](#get_app_allowed_models) | Get app allowed models | `GET /v1/apps/{app_id}/allowed-models` | a signed-in member with `app:read`, or the platform admin | yes | no |
 | [`get_app_storage`](#get_app_storage) | Get app storage | `GET /v1/apps/{app_id}/storage` | a signed-in member with `storage_cred:read`, or the platform admin | yes | no |
 | [`list_apps`](#list_apps) | List apps | `GET /v1/orgs/{id}/apps` | a signed-in member with `app:read`, or the platform admin | yes | no |
+| [`revoke_app_links`](#revoke_app_links) | Revoke app links | `POST /v1/apps/{app_id}/access/revoke-links` | a signed-in member with `storage_cred:write`, or the platform admin | no | yes |
+| [`set_app_access`](#set_app_access) | Set app access | `PUT /v1/apps/{app_id}/access` | a signed-in member with `storage_cred:write`, or the platform admin | no | no |
 | [`set_app_allowed_models`](#set_app_allowed_models) | Set app allowed models | `PUT /v1/apps/{app_id}/allowed-models` | a signed-in member with `app:write`, or the platform admin | no | no |
 | [`set_app_storage`](#set_app_storage) | Set app storage | `PUT /v1/apps/{app_id}/storage` | a signed-in member with `storage_cred:write`, or the platform admin | no | no |
 | [`update_app`](#update_app) | Update app | `PATCH /v1/apps/{app_id}` | a signed-in member with `app:write`, or the platform admin | no | no |
@@ -196,6 +201,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`list_gateway_models`](#list_gateway_models) | List gateway models | `GET /v1/admin/models` | the platform admin (single-tenant: owners, admins and `admin` keys) | yes | no |
 | [`list_gateway_providers`](#list_gateway_providers) | List gateway providers | `GET /v1/admin/providers` | the platform admin (single-tenant: owners, admins and `admin` keys) | yes | no |
 | [`replace_gateway_model`](#replace_gateway_model) | Replace gateway model | `PUT /v1/admin/models/{id}` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
+| [`revoke_gateway_links`](#revoke_gateway_links) | Revoke gateway links | `POST /v1/admin/revoke-links` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | yes |
 | [`set_gateway_provider`](#set_gateway_provider) | Set gateway provider | `PUT /v1/admin/providers/{name}` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
 | [`set_gateway_routes`](#set_gateway_routes) | Set gateway routes | `PUT /v1/admin/routes` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
 | [`set_gateway_settings`](#set_gateway_settings) | Set gateway settings | `PUT /v1/admin/settings` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
@@ -206,7 +212,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
 | [`clear_cache`](#clear_cache) | Clear cache | `DELETE /v1/cache` | the `admin` scope | no | yes |
-| [`get_provider_health`](#get_provider_health) | Get provider health | `GET /health` | the `read` scope | yes | no |
+| [`get_provider_health`](#get_provider_health) | Get provider health | `GET /health` | the platform admin (single-tenant: the `read` scope in the deployment's org) | yes | no |
 
 ### Toolset `account`
 
@@ -236,12 +242,13 @@ One model's full schema: every parameter it takes (types, ranges, defaults), its
 
 ### `list_models`
 
-The models you may use, with provider, media type, status and pricing. Filter with media_type (image, video, model3d).
+The models you may use, with provider, media type, status and pricing. Filter with media_type (image, video, model3d); all=true lists every model the gateway serves, including ones your org's pool leaves out.
 
 `GET /v1/models` · on `/mcp` · needs the `generate` or `read` scope
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
+| `all` | boolean | no | true: every model the gateway serves, including those outside the caller's org pool and app access, which generations still enforce. |
 | `media_type` | string | no | Filter by media type |
 
 ### `list_providers`
@@ -256,12 +263,22 @@ No arguments.
 
 Soft-cancel a generation.
 
-`PATCH /v1/generations/{id}` · on `/mcp` · needs the `generate` or `read` scope
+`PATCH /v1/generations/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Generation ID (litegen-vid-...) |
 | `status` | string | yes | Target status; only `"cancelled"` is honored. |
+
+### `delete_generation`
+
+delete a finished generation's files and request.
+
+`DELETE /v1/generations/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Generation ID |
 
 ### `get_generation`
 
@@ -306,11 +323,21 @@ Paginated list of generations.
 | `page` | integer | no | Page number (default 1) |
 | `per_page` | integer | no | Items per page (default 50) |
 
+### `revoke_generation_links`
+
+end every litegen link to one generation's files.
+
+`POST /v1/generations/{id}/revoke-links` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Generation ID |
+
 ### `estimate_image_cost`
 
 Quote what generate_image would cost with the same arguments. Generates nothing and spends nothing.
 
-`POST /v1/images/cost` · on `/mcp` · needs the `generate` scope
+`POST /v1/images/cost` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -319,14 +346,14 @@ Quote what generate_image would cost with the same arguments. Generates nothing 
 | `background` | one of `transparent`, `opaque` | no | `transparent` for a real alpha channel where the model supports it (`supports_transparent_background`); needs `png` or `webp`. |
 | `directions` | integer | no | A character in 4 or 8 facings, one labelled image each. |
 | `expand` | object | no | Grow the init image's canvas by this many pixels a side; the model's `expand` spec says how much and whether it only centres. |
-| `extra` | any | no |  |
+| `extra` | any | no | Vendor fields with no canonical param, sent to the vendor as given: only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`), each of the type its `extra_params` entry gives, when it… |
 | `feather_px` | integer | no | With `preserve_unmasked`: blend from the init at the edit area's edge to the vendor's pixels this many pixels inside it (0, a hard edge, by default; at most 256). |
 | `guidance_scale` | number | no |  |
 | `layout` | array of object | no | Boxes for a text-to-image canvas: objects and words placed by fractions of the canvas. |
 | `mask_grow_px` | integer | no | Grow the edit area outward by this many pixels: the vendor's own setting where it has one (sent explicitly, even as 0), else litegen dilates the mask itself. |
 | `mask_prompt` | string | no | The area an edit replaces, named in text rather than drawn as a mask . |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
-| `n` | integer | no |  |
+| `n` | integer | no | One image, video or mesh per request: more than 1 is refused (`param_out_of_range`); send several requests for several. |
 | `negative_prompt` | string | no |  |
 | `output_format` | one of `png`, `webp`, `jpeg` | no | The image container to return: one of the model's `capabilities.output_formats`. |
 | `palette` | array of string | no | Colours as `#rrggbb`: every pixel one of them on a model whose palette is forced, a hint elsewhere. |
@@ -335,12 +362,13 @@ Quote what generate_image would cost with the same arguments. Generates nothing 
 | `quality` | string | no |  |
 | `reference_images` | array of object | no |  |
 | `region` | object | no | Edit only this rectangle of the `init` image. |
+| `resolution` | string | no | The output tier, on a model that has tiers: one of its `params.resolution` values, on one scale for every vendor (`0.5K`, `0.75K`, `1K`, `1.5K`, `2K`, `4K`, about that many thousand pixels a side;… |
 | `response_format` | string | no |  |
 | `seed` | integer | no |  |
 | `size` | string | no |  |
 | `steps` | integer | no |  |
 | `strength` | number | no |  |
-| `strict` | boolean | no |  |
+| `strict` | boolean | no | `true` (the default) refuses a field the request has no such name for, and a param the model does not take, with `param_unsupported`; `false` drops both and names them in `X-Litegen-Dropped-Params`. |
 | `style` | string | no |  |
 | `views` | array of string | no | The views a `multiview` model makes, one image each, in this order. |
 
@@ -348,7 +376,7 @@ Quote what generate_image would cost with the same arguments. Generates nothing 
 
 Generate or edit images with any image model LiteGen serves. Returns the finished images as URLs plus small previews. Find a model with list_models (media_type image) and its parameters with get_model; quote first with estimate_image_cost. Spends your budget.
 
-`POST /v1/images/generations` · on `/mcp` · needs the `generate` scope
+`POST /v1/images/generations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -358,15 +386,16 @@ Generate or edit images with any image model LiteGen serves. Returns the finishe
 | `directions` | integer | no | A character in 4 or 8 facings, one labelled image each. |
 | `end_user` | string | no | Your own customer's id, so spend and budgets can be tracked per customer (sent as x-litegen-end-user). |
 | `expand` | object | no | Grow the init image's canvas by this many pixels a side; the model's `expand` spec says how much and whether it only centres. |
-| `extra` | any | no |  |
+| `extra` | any | no | Vendor fields with no canonical param, sent to the vendor as given: only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`), each of the type its `extra_params` entry gives, when it… |
 | `feather_px` | integer | no | With `preserve_unmasked`: blend from the init at the edit area's edge to the vendor's pixels this many pixels inside it (0, a hard edge, by default; at most 256). |
 | `guidance_scale` | number | no |  |
 | `idempotency_key` | string | no | 1–255 visible ASCII characters. |
+| `keep_outputs` | string | no | `false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). |
 | `layout` | array of object | no | Boxes for a text-to-image canvas: objects and words placed by fractions of the canvas. |
 | `mask_grow_px` | integer | no | Grow the edit area outward by this many pixels: the vendor's own setting where it has one (sent explicitly, even as 0), else litegen dilates the mask itself. |
 | `mask_prompt` | string | no | The area an edit replaces, named in text rather than drawn as a mask . |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
-| `n` | integer | no |  |
+| `n` | integer | no | One image, video or mesh per request: more than 1 is refused (`param_out_of_range`); send several requests for several. |
 | `negative_prompt` | string | no |  |
 | `output_format` | one of `png`, `webp`, `jpeg` | no | The image container to return: one of the model's `capabilities.output_formats`. |
 | `palette` | array of string | no | Colours as `#rrggbb`: every pixel one of them on a model whose palette is forced, a hint elsewhere. |
@@ -376,12 +405,13 @@ Generate or edit images with any image model LiteGen serves. Returns the finishe
 | `quality` | string | no |  |
 | `reference_images` | array of object | no |  |
 | `region` | object | no | Edit only this rectangle of the `init` image. |
+| `resolution` | string | no | The output tier, on a model that has tiers: one of its `params.resolution` values, on one scale for every vendor (`0.5K`, `0.75K`, `1K`, `1.5K`, `2K`, `4K`, about that many thousand pixels a side;… |
 | `response_format` | string | no |  |
 | `seed` | integer | no |  |
 | `size` | string | no |  |
 | `steps` | integer | no |  |
 | `strength` | number | no |  |
-| `strict` | boolean | no |  |
+| `strict` | boolean | no | `true` (the default) refuses a field the request has no such name for, and a param the model does not take, with `param_unsupported`; `false` drops both and names them in `X-Litegen-Dropped-Params`. |
 | `style` | string | no |  |
 | `tags` | array of string | no | Spend tags for reporting (sent as x-litegen-tags). |
 | `views` | array of string | no | The views a `multiview` model makes, one image each, in this order. |
@@ -390,7 +420,7 @@ Generate or edit images with any image model LiteGen serves. Returns the finishe
 
 Cut an image into masks, or remove its background, with a segmentation model. Spends your budget.
 
-`POST /v1/images/segmentations` · on `/mcp` · needs the `generate` scope
+`POST /v1/images/segmentations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -400,43 +430,62 @@ Cut an image into masks, or remove its background, with a segmentation model. Sp
 | `end_user` | string | no | Your own customer's id, so spend and budgets can be tracked per customer (sent as x-litegen-end-user). |
 | `idempotency_key` | string | no | 1–255 visible ASCII characters. |
 | `metadata` | object | no | Your own labels for the call, as on a generation. |
+| `strict` | boolean | no | `true` (the default) refuses a field the request has no such name for (`prompt` for `prompts`, say) with `param_unsupported`; `false` drops it and names it in `X-Litegen-Dropped-Params`. |
 | `tags` | array of string | no | Spend tags for reporting (sent as x-litegen-tags). |
 
 ### `convert_3d_model`
 
 Convert a mesh between formats on LiteGen itself: no AI model, no charge. Give the mesh as source_url or data_base64; list_3d_convert_formats says what converts to what.
 
-`POST /v1/utils/models3d/convert` · on `/mcp` · needs the `generate` scope
+`POST /v1/utils/models3d/convert` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `from` | one of `glb`, `gltf`, `obj`, `stl`, `ply`, `fbx`, `usdz`, `usda`, … | yes | Container the request body is in. |
 | `to` | one of `glb`, `gltf`, `obj`, `stl`, `ply`, `fbx`, `usdz`, `usda`, … | yes | Container to convert to. |
+| `dae_morphs` | string | no | Only when `to` is `dae`: how Collada's morph targets (blend shapes) are written. |
 | `data_base64` | string | no | The file itself, base64-encoded. |
+| `fbx_color_space` | string | no | Only when `from` or `to` is `fbx`: how FBX material and light colours are stored, at that end. |
+| `fbx_light_units` | string | no | Only when `from` or `to` is `fbx`: the units FBX light strengths are stored in, at that end. |
+| `from_units` | string | no | Only when `from` is `stl`, `obj` or `ply`: the unit the body's numbers are in, as `units`. |
+| `from_up` | string | no | Only when `from` is `stl`, `obj` or `ply`: the body's up axis, `y` (the default) or `z`. |
+| `ktx2_textures` | one of `png`, `keep` | no | `png` (the default) re-encodes every KTX2 (Basis Universal) texture as PNG, as WebP is, so no container drops it and no glTF requires `KHR_texture_basisu`: ETC1S, UASTC and uncompressed RGBA8 KTX2… |
+| `package` | one of `file`, `zip` | no | `file` (the default) answers with the converted file alone; `zip` answers with a zip (`application/zip`, `model.<to>.zip`) of the file and the sidecars it references (an OBJ's `.mtl` and… |
 | `source_url` | string | no | URL LiteGen downloads the file from. |
+| `units` | string | no | Only when `to` is `stl`, `obj` or `ply`, which carry no units: the unit the written numbers are in, `m` (the default), `cm`, `mm`, `in` or `ft`. |
+| `up` | string | no | Only when `to` is `stl`, `obj` or `ply`: the written up axis, `y` (the default, glTF's) or `z` (slicers, CAD, Blender), turning +Y up to +Z up and the front (+Z) to -Y. |
+| `usd_clips` | string | no | Only when `to` is `usda`, `usdc` or `usdz`: which animation clips the USD file holds. |
+| `usd_light_units` | string | no | Only when `from` or `to` is `usdz`, `usda` or `usdc`: the units USD light strengths are stored in, at that end. |
+| `usdz_root` | string | no | Only when `to` is `usdz`: what the package's root layer, its first entry, is. |
 
 ### `estimate_3d_model_cost`
 
 Quote what generate_3d_model would cost with the same arguments. Generates nothing and spends nothing.
 
-`POST /v1/models3d/cost` · on `/mcp` · needs the `generate` scope
+`POST /v1/models3d/cost` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `model` | string | yes |  |
-| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named exactly its `name`. |
+| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named its `name`, or the name litegen gives a clip that leaves it out. |
 | `center` | boolean | no | Centre the mesh's bounds on x and z. |
-| `extra` | any | no |  |
+| `dae_morphs` | one of `bake`, `keep` | no | How the Collada (`dae`) litegen writes stores a mesh's morph targets, when litegen writes one for this request (a vendor Collada delivered as it is keeps the vendor's): `bake` (the default) applies… |
+| `extra` | any | no | Vendor fields with no canonical param, sent to the vendor as given: only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`), each of the type its `extra_params` entry gives, when it… |
+| `fbx_color_space` | one of `srgb`, `linear` | no | How FBX material and light colours are stored, when litegen reads the vendor's FBX or writes one for this request (a vendor FBX delivered as it is keeps the vendor's): `srgb` (the default; three.js… |
+| `fbx_light_units` | one of `photometric`, `blender` | no | The units FBX light strengths are stored in, when litegen reads the vendor's FBX or writes one for this request (a vendor FBX delivered as it is keeps the vendor's units): `photometric` (the… |
+| `format_source` | one of `native`, `glb` | no | Where a promised `fbx` or `usdz` comes from: `native` (the default) asks the vendor for its own export when it offers one, and litegen makes the other containers from that file; `glb` asks for the… |
 | `fps` | integer | no | Frames per second of the delivered clips. |
 | `ground` | boolean | no | Put the mesh's lowest point at y = 0. |
 | `height_m` | number | no | The delivered mesh's height in metres: litegen scales any mesh it delivers to it, and a rig model whose vendor takes a height gets it too. |
 | `joint_naming` | one of `vendor`, `vrm`, `mixamo`, `unity`, `unreal` | no | The joint names to deliver the rig with. |
 | `keep_uvs` | boolean | no | Paint the source's own UV layout rather than a new one. |
+| `ktx2_textures` | one of `png`, `keep` | no | What delivery does with a KTX2 (Basis Universal) texture, such as the images of a GLB that requires `KHR_texture_basisu`. |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
-| `n` | integer | no |  |
+| `n` | integer | no | One image, video or mesh per request: more than 1 is refused (`param_out_of_range`); send several requests for several. |
 | `negative_prompt` | string | no |  |
 | `output_format` | one of `glb`, `gltf`, `obj`, `stl`, `ply`, `fbx`, `usdz`, `usda`, … | no | Superseded by `output_formats`. |
 | `output_formats` | array of string | no | Mesh containers to deliver, e.g. |
+| `output_packages` | boolean | no | Also deliver each requested container that is a file and its sidecars (an `obj` with its `.mtl` and textures, a `dae`, `usda` or `usdc` with its textures, a `gltf` with its `.bin` and images) as one… |
 | `pbr` | boolean | no | PBR materials. |
 | `prompt` | string | no | Whether a prompt is required is decided per model, by its `prompt.required` in `GET /v1/models/{id}` — never by the wire format. |
 | `reference_images` | array of object | no |  |
@@ -444,37 +493,47 @@ Quote what generate_3d_model would cost with the same arguments. Generates nothi
 | `seed` | integer | no |  |
 | `skeleton` | one of `humanoid`, `quadruped`, `hexapod`, `octopod`, `avian`, `serpentine`, `aquatic`, `other` | no | The skeleton to rig for, from the model's `skeleton` enum. |
 | `source_model` | object | no | The mesh an operation (`rig`, `animate`, `texture`, `remesh`, `segment`) works on, required by every model whose task is not `generate`. |
-| `strict` | boolean | no |  |
+| `strict` | boolean | no | `true` (the default) refuses a field the request has no such name for, and a param the model does not take, with `param_unsupported`; `false` drops both and names them in `X-Litegen-Dropped-Params`. |
 | `symmetry` | one of `off`, `auto`, `on` | no | Symmetry handling. |
 | `target_polycount` | integer | no | Approximate triangle budget for the mesh, within the model's declared `target_polycount` range. |
 | `texture` | boolean | no | Texture the mesh, rather than returning bare geometry. |
 | `texture_resolution` | integer | no | A `texture` model's map size in pixels, one of its `texture_resolutions`. |
 | `topology` | one of `triangle`, `quad` | no | Face topology of the output mesh. |
+| `usd_clips` | one of `all`, `first` | no | Which animation clips the `usda`, `usdc` or `usdz` litegen writes for this request holds (a vendor USD delivered as it is keeps the vendor's): `all` keeps every clip as an alternative (a… |
+| `usd_light_units` | one of `photometric`, `blender` | no | The units USD light strengths are stored in, when litegen reads the vendor's `usdz`, `usda` or `usdc` or writes one for this request (one delivered as it is keeps the vendor's units): `photometric`… |
+| `usdz_root` | one of `usda`, `usdc` | no | What the root layer of a `usdz` litegen writes for this request is (a vendor USDZ delivered as it is keeps the vendor's): `usda` (the default) is text, which `usdchecker --arkit` accepts and which… |
 
 ### `generate_3d_model`
 
 Start a 3D model generation (text-to-3D, image-to-3D, multiview, rigging and other 3D operations). Returns a job right away: pass its id to wait_for_generation to get the mesh files. Spends your budget.
 
-`POST /v1/models3d/generations` · on `/mcp` · needs the `generate` scope
+`POST /v1/models3d/generations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `model` | string | yes |  |
-| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named exactly its `name`. |
+| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named its `name`, or the name litegen gives a clip that leaves it out. |
 | `center` | boolean | no | Centre the mesh's bounds on x and z. |
+| `dae_morphs` | one of `bake`, `keep` | no | How the Collada (`dae`) litegen writes stores a mesh's morph targets, when litegen writes one for this request (a vendor Collada delivered as it is keeps the vendor's): `bake` (the default) applies… |
 | `end_user` | string | no | Your own customer's id, so spend and budgets can be tracked per customer (sent as x-litegen-end-user). |
-| `extra` | any | no |  |
+| `extra` | any | no | Vendor fields with no canonical param, sent to the vendor as given: only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`), each of the type its `extra_params` entry gives, when it… |
+| `fbx_color_space` | one of `srgb`, `linear` | no | How FBX material and light colours are stored, when litegen reads the vendor's FBX or writes one for this request (a vendor FBX delivered as it is keeps the vendor's): `srgb` (the default; three.js… |
+| `fbx_light_units` | one of `photometric`, `blender` | no | The units FBX light strengths are stored in, when litegen reads the vendor's FBX or writes one for this request (a vendor FBX delivered as it is keeps the vendor's units): `photometric` (the… |
+| `format_source` | one of `native`, `glb` | no | Where a promised `fbx` or `usdz` comes from: `native` (the default) asks the vendor for its own export when it offers one, and litegen makes the other containers from that file; `glb` asks for the… |
 | `fps` | integer | no | Frames per second of the delivered clips. |
 | `ground` | boolean | no | Put the mesh's lowest point at y = 0. |
 | `height_m` | number | no | The delivered mesh's height in metres: litegen scales any mesh it delivers to it, and a rig model whose vendor takes a height gets it too. |
 | `idempotency_key` | string | no | 1–255 visible ASCII characters. |
 | `joint_naming` | one of `vendor`, `vrm`, `mixamo`, `unity`, `unreal` | no | The joint names to deliver the rig with. |
+| `keep_outputs` | string | no | `false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). |
 | `keep_uvs` | boolean | no | Paint the source's own UV layout rather than a new one. |
+| `ktx2_textures` | one of `png`, `keep` | no | What delivery does with a KTX2 (Basis Universal) texture, such as the images of a GLB that requires `KHR_texture_basisu`. |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
-| `n` | integer | no |  |
+| `n` | integer | no | One image, video or mesh per request: more than 1 is refused (`param_out_of_range`); send several requests for several. |
 | `negative_prompt` | string | no |  |
 | `output_format` | one of `glb`, `gltf`, `obj`, `stl`, `ply`, `fbx`, `usdz`, `usda`, … | no | Superseded by `output_formats`. |
 | `output_formats` | array of string | no | Mesh containers to deliver, e.g. |
+| `output_packages` | boolean | no | Also deliver each requested container that is a file and its sidecars (an `obj` with its `.mtl` and textures, a `dae`, `usda` or `usdc` with its textures, a `gltf` with its `.bin` and images) as one… |
 | `pbr` | boolean | no | PBR materials. |
 | `prompt` | string | no | Whether a prompt is required is decided per model, by its `prompt.required` in `GET /v1/models/{id}` — never by the wire format. |
 | `reference_images` | array of object | no |  |
@@ -482,19 +541,22 @@ Start a 3D model generation (text-to-3D, image-to-3D, multiview, rigging and oth
 | `seed` | integer | no |  |
 | `skeleton` | one of `humanoid`, `quadruped`, `hexapod`, `octopod`, `avian`, `serpentine`, `aquatic`, `other` | no | The skeleton to rig for, from the model's `skeleton` enum. |
 | `source_model` | object | no | The mesh an operation (`rig`, `animate`, `texture`, `remesh`, `segment`) works on, required by every model whose task is not `generate`. |
-| `strict` | boolean | no |  |
+| `strict` | boolean | no | `true` (the default) refuses a field the request has no such name for, and a param the model does not take, with `param_unsupported`; `false` drops both and names them in `X-Litegen-Dropped-Params`. |
 | `symmetry` | one of `off`, `auto`, `on` | no | Symmetry handling. |
 | `tags` | array of string | no | Spend tags for reporting (sent as x-litegen-tags). |
 | `target_polycount` | integer | no | Approximate triangle budget for the mesh, within the model's declared `target_polycount` range. |
 | `texture` | boolean | no | Texture the mesh, rather than returning bare geometry. |
 | `texture_resolution` | integer | no | A `texture` model's map size in pixels, one of its `texture_resolutions`. |
 | `topology` | one of `triangle`, `quad` | no | Face topology of the output mesh. |
+| `usd_clips` | one of `all`, `first` | no | Which animation clips the `usda`, `usdc` or `usdz` litegen writes for this request holds (a vendor USD delivered as it is keeps the vendor's): `all` keeps every clip as an alternative (a… |
+| `usd_light_units` | one of `photometric`, `blender` | no | The units USD light strengths are stored in, when litegen reads the vendor's `usdz`, `usda` or `usdc` or writes one for this request (one delivered as it is keeps the vendor's units): `photometric`… |
+| `usdz_root` | one of `usda`, `usdc` | no | What the root layer of a `usdz` litegen writes for this request is (a vendor USDZ delivered as it is keeps the vendor's): `usda` (the default) is text, which `usdchecker --arkit` accepts and which… |
 
 ### `get_3d_model_status`
 
 The current state of a 3D job; when completed, assets lists the mesh files in each requested format.
 
-`GET /v1/models3d/{id}` · on `/mcp` · needs the `generate` scope
+`GET /v1/models3d/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -512,7 +574,7 @@ No arguments.
 
 Quote what generate_video would cost with the same arguments. Generates nothing and spends nothing.
 
-`POST /v1/videos/cost` · on `/mcp` · needs the `generate` scope
+`POST /v1/videos/cost` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -521,12 +583,12 @@ Quote what generate_video would cost with the same arguments. Generates nothing 
 | `audio` | boolean | no | `false` for a silent clip, where the model can leave audio out (`supports_audio_toggle`). |
 | `camera` | one of `fixed`, `auto` | no | `fixed` for a still camera, where the model takes one (`supports_fixed_camera`, PixelGenie L10). |
 | `direction` | string | no | An `extend`: add before (`backward`) or after (`forward`) the source. |
-| `duration_seconds` | number | no | Absent means the model's own `duration_seconds` default (resolved by `resolve_duration_seconds`), not a fixed 5s: models whose minimum is higher (fal/ltx-2.3, bedrock nova-reel) rejected every… |
-| `extra` | any | no |  |
+| `duration_seconds` | number | no | Seconds of video, above 0, as the model's `params.duration_seconds` allows: within its range, and one of its `values` where it lists them; a whole-second model gets the nearest whole second. |
+| `extra` | any | no | Vendor fields with no canonical param, sent to the vendor as given: only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`), each of the type its `extra_params` entry gives, when it… |
 | `fps` | integer | no |  |
 | `loop` | boolean | no | `true` for a clip whose last frame is its first (`supports_loop`). |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
-| `n` | integer | no |  |
+| `n` | integer | no | One image, video or mesh per request: more than 1 is refused (`param_out_of_range`); send several requests for several. |
 | `negative_prompt` | string | no |  |
 | `prompt` | string | no | Whether a prompt is required is decided per model, by its `prompt.required` in `GET /v1/models/{id}` — never by the wire format. |
 | `reference_images` | array of object | no |  |
@@ -534,14 +596,14 @@ Quote what generate_video would cost with the same arguments. Generates nothing 
 | `resolution` | string | no |  |
 | `seed` | integer | no |  |
 | `source_video` | object | no | The clip an operation (`extend`, `retake`, `video_edit`) works on: a litegen generation id, a URL or base64, as `source_model`. |
-| `strict` | boolean | no |  |
+| `strict` | boolean | no | `true` (the default) refuses a field the request has no such name for, and a param the model does not take, with `param_unsupported`; `false` drops both and names them in `X-Litegen-Dropped-Params`. |
 | `time_range` | object | no | A `retake`'s window, or a `video_edit`'s where the model takes one. |
 
 ### `generate_video`
 
 Start a video generation (text-to-video, image-to-video, keyframes, edits). Returns a job right away: pass its id to wait_for_generation to get the video. Spends your budget.
 
-`POST /v1/videos/generations` · on `/mcp` · needs the `generate` scope
+`POST /v1/videos/generations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -550,14 +612,15 @@ Start a video generation (text-to-video, image-to-video, keyframes, edits). Retu
 | `audio` | boolean | no | `false` for a silent clip, where the model can leave audio out (`supports_audio_toggle`). |
 | `camera` | one of `fixed`, `auto` | no | `fixed` for a still camera, where the model takes one (`supports_fixed_camera`, PixelGenie L10). |
 | `direction` | string | no | An `extend`: add before (`backward`) or after (`forward`) the source. |
-| `duration_seconds` | number | no | Absent means the model's own `duration_seconds` default (resolved by `resolve_duration_seconds`), not a fixed 5s: models whose minimum is higher (fal/ltx-2.3, bedrock nova-reel) rejected every… |
+| `duration_seconds` | number | no | Seconds of video, above 0, as the model's `params.duration_seconds` allows: within its range, and one of its `values` where it lists them; a whole-second model gets the nearest whole second. |
 | `end_user` | string | no | Your own customer's id, so spend and budgets can be tracked per customer (sent as x-litegen-end-user). |
-| `extra` | any | no |  |
+| `extra` | any | no | Vendor fields with no canonical param, sent to the vendor as given: only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`), each of the type its `extra_params` entry gives, when it… |
 | `fps` | integer | no |  |
 | `idempotency_key` | string | no | 1–255 visible ASCII characters. |
+| `keep_outputs` | string | no | `false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). |
 | `loop` | boolean | no | `true` for a clip whose last frame is its first (`supports_loop`). |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
-| `n` | integer | no |  |
+| `n` | integer | no | One image, video or mesh per request: more than 1 is refused (`param_out_of_range`); send several requests for several. |
 | `negative_prompt` | string | no |  |
 | `prompt` | string | no | Whether a prompt is required is decided per model, by its `prompt.required` in `GET /v1/models/{id}` — never by the wire format. |
 | `reference_images` | array of object | no |  |
@@ -565,7 +628,7 @@ Start a video generation (text-to-video, image-to-video, keyframes, edits). Retu
 | `resolution` | string | no |  |
 | `seed` | integer | no |  |
 | `source_video` | object | no | The clip an operation (`extend`, `retake`, `video_edit`) works on: a litegen generation id, a URL or base64, as `source_model`. |
-| `strict` | boolean | no |  |
+| `strict` | boolean | no | `true` (the default) refuses a field the request has no such name for, and a param the model does not take, with `param_unsupported`; `false` drops both and names them in `X-Litegen-Dropped-Params`. |
 | `tags` | array of string | no | Spend tags for reporting (sent as x-litegen-tags). |
 | `time_range` | object | no | A `retake`'s window, or a `video_edit`'s where the model takes one. |
 
@@ -573,7 +636,7 @@ Start a video generation (text-to-video, image-to-video, keyframes, edits). Retu
 
 The current state of a video job: queued, processing, completed (with video_url) or failed.
 
-`GET /v1/videos/{id}` · on `/mcp` · needs the `generate` scope
+`GET /v1/videos/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -636,6 +699,16 @@ Get an application; authorizes via its org (app:read).
 |---|---|---|---|
 | `app_id` | string | yes | Application ID |
 
+### `get_app_access`
+
+who may open the app's stored files (`docs/storage-access.md`): its own settings and the ones in force.
+
+`GET /v1/apps/{app_id}/access` · on `/admin/mcp` · needs a signed-in member with `storage_cred:read`, or the platform admin
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `app_id` | string | yes | Application ID |
+
 ### `get_app_allowed_models`
 
 Which org models this app's keys may call (app read).
@@ -666,6 +739,32 @@ List applications in an org (requires app:read).
 |---|---|---|---|
 | `id` | string | yes | Organization ID |
 
+### `revoke_app_links`
+
+end every litegen link to the app's files.
+
+`POST /v1/apps/{app_id}/access/revoke-links` · on `/admin/mcp` · needs a signed-in member with `storage_cred:write`, or the platform admin
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `app_id` | string | yes | Application ID |
+
+### `set_app_access`
+
+replace the app's stored-file access settings. An omitted or `null` field uses the gateway's value.
+
+`PUT /v1/apps/{app_id}/access` · on `/admin/mcp` · needs a signed-in member with `storage_cred:write`, or the platform admin
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `app_id` | string | yes | Application ID |
+| `keep_outputs` | boolean | no | `false` keeps nothing: answers carry the vendor's own link, or the image itself. |
+| `mode` | one of `public`, `signed`, `private` | no | `public`, `signed` or `private`. |
+| `owner_scope` | one of `key`, `app`, `org` | no | `key`, `app` or `org`. |
+| `retention_days` | integer | no | 0 to 36500; 0 keeps files until they are deleted. |
+| `signed_links` | one of `store`, `litegen` | no | `store` or `litegen`. |
+| `signed_url_ttl_seconds` | integer | no | 60 to 604800. |
+
 ### `set_app_allowed_models`
 
 Set this app's model access (app write).
@@ -690,10 +789,13 @@ upsert BYO storage config (storage_cred:write).
 | `bucket_name` | string | yes |  |
 | `access_key_id` | string | no | Write-only. |
 | `backend` | string | no |  |
+| `credential_mode` | string | no | `access_key` (default: the key pair above) or `assume_role` (a cross-account IAM role, `role_arn`, trusting litegen with the app's `external_id`). |
 | `custom_public_url` | string | no |  |
 | `endpoint_url` | string | no |  |
+| `fallback_to_litegen_store` | boolean | no | Whether litegen's own store keeps the app's files while its bucket can't be reached (default true). |
 | `path_prefix` | string | no |  |
 | `region` | string | no |  |
+| `role_arn` | string | no | `arn:aws:iam::{account}:role/{name}`, with `credential_mode: assume_role`. |
 | `secret_access_key` | string | no | Write-only. |
 
 ### `update_app`
@@ -1081,12 +1183,15 @@ The body is a full model schema, the same shape as a `models/*.yaml` row, and pa
 | `description` | string | no |  |
 | `docs_url` | string | no | The vendor's own API reference page for the endpoint this model calls — the page to re-read when a field mapping is questioned. |
 | `extra_allowlist` | array of string | no |  |
+| `extra_params` | object | no | The vendor's type for an `extra_allowlist` key, by key: `bool`, `int`, `float`, `string` or `string_array`, with its bounds or values when they are known. |
+| `litegen_params` | object | no | Request fields litegen applies to this model itself, beyond what its vendor takes, each with the bounds litegen holds it to and in the same `ParamSpec` shape as `params`: on every 3D model `ground`,… |
 | `native_orientation` | object | no | 3D only: the axes the vendor builds its meshes along, declared once a run has shown them. |
 | `params` | object | no |  |
 | `preserves_unmasked` | one of `exact`, `similar`, `unspecified` | no | Image edits: what the vendor promises about pixels outside the edit area, in its own words. |
 | `ref_inputs` | object | no |  |
 | `replaced_by` | string | no | The catalog model to move to. |
 | `retires_at` | string | no | The vendor's announced shutdown date (`YYYY-MM-DD`). |
+| `status` | one of `active`, `deprecated`, `retired` | no | Derived from the dates above when the model is served. |
 | `tags` | array of string | no |  |
 | `task` | one of `generate`, `rig`, `animate`, `texture`, `remesh`, `segment`, `multiview`, `background_swap`, … | no | What the model does: `generate`, or an operation on an existing asset such as `rig` or `animate`. |
 
@@ -1181,6 +1286,14 @@ Replace a runtime model's schema (LiteLLM `/model/update`).
 | `body` | object | yes |  |
 | `id` | string | yes | Model id (may contain slashes) may contain '/' (send it unescaped). |
 
+### `revoke_gateway_links`
+
+end every link litegen signed, gateway-wide.
+
+`POST /v1/admin/revoke-links` · on `/admin/mcp` · needs the platform admin (single-tenant: owners, admins and `admin` keys)
+
+No arguments.
+
 ### `set_gateway_provider`
 
 Set a provider's keys, api_base, model mapping, headers, options or enabled flag at runtime. Secret fields left out keep their stored value; every unset field falls back to env/YAML. In-flight jobs finish on the instance they started with.
@@ -1221,9 +1334,25 @@ Replace the gateway settings (markup, budget alert webhook, default end-user bud
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `alert_webhook_url` | string | no | URL that receives budget alerts (soft budget crossed, hard budget hit). |
+| `cache_enabled` | boolean | no | Whether image answers are cached. |
+| `cache_max_bytes` | integer | no | About how much memory the cached answers may take on each replica, in bytes, 1048576 to 68719476736. |
+| `cache_max_items` | integer | no | How many answers the cache holds, 1 to 1000000. |
+| `cache_ttl_seconds` | integer | no | How long a cached answer lives, 1 to 604800 s. |
+| `circuit_breaker_open_for_seconds` | integer | no | Seconds an open breaker stays open, 1 to 3600. |
+| `circuit_breaker_threshold` | integer | no | Consecutive failures that open a provider's breaker, 1 to 1000. |
 | `cost_markup_percent` | number | no | Percent added on top of provider cost when billing. |
 | `default_end_user_budget_duration` | string | no | Window for that default end-user budget. |
 | `default_end_user_max_budget_usd` | number | no | Default hard budget (USD) for an end user with no limits of its own. |
+| `retry_backoff_ms` | integer | no | The longest first wait before a retry, 0 to 60000 ms. |
+| `retry_max_backoff_ms` | integer | no | The longest any wait may be, up to 60000 ms. |
+| `retry_max_retries` | integer | no | Tries after the first for a retryable vendor error, 0 to 5. |
+| `storage_access_keep_outputs` | boolean | no | Whether litegen keeps a copy of each output. |
+| `storage_access_mode` | one of `public`, `signed`, `private` | no | How stored outputs are handed out, unless an app says otherwise. |
+| `storage_access_owner_scope` | one of `key`, `app`, `org` | no | Which keys may open a stored output. |
+| `storage_access_retention_days` | integer | no | Days after which kept files are deleted, 0 to 36500 (0: until deleted). |
+| `storage_access_signed_links` | one of `store`, `litegen` | no | Who signs a signed link: `store` or `litegen`. |
+| `storage_access_signed_url_ttl_seconds` | integer | no | How long a signed link works, 60 to 604800 seconds. |
+| `vendor_timeout_seconds` | integer | no | Seconds one vendor call may take, 5 to 3600. |
 
 ### `update_gateway_model`
 
@@ -1586,7 +1715,9 @@ No arguments.
 
 Health check for all providers.
 
-`GET /health` · on `/admin/mcp` · needs the `read` scope
+Checks each provider configured with the gateway's own keys, side by side, and reports what each vendor answered. It reads the deployment's own state, so it takes the master key, or, in single-tenant mode, the `read` scope in the deployment's org.
+
+`GET /health` · on `/admin/mcp` · needs the platform admin (single-tenant: the `read` scope in the deployment's org)
 
 No arguments.
 

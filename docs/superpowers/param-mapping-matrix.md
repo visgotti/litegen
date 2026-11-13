@@ -110,7 +110,9 @@ a more specific code exists).
 | 5xx or no answer | 502 `vendor_error`, `retryable: true` | same | HTTP `a_vendors_5xx_is_a_502_that_says_to_retry` | ✅ wiremock |
 | 429 | 429 `vendor_error`, `retryable: true` | same | — | 🟡 |
 | timeout | 504 `vendor_timeout`, `retryable: true`, `vendor_job_id` when accepted | — | existing timeout tests | ✅ |
-| refused before any call (`InvalidRequest`, `ModelNotSupported`) | 400 | message | existing adapter tests | ✅ |
+| refused before any call (`InvalidRequest`, `ModelNotSupported`, `PricingUnavailable`) | 400 `validation_error` / `request_unsupported`, `model`, `retryable: false`; does not spend an `Idempotency-Key`; never counts toward the circuit breaker (E9) | message | HTTP `an_adapter_refusal_does_not_spend_its_key`; router `a_refusal_before_any_call_is_not_a_vendor_attempt`, `an_adapter_refusal_does_not_count_against_the_breaker`; existing adapter tests | ✅ |
+| no usable credential at call time (`NotConfigured`) | 400 `provider_not_configured`, naming the provider, with the adapter's advice (E9) | message | router `a_missing_credential_is_provider_not_configured`; handler `an_adapters_credential_advice_reaches_the_caller` | ✅ |
+| every breaker on a route open, or every provider missing | 502, retryable, naming each skip; does not spend an `Idempotency-Key` (E9b) | message | router `a_route_whose_every_breaker_is_open_answers_a_retryable_502_and_spends_no_key` | ✅ |
 | every `code` | a string | — | HTTP `every_error_code_is_a_string`; SDKs `test_a_vendor_rejection_carries_the_vendors_answer_and_whether_to_retry`, `carries the vendor's own answer and whether to retry`; OpenAPI `an_error_documents_the_vendors_own_answer_and_whether_to_retry` | ✅ |
 
 ## Prices that match the bill (3D doc §3G, L14)
@@ -134,8 +136,8 @@ unit price per delivered output, so the three agree.
 | one price for quote, reservation and charge | every row | `request_price_usd` / `unit_price_usd` | HTTP `an_image_is_priced_by_its_megapixels_and_its_quality`, `a_video_is_priced_by_its_seconds_at_its_resolution`, `a_mesh_is_priced_by_its_multipliers_and_add_ons` (quote = charge); `a_reservation_holds_the_requests_own_price` (402 at the request's price, not the base); unit `capabilities::pricing::tests::*` | ✅ mock |
 | the base is the default request's price | every priced row | conformance `every_base_price_is_what_the_rules_charge_for_the_default_request` | ✅ |
 | rules are well formed | every row | one effect each; `per_item` with `per_item_usd`; `when` names a param, an allowlisted `extra.<field>` or a derived fact; `per_second_usd` on video, `per_megapixel_usd` on images; nothing negative but `add_usd` | loader `a_pricing_rule_names_one_effect_over_facts_the_request_has` | ✅ |
-| per megapixel | `fal/flux-pro` 0.04, `fal/flux-dev` 0.025, `fal/flux-schnell` 0.003, `fal/flux-2` 0.012, `fal/sd35-medium` 0.02 | `per_megapixel_usd` | fal's "per megapixels" (llms.txt); how fal counts or rounds megapixels is undocumented **(unverified)** | 🟡 |
-| per second | `runway/gen4.5` 0.12, `runway/gen4-turbo` 0.05; `kling/video-kling-v2-5-turbo`, `-v2-6`, `-v3` by `extra.mode` / `extra.sound`; `minimax/MiniMax-H3`, `-H3-Max` by `resolution`; `vidu/viduq3-turbo` 0.055, `viduq3-pro` 0.10 (720p; other resolutions unpublished in the rows), `viduq2-pro-fast` $0.04 + $0.01/s after the first; `fal/ltx-2.3` by `resolution`; `pixverse/v6`, `pixverse/c1` by `resolution` and `extra.generate_audio_switch` | `per_second_usd` (+ `add_usd`) | each row's quoted vendor rate | 🟡 |
+| per megapixel | `fal/flux-pro` 0.04, `fal/flux-dev` 0.025, `fal/flux-schnell` 0.003, `fal/flux-2` 0.012, `-turbo` 0.008, `-flash` 0.005, `-klein-4b` 0.005 (edits 0.01), `-klein-9b` 0.006 (edits 0.011), `-klein-4b-base` 0.009, `-klein-9b-base` 0.011, `fal/sd35-medium` 0.02; the FLUX.2 edits add each input image at its 1 MP ("Input images will be resized to 1MP") | `per_megapixel_usd`, `add_usd` by `references` | fal's "per megapixels" (llms.txt); how fal counts or rounds megapixels is undocumented **(unverified)** | 🟡 |
+| per second | `runway/gen4.5` 0.12, `runway/gen4-turbo` 0.05; `kling/video-kling-v2-5-turbo`, `-v2-6`, `-v3` by `resolution` / `audio` (2026-11-03; `extra.mode` / `extra.sound` before); `minimax/MiniMax-H3`, `-H3-Max` by `resolution`; `vidu/viduq3-turbo` 0.06 (540p 0.035, 1080p 0.065), `viduq3-pro` 0.10 (540p 0.045, 1080p 0.12), `viduq2-pro-fast` $0.03 + $0.01/s (1080p $0.06 + $0.02/s) (2026-11-09: Vidu's credits a second, `varying_rows_price_the_variant_asked_for`); `fal/ltx-2.3` by `resolution`; `pixverse/v6`, `pixverse/c1` by `resolution` and `extra.generate_audio_switch` | `per_second_usd` (+ `add_usd`) | each row's quoted vendor rate | 🟡 |
 | fixed tiers | `pixverse/v5` (5 s / 8 s × resolution), `pixverse/v5-multi-transition` (1–10, 15, 20, 25, 30 s × resolution), `ideogram/ideogram-4-5-precise-edit` (quality), `hunyuan/hunyuan-video-i2v` (480p 2 credits, 720p and 1080p 5) | `usd` by value | rows' quoted tables; conformance `a_480p_hunyuan_image_to_video_job_is_billed_at_two_credits` | 🟡 |
 | multipliers and add-ons | `fal/recraft-v3` vector style ×2, `fal/hyper3d-rodin` HighPack ×3, `fal/hunyuan3d-v2` textured ×3, `fal/hunyuan3d-v3.1-pro` +$0.15 each for PBR, views, a face count, `fal/tripo-h3.1-multiview` $0.20 untextured | `multiply`, `add_usd`, `usd` | fal llms.txt quotes | 🟡 |
 | per clip | `tripo/animate` $0.10, `meshy/animate` $0.06 | `per_item_usd` × `animations` | Tripo pricing; Meshy provisional | 🟡 |
@@ -153,7 +155,7 @@ Headers every billed POST (`/v1/images/generations`, `/v1/videos/generations`,
 
 | header | rule | proof | status |
 |---|---|---|---|
-| `Idempotency-Key` | 1–255 visible ASCII characters, scoped to the caller's org, app and key. Same key + same request (method, path, canonical body) within 24 h: the stored response, byte for byte, with `Idempotent-Replayed: true`, and nothing runs or bills. Same key + another request: 409 `idempotency_key_reused`. Same request still running: 409 `idempotency_request_in_progress` with `Retry-After`. A request refused before any vendor call (validation, auth, quota, unconfigured provider) does not spend the key. A record left `in_progress` for 15 min is abandoned. | HTTP: `tests/idempotency_api.rs` (all three families replay with one vendor job and one log row; conflict; unspent key on a validation error; malformed key; a timed-out call replayed as its 504). storage: `a_finished_request_replays_and_a_new_body_conflicts`, `a_released_key_can_run_again`, `a_record_older_than_a_day_is_forgotten_and_a_stale_run_abandoned`, `racing_first_requests_start_exactly_once`, Postgres `idempotency_records_against_postgres`. hashing: `a_json_body_hashes_the_same_whatever_its_layout`, `a_multipart_body_hashes_the_same_whatever_its_boundary`, `keys_belong_to_their_owner`. wire: `every_billed_post_documents_its_idempotency_key`. SDKs: `idempotencyKey` (TS `Idempotency-Key` tests), `idempotency_key` (Python, sync and async). | ✅ |
+| `Idempotency-Key` | 1–255 visible ASCII characters, scoped to the caller's org, app and key. Same key + same request (method, path, canonical body) within 24 h: the stored response, byte for byte, with `Idempotent-Replayed: true`, and nothing runs or bills. Same key + another request: 409 `idempotency_key_reused`. Same request still running: 409 `idempotency_request_in_progress` with `Retry-After`. A request refused before any vendor call (validation, auth, quota, unconfigured provider) does not spend the key. A record left `in_progress` for 15 min is abandoned. Every billed POST, with a key or without one, runs to its end in a task of its own: a client that hangs up mid-call does not cancel the vendor call, the request is charged only if it succeeds, its reservations are settled, and it shows in the request log, `GET /v1/generations` and the key's webhook as if the client had stayed. | HTTP: `tests/idempotency_api.rs` (all three families replay with one vendor job and one log row; conflict; unspent key on a validation error; malformed key; a timed-out call replayed as its 504; `a_client_that_hangs_up_without_a_key_leaves_nothing_reserved`). Drop guards: `an_unsettled_guard_releases_its_reservations_when_dropped`, `an_unsettled_quota_hold_is_given_back_when_dropped`; span: `a_billed_request_keeps_its_span_in_its_own_task`. storage: `a_finished_request_replays_and_a_new_body_conflicts`, `a_released_key_can_run_again`, `a_record_older_than_a_day_is_forgotten_and_a_stale_run_abandoned`, `racing_first_requests_start_exactly_once`, Postgres `idempotency_records_against_postgres`. hashing: `a_json_body_hashes_the_same_whatever_its_layout`, `a_multipart_body_hashes_the_same_whatever_its_boundary`, `keys_belong_to_their_owner`. wire: `every_billed_post_documents_its_idempotency_key`. SDKs: `idempotencyKey` (TS `Idempotency-Key` tests), `idempotency_key` (Python, sync and async). | ✅ |
 
 **Vendor calls are never re-sent once they may have been billed** (L1). A call
 that ran past `server.vendor_timeout_secs` (default 120) answers 504
@@ -235,25 +237,33 @@ and `/v1/stats` read 0. A cancel also sends the terminal webhook.
 
 Every request field a catalog row can take has a control in the Playground
 (`dashboard/src/playground/`): a structured param edits a draft that
-`wireValue` turns into the wire form, and a half-filled one is not sent. Single
-mode runs image, segmentation (`/v1/images/segmentations`), video and 3D
-models; Compare mode compares image and 3D generation.
+`wireValue` turns into the wire form, and a half-filled one is not sent; a
+complete one goes as typed. Single mode runs image, segmentation
+(`/v1/images/segmentations`), video and 3D models; Compare mode compares image
+and 3D generation. Before Generate, the exact body goes to the family's quote
+route (`/v1/{images,videos,models3d}/cost`, which validates as the generation
+does and calls no vendor): a refusal holds Generate back in the server's words
+(E11b; vitest `server-check.test.ts`, e2e `Single Mode: an operation with no
+mesh to work on is held back, in the server's words`). The page keeps no copy
+of the server's rules.
 
 | field | control | proof | status |
 |---|---|---|---|
 | `region` | x / y / width / height in pixels of the input image | vitest `sends a region only once all four sides are whole pixels`; e2e `a region edit sends the box, the mask growth and the kept pixels` (`mock/region-image`) | ✅ mock |
-| `mask_grow_px`, `preserve_unmasked`, `feather_px` | offered wherever a model takes a mask or a region (the server's rule; no catalog param declares them) | vitest `offers mask growth and keeping unmasked pixels wherever a mask or a region goes`; same e2e | ✅ mock |
+| `mask_grow_px`, `preserve_unmasked`, `feather_px` | offered as `GET /v1/models/{id}` serves them in `litegen_params`, with their bounds (a model that takes a mask or a region; no catalog param declares them); the page derives none | vitest `takes each field and its bounds from litegen_params`, `derives nothing from the model's shape`; same e2e | ✅ mock |
 | `expand` | pixels per side, up to `max_px` | vitest `sends the sides of an expand that grow…`; e2e `an expand sends the sides that grow` (`mock/expand-image`) | ✅ mock |
-| `layout` | rows of kind, word or prompt, and a box as fractions; a box off the canvas is flagged and not sent | vitest `sends layout boxes as fractions…`; e2e `layout boxes go as fractions…` (`mock/layout-image`) | ✅ mock |
-| `palette` | colour swatches, up to `max_colors` | vitest `sends a palette as distinct #rrggbb colours…`; e2e `a palette goes as its colours…` (`mock/pixel-art-image`) | ✅ mock |
+| `layout` | rows of kind, word or prompt, and a box as fractions, sent as typed once its four numbers are set; a box off the canvas is held back in the server's words | vitest `sends layout boxes as typed fractions…`; e2e `layout boxes go as fractions…` (`mock/layout-image`) | ✅ mock |
+| `palette` | colour swatches, up to `max_colors`, sent as typed | vitest `sends a palette as typed…`; e2e `a palette constrains the pixel art…` (`mock/pixel-art-image`) | ✅ mock |
 | `background`, `output_format`, `views`, `skeleton`, `joint_naming`, `camera`, `replace`, `direction` | the generic select or set | e2e `background and output format go as chosen`, `multiview views go as the set ticked`, `a mesh of mine is rigged…`, `a clip runs with its camera, audio and loop…` | ✅ mock |
 | `duration_seconds` with listed `values` | only the listed lengths | e2e `a clip runs with its camera, audio and loop, at a listed length` (`mock/sprite-video`) | ✅ mock |
 | `audio`, `loop` | checkboxes | same | ✅ mock |
 | keyframe `reference_images[].time_s` | a time beside each keyframe image; blank lets the model spread them | vitest `sends each keyframe its time, and no other role one`; e2e `keyframes go with the times they are pinned at` (`mock/keyframe-video`) | ✅ mock |
+| 3D `view-*` `reference_images` | an upload or URL row per view the model declares; Generate is held while the server's check refuses the body (`check_multiview_refs`: an input image beside views, views without the front, a gap in a model's `view_order`), in its words | e2e `Single Mode: multiview-to-3D from uploaded views, each under its own side` (`mock/all-params-3d`: "needs a view-front image", "not both") | ✅ mock |
 | `source_model`, `source_video` | a picker of the caller's completed generations of that kind (by id), a pasted id, or a URL with its format | vitest `sends a source by generation id or URL…`; e2e `a mesh of mine is rigged, then animated…`, `a clip of mine is picked by generation id to extend, then to retake…` | ✅ mock |
-| `time_range` | from / to in seconds | vitest `sends a time range only when it ends after it starts`; same e2e (`mock/retake-video`) | ✅ mock |
-| `animations` | rows of preset or motion prompt, name, loop, in place; a blank name is the preset's canonical name (`mock:walk` → `walk`), a typed one must be 1–64 of A–Z a–z 0–9 _ . - | vitest `sends each animation by a name the server takes…`; same e2e (`mock/animate-3d`) | ✅ mock |
-| segmentation `prompts` | rows of point, box or text, of the kinds the model takes; a text prompt alone | vitest `builds a segmentation request…`; e2e `an image is segmented by a point and a box…` (`mock/segment-image`) | ✅ mock |
+| `time_range` | from / to in seconds, sent as typed | vitest `sends a time range as typed once both ends are numbers…`; same e2e (`mock/retake-video`) | ✅ mock |
+| `animations` | rows of preset or motion prompt, name, loop, in place; a typed name goes as typed, a blank one not at all: the server names the clip (`mock:walk` → `walk`) and judges a typed name | vitest `sends a clip name as typed, and none for a blank one…`; same e2e (`mock/animate-3d`: sent unnamed, delivered `walk`) | ✅ mock |
+| segmentation `prompts` | rows of point, box or text, of the kinds the model takes; which go together is the server's to say (a text prompt mixed with a point is refused at submit, in its words) | vitest `builds a segmentation request…`; e2e `an image is segmented by a point and a box…` (`mock/segment-image`) | ✅ mock |
+| provider passthrough `extra` | one row per `extra_allowlist` key; a key typed in `extra_params` gets a control of its type (listed values, yes/no, a number) and goes as that type (fal FLUX's `safety_tolerance` as the string `"2"`), an untyped one as JSON where its text parses | vitest `typed passthrough fields (extra_params)` | ✅ mock |
 | results | an image, a clip (a GIF as an image), masks with scores and boxes, or the 3D inspector with the scene manifest, clips and the vendor's `original` file | vitest `scene-manifest.test.ts`; e2e above (`playground-video`, `playground-masks`, `playground-mesh-scene`, `playground-mesh-clips`) | ✅ mock |
 | model detail | `task`, every served capability flag, and the catalog facts (keyframes, durations, region input, mask convention, kept pixels, texture resolutions, layout and prompt kinds, lifecycle); segmentation's own endpoint and an operation's source in the copied curl | vitest `the catalog fields the drawer shows`, `segmentation and operation models`; e2e `states an operation's task, and a keyframe model's keyframes and lengths` | ✅ mock |
 
@@ -345,7 +355,7 @@ in `X-Litegen-Dropped-Params` (`extra_lax_keeps_only_allowlisted_keys_and_report
 
 | behaviour | rule | proof | status |
 |---|---|---|---|
-| what a model cannot make | refused before any call or upload: a lone last frame (Kling, PixVerse); a PixVerse last frame outside c1, v6, v5.6 and v5 (v3.5 and v4.5 carry no `last_frame` role); a Kling 2.5 Turbo / 2.6 last frame without `mode: pro`; a duration the model does not take (Kling 5 or 10 s and whole seconds; PixVerse v3.5 to v5 5 or 8 s; Luma 5 or 9 s); a Luma loop with a last frame | `what_a_model_cannot_make_is_refused_before_any_call` (Kling), `what_a_model_cannot_make_is_refused_before_any_upload` (PixVerse), `what_luma_cannot_make_is_refused_before_any_call` | ✅ wiremock |
+| what a model cannot make | refused before any call or upload: a lone last frame (Kling, PixVerse); a PixVerse last frame outside c1, v6, v5.6 and v5 (v3.5 and v4.5 carry no `last_frame` role); a Kling 2.5 Turbo / 2.6 last frame below 1080p; a duration the model does not take (Kling 5 or 10 s and whole seconds; PixVerse v3.5 to v5 5 or 8 s; Luma 5 or 9 s); a Luma loop with a last frame | `what_a_model_cannot_make_is_refused_before_any_call` (Kling), `what_a_model_cannot_make_is_refused_before_any_upload` (PixVerse), `what_luma_cannot_make_is_refused_before_any_call` | ✅ wiremock |
 | only what the endpoint takes | Kling and PixVerse send `aspect_ratio` to text-to-video only; PixVerse's transition body has no `generate_multi_clip_switch`; Luma never sends `camera_motion`; Kling image sends `n: 1`, its subject reference as `image_reference: "subject"`, and refuses a negative prompt with a reference | `only_text_to_video_gets_an_aspect_ratio`, `the_transition_body_has_only_what_transition_takes`, `camera_motion_is_never_sent_as_a_field`, `one_image_is_asked_for_and_a_subject_is_sent_as_one`, `a_negative_prompt_with_a_reference_is_refused` | ✅ wiremock |
 | owned fields | `extra` never replaces the fields each adapter writes (model, prompt, frames, duration, quality, …) | the tests above | ✅ wiremock |
 | Hunyuan seed | a seed is 1 to 2147483647 (`Seed`: unset is random, a positive seed is fixed); it has no effect while `Revise` is on, the default, and never with a reference image | `only_a_positive_seed_is_sent`; conformance `hunyuan_image_seeds_are_positive` | ✅ wiremock |
@@ -368,6 +378,60 @@ in `X-Litegen-Dropped-Params` (`extra_lax_keeps_only_allowlisted_keys_and_report
 | model ids | `replicate/video` has its own arm and an unknown id is refused, not run as AnimateDiff | `every_catalog_row_resolves_and_an_unknown_id_does_not` | ✅ |
 | result downloads | images are fetched without the key, from public addresses only, at most 64 MiB | `a_result_is_fetched_only_from_a_public_address` (Runway, Leonardo, Replicate) | ✅ |
 | catalog | gen4.5 takes no `outputFormat` / `proresProfile` (other containers at a surcharge); gen4-turbo's prompt is optional and an empty one is not sent; Diffusion XL allowlists no `modelId` or `contrast`; Motion 2.0 says it is sent at 720p; every row names its docs page | `runway_gen4_5_returns_only_the_mp4_it_prices`, `runway_gen4_turbo_takes_an_optional_prompt`, `gen4_turbo_without_a_prompt_sends_no_prompt_text`, `leonardo_diffusion_xl_cannot_name_another_model_or_a_phoenix_knob`, `leonardo_motion2_says_it_is_sent_at_720p`, `every_runway_leonardo_and_replicate_row_names_its_docs_url` | ✅ |
+
+### Runway resold image models (2026-11-10)
+
+Twenty third-party models on `POST /v1/text_to_image` (`image/runway.rs` `RESOLD`), each sent its own branch of the request union.
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| `aspect_ratio` × `resolution` → `ratio` | each cell is one size of the branch's `ratio` enum (generated table per model: the named aspect within 4.5 %, the tier by pixels, GPT Image by Runway's own 1K/2K/4K lists); the row's defaults when none is asked; a row with no default aspect (Ideogram 4.0 / 4.5, Bria FIBO Edit) sends none unless asked; Ideogram Vector sends none | `every_aspect_and_resolution_a_resold_row_offers_reaches_runway_as_its_size` (456 cells), `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
+| `quality`, `background`, `output_format`, `seed` | `quality`, `background`, `outputFormat`, `seed`, only where the row declares them | `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
+| references | `referenceImages[]` as `{uri, tag}` on GPT Image and Gemini, `{uri}` elsewhere (`additionalProperties: false`); never `outputCount` | `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
+| mask | Ideogram 4.5's mask → `maskUri` (black edits), not a reference image | `an_ideogram_mask_goes_as_mask_uri` | ✅ wiremock |
+| impossible requests | Bria FIBO Edit sizes only 2+ images; Ideogram 4.5 `very_low` needs a reference and no `preciseEdit`; Grok `edit` / Ideogram `preciseEdit` need a reference: refused before any call | `a_request_runway_documents_as_impossible_is_refused_before_any_call` | ✅ wiremock |
+| result type | read from the bytes: PNG, JPEG, WebP, or SVG (Ideogram Vector) | `the_result_is_labelled_by_its_bytes` | ✅ wiremock |
+| price | per quality × tier (× aspect on GPT Image 2.5 / 2.6), + $0.01 per reference image on GPT 2.5 / 2.6 and Grok; Ideogram 4.5's default quality follows its references | `runway_resold_image_rows_are_carried_with_runways_contract` | ✅ |
+
+### Runway resold video models (2026-11-10)
+
+Twenty-five third-party models on `POST /v1/text_to_video` and `/v1/image_to_video` (`video/runway.rs` `RESOLD`): a start frame sends image-to-video, otherwise text-to-video, each with its own branch's fields.
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| `aspect_ratio` / `resolution` → `ratio` / `resolution` | per mode (`Shape`): a size of the branch's `ratio` enum (generated table), the aspect itself (MiniMax H3, Grok 1.5), `auto_<tier>` (Kling 4.0 and Grok 1.5 Lite image-to-video, Wan's tier alone), a `resolution` field (MiniMax H3 / H3 Max, Grok 1.5, HappyHorse image-to-video), or none where the image sets the shape | `every_aspect_and_resolution_a_resold_row_offers_reaches_runway_in_a_shape_it_takes`, `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
+| frames | `first_frame` alone → `promptImage` string; with `last_frame` → `[{uri, position: first}, {uri, position: last}]` in that order; a last frame alone is refused | `a_resold_model_sends_its_own_branchs_fields`, `a_request_a_branch_cannot_take_is_refused_before_any_call` | ✅ wiremock |
+| references | `reference` images → `references` [{uri}] on the mode that takes them (text-to-video, or image-to-video beside the frame on Kling O3 and 4.0); refused where the chosen mode has none | same two tests | ✅ wiremock |
+| `duration_seconds`, `audio`, `seed`, `negative_prompt` | `duration` (int; Veo 4/6/8, Kling 2.5 5/10), `audio`, `seed`, `negativePrompt`, only where the row declares them; `audio` only when asked | `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
+| prompt | where text-to-video requires `promptText` but image-to-video doesn't, the row's prompt is optional and says `required_for_text_to_video: true`: a request with no first frame and no prompt is refused at validation (`prompt_required`, N3), before it is quoted or reserved, and the adapter refuses it too; Kling 3.0/O3 and Seedance 2.5, whose text-to-video takes no `promptText`, leave it off | `a_request_a_branch_cannot_take_is_refused_before_any_call`; `the_catalog_says_which_text_to_video_needs_a_prompt_as_runway_does`; HTTP `a_text_to_video_request_with_no_prompt_is_refused_before_it_is_quoted_or_reserved` | ✅ wiremock |
+| owned fields | `extra` can't replace `model`, `promptText`, `promptImage`, `duration`, `ratio`, `seed`, `references`, `resolution`, `audio`, `negativePrompt` | `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
+| price | per second by tier and audio; + credits per reference image or frame (MiniMax H3 2, Gemini Omni and Grok 1); Seedance 2.5 `draft` at the 480p rate; Kling 4.0 at list price | `runway_resold_video_rows_are_carried_with_runways_contract` | ✅ |
+
+### Bedrock Luma Ray 2 (2026-11-10)
+
+`POST /async-invoke` (`video/bedrock.rs`), signed for us-west-2; the MP4 read back from the caller's S3 bucket.
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| body | `modelId`, `modelInput` {`prompt`, `duration` "5s" / "9s", `resolution` (asked, else 720p), `aspect_ratio` and `loop` when asked, `keyframes` frame0 / frame1}, `outputDataConfig.s3OutputDataConfig.s3Uri`; signed for `bedrock` in us-west-2 whatever the credential names | `ray_2_is_submitted_signed_for_us_west_2_with_its_own_fields` | ✅ wiremock |
+| keyframes | `first_frame` → frame0, `last_frame` → frame1, each {type image, source {type base64, media_type, data}}, JPEG or PNG; anything else, or a loop with a last frame, refused before any call | `keyframes_go_as_base64_with_their_own_type` | ✅ wiremock |
+| bucket | `s3_output_uri` (options, else the credential's) must be `s3://<bucket>[/<prefix>]` in plain characters, or the request is refused before any call; an id with no arm is refused | `a_request_without_a_usable_bucket_is_refused_before_any_call`, `every_catalog_row_resolves_and_an_unknown_id_does_not` | ✅ wiremock |
+| result | a Completed job's `<s3Uri>/output.mp4`, else the first `.mp4` ListObjectsV2 finds under it, read with SigV4 for `s3` (+ x-amz-content-sha256) and kept as bytes; an unreadable one fails naming s3:GetObject / s3:ListBucket; a 5xx is asked again | `a_finished_job_is_read_back_from_the_bucket`, `a_finished_job_elsewhere_under_its_prefix_is_found_and_an_unreadable_one_fails` | ✅ wiremock |
+| polls | InProgress / Completed / Failed (with `failureMessage`); an undocumented state fails; a 404 is final, a 5xx retried | `a_poll_says_what_bedrock_said` | ✅ wiremock |
+| price | $1.50/s at 720p, $0.75/s at 540p | `bedrock_luma_ray_2_is_carried_with_bedrocks_contract` | ✅ |
+
+### Ideogram resold video (2026-11-10)
+
+`POST /v2/video/generate/{model}-{text,image,reference}-to-video` (`video/ideogram.rs`), polled at `GET /v2/generations/{generation_id}`.
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| routing | reference images → reference to video (`reference_images`), a start frame (+ last) → image to video (`image`, `end_image`), none → text to video; frames with references, a last frame alone, references on Kling refused before any call | `frames_and_references_go_multipart_to_their_own_endpoints`, `a_request_no_endpoint_takes_is_refused_before_any_call` | ✅ wiremock |
+| body | text to video JSON, the others multipart: `prompt`, `duration` (always), `aspect_ratio` "16x9" where the endpoint takes one (asked, else the row's default), `resolution` as Ideogram spells it, `generate_audio` and `negative_prompt` when asked, allowlisted extras (`prompt_expansion_mode` on reference to video only); never `webhook_url`; the Api-Key from the pool | `text_to_video_is_json_with_the_fields_its_endpoint_takes`, `frames_and_references_go_multipart_to_their_own_endpoints` | ✅ wiremock |
+| polls | pending / completed (the `video.generation` url) / failed (`failure_reason`); a completed one without a url fails; an undocumented state fails; 401 / 404 final, 5xx retried | `a_poll_says_what_ideogram_said` | ✅ wiremock |
+| submit errors | a 422 is final, a 5xx may be resent, an answer without `generation_id` is final | `a_refused_submit_says_why` | ✅ wiremock |
+| credentials | Ideogram's one dashboard key configures its video adapter | `ideogram_video_takes_the_same_api_key_pool` | ✅ |
+| price | per second by tier (Kling by audio); MiniMax H3 + $0.04 per reference image past five | `ideogram_video_resales_are_carried_with_ideograms_contract` | ✅ |
 
 ### BFL, Ideogram, Recraft and Stability adapters (audit 2026-10-30)
 
@@ -419,7 +483,9 @@ read from its bytes (PNG, JPEG, WebP, GIF), whatever the adapter labelled it.
 | `fal/flux-2` | png, webp, jpeg | none (fal's png) | — | `output_format` | — | 🟡 |
 | `fal/flux-pro`, `flux-dev`, `flux-schnell`, `sd35-medium` | png, jpeg | none (fal's jpeg) | — | `output_format` | `generates_flux_dev_image` | 🟡 wiremock |
 | `replicate/{flux-pro, flux-1.1-pro, flux-dev, flux-schnell, sd3}` | png, webp, jpeg | none (Replicate's webp) | — | `output_format`, jpeg sent as `jpg` | `generates_flux_dev_via_polling` | 🟡 wiremock |
-| `luma/photon-1`, `photon-flash-1` | jpeg (`lossy_only`) | — (no format field) | — | — | HTTP `the_listing_says_what_each_model_can_return` | ✅ |
+| `bytedance/seedream-5-0-lite-260128` (2026-11-03; not 4.0 or 4.5, which the vendor lists as unsupported) | png, jpeg | none (BytePlus's jpeg) | — | `output_format` | `the_output_format_goes_as_its_own_field_and_labels_the_image`; conformance `bytedance_only_seedream_5_0_lite_takes_an_output_format` | 🟡 wiremock |
+| `luma/photon-1`, `photon-flash-1` (2026-11-03: Luma's ImageFormat is `jpg \| png`) | jpeg, png | none (Luma's jpg) | — | `format`, jpeg sent as `jpg` | `the_output_format_goes_as_lumas_format`; HTTP `the_listing_says_what_each_model_can_return` | 🟡 wiremock |
+| `fal/sdxl` (2026-11-03) | png, jpeg | none (fal's jpeg) | — | `format` (fast-sdxl has no `output_format`) | `fast_sdxl_takes_its_container_as_format` | 🟡 wiremock |
 | `mock/format-image` | png, webp, jpeg | png | transparent, opaque | encodes as asked, labels everything png | HTTP `the_asked_format_comes_back_labelled_by_its_bytes`, `a_transparent_background_has_real_alpha`, `formats_and_backgrounds_a_model_cannot_make_are_refused` | ✅ mock |
 
 Other image rows declare no `output_format`: their `output_formats` is empty
@@ -504,7 +570,10 @@ promise. **`feather_px`** (0, a hard edge, by default; at most 256) blends from
 the init at the area's edge to the vendor's pixels that far inside it
 (chessboard distance), never outside. A vendor image of another size is
 resized to the init's first; the result is PNG, or lossless WebP when webp is
-asked. Every model taking a mask or region lists `supports_preserve_unmasked`.
+asked. Every model taking a mask or region lists `supports_preserve_unmasked`,
+and `GET /v1/models/{id}` serves it `mask_grow_px` (0–100), `preserve_unmasked`
+and `feather_px` (0–256) in `litegen_params` (E11a: HTTP
+`a_model_that_edits_part_of_an_image_serves_mask_growth_and_kept_pixels_with_their_caps`).
 Refused before billing (`param_conflict`): no mask or region, `output_format`
 jpeg, a `size` other than the init's, `feather_px` without
 `preserve_unmasked`; a feather over 256 is `param_out_of_range`.
@@ -721,7 +790,7 @@ boxes or GIF frames) and recorded on its asset.
 | control | rows | wire | proof | status |
 |---|---|---|---|---|
 | `camera: fixed` | `bytedance/doubao-seedance-1-0-pro-250528`, `seedance-1-0-pro-fast-251015` | `camera_fixed: true` | `submits_seedance_task_and_polls` | 🟡 wiremock |
-| `audio` | `bytedance/dreamina-seedance-2-0-mini-260615` (`generate_audio`, default on), `fal/ltx-2.3` (`generate_audio`, on), `kling/video-kling-v2-6`, `-v3` (`sound` on/off, off), `pixverse/v6`, `c1` (`generate_audio_switch`, off), `vidu/viduq3-turbo`, `-pro` (`audio`, on) | as listed | `submits_fal_video_job_and_returns_handle`, `submits_text2video_with_jwt_and_polls`, `submits_text_to_video_and_polls`, `submits_text2video_with_token_auth_and_polls` | 🟡 wiremock |
+| `audio` | `bytedance/dreamina-seedance-2-0-mini-260615` (`generate_audio`, default on), `fal/ltx-2.3`, `fal/flux-3-video`, `-video-draft`, `-max-video` (`generate_audio`, on), `kling/video-kling-v2-6`, `-v3` (`sound` on/off, off), `pixverse/v6`, `c1` (`generate_audio_switch`, off), `vidu/viduq3-turbo`, `-pro` (`audio`, on) | as listed | `submits_fal_video_job_and_returns_handle`, `submits_text2video_with_jwt_and_polls`, `submits_text_to_video_and_polls`, `submits_text2video_with_token_auth_and_polls` | 🟡 wiremock |
 | `loop` | `luma/dream-machine`, `ray-2`, `ray-flash-2` | `loop`; refused with a last frame ("Loop is not supported for keyframes") | `submits_luma_job_with_first_frame_keyframe`, `what_luma_cannot_make_is_refused_before_any_call`; conformance `every_luma_video_row_takes_loop` | 🟡 wiremock |
 | `duration_values` | Kling 2.5 Turbo / 2.6 (5, 10), MiniMax Hailuo 02 / 2.3 / 2.3 Fast (6, 10), fal LTX-2.3 (6, 8, 10), Leonardo Kling 2.5 (5, 10), PixVerse v3.5 / v4.5 / v5 (5, 8), Luma Dream Machine / Ray 2 / Ray Flash 2 (5, 9), Hunyuan Video / Video I2V (5 only, as a 5–5 range) | the validator refuses others | HTTP `controls_and_durations_a_model_lacks_are_refused` | ✅ |
 | `media` | every finished video | — | unit `an_mp4_says_its_length_rate_size_and_audio`; HTTP `a_looping_still_silent_clip_reports_what_came_back` (`mock/sprite-video`: 64×64, 10 fps, 2 s, silent, last frame = first) | ✅ |
@@ -852,7 +921,11 @@ Not verified live: no Tripo or fal key is available here.
 An `animate` model adds one clip per `animations[]` entry to a rigged source,
 in request order. litegen names the clips exactly as asked (dropping a static
 pose clip a vendor adds, and failing the generation when fewer clips come back
-than were asked), holds `in_place` clips the vendor did not, keys every clip at
+than were asked); a clip that leaves `name` out (or sends null) is named by the
+validator before anything is quoted or stored (E11c): after its canonical
+preset, else its preset id with every other character as `_`, a prompt clip
+`clip-<n>` by its place, `-2`, `-3`, … on a taken name. It holds `in_place`
+clips the vendor did not, keys every clip at
 `fps` when the vendor did not, and measures each clip into the manifest from
 its keys. An animate model returns its source's geometry, so its catalog row
 says `native_orientation: {up: source, front: source}` and the delivered front
@@ -861,7 +934,7 @@ is the source manifest's.
 | litegen param | ParamSpec | `tripo/animate` | `meshy/animate` | `mock/animate-3d` | proof | status |
 |---|---|---|---|---|---|---|
 | `animations[].preset` | `animation_list` | `animations` (≤ 5; the 16 v2.5/v3.0 preset ids, 10 tagged canonical) | `action_ids` (≤ 10, no repeats — refused before the call; 678 library ids with Meshy's names, 12 tagged canonical) | `mock:*` (3 canonical) | validator `a_clip_names_a_canonical_preset_or_one_of_the_models_own`; tripo `a_retarget_sends_the_rigs_task_id_its_presets_and_tripos_in_place_flag`; meshy `an_animation_goes_to_the_meshy_rig_with_its_action_ids_and_change_fps`, `a_repeated_action_is_refused_before_any_call`; conformance `tripo_animate_offers_the_retarget_presets_on_tripos_own_rig`, `meshy_rig_and_animate_take_what_meshys_endpoints_accept` | 🟡 wiremock / ✅ mock |
-| `animations[].name` | — | renamed by litegen in order | renamed by litegen | renamed by litegen | validator `clip_names_are_unique_and_well_formed`; delivery `a_pose_clip_beside_the_asked_ones_is_dropped_and_the_rest_named_in_order`, `a_vendor_returning_fewer_clips_than_asked_fails_the_delivery`; HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` | ✅ |
+| `animations[].name` | — (optional: litegen names an unnamed clip) | renamed by litegen in order | renamed by litegen | renamed by litegen | validator `clip_names_are_unique_and_well_formed`, `an_unnamed_clip_is_named_after_its_preset_or_its_place`, `a_typed_name_is_kept_and_an_unnamed_clip_steps_around_it`, `an_unnamed_clip_whose_preset_gives_no_name_is_named_by_its_place`, `a_clips_refusal_names_its_place_in_the_list`; HTTP `an_unnamed_clip_is_delivered_under_the_name_litegen_gives_it`; delivery `a_pose_clip_beside_the_asked_ones_is_dropped_and_the_rest_named_in_order`, `a_vendor_returning_fewer_clips_than_asked_fails_the_delivery`; HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` | ✅ |
 | `animations[].prompt`, `.duration_s` | `text_to_motion` | — | — (text-to-motion is a second billed task; not carried) | 1–10 s | validator `a_clip_is_exactly_one_of_a_preset_or_a_prompt`, `a_prompt_clip_lasts_within_the_models_text_to_motion_range`, `a_prompt_clip_needs_a_model_that_makes_motion_from_text`; HTTP `a_prompt_clip_lasts_the_duration_asked` | ✅ mock |
 | `animations[].in_place` | `in_place: native \| litegen` | `animate_in_place: true` when every clip asks; otherwise litegen holds the in-place ones | litegen holds them (`in_place: litegen`) | natively when every clip asks | tripo `clips_that_differ_on_in_place_leave_it_to_litegen`; HTTP `a_travelling_clip_moves_one_metre_along_z_and_litegen_holds_the_in_place_one` (manifest `in_place_by`) | 🟡 wiremock / ✅ mock |
 | `animations[].loop` | — | hint only | hint only | hint only | HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` (`loop_requested`) | ✅ |
@@ -909,10 +982,15 @@ scene — a uniform scale about the origin, then the move — so skins, clips an
 the vendor's own file (kept as `original`) are untouched. A rig model that
 declares `height_m` still sends it to its vendor too; elsewhere `height_m`
 must be above 0 and at most 10,000 m (`param_out_of_range`).
+`GET /v1/models/{id}` serves the three in `litegen_params` (E11a): `ground`
+and `center` as `bool`, `height_m` as `float` with `max: 10000` and no `min`
+(above 0 is exclusive). A rig that declares its own `height_m` keeps it in
+`params` alone, served with litegen's 10,000 m ceiling when it states none,
+since the validator holds it to that.
 
 | field | rule | proof | status |
 |---|---|---|---|
-| `ground`, `center`, `height_m` | one root transform; bounds measured at rest (a skinned mesh's bind pose); a mesh already placed is left alone | unit `placement_scales_grounds_and_centres_through_one_new_root_and_leaves_skins_and_clips_alone`; HTTP `ground_center_and_height_place_the_mesh_and_keep_the_vendors_file`, `height_m_scales_a_rigged_animated_mesh_without_touching_its_skin_or_clips`, `placement_is_offered_on_every_3d_model_and_a_height_must_be_one`; validator `every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared` (height_m passes as placement); OpenAPI `placement_is_three_request_fields_and_a_listed_capability` | ✅ |
+| `ground`, `center`, `height_m` | one root transform; bounds measured at rest (a skinned mesh's bind pose); a mesh already placed is left alone | unit `placement_scales_grounds_and_centres_through_one_new_root_and_leaves_skins_and_clips_alone`; HTTP `ground_center_and_height_place_the_mesh_and_keep_the_vendors_file`, `height_m_scales_a_rigged_animated_mesh_without_touching_its_skin_or_clips`, `placement_is_offered_on_every_3d_model_and_a_height_must_be_one`, `every_3d_model_serves_its_placement_fields_with_the_bounds_the_validator_keeps`, `a_declared_height_without_a_ceiling_is_served_with_the_ceiling_the_validator_keeps`; validator `every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared` (height_m passes as placement); loader `litegen_params_cannot_be_set_from_yaml`; OpenAPI `placement_is_three_request_fields_and_a_listed_capability`, `the_served_schema_documents_the_fields_litegen_applies` | ✅ |
 
 ### Normalised delivery (3D doc §2 rule 3, §3D)
 
@@ -923,7 +1001,7 @@ it is what every vendor's mesh goes through before litegen stores it.
 
 | behaviour | rule | proof | status |
 |---|---|---|---|
-| read | The vendor's mesh is read with litegen's own reader. One it cannot read (Draco, meshopt) fails the generation, naming it and any promised container that cannot be derived (P-R7). | `a_mesh_litegen_cannot_read_fails_the_delivery_and_names_what_is_missing`; HTTP `a_mesh_litegen_cannot_read_is_never_delivered`; `a_provider_that_under_delivers_an_underivable_format_fails_the_generation` | ✅ |
+| read | The vendor's mesh is read with litegen's own reader. One it cannot read (a required extension the reader doesn't implement, a corrupt file, a Draco stream past the reader's limits; Draco and meshopt themselves are read since mesh-gaps item 2, 2026-11-06, and `KHR_mesh_quantization` since 2026-10-12) fails the generation, naming it and any promised container that cannot be derived (P-R7). | `a_mesh_litegen_cannot_read_fails_the_delivery_and_names_what_is_missing`; HTTP `a_mesh_litegen_cannot_read_is_never_delivered`; `a_provider_that_under_delivers_an_underivable_format_fails_the_generation` | ✅ |
 | orientation | A model whose `native_orientation` differs from +Y up / +Z front gets one root rotation; the manifest says `oriented_by: "litegen"`. Unproven: never turned, `front: "unverified"`. | `a_turned_mesh_is_rotated_to_face_z_and_the_vendors_file_kept`, `an_unproven_orientation_is_reported_never_guessed`; mesh `a_mesh_facing_x_is_turned_to_face_z`, `a_z_up_mesh_is_stood_up`; HTTP `a_turned_vendor_mesh_is_delivered_facing_z_with_the_vendors_file_kept`, `a_model_whose_orientation_is_unproven_says_so` | ✅ (mock) |
 | extensions | No delivered glTF requires an extension: WebP textures become PNG; a KTX2 texture is dropped from the normalised copy and logged (P-R8); a vendor glb that declares `extensionsRequired` is rewritten. | `a_webp_textured_mesh_needs_no_extension_once_delivered`, `webp_textures_become_png_and_nothing_needs_an_extension`; HTTP `every_asset_hash_matches_the_bytes_litegen_serves` (empty `extensionsRequired`) | ✅ |
 | names | Node names are made unique (`arm`, `arm_1`), so a bone map is unambiguous. | `duplicate_node_names_get_numeric_suffixes`, `duplicate_joint_names_are_delivered_with_numeric_suffixes` | ✅ |
@@ -1031,8 +1109,9 @@ consequences for this matrix:
   the widened `enum_values`
   (`model3d_api::fal_3d_models_are_served_with_their_deliverable_formats_and_vendor_reference`).
 - A promised container can still go missing when the vendor's own file is one
-  the converter cannot read — a Draco-compressed glb, say — because nothing is
-  then derivable from it. `mock/partial-3d` is exactly that case, and the
+  the converter cannot read — a glb requiring an extension the reader doesn't
+  implement, say; Draco and meshopt are read since mesh-gaps item 2 — because
+  nothing is then derivable from it. `mock/partial-3d` is exactly that case, and the
   completion guard fails it at every observer. A vendor's own fbx or usdz still
   matters, as the higher-fidelity export `prefers_vendor_native` asks for: a cell
   claiming one must be proven by a live call before it is ticked.
@@ -1197,5 +1276,149 @@ contract fixes that touch no vendor field.
 | the image could not write its asset directory | `/app/data` created and owned by 1000:1000, a volume, `LITEGEN__IMAGE_STORAGE__LOCAL_DIR`; startup refuses an unwritable directory | `an_asset_directory_litegen_cannot_write_is_named_at_startup`; a trixie-slim probe image as 1000:1000 (before: `Permission denied`; after: written) |
 | `source_not_chainable` half built; `video_edit` had no mock | own-generations-only rows refuse a URL or upload before fetching, and compare the vendor account recorded on video rows; `mock/edit-video` | `a_model_that_edits_only_its_own_generations_refuses_any_other_source`, `a_whole_clip_edit_regenerates_every_frame_of_its_source` |
 | slow mock timed out only under 30 s | answers after a day | `the_slow_mock_outlasts_any_vendor_timeout` |
-| Playground: URL source format, segmentation by URL, history quota, placement | the shown format is sent; segmentation is upload-only; history drops inline images and masks and never fails a run; `ground` / `center` / `height_m` on every 3D model | vitest `sends a URL source with the format its select shows…`, `builds a segmentation request…`, `what a history entry keeps`, `a history write that cannot be stored`, `offers placement on every 3D model…` |
+| Playground: URL source format, segmentation by URL, history quota, placement | the shown format is sent; segmentation is upload-only; history drops inline images and masks and never fails a run; `ground` / `center` / `height_m` on every 3D model, as `litegen_params` serves them | vitest `sends a URL source with the format its select shows…`, `builds a segmentation request…`, `what a history entry keeps`, `a history write that cannot be stored`, `takes each field and its bounds from litegen_params` |
 
+## Vendor feature audit (2026-11-03)
+
+Every carried row's declared features against its vendor's current schema, in
+both directions, and each adapter's mapping of every unified feature. Ledger:
+`.superpowers/sdd/2026-11-03-vendor-audit/progress.md` (git-ignored). Each cell
+below has a test that failed before the fix unless marked *guard*.
+
+| param × provider | what changed | proof | status |
+|---|---|---|---|
+| `aspect_ratio` × Recraft (8 generation rows) | declared (the Appendix's 14 ratios), sent as `size: "w:h"`; an exact size wins | `an_aspect_ratio_goes_as_size_and_an_exact_size_wins`, `every_recraft_generation_model_takes_the_appendix_aspect_ratios` | 🟡 wiremock |
+| `size` × Seedream 4.0 / 4.5 / 5.0 lite | min/max pixels and `max_aspect: 16` (the vendor's pixel rule) | `bytedance_seedream_sizes_carry_the_vendors_pixel_range_and_ratio` | ✅ |
+| `output_format` × Seedream 5.0 lite | png, jpeg; label from the bytes | `the_output_format_goes_as_its_own_field_and_labels_the_image` | 🟡 wiremock |
+| `seed` × Seedream | never sent (no model we carry has one) | `a_seed_never_reaches_seedream` | 🟡 wiremock |
+| `duration_seconds` × Seedance (3), PixVerse v6/c1 | `kind: int` (C5) | the five duration facts in `catalog_conformance` | ✅ |
+| `duration_seconds` × Leonardo Veo 3.1 / Fast | `values: [4, 6, 8]` | `leonardo_veo3_1_*_contract` | ✅ |
+| `duration_seconds` × vidu2.0 | `values: [4, 8]`; unpriced pairs refused, never snapped | `vidu2_makes_only_the_lengths_and_sizes_vidu_prices` | 🟡 wiremock |
+| `duration_seconds` × PixVerse v3.5 | 8 s at 1080p refused | `v3_5_makes_no_8_s_clip_at_1080p` | 🟡 wiremock |
+| `resolution` × Kling video (3 rows) | declared; on Kling's current API sent as `settings.resolution` | `resolution_and_multi_shot_go_in_settings` | 🟡 wiremock |
+| Kling video × the current API (3 rows) | `POST /text-to-video/<model>` / `/image-to-video/<model>` (`prompt` or `contents`, `settings`), `GET /tasks`, API key; no `negative_prompt` | `text_to_video_goes_to_the_models_path_with_the_api_key_and_polls_tasks`, `image_to_video_sends_contents_with_the_first_frame_first`, `every_documented_status_maps`, `a_legacy_handle_still_polls_on_the_legacy_path` | 🟡 wiremock |
+| refs × Gemini 2.5 Flash Image | 3 input images | `gemini_2_5_flash_image_takes_three_input_images` | ✅ |
+| `seed` × Gemini image rows | not declared (Ruling) | `gemini_image_rows_declare_no_seed` (*guard*) | ✅ |
+| refs × FLUX.2 pro / max / klein | 8 / 8 / 4, each to its own `input_image_N` | `every_reference_goes_to_its_own_input_image` | 🟡 wiremock |
+| `steps`, `guidance_scale` × BFL flux-dev | declared; `steps`, `guidance` | `flux_dev_sends_steps_and_guidance_as_its_own_fields` | 🟡 wiremock |
+| `redux` role × BFL flux-dev, Ultra | `image_prompt` (+ Ultra's `image_prompt_strength` extra) | `an_ultra_image_prompt_goes_as_image_prompt` | 🟡 wiremock |
+| `style` × Stability (8 more rows) | `style_preset` on every route that takes it, v1 SDXL included | `sdxl_sends_style_as_style_preset_on_every_v1_route` | 🟡 wiremock |
+| `guidance_scale` × Stability sd3 rows | `cfg_scale`, sd3 route only | `guidance_goes_as_cfg_scale_and_only_to_the_sd3_route` | 🟡 wiremock |
+| init + `strength` × Stability Ultra, sd3-turbo | declared (the adapter already sent them) | `stability_ultra_and_sd3_turbo_take_an_image_to_start_from` | ✅ |
+| prompt / `negative_prompt` / `output_format` × Stability inpaint | 10,000-char caps; jpeg/png/webp | `stability_inpaint_carries_its_prompt_limits_and_output_format` | ✅ |
+| `size` × Ideogram 3.0 | the 69 ResolutionV3 sizes; an exact size drops the ratio | `a_3_0_size_goes_as_resolution_without_an_aspect_ratio` | 🟡 wiremock |
+| `reference` role × Ideogram 4.5 Precise Edit | ≤ 4, 3 beside a mask | `a_masked_precise_edit_takes_at_most_three_references` | 🟡 wiremock |
+| `size`, `seed` × MiniMax image-01 | width/height 512–2048 ×8 (no ratio beside); seed | `a_size_goes_as_width_and_height_and_a_seed_goes_too` | 🟡 wiremock |
+| `seed` × Vidu (6 rows) | 1–2147483647 (0 is Vidu's random) | `a_seed_goes_as_vidus_seed` | 🟡 wiremock |
+| `audio` × Vidu viduq1, viduq2-pro | only where the endpoint has the switch; viduq1's reference2video `images` form has none (2026-11-09), so `audio: true` there is refused | `audio_goes_only_where_the_endpoint_has_a_switch`, `viduq1_reference_images_send_no_audio_switch` | 🟡 wiremock |
+| `seed` × Hunyuan image | sent with `Revise: 0`; refused beside a reference or Revise 1 | `a_seed_turns_prompt_expansion_off_so_it_takes_effect` | 🟡 wiremock |
+| `size` × Hunyuan image with a reference | the four sizes Tencent allows | `a_reference_image_takes_only_the_four_sizes_tencent_lists` | 🟡 wiremock |
+| `reference` role × OpenAI GPT image (3 rows) | ≤ 15 beside `init`, sent as `image[]`, edited image first | `several_images_go_as_an_image_array_with_the_edited_one_first` | 🟡 wiremock |
+| `guidance_scale`, `steps` × Leonardo Diffusion XL | `guidance_scale`, `num_inference_steps` | `guidance_and_steps_go_as_leonardos_own_fields` | 🟡 wiremock |
+| `seed`, `negative_prompt` × Leonardo Motion 2.0 | `seed`, `negativePrompt` | `motion2_sends_its_seed_and_negative_prompt` | 🟡 wiremock |
+| `strength` × Replicate flux-dev, SDXL | declared (the adapter already sent `prompt_strength`) | `replicate_img2img_rows_take_a_strength` | ✅ |
+| `docs_url` × every row | whitespace refused by the loader (4 rows had swallowed a description line) | `rejects_a_docs_url_that_swallowed_the_next_line` | ✅ |
+
+
+## New models (2026-11-03)
+
+Models added on 2026-11-03 from the vendors' current API pages, each with its
+facts in `catalog_conformance` (test first) and its wire shape in the adapter's
+wiremock tests. Ledger: `.superpowers/sdd/2026-11-03-kling-new-api-and-new-models/progress.md`
+(git-ignored). None was run live.
+
+| model × param | wire | proof | status |
+|---|---|---|---|
+| `kling/video-kling-v3-turbo`, `-v4` × route | `POST /text-to-video/kling-3.0-turbo` / `kling-4.0` (and `/image-to-video/…`), `settings`, `contents` | `the_new_models_go_to_their_own_paths`, `every_kling_video_row_has_a_path_model` | 🟡 wiremock |
+| Kling 3.0 Turbo / 4.0 × `duration_seconds`, `resolution`, `aspect_ratio`, frames | int 3–15 s / 3–30 s; 720p, 1080p; 4.0 adds 21:9 and a last frame | `kling_3_0_turbo_and_4_0_are_carried_with_their_documented_contract` | ✅ |
+| `bytedance/dola-seedream-5-0-pro-260628`, `-flash-260915` × `size`, `output_format`, refs | 921,600–4,624,220 px up to 16:1; png, jpeg; ≤ 10 references; BytePlus / Volcengine ids | `bytedance_seedream_5_0_pro_and_flash_are_carried_with_their_documented_contract`, `ark_model_id_sends_each_hosts_documented_id` | ✅ |
+| `minimax/MiniMax-H3-Highspeed`, `-Lite` × route, `resolution`, `duration_seconds`, refs | the V2 API; 480P, 768P; int 4–15 s; first, last and ≤ 9 references | `the_new_h3_variants_go_to_the_v2_api`, `minimax_h3_highspeed_and_lite_are_carried_with_their_documented_contract` | 🟡 wiremock |
+| `pixverse/v6-max` × model, `duration_seconds`, `resolution`, audio | `model: "v6-max"` on text/ and img/; int 1–15 s; 360p–1080p; `generate_audio_switch` | `v6_max_goes_to_text_and_img_by_its_own_id`, `pixverse_v6_max_is_carried_with_its_documented_contract` | 🟡 wiremock |
+| `recraft/recraftv4_1_flash` × `size`, `seed`, `palette` | the V4.1 1K table; `random_seed`; `controls.colors` | `recraft_v4_1_flash_is_carried_with_its_documented_contract` | ✅ |
+| `bfl/flux-3-image`, `-klein` × refs | one `images` list, in order, never `input_image_N`; `extra` cannot replace it | `flux_3_rows_send_every_reference_in_one_images_list` | 🟡 wiremock |
+| `bfl/flux-3-image` × `output_format`, `seed`, `steps` | not declared, never sent (`additionalProperties: false`); `size` is declared (see below) | `output_format_goes_only_to_endpoints_that_take_it`, `bfl_flux_3_image_and_klein_are_carried_with_their_documented_contract` | 🟡 wiremock |
+| `bfl/flux-3-image-klein` × `output_format`, `seed`, `steps`, `size` | png, jpeg; 0–4294967295; 1–16; width/height 64–6256 up to 16,822,272 px and 8:1 | the two tests above | 🟡 wiremock |
+| FLUX 3 × `resolution` price | 0.75K / 1K / 1.5K / 2K / 4K (768sq … 4k) each at its tier | `varying_rows_price_the_variant_asked_for` | ✅ |
+| BFL polls × a 503 | a 503 whose body names a status is the job's answer (FLUX 3: "A failed task can come back as HTTP `503` with a normal JSON body") | `a_failure_answered_with_a_503_ends_the_job` | 🟡 wiremock |
+| image `resolution` (new canonical param) × Google, Kling image, BFL FLUX 3, Replicate FLUX 3 | one scale (`0.5K` … `4K`, `match_input`), default `1K`; Google `imageConfig.imageSize` (`0.5K` → `512`), Kling `resolution` (`1k`, `2k`), BFL / Replicate `resolution` (`0.75K` → `768sq`); the old extras (`imageSize`, `resolution`) are refused with "send it as `resolution`" | `an_image_resolution_is_one_of_the_models_tiers`, `every_declared_resolution_is_one_of_{googles_image_sizes,klings,bfls}`, `the_tier_goes_as_{klings,bfls}_resolution_and_extra_cannot_replace_it`, `flux_3_image_sends_its_references_as_images_and_its_tier_as_resolution`, `image_tiers_are_one_resolution_param_on_one_scale` | 🟡 wiremock |
+| `layout` × BFL FLUX 3 Image, Klein | object and text boxes → `{id, bbox [top, left, bottom, right] 0–1000, desc}` rows appended to the prompt, each `<id>` named in the caption | `a_layout_goes_as_flux_3_boxes_in_the_prompt` | 🟡 wiremock |
+| `size` × BFL FLUX 3 Image | width/height 256–6256 up to 16.8 MP and 8:1; over 4 MP with references refused before any call | `a_flux_3_image_edit_larger_than_4_mp_is_refused_before_any_call` | 🟡 wiremock |
+| price ranges (`when: { megapixels: { gt, lte } }`) × FLUX 3 (pixel tiers), FLUX.2 pro / max / klein / flex (output MP bands), Seedream 5.0 Pro (≤ 2.61 MP) | the rule matches a number inside its bounds | `a_rule_can_name_a_range_of_a_numeric_fact`, `varying_rows_price_the_variant_asked_for` | ✅ |
+| reference counts × Seedream 5.0 Pro, MiniMax H3 / Highspeed / Lite / Max | images past the vendor's free ones add their price | `varying_rows_price_the_variant_asked_for` | ✅ |
+| `bfl/flux-2-flex` × `steps`, `guidance_scale`, refs | `steps`, `guidance`; up to 8 `input_image_N` | `bfl_flux_2_flex_is_carried_with_its_documented_contract` | ✅ |
+| `vidu/viduq4-preview` × route, `audio`, `aspect_ratio` | img2video (first frame) or reference2video (1–15); `audio` on both; aspect ratio on reference2video only | `q4_preview_sends_its_audio_switch_on_both_endpoints`, `vidu_q4_preview_is_carried_with_its_documented_contract` | 🟡 wiremock |
+| `replicate/flux-3-image` × refs, `resolution` | official versionless route; `images` list; tier as `resolution` | `flux_3_image_sends_its_references_as_images_and_its_tier_as_resolution`, `replicate_flux_3_image_is_carried_with_its_documented_contract` | 🟡 wiremock |
+| Kling credentials | an access/secret key pair without an API key is refused naming the fix | `a_stored_key_pair_is_refused_naming_the_api_key_kling_needs` (image, video) | 🟡 wiremock |
+| `ideogram/ideogram-4-5` × `size`, `quality`, `background`, `seed`, refs, mask, `region` | v2 multipart: `size` (32 presets), `quality`, `background`, `seed`; `images` with the edited one first, then references, then `mask`; a region drawn as the mask; `very_low` without an image, a size beside a mask and four others beside a mask refused | `ideogram_4_5_generates_with_its_own_fields`, `ideogram_4_5_sends_the_edited_image_first`, `what_ideogram_4_5_cannot_make_is_refused_before_any_call`, `ideogram_4_5_is_carried_with_its_documented_contract` | 🟡 wiremock |
+| Vidu Q3, Q3 Mix, Q3 Pro Fast, Q2, Q2 Turbo, Q1 Classic × modes, `duration_seconds`, `resolution`, `audio` | each model's own operation: reference2video (Q3, Q3 Mix), img2video (Q3 Pro Fast), text2video (Q2), img2video + start-end (Q2 Turbo, Q1 Classic); `audio` only where the operation has it | `vidu_models_skipped_as_optional_are_carried_with_their_documented_contracts`, `the_newly_carried_models_send_audio_only_where_their_endpoint_has_it` | 🟡 wiremock |
+| `vidu/viduq2-pro`, `viduq2-turbo` × `audio` price | "consumes an additional 15 credits" | `varying_rows_price_the_variant_asked_for` | ✅ |
+
+## TokenHub (2026-11-04)
+
+Tencent TokenHub, Hunyuan's new home, is the `tokenhub` provider (one Bearer
+key); the old Tencent Cloud API stays as `hunyuan` for its existing buyers.
+Facts in `catalog_conformance` (test first), wire shapes in
+`providers/{image,video}/tokenhub.rs` wiremock tests. Ledger:
+`.superpowers/sdd/2026-11-04-tokenhub-bedrock-fal/progress.md` (git-ignored).
+None was run live.
+
+| model × param | wire | proof | status |
+|---|---|---|---|
+| `tokenhub/hy-image-v3.5-preview` × prompt, refs | one `role: user` message: a `text` part, then each image as an `image_url` part (data URI) | `hy_image_3_5_sends_its_prompt_as_one_user_message_with_the_pooled_key`, `references_go_as_image_url_parts_after_the_text` | 🟡 wiremock |
+| Hy-Image 3.5 × `resolution`, `aspect_ratio`, `size`, `seed` | `generate_max_pixels` 1048576 / 2359296 / 4194304; a ratio-shaped `size` beside it; an exact `size` alone (4K this way); `seed` | `the_tier_goes_as_generate_max_pixels_and_a_ratio_as_a_size_beside_it`, `every_declared_tier_and_ratio_maps_inside_the_vendors_bounds`, `a_size_with_a_tier_or_a_ratio_is_refused_before_any_call` | 🟡 wiremock |
+| Hy-Image 3.5 × answer | `choices[0].delta.image.url` downloaded; a failure frame's `error` or a 422 is final | `a_failure_frame_or_a_refusal_names_the_vendors_reason` | 🟡 wiremock |
+| `tokenhub/hy-video-v1.5` × prompt, `negative_prompt`, frame, `aspect_ratio`, `duration_seconds`, `resolution` | flat fields; `image` data URI; `aspect_ratio` only without an image; `duration` 5; `resolution` 720p | `text_to_video_sends_its_fields_with_the_pooled_key`, `image_to_video_sends_the_frame_as_a_data_uri_and_no_ratio` | 🟡 wiremock |
+| Hy-Video × poll | `GET /wand/hunyuan-video/tasks/{task_id}`: queued, running, succeeded (`videos[0].url`), failed (`error`) | `every_documented_status_maps`, `every_video_and_3d_poll_fails_an_undocumented_state` | 🟡 wiremock |
+| `tokenhub/wand-vega-video-1.0-lite` × prompt, frames, references | `content`: a `text` part, then `image_url` parts with `role` first_frame, last_frame or reference_image; frames and references not mixed | `wand_frames_and_references_go_as_roled_image_parts`, `wand_refuses_frames_with_references_and_a_last_frame_alone` | 🟡 wiremock |
+| WAND-Vega × `resolution`, `aspect_ratio`, `duration_seconds` | `resolution` 768P (sent when none is asked) … 4K; `ratio`; int `duration` 4–15 | `wand_text_to_video_sends_a_content_list_and_its_settings`, `tokenhub_wand_vega_video_lite_is_carried_with_its_documented_contract` | 🟡 wiremock |
+| WAND-Vega × poll | `GET /wand/vega-videos/tasks/{id}`: `content.video_url`, `error` | `wand_statuses_map` | 🟡 wiremock |
+
+## Bedrock: Stability AI (2026-11-04)
+
+| model × param | wire | proof | status |
+|---|---|---|---|
+| `bedrock/stability.*` × prompt, `negative_prompt`, `seed`, `output_format`, `aspect_ratio` | Stability's InvokeModel body, SigV4 for us-west-2; `aspect_ratio` on text-to-image only; no count | `sd3_5_large_sends_stabilitys_body_signed_for_us_west_2`, `bedrock_stability_rows_are_carried_with_their_documented_contract` | 🟡 wiremock |
+| SD3.5 Large / Ultra × init image, `strength` | SD3.5 `mode: image-to-image` + `image` + `strength` (0.5 when none); Ultra `image` + `strength` when asked; Core refuses | `image_to_image_sends_the_image_and_strength_and_no_ratio` | 🟡 wiremock |
+| Bedrock × answer | `images[0]`; a non-null `finish_reasons[0]` is a refusal | `a_filtered_answer_is_a_refusal_with_its_reason` | 🟡 wiremock |
+| `tokenhub/kling-video-*` (v2.5-turbo, v2.6, v3, v3-turbo, v4) × prompt, frames, `duration_seconds`, `resolution`, `aspect_ratio`, `audio`, `multi_shot` | Kling's own `settings` / `contents` (shared with `video/kling.rs`), `model` in the body, frames as data URIs; TokenHub's rules (v2.5 frames 1080p; v2.6 frames 720p, audio 1080p) | `kling_text_to_video_sends_klings_shape_to_tokenhub`, `kling_image_to_video_sends_contents_with_data_uri_frames`, `tokenhubs_kling_rules_are_refused_before_any_call`, `tokenhub_kling_video_rows_are_carried_with_tokenhubs_contract` | 🟡 wiremock |
+| TokenHub Kling × poll | `GET /wand/kling/tasks/{id}`: Kling's `data[]` (`kling_task_result`), a non-zero `code` an error | `kling_polls_map_tokenhubs_answers`, `every_video_and_3d_poll_fails_an_undocumented_state` | 🟡 wiremock |
+| `tokenhub/seedream-image-v5.0-*` (pro, flash) × prompt, refs, `resolution`, `size`, `output_format`, `background` | Ark's body at `/wand/si-image/generation`: `size` a tier (1K / 1.5K / 2K) or WxH, never both; `images` data URIs; `response_format: b64_json` | `seedream_sends_arks_shape_with_a_tier_or_a_size`, `seedream_refuses_a_tier_with_a_size_and_keeps_its_owned_fields`, `tokenhub_seedream_rows_are_carried_with_tokenhubs_contract` | 🟡 wiremock |
+| `tokenhub/minimax-video-v2.3`, `-v2.3-fast` × prompt, frames, `duration_seconds`, `resolution` | flat fields at `/wand/minimax-video/generation`: `first_frame_image` / `last_frame_image` data URIs, int duration (1080P only at 6 s, refused otherwise); `base_resp.status_code` ≠ 0 is a refusal | `minimax_flat_sends_its_fields`, `tokenhub_minimax_rows_are_carried_with_tokenhubs_contract` | 🟡 wiremock |
+| `tokenhub/minimax-video-h3`, `-h3-max` × prompt, frames, references, `resolution`, `duration_seconds`, `aspect_ratio` | `content` at `/wand/minimax-video-v2/generation`: text, then image_url parts with role first_frame / last_frame / reference_image (not mixed); `ratio` on text-to-video (16:9 default); H3-Max `extra.prompt_expansion_mode` | `minimax_content_sends_roled_parts` | 🟡 wiremock |
+| TokenHub MiniMax × poll | flat "Processing / Success / Fail", content task.status "queued … cancelled"; `content.url` | `minimax_polls_map`, `every_video_and_3d_poll_fails_an_undocumented_state` | 🟡 wiremock |
+| `tokenhub/pixverse-video-*` (v6.0, c1, v5.6) × prompt, frames, references, `duration_seconds`, `resolution`, `aspect_ratio`, `seed`, `audio` | the endpoint from the images (text / `img_id` / `first_frame_img` + `last_frame_img` / `image_references[]`), `quality`, `generate_audio_switch`; `aspect_ratio` on text and references; v5.6 10 s at 1080p refused; `ErrCode` ≠ 0 a refusal | `pixverse_picks_its_endpoint_from_the_images`, `pixverse_refuses_what_it_cannot_make`, `tokenhub_pixverse_rows_are_carried_with_tokenhubs_contract` | 🟡 wiremock |
+| TokenHub PixVerse × poll | `Resp.status` 1 / 5 / 6 / 7 / 8, `Resp.url` | `pixverse_polls_map`, `every_video_and_3d_poll_fails_an_undocumented_state` | 🟡 wiremock |
+| `tokenhub/kling-image-*` (v3, o1, v3-omni) × prompt, refs, `negative_prompt` (v3), `aspect_ratio`, `resolution` | submit at `/wand/kling-image/generation` (`n: 1`; v3 one raw-base64 `image`, omni `image_list` + `result_type: single`; tiers 1k / 2k / 4k), the task recorded, polled at `/wand/kling-image/tasks/{id}`, `task_result.images[0].url` downloaded; still running at the deadline → `Timeout` (late delivery) | `kling_image_submits_polls_and_downloads`, `kling_omni_images_go_as_a_list_and_a_failure_names_its_reason`, `every_async_tier_is_one_of_the_vendors`, `every_resumable_image_job_is_read_by_poll_job` | 🟡 wiremock |
+| `tokenhub/vidu-image-q2` × prompt, refs, `aspect_ratio`, `resolution`, `seed` | `/wand/vidu-image/generation` (`images` data URIs, 1K → "1080p"), polled at `/wand/vidu-image/tasks/{id}` (`state`, `creations[0].url`) | `vidu_image_submits_polls_and_downloads`, `every_image_poll_fails_an_undocumented_state` | 🟡 wiremock |
+| `tokenhub/vidu-video-*` (q4-preview, q3-pro, q3-turbo, q3, q2, q2-pro, q2-turbo) × prompt, frames, references, `duration_seconds`, `resolution`, `aspect_ratio`, `audio`, `seed` | the endpoint from the images (as `video/vidu.rs`): `images` data URIs (start frame first), the row's 720p when none, `aspect_ratio` on text and references; refused: no-image Q4, sound on references but q3, a reference prompt over 2000, Q2 first/last over 8 s or with sound | `vidu_picks_its_endpoint_from_the_images`, `vidu_refuses_what_its_endpoint_cannot_take`, `vidu_q2_start_end_limits_are_refused_before_any_call`, `tokenhub_vidu_q3_and_q4_rows_are_carried_with_tokenhubs_contract`, `tokenhub_vidu_q2_rows_are_carried_with_tokenhubs_contract` | 🟡 wiremock |
+| TokenHub Vidu × price | per second (Q3/Q4), first second + rate (Q2) as `per_second_usd` + `add_usd`, the reference endpoint's own figures by `references.reference` | `varying_rows_price_the_variant_asked_for` (7 cases) | ✅ |
+| TokenHub Vidu × poll | `state` created / queueing / processing / success / failed, `creations[0].url` | `vidu_polls_map`, `every_video_and_3d_poll_fails_an_undocumented_state` | 🟡 wiremock |
+| `tokenhub/yt-video-2.0` × first frame, prompt, `resolution`, `fps` | `/api/video/submit` with the old action's fields in snake_case (`image` {base64 \| url}); polled by POST `/api/video/query {model, id}` (`status`, `progress`, `data.url`) | `yt_video_submits_and_queries_by_post`, `tokenhub_yt_video_2_0_is_carried_with_tokenhubs_contract` | 🟡 wiremock |
+| `tokenhub/kling-video-v3-omni`, `-o1` × prompt, frames, `audio` (v3-omni), `duration_seconds` | `/wand/kling/omni-video` for text and frames (`contents` + `settings`); O1 with a first frame alone only 5 / 10 s; no references (their count is undocumented for these two) | `kling_omni_sends_contents_to_its_own_endpoint` (pending a cargo slot), `tokenhub_kling_omni_rows_are_carried_with_text_and_frames` | 🟡 wiremock |
+| `ideogram/nano-banana-2`, `-pro` × prompt, images, `aspect_ratio`, `resolution`, `seed` | Ideogram v2 `/v2/image/generate/{model}` multipart: `resolution_tier` (1K when none), the edited image first, `num_images` 1, no `async` / `webhook_url` | `nano_banana_through_ideogram_sends_its_own_fields` (pending a cargo slot), `ideogram_resold_nano_banana_rows_are_carried` | 🟡 wiremock |
+| `replicate/sd3.5-large`, `-large-turbo`, `-medium` × prompt, `aspect_ratio`, `guidance_scale`, `seed`, `negative_prompt`, `strength`, `output_format`, init image | official versionless `/v1/models/stability-ai/stable-diffusion-3.5-*/predictions`; guidance as `cfg`, strength as `prompt_strength`, jpeg as jpg, no steps | `sd3_5_rows_send_cfg_to_their_own_official_model` (pending a cargo slot), `replicate_sd3_5_rows_are_carried_with_their_documented_contract` | 🟡 wiremock |
+| `fal/flux-3-image`, `-klein` × prompt, images, `resolution` (Image), `aspect_ratio` (Image), `size` (Klein), `seed` (Klein), `output_format` | text-to-image at `blackforestlabs/flux-3[/klein]/text-to-image`; with images the `/edit-image` twin and an `image_urls` list; Image's tier as "1k" (only 1K priced), Klein's size as `image_size` | `flux_3_on_fal_routes_by_images`, `fal_flux_3_rows_are_carried_with_fals_contract` | 🟡 wiremock |
+| `fal/flux-3-image-klein-base` × prompt, images, `size`, `seed`, `output_format` | Klein's body at `blackforestlabs/flux-3/klein/base/text-to-image/lora`, with images `…/klein/base/edit-image/lora` and `image_urls`; no `loras` sent; sizes up to 4,194,304 px (fal prices nothing past 2048²) | `flux_3_klein_base_on_fal_takes_its_lora_endpoints_with_no_lora`, `fal_flux_3_klein_base_is_carried_with_fals_contract` | 🟡 wiremock |
+| `fal/flux-3-video`, `-video-draft`, `-max-video` × prompt, `first_frame`, `last_frame`, keyframes, `duration_seconds`, `resolution` (not drafts), `aspect_ratio`, `audio`, `seed` (Max) | no frame → `…/text-to-video`; a first frame → `…/image-to-video` (`image_url`); first + last → `…/first-last-frame-to-video` (`start_image_url`, `end_image_url`; Max: image-to-video's `end_image_url`); keyframes → `…/keyframes-to-video` (`frame_index` = round(time_s × 24)); duration an integer 5–20; on the standard row 1440p/2160p with frames or keyframes refused before the call; drafts at the `/draft` twins with no `resolution`; `audio` as `generate_audio` | `flux_3_video_on_fal_picks_its_endpoint_from_the_frames`, `flux_3_video_on_fal_refuses_what_its_endpoints_do_not_take`, `flux_3_max_video_on_fal_sends_its_last_frame_to_image_to_video`, `flux_3_video_drafts_on_fal_take_the_draft_endpoints`, `fal_flux_3_video_rows_are_carried_with_fals_contract` | 🟡 wiremock |
+| `fal/flux-2`, `-turbo`, `-flash`, `-pro`, `-max`, `-flex`, `-klein-4b`, `-klein-9b`, `-klein-4b-base`, `-klein-9b-base` × prompt, images, `size`, `seed`, `output_format`, `guidance_scale` (dev, turbo, flash, flex, klein base), `steps` (dev, flex, klein), `negative_prompt` (klein base) | text-to-image at each endpoint; with images its `/edit` twin and an `image_urls` list (4 images on dev, turbo, flash, klein; 8 on pro, max, flex); size as `image_size` {width, height}; `steps` as `num_inference_steps`; no `num_images` | `flux_2_on_fal_routes_by_images`, `fal_flux_2_rows_are_carried_with_fals_contract`, `fal_flux_2_matches_the_endpoint_input_schema` | 🟡 wiremock |
+| `fal/flux-2-pro-outpaint` × `expand`, the init image, `output_format` | `fal-ai/flux-2-pro/outpaint`: `image_url`, `expand_left` / `_top` / `_right` / `_bottom` (≤ 2048), no prompt; `extra` adds `mode`, `auto_crop` and can't change a side; nothing to grow is refused before the call | `flux_2_pro_outpaint_on_fal_sends_the_sides_and_no_prompt`, `fal_flux_2_pro_outpaint_is_carried_with_fals_contract` | 🟡 wiremock |
+| `fal/flux-kontext-pro`, `-max`, `fal/flux-pro-1.1-ultra`, `-1.1-redux`, `-1.1-ultra-redux`, `fal/flux-pro-fill`, `-erase` × prompt, images, `aspect_ratio` (Kontext, ultra), `guidance_scale`, `steps`, `size` (Redux), mask and `region` (fill, erase) | Kontext: no image → `…/kontext[/max]/text-to-image`, one → `…/kontext[/max]` (`image_url`), two to four → `…/multi` (`image_urls`); ultra's `redux` image prompt as `image_url`; fill and erase send the mask as `mask_url` and refuse a request without one; erase sends no `prompt` | `flux_1_pro_on_fal_routes_by_images_and_masks`, `fal_flux_1_pro_rows_are_carried_with_fals_contract` | 🟡 wiremock |
+| `fal/recraft-v2`, `-v4`, `-v4-pro`, `-v4-vector`, `-v4-pro-vector`, `-v4.1`, `-v4.1-pro`, `-v4.1-vector`, `-v4.1-pro-vector`, `-v4.1-utility`, `-v4.1-utility-pro`, `-v4.1-flash` × prompt, `size`, `palette`, `style` (V2) | each row's own endpoint (V2 at the listed `fal-ai/recraft-20b`); `size` from Recraft's 1K or 2K table as `image_size`; `palette` as `colors` [{r, g, b}]; SVG rows answer fal's `image/svg+xml` | `recraft_v4_on_fal_sends_its_size_and_palette`, `fal_recraft_v4_rows_are_carried_with_fals_contract` | 🟡 wiremock |
+| `fal/recraft-v3` (images), `-v4-style`, `-v4-style-pro`, `-v4-style-vector`, `-v4-style-pro-vector`, `-vectorize`, `-upscale-crisp`, `-upscale-creative` × the init image, `strength` and `negative_prompt` (V3 images), `style` references, `palette` | V3 with an image → `/image-to-image` (`image_url`, `strength`, `negative_prompt`; text-to-image gets neither); style rows send `style` references as `image_urls` (+$0.005 when the style is made from them); vectorize and upscale send `image_url` alone and read fal's one `image` | `recraft_operations_on_fal_send_their_own_fields`, `fal_recraft_operations_are_carried_with_fals_contract` | 🟡 wiremock |
+| `ideogram/p-image-ideogram` × prompt, `quality`, `resolution`, `aspect_ratio`, `seed` | `POST /v2/image/generate/p-image-ideogram` as JSON: `quality` (medium when none is asked), `resolution` "1k" \| "2k", `aspect_ratio` "16x9", `seed`, `num_images` 1 | `p_image_through_ideogram_sends_its_json_fields`, `ideogram_p_image_is_carried_with_ideograms_contract` | 🟡 wiremock |
+
+### 2026-11-09 audit fixes
+
+From `docs/superpowers/2026-11-09-provider-audit.md`, each vendor fact re-read
+that day.
+
+| param × provider | what reaches the vendor (or what is billed) | proof | status |
+|---|---|---|---|
+| ref role `reference` × `vidu/viduq3-turbo` | not offered; the adapter refuses one before any call (Vidu documents only the subjects form for viduq3-turbo on reference2video) | `vidu_q3_turbo_serves_every_endpoint_the_adapter_routes_to`, `viduq3_turbo_refuses_reference_images_before_any_call` | 🟡 wiremock |
+| `extra.movement_amplitude`, `extra.bgm` × `vidu/viduq1` | sent on start-end2video and reference2video, left out on text2video (its body has neither) | `viduq1_text2video_sends_no_movement_amplitude_or_bgm` | 🟡 wiremock |
+| `aspect_ratio` × `minimax/MiniMax-H3-Lite` reference-to-video | the row's default (16:9) when none is asked: H3-Lite "does not support `adaptive` yet" | `h3_lite_references_never_ride_on_the_adaptive_default` | 🟡 wiremock |
+| `aspect_ratio` × `tokenhub/kling-image-o1`, `-v3-omni` text-to-image | 16:9 when none is asked (TokenHub's own `auto` is refused for text-to-image); with images, none, so `auto` follows them | `kling_omni_text_to_image_never_rides_on_the_auto_default` | 🟡 wiremock |
+| result `content_type` × Replicate, BFL | the bytes' type (the router already relabelled by bytes) | `a_result_is_labelled_with_the_type_its_bytes_are` (both adapters) | 🟡 wiremock |
+| price × `openai/gpt-image-2` `quality` | low $0.006, medium $0.053, high $0.211 at 1024² | `varying_rows_price_the_variant_asked_for`, `an_openai_image_is_quoted_by_its_quality_and_its_size`, `gpt_image_2_estimate_is_openais_table_by_quality` | 🟡 |
+| price × Ideogram 3.0 `character` reference | $0.15 / $0.10 / $0.20 (Default / Turbo / Quality) | `varying_rows_price_the_variant_asked_for` | 🟡 |
+| price × `luma/ray-2`, `luma/dream-machine` `resolution` | 1080p $0.95, 4k $1.05 (Luma's 5 s figures) | `varying_rows_price_the_variant_asked_for` | 🟡 |

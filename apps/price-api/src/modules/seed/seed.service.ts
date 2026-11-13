@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { Freshness, PriceSource, ProviderMode, Scope } from '../../common/enums';
 import { tierKey } from '../../common/tier-key';
 import { AppConfig } from '../../config/configuration';
@@ -14,7 +14,9 @@ import { AuthService } from '../auth/auth.service';
  * providers, models, and any missing baseline price components. Existing prices
  * are never overwritten — scraped/manual updates survive restarts. Operator
  * edits to provider mode/cron/url are also preserved; only static facts
- * (display name, scraper-implemented flag, model metadata) are refreshed.
+ * (display name, scraper-implemented flag, model metadata) are refreshed. A
+ * model the registry no longer declares (litegen's catalog dropped it) is
+ * retired: `active = false`, out of every list, its prices and history kept.
  *
  * Also bootstraps an initial admin OAuth client when configured.
  */
@@ -41,7 +43,7 @@ export class SeedService implements OnApplicationBootstrap {
   }
 
   /** Insert/refresh providers, models, and baseline prices from the registry. */
-  async seed(): Promise<{ providers: number; models: number; pricesInserted: number }> {
+  async seed(): Promise<{ providers: number; models: number; pricesInserted: number; modelsRetired: number }> {
     let pricesInserted = 0;
     let modelCount = 0;
 
@@ -99,10 +101,14 @@ export class SeedService implements OnApplicationBootstrap {
       }
     }
 
+    const declared = PROVIDER_REGISTRY.flatMap((d) => d.seed.map((m) => m.id));
+    const retired = await this.modelRepo.update({ id: Not(In(declared)), active: true }, { active: false });
+    const modelsRetired = retired.affected ?? 0;
+
     this.logger.log(
-      `Seed complete: ${PROVIDER_REGISTRY.length} providers, ${modelCount} models, ${pricesInserted} baseline prices inserted.`,
+      `Seed complete: ${PROVIDER_REGISTRY.length} providers, ${modelCount} models, ${pricesInserted} baseline prices inserted, ${modelsRetired} models retired.`,
     );
-    return { providers: PROVIDER_REGISTRY.length, models: modelCount, pricesInserted };
+    return { providers: PROVIDER_REGISTRY.length, models: modelCount, pricesInserted, modelsRetired };
   }
 
   private async upsertProvider(
@@ -151,6 +157,7 @@ export class SeedService implements OnApplicationBootstrap {
     existing.displayName = sm.displayName;
     existing.mediaType = sm.mediaType;
     existing.modeOverride = sm.modeOverride ?? null;
+    existing.active = true; // the catalog carries it (again)
     await this.modelRepo.save(existing);
   }
 

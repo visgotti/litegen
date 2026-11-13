@@ -1,16 +1,9 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from dateutil.parser import isoparse
 
 from ..models.model_3d_asset_kind import Model3DAssetKind
 from ..types import UNSET, Unset
@@ -29,7 +22,9 @@ class Model3DAsset:
 
     A `completed` generation carries one `mesh` asset for every format in its
     `output_formats` — never fewer; a missing one fails the generation instead —
-    plus whatever textures and previews the vendor returned.
+    plus whatever textures and previews the vendor returned, and, when the
+    request set `output_packages`, a `package` asset (a zip) for each of those
+    formats that is a file and its sidecars, after every other asset.
 
         Attributes:
             format_ (str): Lowercase container without a dot. Meshes use the `Model3dFormat`
@@ -38,8 +33,15 @@ class Model3DAsset:
             kind (Model3DAssetKind): What a `Model3dAsset` is.
             url (str): Always absolute: a root-relative path is indistinguishable from an
                 outage to a client fetching it from a worker. Meshes live at
-                `…/{generation_id}/model.{format}`.
+                `…/{generation_id}/model.{format}`, packages at
+                `…/{generation_id}/package_{format}.zip`.
+            expires_at (Union[None, Unset, datetime.datetime]): When a signed link stops working (`docs/storage-access.md`);
+                read the
+                generation again for a fresh one. Absent on every other URL.
             height (Union[None, Unset, int]): Pixel height, on textures and previews whose vendor reports it.
+            kept (Union[None, Unset, bool]): `false` when litegen kept no copy (`keep_outputs: false`): the file is
+                the vendor's own, unconverted, and the vendor deletes it on its own
+                schedule. Absent when litegen kept it.
             polycount (Union[None, Unset, int]): Triangle count, on meshes whose vendor reports one. A container litegen
                 derived carries its source's count — conversion keeps every triangle.
             scene (Union['SceneManifest', None, Unset]):
@@ -51,7 +53,9 @@ class Model3DAsset:
     format_: str
     kind: Model3DAssetKind
     url: str
+    expires_at: Union[None, Unset, datetime.datetime] = UNSET
     height: Union[None, Unset, int] = UNSET
+    kept: Union[None, Unset, bool] = UNSET
     polycount: Union[None, Unset, int] = UNSET
     scene: Union["SceneManifest", None, Unset] = UNSET
     sha256: Union[None, Unset, str] = UNSET
@@ -68,11 +72,25 @@ class Model3DAsset:
 
         url = self.url
 
+        expires_at: Union[None, Unset, str]
+        if isinstance(self.expires_at, Unset):
+            expires_at = UNSET
+        elif isinstance(self.expires_at, datetime.datetime):
+            expires_at = self.expires_at.isoformat()
+        else:
+            expires_at = self.expires_at
+
         height: Union[None, Unset, int]
         if isinstance(self.height, Unset):
             height = UNSET
         else:
             height = self.height
+
+        kept: Union[None, Unset, bool]
+        if isinstance(self.kept, Unset):
+            kept = UNSET
+        else:
+            kept = self.kept
 
         polycount: Union[None, Unset, int]
         if isinstance(self.polycount, Unset):
@@ -115,8 +133,12 @@ class Model3DAsset:
                 "url": url,
             }
         )
+        if expires_at is not UNSET:
+            field_dict["expires_at"] = expires_at
         if height is not UNSET:
             field_dict["height"] = height
+        if kept is not UNSET:
+            field_dict["kept"] = kept
         if polycount is not UNSET:
             field_dict["polycount"] = polycount
         if scene is not UNSET:
@@ -141,6 +163,23 @@ class Model3DAsset:
 
         url = d.pop("url")
 
+        def _parse_expires_at(data: object) -> Union[None, Unset, datetime.datetime]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                expires_at_type_0 = isoparse(data)
+
+                return expires_at_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, datetime.datetime], data)
+
+        expires_at = _parse_expires_at(d.pop("expires_at", UNSET))
+
         def _parse_height(data: object) -> Union[None, Unset, int]:
             if data is None:
                 return data
@@ -149,6 +188,15 @@ class Model3DAsset:
             return cast(Union[None, Unset, int], data)
 
         height = _parse_height(d.pop("height", UNSET))
+
+        def _parse_kept(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        kept = _parse_kept(d.pop("kept", UNSET))
 
         def _parse_polycount(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -207,7 +255,9 @@ class Model3DAsset:
             format_=format_,
             kind=kind,
             url=url,
+            expires_at=expires_at,
             height=height,
+            kept=kept,
             polycount=polycount,
             scene=scene,
             sha256=sha256,

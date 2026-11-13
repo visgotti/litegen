@@ -31,23 +31,38 @@ pub struct LeonardoVideoProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Start-image uploads to Leonardo's presigned storage URL, without the
+    /// operator's extra_headers: a URL from the vendor's answer, so the
+    /// client is public-only, follows no redirect and uses no proxy
+    /// (SEC-LEONARDO).
+    upload_client: Client,
+    /// Whether the upload URL must be a public address. Only the tests,
+    /// whose mock storage runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 /// What litegen itself sends to `POST /generations-image-to-video`; `extra`
 /// cannot replace it (`imageId` and `imageType` in `extra` name the start
 /// frame instead of an uploaded reference).
-const OWNED_FIELDS: &[&str] = &["prompt", "imageId", "imageType", "model", "resolution", "duration"];
+const OWNED_FIELDS: &[&str] = &["prompt", "imageId", "imageType", "model", "resolution", "duration", "seed", "negativePrompt"];
 
 impl LeonardoVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            // The process's shared public-only client for this timeout, not
+            // one per instance (P8).
+            upload_client: crate::util::ssrf::public_only_client_with_timeout(std::time::Duration::from_secs(180)),
+            public_assets_only: true,
         }
     }
 
@@ -125,6 +140,7 @@ impl VideoProvider for LeonardoVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -149,7 +165,9 @@ impl VideoProvider for LeonardoVideoProvider {
         let mut image_type = "UPLOADED";
         for r in &materialized.refs {
             if let MaterializedRefForm::MultipartField { bytes, .. } = &r.form {
-                image_id = Some(upload_init_image(&self.client, self.api_base(), &self.auth, &creds, bytes).await?);
+                image_id = Some(
+                    upload_init_image(&self.client, &self.upload_client, self.public_assets_only, self.api_base(), &self.auth, &creds, bytes).await?,
+                );
                 break;
             }
         }
@@ -172,7 +190,7 @@ impl VideoProvider for LeonardoVideoProvider {
             "prompt": base.prompt,
             "imageId": image_id,
             "imageType": image_type,
-            "model": leo_model,
+            "model": crate::providers::wire_model(self.config.as_ref(), &model.id, leo_model),
             "resolution": Self::resolve_resolution(leo_model, extras.resolution.as_deref()),
         });
         // `duration` is documented for Veo and Kling only; Motion 2.0 (and
@@ -181,11 +199,21 @@ impl VideoProvider for LeonardoVideoProvider {
         if extras.duration_seconds > 0.0 && !leo_model.starts_with("MOTION2") {
             body["duration"] = Value::Number((extras.duration_seconds as i64).into());
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // Motion 2.0's `seed` and `negativePrompt` (the model list: "seed
+        // {…maximum":2147483637}", "negative_prompt {…maxLength":1000}"); only
+        // its row declares them, and no other model is sent either.
+        // @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (2026-11-03)
+        if leo_model.starts_with("MOTION2") {
+            if let Some(seed) = base.seed {
+                body["seed"] = Value::Number(seed.into());
+            }
+            if let Some(np) = base.negative_prompt.as_deref() {
+                body["negativePrompt"] = Value::String(np.to_string());
+            }
+        }
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -249,7 +277,9 @@ impl VideoProvider for LeonardoVideoProvider {
         let mut status = match pk["status"].as_str() {
             Some("COMPLETE") => GenerationStatus::Completed,
             Some("FAILED") => GenerationStatus::Failed,
-            _ => GenerationStatus::Processing,
+            // job_status: PENDING | COMPLETE | FAILED.
+            Some("PENDING") => GenerationStatus::Processing,
+            other => return Ok(super::unknown_state("leonardo", other)),
         };
         // The video is the generated image's `motionMP4URL` ("The URL of the
         // motion MP4"); its `url` is not a video, so a finished generation
@@ -453,6 +483,87 @@ mod tests {
         assert_eq!(poll.video_url.unwrap(), "https://cdn.leo/v.mp4");
     }
 
+    /// Leonardo, whose presign names an upload URL on `s3` (a loopback IP
+    /// literal) that redirects to `s3`'s `/landed`, which would accept it.
+    async fn leonardo_with_a_redirecting_upload() -> (MockServer, MockServer) {
+        let server = MockServer::start().await;
+        let s3 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/init-image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "uploadInitImage": { "id": "init-1", "url": format!("{}/upload", s3.uri()), "fields": "{\"key\":\"k\"}" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "motionVideoGenerationJob": { "generationId": "leo-vid-1" } })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/upload"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/landed", s3.uri())))
+            .mount(&s3)
+            .await;
+        Mock::given(path("/landed")).respond_with(ResponseTemplate::new(200)).mount(&s3).await;
+        (server, s3)
+    }
+
+    fn one_start_frame() -> MaterializedRequest {
+        MaterializedRequest {
+            refs: vec![MaterializedRef {
+                role: "start".into(),
+                form: MaterializedRefForm::MultipartField {
+                    field_name: "file".into(),
+                    bytes: bytes::Bytes::from_static(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16]),
+                    content_type: "image/jpeg".into(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        }
+    }
+
+    /// SEC-LEONARDO: the upload URL comes from Leonardo's answer, so the start
+    /// frame goes only to a public address, and nothing is created when it
+    /// can't.
+    #[tokio::test]
+    async fn a_start_frame_is_never_uploaded_to_an_internal_address() {
+        let (server, s3) = leonardo_with_a_redirecting_upload().await;
+        let mut extras = extras_with_image_id();
+        extras.extra = None;
+        let got = make_provider(&server.uri())
+            .generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras, &one_start_frame())
+            .await;
+        let seen: Vec<String> = s3.received_requests().await.unwrap().iter().map(|r| format!("{} {}", r.method, r.url.path())).collect();
+        assert!(seen.is_empty(), "the start frame went to an internal address: {seen:?}");
+        let err = got.expect_err("refused before the upload");
+        assert!(
+            matches!(&err, ProviderError::RequestFailed { retryable: false, status_code: None, message, .. } if message.contains("upload URL")),
+            "{err:?}"
+        );
+        let received = server.received_requests().await.unwrap();
+        assert!(received.iter().all(|r| r.url.path() != "/generations-image-to-video"), "a job was created after a refused upload");
+    }
+
+    /// The upload client follows no redirect: the storage URL Leonardo named
+    /// gets the upload, and a 3xx from it is a failed upload, never a second
+    /// request to wherever it points.
+    #[tokio::test]
+    async fn an_upload_url_that_redirects_is_not_followed() {
+        let (server, s3) = leonardo_with_a_redirecting_upload().await;
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = false;
+        let mut extras = extras_with_image_id();
+        extras.extra = None;
+        let got = provider.generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras, &one_start_frame()).await;
+        let seen: Vec<String> = s3.received_requests().await.unwrap().iter().map(|r| format!("{} {}", r.method, r.url.path())).collect();
+        assert_eq!(seen, vec!["POST /upload".to_string()], "the redirect was followed");
+        assert!(matches!(got, Err(ProviderError::RequestFailed { status_code: Some(302), retryable: false, .. })), "{got:?}");
+        let received = server.received_requests().await.unwrap();
+        assert!(received.iter().all(|r| r.url.path() != "/generations-image-to-video"), "a job was created after a failed upload");
+    }
+
     /// Kling 2.5 Turbo takes `RESOLUTION_1080` ("resolution ... Set to
     /// RESOLUTION_1080"); a request that names no resolution used to go out
     /// as `RESOLUTION_720`.
@@ -514,6 +625,35 @@ mod tests {
         assert!(body.get("duration").is_none(), "Motion 2.0 got a duration: {body}");
     }
 
+    /// Motion 2.0 takes a seed and a negative prompt: the v1 body's `seed` and
+    /// `negativePrompt`, which Leonardo's model list gives `motion_2.0` as
+    /// "seed {…"maximum":2147483637}" and "negative_prompt {…"maxLength":1000}".
+    /// `extra` cannot replace either.
+    /// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (2026-11-03)
+    #[tokio::test]
+    async fn motion2_sends_its_seed_and_negative_prompt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "motionVideoGenerationJob": { "generationId": "leo-vid-4" }
+            })))
+            .mount(&server)
+            .await;
+        let mut base = make_base("leaves drifting in the wind", "leonardo/motion2");
+        base.seed = Some(77);
+        base.negative_prompt = Some("blur".into());
+        let mut extras = extras_with_image_id();
+        if let Some(Value::Object(map)) = extras.extra.as_mut() {
+            map.insert("seed".into(), json!(1));
+            map.insert("negativePrompt".into(), json!("other"));
+        }
+        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
+        make_provider(&server.uri()).generate(&ref_schema("leonardo/motion2"), &base, &extras, &materialized).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["seed"].as_i64(), body["negativePrompt"].as_str()), (Some(77), Some("blur")), "{body}");
+    }
+
     /// Kling 2.5 Turbo: `KLING2_5`, "resolution ... Set to RESOLUTION_1080",
     /// "duration ... Set to 5 or 10".
     /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo>
@@ -552,7 +692,9 @@ mod tests {
     }
 
     /// #16: `extra` passes a start frame by `imageId` and Leonardo's own
-    /// knobs, but never replaces the model litegen bills or anything else it sends.
+    /// knobs, but never replaces the model litegen bills or anything else it
+    /// sends. E4a: nor does it publish the clip (`isPublic`); the account's
+    /// own default applies.
     #[tokio::test]
     async fn extra_cannot_replace_what_litegen_sends() {
         let server = MockServer::start().await;
@@ -564,7 +706,7 @@ mod tests {
         extras.duration_seconds = 8.0;
         extras.extra = Some(json!({
             "imageId": "img-1", "model": "MOTION2", "prompt": "other", "resolution": "RESOLUTION_480",
-            "duration": 4, "isPublic": true
+            "duration": 4, "isPublic": true, "promptEnhance": true
         }));
         let _ = make_provider(&server.uri())
             .generate(&ref_schema("leonardo/veo3.1"), &make_base("a fox runs", "leonardo/veo3.1"), &extras, &no_refs())
@@ -575,7 +717,8 @@ mod tests {
         assert_eq!(body["resolution"], "RESOLUTION_720");
         assert_eq!(body["duration"], 8);
         assert_eq!(body["imageId"], "img-1");
-        assert_eq!(body["isPublic"], true);
+        assert_eq!(body["promptEnhance"], true);
+        assert!(body.get("isPublic").is_none(), "{body}");
     }
 
     /// #17, #19: a create Leonardo turned away says so, with its status, and

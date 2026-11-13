@@ -14,12 +14,12 @@ export function Providers() {
       <div className="container">
         <header className={styles.head}>
           <h2 className={styles.heading}>{t('heading')}</h2>
-          <p className={styles.sub}>{t('subheading')}</p>
+          <p className={styles.sub}>{t('subheading', { count: PROVIDERS.length })}</p>
         </header>
 
         <ul className={styles.grid}>
           {PROVIDERS.map((p) => (
-            <li key={p.name} className={styles.chip}>
+            <li key={p.id} className={styles.chip}>
               {p.logo ? (
                 <span className={styles.logo} aria-hidden="true">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -35,6 +35,9 @@ export function Providers() {
                 {p.image && <span className={styles.tag}>{t('image')}</span>}
                 {p.video && (
                   <span className={`${styles.tag} ${styles.tagVideo}`}>{t('video')}</span>
+                )}
+                {p.model3d && (
+                  <span className={`${styles.tag} ${styles.tag3d}`}>{t('model3d')}</span>
                 )}
               </span>
             </li>

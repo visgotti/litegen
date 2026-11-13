@@ -33,7 +33,9 @@
 //! - File inputs, including base64 `data:` URIs:
 //!   <https://fal.ai/docs/documentation/model-apis/fal-cdn>
 //! - Retention — output media on the CDN expires per the account's lifecycle
-//!   settings; request payloads (and so the stored result) are kept 30 days:
+//!   settings; request payloads (and so the stored result) are kept 90 days
+//!   ("Request inputs and outputs are stored in the platform for 90 days by
+//!   default", 2026-11-09):
 //!   <https://fal.ai/docs/documentation/model-apis/media-expiration>
 //! - Key check behind `health_check` (Platform API; free, read-only):
 //!   <https://fal.ai/docs/platform-apis/v1/models/pricing>
@@ -44,6 +46,7 @@
 //! How each canonical param lands on each endpoint is tabled in the
 //! `providers::model3d` module docs.
 
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
@@ -66,6 +69,13 @@ pub(crate) const DEFAULT_QUEUE_BASE: &str = "https://queue.fal.run";
 /// fal's Platform API, used only to check a key. `options.platform_api_base`
 /// overrides it.
 pub(crate) const DEFAULT_PLATFORM_BASE: &str = "https://api.fal.ai/v1";
+
+/// fal's auth on every queue, platform and cancel call: `Authorization: Key <key>`.
+/// @see <https://fal.ai/docs/documentation/setting-up/authentication> — Verbatim:
+///   "Authorization: Key $FAL_KEY" (2026-11-09)
+pub(crate) fn fal_auth() -> crate::providers::auth::AuthSpec {
+    crate::providers::auth::AuthSpec::Header { name: "Authorization".to_string(), value_prefix: "Key ".to_string() }
+}
 
 /// The endpoint `health_check` asks the price of — any public id will do.
 const HEALTH_CHECK_ENDPOINT: &str = "fal-ai/trellis";
@@ -418,9 +428,13 @@ fn resolve_operation(model: &str) -> Option<OperationSpec> {
         //   basic_animations {walking_*, running_*}, rig_task_id.
         // Meshy's own limits, which fal forwards: "The model must be a GLB
         //   (`.glb`) file of at most 400 MB from an `http` or `https` URL, or
-        //   100 MB as a data URI."; "The model can have at most 320,000
-        //   faces"; "Rigging isn't suitable for these models: - Untextured
-        //   meshes - Non-humanoid assets" (docs.meshy.ai/en/api/rigging).
+        //   100 MB as a data URI."; "The model can have at most 380,000
+        //   triangles (a quad counts as 2), and a model with more returns
+        //   `400`." (litegen keeps its own cap at 320,000 faces, the limit
+        //   Meshy published before; a test pins it); "Rigging isn't suitable
+        //   for these models: - Untextured meshes - Non-humanoid assets -
+        //   Humanoid assets with an unclear limb and body structure"
+        //   (docs.meshy.ai/en/api/rigging, 2026-11-09).
         //
         // @see <https://fal.ai/models/fal-ai/meshy/rigging/api>
         // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging>
@@ -443,7 +457,7 @@ fn resolve_operation(model: &str) -> Option<OperationSpec> {
 /// container, else what fal declared, else what the CDN served.
 fn model3d_content_type_or(format: &str, declared: &str, served: &str) -> String {
     let fallback = if declared.is_empty() { served } else { declared };
-    crate::proxy::storage::model3d_content_type(format, fallback).to_string()
+    crate::store::model3d_content_type(format, fallback).to_string()
 }
 
 /// The ONE container to ask the vendor for — `None` when the endpoint emits GLB
@@ -456,12 +470,12 @@ fn model3d_content_type_or(format: &str, declared: &str, served: &str) -> String
 /// wanted an underivable fbx would deliver a glb, and the completion guard would
 /// then fail a generation the vendor could have fulfilled, after it was billed.
 /// Otherwise GLB: the conversion source carrying the most.
-fn vendor_format(spec: &EndpointSpec, requested: &[String]) -> Option<String> {
+fn vendor_format(spec: &EndpointSpec, requested: &[String], source: Option<crate::types::Model3dFormatSource>) -> Option<String> {
     spec.format_field?;
     let offers = |f: &str| spec.format_values.iter().any(|v| v.eq_ignore_ascii_case(f));
     if let Some(native) = requested
         .iter()
-        .find(|r| model3d_convert::prefers_vendor_native(r) && offers(r))
+        .find(|r| model3d_convert::asks_vendor_for(r, source) && offers(r))
     {
         return Some(native.to_ascii_lowercase());
     }
@@ -581,6 +595,8 @@ pub(crate) fn needs_retry(headers: &reqwest::header::HeaderMap) -> Option<bool> 
 /// and the body — parsed when it is JSON, kept as text either way.
 pub(crate) struct QueueReply {
     pub(crate) status: StatusCode,
+    /// The wait a 429 named (`Retry-After`), in milliseconds.
+    pub(crate) retry_after_ms: Option<u64>,
     pub(crate) error_type: Option<String>,
     pub(crate) json: Option<Value>,
     pub(crate) text: String,
@@ -591,10 +607,11 @@ impl QueueReply {
     /// parsed when it is JSON, kept as text either way.
     pub(crate) async fn read(resp: reqwest::Response) -> Result<Self, reqwest::Error> {
         let status = resp.status();
+        let retry_after_ms = crate::providers::retry_after_ms(resp.headers());
         let error_type = header(resp.headers(), "x-fal-error-type").map(str::to_string);
         let text = resp.text().await?;
         let json = serde_json::from_str(&text).ok();
-        Ok(Self { status, error_type, json, text })
+        Ok(Self { status, retry_after_ms, error_type, json, text })
     }
 
     /// What went wrong, in fal's words when it sent any.
@@ -629,9 +646,19 @@ impl QueueReply {
             })
     }
 
+    /// A 429 that named its wait, as `RateLimited` (see
+    /// [`crate::providers::rate_limited`]).
+    pub(crate) fn rate_limited(&self, message: &str) -> Option<ProviderError> {
+        crate::providers::rate_limited("fal", self.status, self.retry_after_ms, message, self.json.as_ref())
+    }
+
     fn into_error(self, what: &str, retryable: bool) -> ProviderError {
+        let message = format!("fal 3d {what} returned HTTP {}: {}", self.status.as_u16(), self.describe());
+        if let Some(e) = self.rate_limited(&message) {
+            return e;
+        }
         ProviderError::RequestFailed {
-            message: format!("fal 3d {what} returned HTTP {}: {}", self.status.as_u16(), self.describe()),
+            message,
             status_code: Some(self.status.as_u16()),
             provider_error: self.json,
             retryable,
@@ -663,6 +690,21 @@ pub(crate) fn same_origin_url(base: &str, candidate: Option<&str>) -> Option<Str
     same.then(|| candidate.to_string())
 }
 
+/// fal's Platform API, which the health checks read: `options.platform_api_base`,
+/// else fal's own when `api_base` is unset or one of fal's own hosts. Through
+/// any other `api_base` (a proxy) there is none: the key never goes to a host
+/// the operator didn't configure, and the health check says it can't check.
+pub(crate) fn platform_base_for(config: Option<&ProviderInstanceConfig>) -> Option<String> {
+    if let Some(named) = config.and_then(|c| c.options.as_ref()).and_then(|o| o["platform_api_base"].as_str()) {
+        return Some(named.trim_end_matches('/').to_string());
+    }
+    match config.and_then(|c| c.api_base.as_deref()).map(|b| b.trim_end_matches('/')) {
+        None => Some(DEFAULT_PLATFORM_BASE.to_string()),
+        Some(b) if b == DEFAULT_QUEUE_BASE || b == "https://fal.run" => Some(DEFAULT_PLATFORM_BASE.to_string()),
+        Some(_) => None,
+    }
+}
+
 /// Check a fal key against the Platform API — the price of one public
 /// endpoint. Free, read-only, and authenticated: 401 or 403 means the key is
 /// bad. Every fal adapter shares it; `rest.alpha.fal.ai/tokens/current`, the
@@ -670,15 +712,23 @@ pub(crate) fn same_origin_url(base: &str, candidate: Option<&str>) -> Option<Str
 ///
 /// @see <https://fal.ai/docs/platform-apis/v1/models/pricing> — Verbatim: "Authentication:
 /// Required. Users must provide a valid API key."
-pub(crate) async fn platform_key_check(client: &Client, platform_base: &str, api_key: &str) -> HealthCheckResult {
+pub(crate) async fn platform_key_check(client: &Client, platform_base: Option<&str>, api_base: &str, api_key: &str) -> HealthCheckResult {
+    let Some(platform_base) = platform_base else {
+        return HealthCheckResult {
+            healthy: true,
+            message: format!(
+                "fal is reached through {api_base}; fal's Platform API isn't checked (set options.platform_api_base to check the key)"
+            ),
+            latency_ms: None,
+        };
+    };
     let url = format!("{}/models/pricing?endpoint_id={HEALTH_CHECK_ENDPOINT}", platform_base.trim_end_matches('/'));
     let start = std::time::Instant::now();
-    let reply = client
-        .get(&url)
-        .header("Authorization", format!("Key {api_key}"))
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await;
+    let request = match client.get(&url).authorized(&fal_auth(), api_key) {
+        Ok(request) => request,
+        Err(e) => return HealthCheckResult { healthy: false, message: format!("fal health check failed: {e}"), latency_ms: None },
+    };
+    let reply = request.timeout(std::time::Duration::from_secs(10)).send().await;
     let latency_ms = Some(start.elapsed().as_millis() as u64);
     match reply {
         Ok(r) if r.status().is_success() => HealthCheckResult { healthy: true, message: "fal API key valid".into(), latency_ms },
@@ -708,6 +758,8 @@ pub struct FalModel3dProvider {
     key_pool: Option<ApiKeyPool>,
     /// Queue and Platform API calls.
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
     /// Asset downloads. Follows no redirects, so a URL that passed the
     /// public-address check cannot bounce into a private one — fal's CDN
     /// answers directly (checked 2026-10-12).
@@ -727,18 +779,22 @@ impl Default for FalModel3dProvider {
 }
 
 impl FalModel3dProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(600), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            auth: fal_auth(),
             // 600 s caps a large mesh's whole transfer; 60 s of silence fails a
             // stalled one early. Downloads run inline in the poller's tick, so
             // a CDN that stops sending used to hold up every row for 10 min.
-            asset_client: crate::util::ssrf::no_redirect_download_client(
+            asset_client: crate::util::ssrf::public_only_download_client(
                 std::time::Duration::from_secs(600),
                 std::time::Duration::from_secs(60),
             ),
@@ -765,14 +821,6 @@ impl FalModel3dProvider {
             .trim_end_matches('/')
     }
 
-    fn platform_base(&self) -> &str {
-        self.config
-            .as_ref()
-            .and_then(|c| c.options.as_ref())
-            .and_then(|o| o["platform_api_base"].as_str())
-            .unwrap_or(DEFAULT_PLATFORM_BASE)
-            .trim_end_matches('/')
-    }
 
     /// A queue URL fal handed back, kept only when it is on the origin this
     /// provider is configured for. The API key travels with every queue call,
@@ -814,7 +862,7 @@ impl FalModel3dProvider {
     /// the job is known yet.
     async fn queue_get(&self, url: &str, api_key: &str, what: &str) -> Result<QueueReply, ProviderError> {
         let resp = crate::providers::inject_trace_headers(
-            self.client.get(url).header("Authorization", format!("Key {api_key}")),
+            self.client.get(url).authorized(&self.auth, api_key)?,
         )
         .send()
         .await
@@ -825,6 +873,7 @@ impl FalModel3dProvider {
             retryable: true,
         })?;
         let status = resp.status();
+        let retry_after_ms = crate::providers::retry_after_ms(resp.headers());
         let error_type = header(resp.headers(), "x-fal-error-type").map(str::to_string);
         let text = resp.text().await.map_err(|e| ProviderError::RequestFailed {
             message: format!("fal 3d {what} body could not be read: {e}"),
@@ -833,7 +882,7 @@ impl FalModel3dProvider {
             retryable: true,
         })?;
         let json = serde_json::from_str(&text).ok();
-        Ok(QueueReply { status, error_type, json, text })
+        Ok(QueueReply { status, retry_after_ms, error_type, json, text })
     }
 
     /// Submit `body` to a queue endpoint (`POST {queue}/{endpoint}`). Returns
@@ -843,7 +892,7 @@ impl FalModel3dProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(&url)
-                .header("Authorization", format!("Key {api_key}"))
+                .authorized(&self.auth, api_key)?
                 .json(&body),
         )
         .send()
@@ -856,6 +905,7 @@ impl FalModel3dProvider {
         })?;
         let retry_hint = needs_retry(resp.headers());
         let error_type = header(resp.headers(), "x-fal-error-type").map(str::to_string);
+        let retry_after_ms = crate::providers::retry_after_ms(resp.headers());
         let status = resp.status();
         let text = resp.text().await.map_err(|e| ProviderError::RequestFailed {
             message: format!("fal 3d submit response could not be read: {e}"),
@@ -866,7 +916,7 @@ impl FalModel3dProvider {
             // second job. Only an unreadable failure reply is worth retrying.
             retryable: !status.is_success(),
         })?;
-        let reply = QueueReply { status, error_type, json: serde_json::from_str(&text).ok(), text };
+        let reply = QueueReply { status, retry_after_ms, error_type, json: serde_json::from_str(&text).ok(), text };
 
         if !status.is_success() {
             // fal says whether resubmitting can help; without that, 5xx, 408 and
@@ -945,16 +995,16 @@ impl FalModel3dProvider {
         if op.requires_texture && !source.facts.textured {
             return Err(ProviderError::InvalidRequest(format!("'{}' rigs textured meshes only", model.id)));
         }
-        let content_type = crate::proxy::storage::model3d_content_type(&source.format, "application/octet-stream");
+        let content_type = crate::store::model3d_content_type(&source.format, "application/octet-stream");
         let uri = format!("data:{content_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(&source.bytes));
         let mut body = serde_json::Map::new();
         body.insert(op.source_field.into(), json!(uri));
         if let (Some(field), Some(h)) = (op.height_field, extras.height_m) {
             body.insert(field.into(), json!(h));
         }
-        // `extra` is not merged: these rows allow none, and in lax mode it
-        // would arrive unfiltered — `enable_animation` alone is a billed
-        // add-on litegen would not charge for.
+        // `extra` is not merged: these rows allow none, and a key added to
+        // their allowlist later must not slip in here — `enable_animation`
+        // alone is a billed add-on litegen would not charge for.
         //
         // The endpoint returns every container it makes; the job records the
         // ones to download: glb, plus a promised one only the vendor's own
@@ -963,7 +1013,7 @@ impl FalModel3dProvider {
         for (format, _) in op.outputs {
             if *format != DEFAULT_MODEL3D_FORMAT
                 && extras.output_formats.iter().any(|f| f.eq_ignore_ascii_case(format))
-                && model3d_convert::prefers_vendor_native(format)
+                && model3d_convert::asks_vendor_for(format, extras.format_source)
             {
                 want.push(format.to_string());
             }
@@ -1023,6 +1073,7 @@ impl FalModel3dProvider {
                     width: None,
                     height: None,
                     manifest: None,
+                    source_url: Some(url.to_string()),
                 }),
                 Err(AssetError::Transient(e)) => return Err(e),
                 Err(AssetError::Gone(why)) if primary => {
@@ -1075,6 +1126,7 @@ impl Model3dProvider for FalModel3dProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -1165,6 +1217,9 @@ impl Model3dProvider for FalModel3dProvider {
                 None => ProviderError::InvalidRequest(format!("'{}' does not take reference images", model.id)),
             })?
         };
+        // fal names the model by its endpoint: a mapping replaces the path
+        // (whichever mode the refs chose), and the job records it for polls.
+        let endpoint = crate::providers::wire_model(self.config.as_ref(), &model.id, endpoint);
 
         let mut body = serde_json::Map::new();
         if spec.prompt && !base.prompt.trim().is_empty() {
@@ -1212,7 +1267,7 @@ impl Model3dProvider for FalModel3dProvider {
             body.insert(spec.image_field.into(), value);
         }
         // ONE container from the vendor; litegen derives the rest.
-        if let (Some(field), Some(fmt)) = (spec.format_field, vendor_format(&spec, &extras.output_formats)) {
+        if let (Some(field), Some(fmt)) = (spec.format_field, vendor_format(&spec, &extras.output_formats, extras.format_source)) {
             body.insert(field.into(), json!(fmt));
         }
         if let Some(seed) = base.seed {
@@ -1251,18 +1306,16 @@ impl Model3dProvider for FalModel3dProvider {
             }
             body.insert(field.into(), json!(polycount));
         }
-        if let Some(Value::Object(extra)) = &extras.extra {
-            let reserved = spec.mapped_fields();
-            for (k, v) in extra {
-                if reserved.contains(&k.as_str()) {
-                    tracing::warn!(
-                        model = %model.id, field = %k,
-                        "fal 3d: ignoring an extra field that would override a canonical param"
-                    );
-                    continue;
-                }
-                body.insert(k.clone(), v.clone());
+        let reserved = spec.mapped_fields();
+        for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |_| false) {
+            if reserved.contains(&k.as_str()) {
+                tracing::warn!(
+                    model = %model.id, field = %k,
+                    "fal 3d: ignoring an extra field that would override a canonical param"
+                );
+                continue;
             }
+            body.insert(k.clone(), v.clone());
         }
 
         let (request_id, queue) = self.queue_submit(endpoint, Value::Object(body), &api_key).await?;
@@ -1290,6 +1343,17 @@ impl Model3dProvider for FalModel3dProvider {
     async fn poll_status(
         &self,
         handle: &Model3dGenerationHandle,
+    ) -> Result<Model3dGenerationPollResult, ProviderError> {
+        self.poll_status_gated(handle, &crate::providers::AlwaysFetch).await
+    }
+
+    /// Once the run COMPLETED without an error, `gate` decides whether this
+    /// observer reads the result and downloads its files. The result is read
+    /// after the gate, so its links are fresh however long the gate took.
+    async fn poll_status_gated(
+        &self,
+        handle: &Model3dGenerationHandle,
+        gate: &dyn crate::providers::FetchGate,
     ) -> Result<Model3dGenerationPollResult, ProviderError> {
         let api_key = self.api_key()?;
         let job = self.job(handle)?;
@@ -1338,12 +1402,17 @@ impl Model3dProvider for FalModel3dProvider {
                 })
             }
             Some("COMPLETED") => {}
+            // fal's queue enum is closed: anything else fails the job now,
+            // through the terminal path that fires its webhook.
             other => {
-                return Err(ProviderError::RequestFailed {
-                    message: format!("fal 3d returned an unknown queue status {other:?}"),
-                    status_code: None,
-                    provider_error: Some(status),
-                    retryable: false,
+                return Ok(Model3dGenerationPollResult {
+                    stage_context: None,
+                    next_stage: None,
+                    status: GenerationStatus::Failed,
+                    progress: 0,
+                    files: Vec::new(),
+                    error: Some(crate::providers::video::unknown_state_message("fal", other)),
+                    metadata: meta,
                 })
             }
         }
@@ -1363,6 +1432,12 @@ impl Model3dProvider for FalModel3dProvider {
                 Vec::new(),
                 meta,
             ));
+        }
+
+        if gate.ask().await == crate::providers::Fetch::StandAside {
+            let mut aside = finished(GenerationStatus::Completed, None, Vec::new(), meta);
+            crate::proxy::model3d_deliver::stand_aside(&mut aside);
+            return Ok(aside);
         }
 
         let result = self.queue_get(&job.response_url, &api_key, "result").await?;
@@ -1432,6 +1507,7 @@ impl Model3dProvider for FalModel3dProvider {
             width: None,
             height: None,
             manifest: None,
+            source_url: Some(mesh_url.to_string()),
         }];
 
         // Rodin returns its PBR maps separately, as fal `Image`s — the only
@@ -1454,6 +1530,7 @@ impl Model3dProvider for FalModel3dProvider {
                             width: dimension("width"),
                             height: dimension("height"),
                             manifest: None,
+                            source_url: Some(url.to_string()),
                         });
                     }
                     Err(AssetError::Transient(e)) => {
@@ -1495,7 +1572,7 @@ impl Model3dProvider for FalModel3dProvider {
         let Ok(api_key) = self.api_key() else {
             return HealthCheckResult { healthy: false, message: "No API key".into(), latency_ms: None };
         };
-        platform_key_check(&self.client, self.platform_base(), &api_key).await
+        platform_key_check(&self.client, platform_base_for(self.config.as_ref()).as_deref(), self.queue_base(), &api_key).await
     }
 
     /// `PUT …/requests/{id}/cancel`. A queued request is removed and never runs
@@ -1506,7 +1583,7 @@ impl Model3dProvider for FalModel3dProvider {
         let api_key = self.api_key()?;
         let job = self.job(handle)?;
         let resp = crate::providers::inject_trace_headers(
-            self.client.put(&job.cancel_url).header("Authorization", format!("Key {api_key}")),
+            self.client.put(&job.cancel_url).authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -1594,7 +1671,7 @@ mod tests {
             extra: None,
             source: None,
             animations: Vec::new(), fps: None,
-            skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
             texture_resolution: None, keep_uvs: None,
             ground: None, center: None,
         }
@@ -1706,10 +1783,9 @@ mod tests {
 
     #[tokio::test]
     async fn rodin_is_asked_for_its_own_fbx_rather_than_a_conversion() {
-        // fbx is `prefers_vendor_native`: while litegen cannot write fbx at all,
-        // asking Rodin for glb would deliver the wrong file and fail the
-        // generation after it was billed; once it can, Rodin's export still
-        // carries rigs and materials a conversion from glb would not.
+        // fbx is `prefers_vendor_native`: Rodin's own export carries rigs and
+        // materials a conversion from its glb would not, so a request for fbx
+        // asks Rodin for it, unless the request says `format_source: glb`.
         let server = MockServer::start().await;
         mount_submit(&server, "fal-ai/hyper3d/rodin", "r-3").await;
         let mut x = extras(&["fbx"]);
@@ -1721,6 +1797,29 @@ mod tests {
         let body = submitted_body(&server).await;
         assert_eq!(body["geometry_file_format"], "fbx");
         assert_eq!(body["material"], "Shaded", "pbr: false is flat shading, not no material");
+    }
+
+    /// The caller's `format_source` (review finding 6, left to the client):
+    /// `glb` asks Rodin for its GLB, which carries the most, and litegen makes
+    /// the fbx and usdz from it — one job either way; the default (`native`)
+    /// still asks for Rodin's own fbx.
+    #[tokio::test]
+    async fn format_source_glb_asks_rodin_for_its_glb() {
+        for (source, want) in [
+            (Some(crate::types::Model3dFormatSource::Glb), "glb"),
+            (Some(crate::types::Model3dFormatSource::Native), "fbx"),
+            (None, "fbx"),
+        ] {
+            let server = MockServer::start().await;
+            mount_submit(&server, "fal-ai/hyper3d/rodin", "r-4").await;
+            let mut x = extras(&["glb", "fbx", "usdz"]);
+            x.format_source = source;
+            provider(&server)
+                .generate(&schema("fal/hyper3d-rodin"), &base("a chair", "fal/hyper3d-rodin"), &x, &no_images())
+                .await
+                .expect("submit");
+            assert_eq!(submitted_body(&server).await["geometry_file_format"], want, "{source:?}");
+        }
     }
 
     // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/trellis>
@@ -2101,6 +2200,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delivered_files_carry_the_url_they_came_from() {
+        let server = MockServer::start().await;
+        let files = server.uri() + "/files";
+        mount_get(&server, &status_path(RODIN, "src"), ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" }))).await;
+        mount_get(
+            &server,
+            &result_path(RODIN, "src"),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "model_mesh": { "url": format!("{files}/m.glb"), "content_type": "application/octet-stream" },
+                "textures": [{ "url": format!("{files}/t.png"), "content_type": "image/png", "width": 4, "height": 4 }],
+            })),
+        )
+        .await;
+        mount_get(&server, "/files/m.glb", ResponseTemplate::new(200).set_body_bytes(b"glTF\x02\x00\x00\x00mesh".to_vec())).await;
+        mount_get(&server, "/files/t.png", ResponseTemplate::new(200).insert_header("content-type", "image/png").set_body_bytes(PNG.to_vec())).await;
+        let done = poll(&server, "fal/hyper3d-rodin", RODIN, "src").await.unwrap();
+        assert_eq!(done.status, GenerationStatus::Completed);
+        let mesh = done.files.iter().find(|f| f.kind == Model3dAssetKind::Mesh).expect("a mesh");
+        assert_eq!(mesh.source_url.as_deref(), Some(format!("{files}/m.glb").as_str()));
+        let tex = done.files.iter().find(|f| f.kind == Model3dAssetKind::Texture).expect("a texture");
+        assert_eq!(tex.source_url.as_deref(), Some(format!("{files}/t.png").as_str()));
+    }
+
+    #[tokio::test]
     async fn completed_with_an_error_is_failed_with_fals_message_and_type() {
         let server = MockServer::start().await;
         mount_get(
@@ -2203,6 +2326,29 @@ mod tests {
         )
         .await;
         mount_get(server, "/files/m.glb", mesh).await;
+    }
+
+    /// A delivery gate that always says another observer delivers.
+    struct Refuse;
+
+    #[async_trait]
+    impl crate::providers::FetchGate for Refuse {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::StandAside
+        }
+    }
+
+    /// Review 2026-11-11 P5: an observer that does not deliver the job reads
+    /// neither the result nor its mesh.
+    #[tokio::test]
+    async fn a_gate_that_says_stand_aside_downloads_nothing() {
+        let server = MockServer::start().await;
+        mount_completed_with_mesh(&server, "fal-ai/trellis", "g", ResponseTemplate::new(200).set_body_bytes(b"glTF".to_vec())).await;
+        let r = provider(&server).poll_status_gated(&handle("fal/trellis", "fal-ai/trellis", "g", &server), &Refuse).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Processing);
+        assert!(r.files.is_empty() && r.error.is_none() && r.progress < 100, "{:?} {:?} {}", r.files.len(), r.error, r.progress);
+        let read: Vec<String> = server.received_requests().await.unwrap().iter().map(|q| q.url.path().to_string()).collect();
+        assert_eq!(read, [status_path("fal-ai/trellis", "g")], "only the status was read");
     }
 
     #[tokio::test]
@@ -2389,6 +2535,9 @@ mod tests {
             base: base("", "fal/hunyuan3d-v2"),
             output_formats: None,
             output_format: None,
+            fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None,
+            format_source: None,
+            output_packages: None, ktx2_textures: None,
             texture: Some(true),
             pbr: None,
             target_polycount: None,
@@ -2448,6 +2597,7 @@ mod tests {
             facts: crate::proxy::model3d_source::SourceFacts { triangles: 12, skinned: false, textured: true },
             vendor_task_id: None,
             front: None,
+            joint_naming: None,
             delivered: Default::default(),
         });
         (x, glb)
@@ -2612,12 +2762,12 @@ mod tests {
     #[test]
     fn the_vendor_is_asked_for_glb_unless_a_format_only_it_can_make_was_promised() {
         let rodin = resolve_spec("fal/hyper3d-rodin").unwrap();
-        let ask = |f: &[&str]| vendor_format(&rodin, &f.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let ask = |f: &[&str]| vendor_format(&rodin, &f.iter().map(|s| s.to_string()).collect::<Vec<_>>(), None);
         assert_eq!(ask(&["obj", "stl"]).as_deref(), Some("glb"), "glb is the richest conversion source");
         assert_eq!(ask(&["fbx"]).as_deref(), Some("fbx"));
         assert_eq!(ask(&["USDZ"]).as_deref(), Some("usdz"), "sent in the endpoint's own lowercase");
         let trellis = resolve_spec("fal/trellis").unwrap();
-        assert_eq!(vendor_format(&trellis, &["obj".into()]), None, "no format field, nothing sent");
+        assert_eq!(vendor_format(&trellis, &["obj".into()], None), None, "no format field, nothing sent");
     }
 
     #[test]
@@ -2654,5 +2804,40 @@ mod tests {
         let p = FalModel3dProvider::new();
         assert!(!p.is_configured());
         assert!(matches!(p.api_key(), Err(ProviderError::NotConfigured(_))));
+    }
+
+    /// The key goes to fal's own Platform API only when fal itself is the
+    /// configured host (or `platform_api_base` names one): through a proxy,
+    /// each family's health check says so instead of calling api.fal.ai.
+    #[tokio::test]
+    async fn a_proxy_api_base_keeps_the_key_off_fals_own_platform_api() {
+        let cfg = |base: Option<&str>, options: Option<Value>| ProviderInstanceConfig {
+            api_key: "test-key".into(),
+            api_base: base.map(str::to_string),
+            options,
+            ..Default::default()
+        };
+        assert_eq!(platform_base_for(Some(&cfg(None, None))).as_deref(), Some(DEFAULT_PLATFORM_BASE));
+        assert_eq!(platform_base_for(Some(&cfg(Some("https://queue.fal.run/"), None))).as_deref(), Some(DEFAULT_PLATFORM_BASE));
+        assert_eq!(platform_base_for(Some(&cfg(Some("https://proxy.example/fal"), None))), None);
+        let named = cfg(Some("https://proxy.example/fal"), Some(json!({ "platform_api_base": "https://proxy.example/fal-platform/" })));
+        assert_eq!(platform_base_for(Some(&named)).as_deref(), Some("https://proxy.example/fal-platform"));
+
+        let server = MockServer::start().await;
+        let config = cfg(Some(&server.uri()), None);
+        let mut image = crate::providers::image::fal::FalProvider::new();
+        crate::providers::ImageProvider::configure(&mut image, config.clone());
+        let mut video = crate::providers::video::fal::FalVideoProvider::new();
+        crate::providers::VideoProvider::configure(&mut video, config.clone());
+        let mut mesh = FalModel3dProvider::new();
+        crate::providers::Model3dProvider::configure(&mut mesh, config);
+        for r in [
+            crate::providers::ImageProvider::health_check(&image).await,
+            crate::providers::VideoProvider::health_check(&video).await,
+            crate::providers::Model3dProvider::health_check(&mesh).await,
+        ] {
+            assert!(r.healthy && r.message.contains("isn't checked"), "{}", r.message);
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

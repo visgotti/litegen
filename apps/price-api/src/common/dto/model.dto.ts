@@ -5,13 +5,13 @@ import { PriceComponentDto } from './price-component.dto';
 
 /** A model with its full set of price components. */
 export class ModelDto {
-  @ApiProperty({ example: 'openai/dall-e-3' })
+  @ApiProperty({ example: 'openai/gpt-image-2' })
   id!: string;
 
   @ApiProperty({ example: 'openai' })
   providerId!: string;
 
-  @ApiProperty({ example: 'DALL-E 3' })
+  @ApiProperty({ example: 'GPT Image 2' })
   displayName!: string;
 
   @ApiProperty({ enum: MediaType, example: MediaType.IMAGE })
@@ -23,6 +23,12 @@ export class ModelDto {
   })
   mode!: ProviderMode;
 
+  @ApiProperty({
+    description:
+      'False once litegen no longer carries the model: it is left out of every list, and kept for its price history.',
+  })
+  active!: boolean;
+
   @ApiProperty({ type: [PriceComponentDto] })
   prices!: PriceComponentDto[];
 
@@ -33,6 +39,7 @@ export class ModelDto {
     dto.displayName = model.displayName;
     dto.mediaType = model.mediaType;
     dto.mode = model.modeOverride ?? provider.mode;
+    dto.active = model.active;
     dto.prices = (model.prices ?? []).map((p) => PriceComponentDto.fromEntity(p));
     return dto;
   }

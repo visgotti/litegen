@@ -115,7 +115,7 @@ pub fn prepare(bytes: Vec<u8>, format: &str, spec: &ParamSpecSourceModel) -> Res
     if spec.requires_texture && !facts.textured {
         return Err(SourceError::NotTextured);
     }
-    let sha256 = crate::proxy::router::sha256_hex(&bytes);
+    let sha256 = crate::util::content::sha256_hex(&bytes);
     let accepted = |f: &str| spec.formats.iter().any(|a| a.eq_ignore_ascii_case(f));
     let (out, out_format) = if accepted(from.as_str()) {
         (bytes, from.as_str().to_string())
@@ -147,13 +147,11 @@ pub fn prepare(bytes: Vec<u8>, format: &str, spec: &ParamSpecSourceModel) -> Res
     Ok(PreparedSource { bytes: out, format: out_format, received_format: from.as_str().to_string(), sha256, facts })
 }
 
-/// Bytes of a stored 3D generation's mesh, preferring a container the model
-/// takes as it is. `stores` are tried in order (the app's own bucket first).
-pub async fn read_generation_source(
-    stores: &[Arc<dyn crate::proxy::storage::ImageStorage>],
-    gen: &crate::types::Generation,
-    spec: &ParamSpecSourceModel,
-) -> Result<(Vec<u8>, String), SourceError> {
+/// Which of a finished 3D generation's stored meshes a `source_model` reads:
+/// one in a container the model takes as it is, else the default container,
+/// else the first. Chosen before anything is read, so the server can ask the
+/// operator's `file_access` hook about that very file first (SEC-FILEHOOK).
+pub fn pick_source_mesh(gen: &crate::types::Generation, spec: &ParamSpecSourceModel) -> Result<crate::types::GenerationAsset, SourceError> {
     use crate::types::GenerationStatus;
     if gen.media_type != "model3d" {
         return Err(SourceError::NotFound(format!("generation {} is not a 3D generation", gen.id)));
@@ -167,13 +165,23 @@ pub async fn read_generation_source(
         }
         GenerationStatus::Completed => {}
     }
-    let meshes: Vec<_> = crate::api::handlers::generation_assets(gen).into_iter().filter(|a| a.kind == "mesh").collect();
-    let pick = meshes
+    let meshes: Vec<_> = crate::types::generation::generation_assets(gen).into_iter().filter(|a| a.kind == "mesh").collect();
+    meshes
         .iter()
         .find(|a| spec.formats.iter().any(|f| f.eq_ignore_ascii_case(&a.format)))
         .or_else(|| meshes.iter().find(|a| a.format == crate::types::DEFAULT_MODEL3D_FORMAT))
         .or_else(|| meshes.first())
-        .ok_or_else(|| SourceError::NotFound(format!("generation {} has no mesh", gen.id)))?;
+        .cloned()
+        .ok_or_else(|| SourceError::NotFound(format!("generation {} has no mesh", gen.id)))
+}
+
+/// The bytes of `pick`, one of `gen`'s meshes ([`pick_source_mesh`]), and its
+/// container. `stores` are tried in order (the app's own bucket first).
+pub async fn read_source_mesh(
+    stores: &[Arc<dyn crate::store::ImageStorage>],
+    gen: &crate::types::Generation,
+    pick: &crate::types::GenerationAsset,
+) -> Result<(Vec<u8>, String), SourceError> {
     for store in stores {
         let Some(key) = store.key_of(&pick.url) else { continue };
         return match store.get(&key).await {
@@ -190,7 +198,7 @@ pub async fn read_generation_source(
 pub async fn fetch_url_source(url: &str, spec: &ParamSpecSourceModel) -> Result<Vec<u8>, SourceError> {
     crate::util::ssrf::validate_public_url(url).await.map_err(SourceError::Fetch)?;
     let max = spec.max_bytes.unwrap_or(MAX_SOURCE_BYTES).min(MAX_SOURCE_BYTES);
-    let client = crate::util::ssrf::no_redirect_download_client(
+    let client = crate::util::ssrf::public_only_download_client(
         std::time::Duration::from_secs(300),
         std::time::Duration::from_secs(60),
     );
@@ -236,7 +244,7 @@ mod tests {
         let p = prepare(bytes.clone(), "glb", &spec(&["glb", "fbx"])).unwrap();
         assert_eq!(p.bytes, bytes);
         assert_eq!((p.format.as_str(), p.received_format.as_str()), ("glb", "glb"));
-        assert_eq!(p.sha256, crate::proxy::router::sha256_hex(&bytes));
+        assert_eq!(p.sha256, crate::util::content::sha256_hex(&bytes));
         assert_eq!(p.facts.triangles, fixtures::cube().triangle_count() as u64);
         assert!(!p.facts.skinned && !p.facts.textured);
     }
@@ -252,7 +260,7 @@ mod tests {
         let p = prepare(fbx.clone(), "fbx", &spec(&["glb"])).unwrap();
         assert_eq!(&p.bytes[..4], b"glTF", "what the vendor takes");
         assert_eq!((p.format.as_str(), p.received_format.as_str()), ("glb", "fbx"));
-        assert_eq!(p.sha256, crate::proxy::router::sha256_hex(&fbx), "lineage names what the caller sent");
+        assert_eq!(p.sha256, crate::util::content::sha256_hex(&fbx), "lineage names what the caller sent");
     }
 
     #[test]

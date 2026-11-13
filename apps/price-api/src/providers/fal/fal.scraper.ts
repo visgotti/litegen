@@ -15,12 +15,14 @@ const ALIASES: PriceAlias[] = [
 ];
 
 /**
- * Scrapes Fal image-model prices from the public pricing page. The generic
- * video endpoint is excluded (manual). Resilient to markup changes via the
- * fixture-tested generic table parser.
+ * Scrapes Fal image-model prices from the public pricing page. Every other fal
+ * model (video, 3D, the newer image rows) is curated by hand: the registry pins
+ * what this scraper doesn't report to manual. Resilient to markup changes via
+ * the fixture-tested generic table parser.
  */
 export class FalScraper extends BaseProviderScraper {
   readonly providerId = 'fal';
+  readonly modelIds = ALIASES.map((a) => a.modelId);
 
   async scrape(ctx: ScrapeContext): Promise<ScrapedPriceComponent[]> {
     const html = await this.fetchText(config.pricingUrl as string, ctx);

@@ -13,7 +13,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use crate::api::handlers::create_router;
-use crate::api::middleware::AppState;
+use crate::api::middleware::{AppState, DEFAULT_APP_ID, DEFAULT_ORG_ID};
 use crate::auth::tokens::{generate_csrf_token, generate_session_token};
 use crate::capabilities::CapabilityRegistry;
 use crate::config::{AppConfig, CacheGlobalConfig, DevFlags, Mode};
@@ -26,7 +26,7 @@ use crate::proxy::materializer::{MaterializeError, Materializer, TempStorage};
 use crate::proxy::registry::ProviderRegistry;
 use crate::proxy::router::ProxyRouter;
 use crate::proxy::storage::LocalStore;
-use crate::types::{Application, Organization, Role, Session, User};
+use crate::types::{Application, Organization, RequestArtifact, Role, Session, User};
 
 const MASTER: &str = "master-secret-for-tests";
 const EXPENSIVE: &str = "mock/expensive-image"; // $5.00 per request
@@ -44,13 +44,31 @@ impl TempStorage for NoopStorage {
 }
 
 async fn build_state(db: Arc<SqliteDatabase>, mode: Mode, secrets_key: Option<[u8; 32]>) -> Arc<AppState> {
+    build_state_with(db, mode, secrets_key, None).await
+}
+
+/// [`build_state`] for a replica that shares a Redis with the others.
+async fn build_state_with(
+    db: Arc<SqliteDatabase>,
+    mode: Mode,
+    secrets_key: Option<[u8; 32]>,
+    shared: Option<Arc<crate::shared::SharedRedis>>,
+) -> Arc<AppState> {
     let registry = Arc::new(ProviderRegistry::new());
     registry
         .configure_provider("mock", crate::providers::ProviderInstanceConfig::default())
         .await;
-    let config = Arc::new(AppConfig::default());
+    // As `tests/harness/mod.rs` does: the mock provider is configured, not only
+    // registered, so a refresh has nothing to say about it.
+    let mut app_config = AppConfig::default();
+    app_config.providers.insert("mock".to_string(), serde_json::from_value(json!({ "enabled": true })).expect("mock provider config"));
+    let config = Arc::new(app_config);
     let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
-    let router = Arc::new(ProxyRouter::new(registry, cache, config, Arc::new(LocalStore)));
+    let router = ProxyRouter::new(registry, cache, config, Arc::new(LocalStore));
+    let router = Arc::new(match shared {
+        Some(shared) => router.with_shared(shared),
+        None => router,
+    });
     let materializer = Arc::new(Materializer::new(Arc::new(NoopStorage), reqwest::Client::new()));
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
@@ -881,6 +899,18 @@ async fn runtime_models_are_created_served_generated_and_deleted() {
     assert_eq!(send(&fx.app, "DELETE", &format!("/v1/admin/models/{id}"), Auth::Bearer(MASTER), None, &[]).await.0, StatusCode::NOT_FOUND);
 }
 
+/// E4a: a runtime model cannot allowlist a field litegen owns (where the
+/// vendor sends results), as a catalog row cannot.
+#[tokio::test]
+async fn a_runtime_model_cannot_allowlist_a_field_litegen_owns() {
+    let fx = fixture().await;
+    let mut m = runtime_model("mock/cb");
+    m["extra_allowlist"] = json!(["callback_url"]);
+    let (s, b) = send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(m), &[]).await;
+    assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "invalid_model"), "{b}");
+    assert!(b["error"]["message"].as_str().unwrap().contains("callback_url"), "{b}");
+}
+
 #[tokio::test]
 async fn runtime_models_get_the_catalog_validation() {
     let fx = fixture().await;
@@ -916,6 +946,36 @@ async fn runtime_models_get_the_catalog_validation() {
     assert_eq!(s, StatusCode::CONFLICT);
     let (s, _) = send(&fx.app, "DELETE", &format!("/v1/admin/models/{FREE}"), Auth::Bearer(MASTER), None, &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
+}
+
+/// Dashboard-server review #2 (orchestrator's ruling): `GET /v1/models/{id}`
+/// serves `litegen_params`, which the server computes. A served schema posted
+/// back to the admin API (or MCP `create_gateway_model`) is taken, with
+/// `litegen_params` read and ignored as `status` is: the copy is served the
+/// server's own bounds, never the posted ones, and nothing of it is stored.
+#[tokio::test]
+async fn a_served_schema_posted_back_is_taken_with_its_litegen_params_ignored() {
+    let fx = fixture().await;
+    let (s, served) = send(&fx.app, "GET", "/v1/models/mock/region-image", Auth::Bearer(&fx.gen_key.raw), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{served}");
+    let theirs = served["litegen_params"]["mask_grow_px"].clone();
+    assert!(theirs.is_object(), "the served schema carries litegen_params: {served}");
+    let id = "mock/region-image-copy";
+    let mut copy = served.clone();
+    copy["id"] = json!(id);
+    copy["display_name"] = json!("Region copy");
+    // A bound the server would never serve: posted, it must not be trusted.
+    copy["litegen_params"]["mask_grow_px"]["max"] = json!(9999);
+
+    let (s, created) = send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(copy.clone()), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "a served schema posted back: {created}");
+    let (s, again) = send(&fx.app, "GET", &format!("/v1/models/{id}"), Auth::Bearer(&fx.gen_key.raw), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{again}");
+    assert_eq!(again["litegen_params"]["mask_grow_px"], theirs, "the copy is served the server's own bounds, not the posted ones");
+    let (s, replaced) = send(&fx.app, "PUT", &format!("/v1/admin/models/{id}"), Auth::Bearer(MASTER), Some(copy), &[]).await;
+    assert_eq!(s, StatusCode::OK, "the same body sent to PUT: {replaced}");
+    let stored = fx.db.management().unwrap().list_runtime_models().await.unwrap();
+    assert!(stored.iter().all(|m| !m.schema_json.contains("litegen_params")), "the posted map was stored: {:?}", stored.iter().map(|m| &m.schema_json).collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -956,14 +1016,16 @@ async fn admin_routes_are_platform_admin_only_in_hosted_mode() {
 
 #[tokio::test]
 async fn single_tenant_admins_manage_the_gateway() {
-    let fx = fixture_with(Mode::SingleTenant, false).await;
-    // An admin-scope key and an owner session both qualify; a generate key does not.
-    assert_eq!(send(&fx.app, "GET", "/v1/admin/models", Auth::Bearer(&fx.admin_key.raw), None, &[]).await.0, StatusCode::OK);
-    assert_eq!(send(&fx.app, "GET", "/v1/admin/settings", Auth::Session(&fx.owner, Some(&fx.org)), None, &[]).await.0, StatusCode::OK);
-    assert_eq!(send(&fx.app, "GET", "/v1/admin/models", Auth::Bearer(&fx.gen_key.raw), None, &[]).await.0, StatusCode::FORBIDDEN);
-    let member = seed_user(&fx.db, "member@acme.test").await;
-    fx.db.add_org_member(&fx.org, &member.user.id, Role::Member).await.unwrap();
-    assert_eq!(send(&fx.app, "GET", "/v1/admin/routes", Auth::Session(&member, Some(&fx.org)), None, &[]).await.0, StatusCode::FORBIDDEN);
+    let d = deployment().await;
+    // An admin-scope key of the deployment and its owner's session both
+    // qualify; a generate key and a member do not.
+    let admin_key = seed_key(&d.db, DEFAULT_ORG_ID, DEFAULT_APP_ID, "generate,read,admin", Some(&d.owner.user.id)).await;
+    let gen_key = seed_key(&d.db, DEFAULT_ORG_ID, DEFAULT_APP_ID, "generate,read", None).await;
+    assert_eq!(send(&d.app, "GET", "/v1/admin/models", Auth::Bearer(&admin_key.raw), None, &[]).await.0, StatusCode::OK);
+    assert_eq!(send(&d.app, "GET", "/v1/admin/settings", Auth::Session(&d.owner, Some(DEFAULT_ORG_ID)), None, &[]).await.0, StatusCode::OK);
+    assert_eq!(send(&d.app, "GET", "/v1/admin/models", Auth::Bearer(&gen_key.raw), None, &[]).await.0, StatusCode::FORBIDDEN);
+    let member = seed_deployment_user(&d.db, "member@deploy.test", Role::Member).await;
+    assert_eq!(send(&d.app, "GET", "/v1/admin/routes", Auth::Session(&member, Some(DEFAULT_ORG_ID)), None, &[]).await.0, StatusCode::FORBIDDEN);
 }
 
 // ─── Gateway admin: providers ───────────────────────────────────────────────
@@ -1010,6 +1072,11 @@ async fn provider_config_validation_and_enable_switch() {
     assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "secrets_key_missing"));
     let (s, _) = send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(json!({ "api_base": "ftp://nope" })), &[]).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+    // A header a default would break, or one that isn't HTTP, is refused by name.
+    for headers in [json!({ "Host": "evil.example" }), json!({ "bad header": "x" }), json!({ "x-ok": "a\r\nb" })] {
+        let (s, b) = send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(json!({ "extra_headers": headers })), &[]).await;
+        assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "invalid_provider_config"), "{headers}: {b}");
+    }
     assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/acme-ai", Auth::Bearer(MASTER), Some(json!({})), &[]).await.0, StatusCode::NOT_FOUND);
     assert_eq!(send(&fx.app, "GET", "/v1/admin/providers/acme-ai", Auth::Bearer(MASTER), None, &[]).await.0, StatusCode::NOT_FOUND);
 
@@ -1082,4 +1149,696 @@ async fn everything_stored_is_reapplied_at_boot() {
     assert_eq!(fresh.router.cost_markup_percent(), 25.0);
     assert_eq!(fresh.router.model_routes().len(), 1);
     assert_eq!(fresh.router.registry.registered_config("openai").await.unwrap().api_key, "sk-boot-123456");
+}
+
+// ─── Refresh: a second replica over the same database ───────────────────────
+
+/// A second replica of the fixture's deployment: its own state over the same
+/// database, with nothing stored yet for a refresh to find.
+async fn second_replica(fx: &Fx) -> (Router, Arc<AppState>) {
+    let state = build_state(fx.db.clone(), Mode::Hosted, Some([7u8; 32])).await;
+    assert!(!crate::management::runtime::refresh(&state).await.unwrap(), "a new replica has nothing to refresh");
+    (create_router(state.clone()), state)
+}
+
+async fn refresh(state: &AppState) -> bool {
+    crate::management::runtime::refresh(state).await.unwrap()
+}
+
+/// A refresh that read the model states, then a PATCH on this very replica,
+/// then the refresh applying what it read: the PATCH must stand. Both ways.
+#[tokio::test]
+async fn a_refresh_that_read_before_a_patch_here_does_not_undo_it() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    for disabled in [true, false] {
+        let pause = fx.state.router.pause_next_sync("model_states");
+        let refreshing = tokio::spawn({
+            let s = fx.state.clone();
+            async move { crate::management::runtime::refresh(&s).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), pause.reached.notified()).await.expect("the refresh read the model states");
+        let (s, _) = send(&fx.app, "PATCH", &format!("/v1/admin/models/{EXPENSIVE}"), Auth::Bearer(MASTER), Some(json!({ "disabled": disabled })), &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        pause.resume.notify_one();
+        refreshing.await.unwrap().unwrap();
+        assert_eq!(
+            fx.state.registry.resolve(EXPENSIVE).is_none(),
+            disabled,
+            "a refresh that read the database before the PATCH (disabled: {disabled}) undid it on the replica that answered 200"
+        );
+    }
+}
+
+/// NEW 1, the runtime-model twin: a model created on this replica, then a
+/// refresh that read the rows, then a DELETE here, then the refresh applying
+/// what it read. The deleted model must not be served again.
+#[tokio::test]
+async fn a_refresh_that_read_before_a_delete_here_does_not_serve_the_model_again() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let (s, _) = send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(runtime_model("mock/fleeting")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let pause = fx.state.router.pause_next_sync("runtime_models");
+    let refreshing = tokio::spawn({
+        let s = fx.state.clone();
+        async move { crate::management::runtime::refresh(&s).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.reached.notified()).await.expect("the refresh read the runtime models");
+    let (s, _) = send(&fx.app, "DELETE", "/v1/admin/models/mock/fleeting", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    pause.resume.notify_one();
+    refreshing.await.unwrap().unwrap();
+    assert!(
+        fx.state.registry.resolve("mock/fleeting").is_none(),
+        "a refresh that read the database before the DELETE served the deleted model again on the replica that answered 200"
+    );
+    refresh(&fx.state).await;
+    assert!(fx.state.registry.resolve("mock/fleeting").is_none(), "and the next refresh keeps it gone");
+}
+
+#[tokio::test]
+async fn a_refresh_applies_what_was_stored_once_and_follows_deletions() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let (_, b) = second_replica(&fx).await;
+    send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(runtime_model("mock/refreshed")), &[]).await;
+    send(&fx.app, "PATCH", &format!("/v1/admin/models/{EXPENSIVE}"), Auth::Bearer(MASTER), Some(json!({ "disabled": true })), &[]).await;
+    send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(json!({ "api_key": "sk-refresh-123456" })), &[]).await;
+    assert!(b.registry.resolve("mock/refreshed").is_none());
+    assert!(b.registry.resolve(EXPENSIVE).is_some());
+    assert!(!b.router.has_image_provider("openai").await);
+
+    assert!(refresh(&b).await, "three kinds of change found");
+    assert!(b.registry.resolve("mock/refreshed").is_some());
+    assert!(b.registry.resolve(EXPENSIVE).is_none(), "disabled");
+    assert_eq!(b.router.registry.registered_config("openai").await.unwrap().api_key, "sk-refresh-123456");
+    assert!(!refresh(&b).await, "nothing new the second time");
+
+    // Every kind leaves again with its row.
+    let store = fx.db.management().unwrap();
+    store.delete_runtime_model("mock/refreshed").await.unwrap();
+    store.set_model_state(EXPENSIVE, false).await.unwrap();
+    store.delete_provider_config("openai").await.unwrap();
+    assert!(refresh(&b).await);
+    assert!(b.registry.resolve("mock/refreshed").is_none(), "the model left the runtime layer");
+    assert!(b.registry.resolve(EXPENSIVE).is_some(), "enabled again");
+    assert!(!b.router.has_image_provider("openai").await, "no row and no env config: out of service");
+    assert!(!refresh(&b).await);
+}
+
+#[tokio::test]
+async fn a_refresh_re_applies_a_row_it_applied_an_older_version_of() {
+    // The race: a save made through this replica's API, and a refresh that
+    // read the row before it and applied it after. The registry then holds the
+    // older model, the record holds the older `updated_at`, and the database
+    // the newer one.
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let (b_app, b) = second_replica(&fx).await;
+    let named = |name: &str| {
+        let mut m = runtime_model("mock/raced");
+        m["display_name"] = json!(name);
+        m
+    };
+    send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(named("one")), &[]).await;
+    assert!(refresh(&b).await);
+    let store = fx.db.management().unwrap();
+    let older = store.list_runtime_models().await.unwrap()[0].updated_at;
+    assert_eq!(b.router.applied_runtime().models.get("mock/raced"), Some(&older));
+    let stale = b.registry.runtime_model("mock/raced").unwrap();
+
+    let (s, _) = send(&b_app, "PUT", "/v1/admin/models/mock/raced", Auth::Bearer(MASTER), Some(named("two")), &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    b.registry.upsert_runtime(stale); // the refresh that read the old row lands last
+    assert_eq!(b.registry.runtime_model("mock/raced").unwrap().display_name, "one");
+
+    assert!(refresh(&b).await, "the record is older than the row");
+    assert_eq!(b.registry.runtime_model("mock/raced").unwrap().display_name, "two", "healed");
+    let newer = store.list_runtime_models().await.unwrap()[0].updated_at;
+    assert!(newer > older);
+    assert_eq!(b.router.applied_runtime().models.get("mock/raced"), Some(&newer));
+    assert!(!refresh(&b).await, "and settled");
+}
+
+#[tokio::test]
+async fn a_refresh_removes_what_this_replica_saved_and_another_deleted() {
+    // Saved through this replica's API, so the record does not know it; deleted
+    // through another replica before this one refreshed.
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let (b_app, b) = second_replica(&fx).await;
+    send(&b_app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(runtime_model("mock/local")), &[]).await;
+    send(&b_app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(json!({ "api_key": "sk-local-123456" })), &[]).await;
+    assert!(b.registry.resolve("mock/local").is_some() && b.router.has_image_provider("openai").await);
+
+    send(&fx.app, "DELETE", "/v1/admin/models/mock/local", Auth::Bearer(MASTER), None, &[]).await;
+    send(&fx.app, "DELETE", "/v1/admin/providers/openai", Auth::Bearer(MASTER), None, &[]).await;
+    assert!(refresh(&b).await);
+    assert!(b.registry.resolve("mock/local").is_none(), "no longer served here");
+    assert!(!b.router.has_image_provider("openai").await);
+    assert!(!refresh(&b).await);
+}
+
+#[tokio::test]
+async fn the_sync_task_applies_a_change_at_its_next_tick_without_redis() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let (_, b) = second_replica(&fx).await;
+    let task = crate::management::runtime::spawn_runtime_sync(b.clone(), std::time::Duration::from_millis(50), false);
+    send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(runtime_model("mock/ticked")), &[]).await;
+    let mut arrived = false;
+    for _ in 0..100 {
+        if b.registry.resolve("mock/ticked").is_some() {
+            arrived = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    task.abort();
+    assert!(arrived, "no Redis here, so only the tick can have brought it");
+}
+
+/// Wait until a listener is subscribed to the replicas' event channel: an
+/// event sent before is lost, which is how Redis pub/sub works.
+async fn wait_until_subscribed(shared: &crate::shared::SharedRedis) {
+    let channel = shared.key(&["events"]);
+    for _ in 0..200 {
+        let channel = channel.clone();
+        let (_, subscribers): (String, i64) = shared
+            .run(|mut c| async move { redis::cmd("PUBSUB").arg("NUMSUB").arg(channel).query_async(&mut c).await })
+            .await
+            .unwrap();
+        if subscribers > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the listener never subscribed");
+}
+
+/// `DELETE /v1/cache` on one replica announces a `cache-clear` event, and a
+/// replica that hears one from another replica empties its memory at once,
+/// not at its next refresh: B's refresh is an hour away.
+///
+/// A and B are two states in this process, but each has a Redis client of its
+/// own, and so an id of its own on the event channel (`SharedRedis::id`): B
+/// hears A's announcement as another replica's, and skips only its own. The
+/// test watches A's announcement on a subscription of A's client, then sends B
+/// the same event by hand, from an id that is neither state's.
+#[tokio::test]
+async fn clearing_the_cache_announces_it_and_a_heard_clear_empties_memory_at_once() {
+    use crate::shared::cache_tier::tests::{cache_get, cache_put, small_response};
+    use futures::StreamExt;
+    let Some((shared_a, shared_b)) = crate::shared::testing::two_shared().await else { return };
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db.clone(), Mode::Hosted, None, Some(shared_a.clone())).await;
+    let b = build_state_with(db.clone(), Mode::Hosted, None, Some(shared_b.clone())).await;
+    let sync = crate::management::runtime::spawn_runtime_sync(b.clone(), std::time::Duration::from_secs(3600), true);
+    wait_until_subscribed(&shared_b).await;
+    let channel = shared_a.key(&["events"]);
+    let mut watcher = shared_a.subscribe(&channel).await.unwrap();
+    let mut heard = std::pin::pin!(watcher.on_message());
+
+    cache_put(&a.router.cache, "p", small_response(), std::time::Duration::from_secs(60)).await;
+    assert!(cache_get(&b.router.cache, "p").await.is_some(), "B has it, copied from the shared tier");
+    assert_eq!(b.router.cache.entry_count().await, 1);
+
+    let (status, _) = send(&create_router(a.clone()), "DELETE", "/v1/cache", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let message = tokio::time::timeout(std::time::Duration::from_secs(5), heard.next()).await.expect("an event within 5 s").expect("a message");
+    let announced: serde_json::Value = serde_json::from_str(&message.get_payload::<String>().unwrap()).unwrap();
+    assert_eq!(announced["event"], "cache-clear", "{announced}");
+
+    // The same event, from another replica.
+    shared_a.publish(&channel, r#"{"event":"cache-clear","from":"another-replica"}"#).await.unwrap();
+    let mut emptied = false;
+    for _ in 0..200 {
+        if b.router.cache.entry_count().await == 0 {
+            emptied = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    sync.abort();
+    assert!(emptied, "B emptied its memory on hearing it");
+    assert!(cache_get(&b.router.cache, "p").await.is_none(), "and Redis holds nothing");
+}
+
+/// The event can be lost; the refresh every 15 s is the backstop.
+#[tokio::test]
+async fn a_refresh_empties_the_memory_of_a_cache_cleared_elsewhere() {
+    use crate::shared::cache_tier::tests::{cache_get, cache_put, small_response};
+    let Some((shared_a, shared_b)) = crate::shared::testing::two_shared().await else { return };
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db.clone(), Mode::Hosted, None, Some(shared_a)).await;
+    let b = build_state_with(db.clone(), Mode::Hosted, None, Some(shared_b)).await;
+    cache_put(&a.router.cache, "p", small_response(), std::time::Duration::from_secs(60)).await;
+    assert!(cache_get(&b.router.cache, "p").await.is_some());
+
+    a.router.cache.clear().await.unwrap();
+    assert_eq!(b.router.cache.entry_count().await, 1, "B has heard nothing");
+    refresh(&b).await;
+    assert_eq!(b.router.cache.entry_count().await, 0, "its refresh saw the epoch move");
+}
+
+/// A client that goes away mid-request, at the same point every time: the
+/// clear is held once this replica's memory is empty and before it has touched
+/// Redis, `request` is dropped there, and only then is the clear let go. The
+/// request cannot have finished before it was dropped, however quick Redis is,
+/// so what the caller checks next is whether the clear finished on its own.
+async fn walk_away_during_the_clear(app: &Router, request: Request<Body>, state: &AppState) {
+    let pause = state.router.cache.pause_next_clear();
+    let mut call = Box::pin(app.clone().oneshot(request));
+    tokio::select! {
+        _ = &mut call => panic!("the request finished while its clear was held"),
+        reached = tokio::time::timeout(std::time::Duration::from_secs(10), pause.reached.notified()) => {
+            reached.expect("the handler never reached the clear");
+        }
+    }
+    drop(call);
+    pause.resume.notify_one();
+}
+
+/// What a clear that finished leaves: the epoch raised to `epoch`, no shared
+/// answer, and the event on the channel (read from a subscription on a second
+/// client, which hears A's event as another replica's).
+async fn assert_clear_finished(shared: &crate::shared::SharedRedis, heard: &mut (impl futures::Stream<Item = redis::Msg> + Unpin), event: &str, epoch: i64) {
+    use futures::StreamExt;
+    let message = tokio::time::timeout(std::time::Duration::from_secs(5), heard.next())
+        .await
+        .expect("the event still went out")
+        .expect("a message");
+    let announced: serde_json::Value = serde_json::from_str(&message.get_payload::<String>().unwrap()).unwrap();
+    assert_eq!(announced["event"], event, "{announced}");
+    assert_eq!(crate::shared::cache_tier::epoch(shared).await.unwrap(), epoch, "the epoch was raised");
+    assert!(crate::shared::cache_tier::tests::entry_keys(shared).await.is_empty(), "the shared answers are gone");
+}
+
+#[tokio::test]
+async fn a_cache_clear_goes_on_when_the_client_walks_away() {
+    use crate::shared::cache_tier::tests::{cache_put, small_response};
+    let Some((shared_a, shared_b)) = crate::shared::testing::two_shared().await else { return };
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db.clone(), Mode::Hosted, None, Some(shared_a.clone())).await;
+    let mut watcher = shared_b.subscribe(&shared_b.key(&["events"])).await.unwrap();
+    let mut heard = std::pin::pin!(watcher.on_message());
+    cache_put(&a.router.cache, "p", small_response(), std::time::Duration::from_secs(60)).await;
+
+    let request = Request::builder().method("DELETE").uri("/v1/cache").header("authorization", format!("Bearer {MASTER}")).body(Body::empty()).unwrap();
+    walk_away_during_the_clear(&create_router(a.clone()), request, &a).await;
+    assert_clear_finished(&shared_a, &mut heard, "cache-clear", 1).await;
+}
+
+#[tokio::test]
+async fn turning_the_cache_off_goes_on_when_the_client_walks_away() {
+    use crate::shared::cache_tier::tests::{cache_put, small_response};
+    let Some((shared_a, shared_b)) = crate::shared::testing::two_shared().await else { return };
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db.clone(), Mode::Hosted, None, Some(shared_a.clone())).await;
+    let app = create_router(a.clone());
+    let (status, _) = send(&app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cache_enabled": true })), &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    // Turning it on cleared it too: the switch-off's clear is one more.
+    let before = crate::shared::cache_tier::epoch(&shared_a).await.unwrap();
+    let mut watcher = shared_b.subscribe(&shared_b.key(&["events"])).await.unwrap();
+    let mut heard = std::pin::pin!(watcher.on_message());
+    cache_put(&a.router.cache, "p", small_response(), std::time::Duration::from_secs(60)).await;
+
+    let request = Request::builder()
+        .method("PUT")
+        .uri("/v1/admin/settings")
+        .header("authorization", format!("Bearer {MASTER}"))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "cache_enabled": false }).to_string()))
+        .unwrap();
+    walk_away_during_the_clear(&app, request, &a).await;
+    assert_clear_finished(&shared_a, &mut heard, "reload", before + 1).await;
+}
+
+/// A clear that emptied this replica but not the shared tier (Redis out, or a
+/// page that failed) must not say it cleared: the other replicas keep their
+/// answers. The dashboard shows "Cache cleared" on any 2xx.
+#[tokio::test]
+async fn a_cache_clear_that_cannot_reach_the_shared_tier_says_so() {
+    use crate::config::connections::RedisSettings;
+    use crate::shared::cache_tier::tests::{entry_keys, small_response};
+    use crate::shared::testing::{addr_of, flush_keys, test_prefix, test_url, CutProxy};
+    let Some(url) = test_url() else { return };
+    let proxy = CutProxy::start(addr_of(&url)).await;
+    let prefix = test_prefix();
+    let behind = crate::shared::SharedRedis::connect(&RedisSettings::from_url(&proxy.url()), &prefix).await.unwrap();
+    let direct = crate::shared::SharedRedis::connect(&RedisSettings::from_url(&url), &prefix).await.unwrap();
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db, Mode::Hosted, None, Some(behind)).await;
+    crate::shared::cache_tier::put(&direct, "p", &small_response(), std::time::Duration::from_secs(60)).await.unwrap();
+
+    proxy.cut();
+    let request = Request::builder().method("DELETE").uri("/v1/cache").header("authorization", format!("Bearer {MASTER}")).body(Body::empty()).unwrap();
+    let response = create_router(a.clone()).oneshot(request).await.unwrap();
+    let (status, retry_after) = (response.status(), response.headers().get("retry-after").cloned());
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into()));
+    assert_eq!(entry_keys(&direct).await.len(), 1, "precondition: the shared answer is still there");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "the shared tier was not cleared, so the clear must not report success: {body}");
+    assert_eq!(body["error"]["code"], "cache_clear_incomplete", "{body}");
+    assert_eq!(retry_after.as_ref().and_then(|v| v.to_str().ok()), Some("1"), "a retryable 503");
+    flush_keys(&direct).await;
+}
+
+/// Answers left in the shared tier while the cache was off (a switch-off
+/// whose clear could not reach Redis, or answers stored around it) must not
+/// be served once it is on again.
+#[tokio::test]
+async fn turning_the_cache_on_empties_what_the_shared_tier_kept_while_it_was_off() {
+    use crate::shared::cache_tier::tests::{entry_keys, small_response};
+    let Some((shared_a, _)) = crate::shared::testing::two_shared().await else { return };
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db, Mode::Hosted, None, Some(shared_a.clone())).await; // the cache is off by default
+    crate::shared::cache_tier::put(&shared_a, "leftover", &small_response(), std::time::Duration::from_secs(60)).await.unwrap();
+    let (status, _) = send(&create_router(a.clone()), "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cache_enabled": true })), &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(entry_keys(&shared_a).await.is_empty(), "a switch-on must not serve what an earlier switch-off failed to remove");
+    crate::shared::testing::flush_keys(&shared_a).await;
+}
+
+/// Turning the cache on clears it before the new settings apply. A route
+/// saved on this replica during that clear (it answered 200) must still be in
+/// force once they do. No Redis needed: the clear stops before it would look
+/// for one.
+#[tokio::test]
+async fn a_route_saved_here_while_the_cache_is_switched_on_stays() {
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db, Mode::Hosted, None, None).await; // the cache is off by default
+    let app = create_router(a.clone());
+    let pause = a.router.cache.pause_next_clear();
+    let switching = switch_the_cache_on(&app);
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.reached.notified()).await.expect("the switch-on reached its clear");
+    assert_eq!(send(&app, "PUT", "/v1/admin/routes", Auth::Bearer(MASTER), Some(one_route()), &[]).await.0, StatusCode::OK);
+    pause.resume.notify_one();
+    assert_eq!(switching.await.unwrap(), StatusCode::OK);
+    assert_the_route_stands(&app, &a).await;
+}
+
+/// The same for a route saved on another replica, which a refresh here
+/// applies during the clear.
+#[tokio::test]
+async fn a_route_a_refresh_applies_while_the_cache_is_switched_on_stays() {
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state(db.clone(), Mode::Hosted, Some([7u8; 32])).await;
+    let b = build_state(db, Mode::Hosted, Some([7u8; 32])).await;
+    let app = create_router(a.clone());
+    let pause = a.router.cache.pause_next_clear();
+    let switching = switch_the_cache_on(&app);
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.reached.notified()).await.expect("the switch-on reached its clear");
+    assert_eq!(send(&create_router(b), "PUT", "/v1/admin/routes", Auth::Bearer(MASTER), Some(one_route()), &[]).await.0, StatusCode::OK);
+    assert!(refresh(&a).await, "this replica's refresh applied the other replica's route");
+    pause.resume.notify_one();
+    assert_eq!(switching.await.unwrap(), StatusCode::OK);
+    assert_the_route_stands(&app, &a).await;
+}
+
+/// `PUT /v1/admin/settings {"cache_enabled": true}`, as a request of its own.
+fn switch_the_cache_on(app: &Router) -> tokio::task::JoinHandle<StatusCode> {
+    let app = app.clone();
+    tokio::spawn(async move { send(&app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cache_enabled": true })), &[]).await.0 })
+}
+
+fn one_route() -> Value {
+    json!({ "routes": [{ "model": "mock/*", "deployments": [{ "provider": "mock" }] }] })
+}
+
+/// After the switch-on: the cache is on, and [`one_route`], saved during its
+/// clear, is the route in force.
+async fn assert_the_route_stands(app: &Router, a: &AppState) {
+    assert!(a.router.settings().cache.enabled, "the switch-on applied");
+    let (_, v) = send(app, "GET", "/v1/admin/routes", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(
+        (v["source"].as_str(), v["routes"][0]["model"].as_str()),
+        (Some("runtime"), Some("mock/*")),
+        "a route saved while the cache was being switched on was undone when the switch applied: {v}"
+    );
+}
+
+#[tokio::test]
+async fn a_row_that_does_not_validate_is_left_out_and_not_retried() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let (_, b) = second_replica(&fx).await;
+    let store = fx.db.management().unwrap();
+    store.upsert_runtime_model("mock/broken", "{\"id\": \"mock/broken\"}", None).await.unwrap();
+    assert!(!refresh(&b).await, "nothing served changed: the row is only recorded as seen");
+    assert!(b.registry.runtime_model("mock/broken").is_none());
+    let seen = store.list_runtime_models().await.unwrap()[0].updated_at;
+    assert_eq!(b.router.applied_runtime().models.get("mock/broken"), Some(&seen), "recorded, so not parsed and warned about again");
+    assert!(!refresh(&b).await);
+}
+
+#[tokio::test]
+async fn a_valid_model_replaced_by_an_invalid_version_stops_being_served() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let (_, b) = second_replica(&fx).await;
+    send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(runtime_model("mock/degraded")), &[]).await;
+    assert!(refresh(&b).await);
+    assert!(b.registry.resolve("mock/degraded").is_some());
+
+    // As a restart would find it: the newest row does not validate here.
+    fx.db.management().unwrap().upsert_runtime_model("mock/degraded", "{\"id\": \"mock/degraded\"}", None).await.unwrap();
+    assert!(refresh(&b).await, "an older valid version left the runtime layer");
+    assert!(b.registry.resolve("mock/degraded").is_none());
+    assert!(!refresh(&b).await);
+}
+
+// ─── Single-tenant: who runs the deployment ─────────────────────────────────
+//
+// In single-tenant mode the default org is the deployment: its owners and
+// admins run the gateway and its users. A session's permissions are its role
+// in the org it acts in, so a role in any other org must carry none of that.
+
+/// A signed-in user of a single-tenant deployment, holding `role` both on
+/// their account and in the default org, as signup and invitations leave them.
+async fn seed_deployment_user(db: &SqliteDatabase, email: &str, role: Role) -> Sess {
+    let sess = seed_user(db, email).await;
+    db.update_user(&sess.user.id, Some(role), None, None).await.unwrap();
+    db.add_org_member(DEFAULT_ORG_ID, &sess.user.id, role).await.unwrap();
+    sess
+}
+
+/// A single-tenant deployment with its owner and a viewer.
+struct Deployment {
+    app: Router,
+    db: Arc<SqliteDatabase>,
+    owner: Sess,
+    viewer: Sess,
+}
+
+async fn deployment() -> Deployment {
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let state = build_state(db.clone(), Mode::SingleTenant, None).await;
+    let owner = seed_deployment_user(&db, "owner@deploy.test", Role::Owner).await;
+    let viewer = seed_deployment_user(&db, "viewer@deploy.test", Role::Viewer).await;
+    Deployment { app: create_router(state), db, owner, viewer }
+}
+
+#[tokio::test]
+async fn single_tenant_a_role_in_another_org_runs_nothing_of_the_deployment() {
+    let d = deployment().await;
+    // An org the viewer owns, as one they could make for themselves.
+    let (side, side_app) = seed_org(&d.db, "Side").await;
+    d.db.add_org_member(&side, &d.viewer.user.id, Role::Owner).await.unwrap();
+    for (method, uri, body) in [
+        ("GET", "/v1/admin/settings", None),
+        ("GET", "/v1/admin/providers", None),
+        ("GET", "/v1/users", None),
+        ("DELETE", "/v1/cache", None),
+        ("POST", "/v1/users/transfer-owner", Some(json!({ "new_owner_id": d.viewer.user.id }))),
+    ] {
+        let (s, v) = send(&d.app, method, uri, Auth::Session(&d.viewer, Some(&side)), body, &[]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri} acting in the side org: {v}");
+    }
+    // Nor does an admin-scope key of that org.
+    let side_key = seed_key(&d.db, &side, &side_app, "generate,read,admin", Some(&d.viewer.user.id)).await;
+    for (method, uri) in [("GET", "/v1/admin/models"), ("DELETE", "/v1/cache")] {
+        let (s, v) = send(&d.app, method, uri, Auth::Bearer(&side_key.raw), None, &[]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri} with the side org's admin key: {v}");
+    }
+    // The deployment's owner keeps all of it.
+    assert_eq!(d.db.get_user_by_id(&d.owner.user.id).await.unwrap().unwrap().role, Role::Owner);
+    for (method, uri) in [("GET", "/v1/admin/settings"), ("GET", "/v1/users"), ("DELETE", "/v1/cache")] {
+        let (s, v) = send(&d.app, method, uri, Auth::Session(&d.owner, None), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{method} {uri} as the owner: {v}");
+    }
+}
+
+/// P1 (code review 2026-11-11): `GET /health` checks the gateway's own vendor
+/// keys and shows what each vendor answered about them, so in hosted mode it
+/// is the platform admin's alone. A tenant's key or session gets 403.
+#[tokio::test]
+async fn provider_health_is_the_platforms_in_hosted_mode() {
+    let fx = fixture().await;
+    for (who, auth) in [
+        ("a tenant's generate,read key", Auth::Bearer(&fx.gen_key.raw)),
+        ("a tenant's admin key", Auth::Bearer(&fx.admin_key.raw)),
+        ("a tenant owner's session", Auth::Session(&fx.owner, Some(&fx.org))),
+    ] {
+        let (s, v) = send(&fx.app, "GET", "/health", auth, None, &[]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{who} read the platform's provider health: {v}");
+    }
+    let (s, v) = send(&fx.app, "GET", "/health", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "the platform admin reads it: {v}");
+}
+
+/// P1: in single-tenant mode `/health` is the deployment's: a caller acting in
+/// another org (a session there, or that org's key) gets 403, and a reader of
+/// the default org keeps it.
+#[tokio::test]
+async fn single_tenant_provider_health_is_the_deployments() {
+    let d = deployment().await;
+    let (side, side_app) = seed_org(&d.db, "Side").await;
+    d.db.add_org_member(&side, &d.viewer.user.id, Role::Owner).await.unwrap();
+    let side_key = seed_key(&d.db, &side, &side_app, "generate,read", None).await;
+    let (s, v) = send(&d.app, "GET", "/health", Auth::Session(&d.viewer, Some(&side)), None, &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a session acting in the side org: {v}");
+    let (s, v) = send(&d.app, "GET", "/health", Auth::Bearer(&side_key.raw), None, &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the side org's read key: {v}");
+    // The org is pinned: the viewer also owns the side org.
+    let (s, v) = send(&d.app, "GET", "/health", Auth::Session(&d.viewer, Some(DEFAULT_ORG_ID)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "the deployment's viewer: {v}");
+    let (s, v) = send(&d.app, "GET", "/health", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "the master key: {v}");
+}
+
+#[tokio::test]
+async fn single_tenant_orgs_are_made_by_the_deployments_admins() {
+    let d = deployment().await;
+    let member = seed_deployment_user(&d.db, "member@deploy.test", Role::Member).await;
+    for who in [&d.viewer, &member] {
+        let (s, v) = send(&d.app, "POST", "/v1/orgs", Auth::Session(who, None), Some(json!({ "name": "Mine" })), &[]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{} made an org: {v}", who.user.email);
+    }
+    let (s, v) = send(&d.app, "POST", "/v1/orgs", Auth::Session(&d.owner, None), Some(json!({ "name": "Team" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn single_tenant_removal_from_the_default_org_ends_access() {
+    let d = deployment().await;
+    let admin = seed_deployment_user(&d.db, "admin@deploy.test", Role::Admin).await;
+    assert_eq!(send(&d.app, "GET", "/v1/admin/settings", Auth::Session(&admin, None), None, &[]).await.0, StatusCode::OK, "an admin runs the gateway");
+    let (s, v) = send(&d.app, "DELETE", &format!("/v1/orgs/{DEFAULT_ORG_ID}/members/{}", admin.user.id), Auth::Session(&d.owner, None), None, &[]).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let routes = [("GET", "/v1/admin/settings"), ("GET", "/v1/users"), ("GET", "/v1/keys"), ("GET", "/v1/generations")];
+    // Its sessions end with its last membership (security fix 4, 2026-11-05)...
+    for (method, uri) in routes {
+        let (s, v) = send(&d.app, method, uri, Auth::Session(&admin, None), None, &[]).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{method} {uri} with the old session: {v}");
+    }
+    // ...and a new one, as signing in again gives, holds nothing.
+    let (token, csrf) = (generate_session_token(), generate_csrf_token());
+    d.db.create_session(&Session {
+        id: token.clone(),
+        user_id: admin.user.id.clone(),
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+        ip: None,
+        user_agent: None,
+        csrf_token: csrf.clone(),
+    })
+    .await
+    .unwrap();
+    let again = Sess { user: admin.user.clone(), token, csrf };
+    for (method, uri) in routes {
+        let (s, v) = send(&d.app, method, uri, Auth::Session(&again, None), None, &[]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri} after signing in again: {v}");
+    }
+}
+
+#[tokio::test]
+async fn single_tenant_a_role_set_on_the_users_page_takes_effect() {
+    let d = deployment().await;
+    let admin = seed_deployment_user(&d.db, "admin@deploy.test", Role::Admin).await;
+    let (s, v) = send(&d.app, "PATCH", &format!("/v1/users/{}", admin.user.id), Auth::Session(&d.owner, None), Some(json!({ "role": "viewer" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = send(&d.app, "GET", "/v1/admin/settings", Auth::Session(&admin, None), None, &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a viewer now: {v}");
+    assert_eq!(d.db.get_membership(DEFAULT_ORG_ID, &admin.user.id).await.unwrap(), Some(Role::Viewer));
+}
+
+#[tokio::test]
+async fn single_tenant_the_users_page_never_hands_out_owner() {
+    let d = deployment().await;
+    let admin = seed_deployment_user(&d.db, "admin@deploy.test", Role::Admin).await;
+    for who in [&admin, &d.owner] {
+        let (s, v) = send(&d.app, "PATCH", &format!("/v1/users/{}", admin.user.id), Auth::Session(who, None), Some(json!({ "role": "owner" })), &[]).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{} gave out owner: {v}", who.user.email);
+    }
+    assert_eq!(d.db.get_user_by_id(&admin.user.id).await.unwrap().unwrap().role, Role::Admin);
+}
+
+#[tokio::test]
+async fn single_tenant_the_users_page_leaves_the_default_orgs_owner_alone() {
+    let d = deployment().await;
+    let admin = seed_deployment_user(&d.db, "admin@deploy.test", Role::Admin).await;
+    // An account whose own role says admin while it owns the default org, as
+    // `POST /v1/users/transfer-owner` leaves the previous owner.
+    d.db.update_user(&d.owner.user.id, Some(Role::Admin), None, None).await.unwrap();
+    let (s, v) = send(&d.app, "PATCH", &format!("/v1/users/{}", d.owner.user.id), Auth::Session(&admin, None), Some(json!({ "role": "viewer" })), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(d.db.get_membership(DEFAULT_ORG_ID, &d.owner.user.id).await.unwrap(), Some(Role::Owner));
+}
+
+// ─── Request artifacts follow generation read rights ────────────────────────
+
+/// Artifacts are written off the response path; wait until `id`'s lands.
+async fn wait_for_artifact(db: &SqliteDatabase, id: &str) {
+    for _ in 0..200 {
+        if db.get_request_artifact(id).await.unwrap().is_some() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("no request artifact for {id}");
+}
+
+#[tokio::test]
+async fn request_artifacts_follow_generation_read_own() {
+    let fx = fixture().await;
+    let member = seed_user(&fx.db, "member@acme.test").await;
+    fx.db.add_org_member(&fx.org, &member.user.id, Role::Member).await.unwrap();
+    let mine = seed_key(&fx.db, &fx.org, &fx.app_id, "generate,read", Some(&member.user.id)).await;
+    let (s, v) = generate(&fx.app, &fx.admin_key.raw, FREE, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let theirs = v["id"].as_str().unwrap().to_string();
+    let (s, v) = generate(&fx.app, &mine.raw, FREE, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let own = v["id"].as_str().unwrap().to_string();
+    // A failed request leaves an artifact and no generation row.
+    let failed = format!("litegen-img-{}", Uuid::new_v4());
+    fx.db
+        .insert_request_artifact(&RequestArtifact {
+            request_id: failed.clone(),
+            media_type: "image".into(),
+            prompt: Some("a private prompt".into()),
+            negative_prompt: None,
+            params_json: None,
+            refs_meta_json: None,
+            output_kind: "error".into(),
+            output_value: None,
+            output_mime: None,
+            output_truncated: false,
+            error_message: Some("vendor refused".into()),
+            created_at: chrono::Utc::now(),
+            org_id: Some(fx.org.clone()),
+            app_id: Some(fx.app_id.clone()),
+        })
+        .await
+        .unwrap();
+    wait_for_artifact(&fx.db, &theirs).await;
+    wait_for_artifact(&fx.db, &own).await;
+
+    // A member reads the artifacts of their own keys' generations, as
+    // `GET /v1/generations/{id}` lets them, and no one else's.
+    for (id, want) in [(&theirs, StatusCode::FORBIDDEN), (&failed, StatusCode::FORBIDDEN), (&own, StatusCode::OK)] {
+        let (s, v) = send(&fx.app, "GET", &format!("/v1/logs/{id}/artifact"), Auth::Session(&member, Some(&fx.org)), None, &[]).await;
+        assert_eq!(s, want, "the member reading {id}: {v}");
+    }
+    let (s, v) = send(&fx.app, "GET", &format!("/v1/generations/{theirs}"), Auth::Session(&member, Some(&fx.org)), None, &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the same rule as the generation itself: {v}");
+    for id in [&theirs, &failed, &own] {
+        let (s, v) = send(&fx.app, "GET", &format!("/v1/logs/{id}/artifact"), Auth::Session(&fx.owner, Some(&fx.org)), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "the owner reads any, {id}: {v}");
+    }
 }

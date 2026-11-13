@@ -1,0 +1,196 @@
+models:
+  # Amazon Bedrock: Stability AI's text-to-image models, through InvokeModel
+  # (`POST /model/{modelId}/invoke`, SigV4 for service `bedrock`) with
+  # Stability's own request body — not Nova Canvas's, which reached end of life
+  # on 2026-09-30. "Amazon Bedrock supports the following Stability AI models
+  # and image services … Support for all other Stability AI models are in the
+  # process of being deprecated": Stable Image Ultra, Stable Diffusion 3.5
+  # Large, Stable Image Core (the Image Services edit tools are skipped,
+  # scripts/model-drift/providers/bedrock.mjs). Each runs In-Region in
+  # us-west-2 only ("us-west-2 (Oregon)", no Geo or Global inference id), so
+  # the adapter calls and signs for us-west-2 whatever region a credential
+  # names. The answer is {seeds, finish_reasons, images: [base64]}; a
+  # finish_reason that is not null ("Filter reason: prompt", "Filter reason:
+  # output image", "Filter reason: input image", "Inference error") is a refusal.
+  # The same models are carried direct as stability/* (models/stability.yaml):
+  # these rows bill to the customer's AWS account.
+  # @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-stability-diffusion.md (2026-11-04)
+  # @see https://aws.amazon.com/bedrock/pricing/ — "Stability AI model | Price per generated image"; the figures are
+  #   AWS's metered unit map, https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/bedrockfoundationmodels/USD/current/bedrockfoundationmodels.json (2026-11-04)
+
+  # Stable Diffusion 3.5 Large: text-to-image, or image-to-image with
+  # `mode: image-to-image` + `image` + `strength` ("image-to-image requires the
+  # prompt, image, and strength parameters"; litegen sends 0.5 when none is
+  # asked, as for the direct stability/sd3.5 rows).
+  # @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-3-5-large.md (2026-11-04)
+  - id: bedrock/stability.sd3-5-large-v1:0
+    provider: bedrock
+    media_type: image
+    display_name: Stable Diffusion 3.5 Large (Bedrock)
+    description: Stability AI's SD3.5 Large on Amazon Bedrock (us-west-2) — text-to-image and image-to-image, 1 MP.
+    docs_url: https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-3-5-large.html
+    # "Stable Diffusion 3.5 Large | Price per generated image": $0.08 (us-west-2).
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # "prompt … Maximum 10,000 characters."
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      # "aspect_ratio … Valid for text-to-image requests only. Enum: 16:9, 1:1,
+      # 21:9, 2:3, 3:2, 4:5, 5:4, 9:16, 9:21. Default 1:1." — image-to-image
+      # keeps its image's shape, so the adapter sends it only without one.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+      # "seed … Range 0 to 4294967294. Default 0 (random seed)."
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # "output_format … Enum: jpeg, png, webp. Default png."
+      output_format: { kind: string, enum_values: [png, jpeg, webp], default: png }
+      # "strength … Range 0 to 1. Value of 0 preserves the input image, value
+      # of 1 ignores the input image." Image-to-image only.
+      strength: { kind: float, min: 0.0, max: 1.0 }
+    # "image … Base64-encoded input image. Minimum 64 pixels per side.
+    # Supported formats: jpeg, png, webp."
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  # Stable Image Core: text-to-image only ("This parameter is only valid for
+  # text-to-image requests"; no image field).
+  # @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-stable-image-core-text-image-request-response.md (2026-11-04)
+  - id: bedrock/stability.stable-image-core-v1:1
+    provider: bedrock
+    media_type: image
+    display_name: Stable Image Core (Bedrock)
+    description: Stability AI's Stable Image Core on Amazon Bedrock (us-west-2) — fast, affordable text-to-image.
+    docs_url: https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-stable-image-core-text-image-request-response.html
+    # "Stable Image Core | Price per generated image": $0.04 (us-west-2).
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true, image_to_image: false }
+    # "prompt (Required) … 0 | 10,000 characters"
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # "negative_prompt – Keywords of what you do not wish to see in the output image. Max: 10.000 characters."
+      negative_prompt: { kind: string, max_length: 10000 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+      # "seed … (Omit this parameter or pass 0 to use a random seed.) Range: 0 to 4294967295."
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # "output_format – … Supported formats: JPEG, PNG." (png, as Stability's own API defaults).
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+    extra_allowlist: []
+    tags: [text-to-image, fast]
+
+  # Stable Image Ultra: text-to-image (`mode` "Enum: text-to-image"), or
+  # image-to-image with `image` + `strength` ("Range: 0.0 to 1.0. Default:
+  # 0.35"; omitted when none is asked).
+  # @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-stable-ultra-text-image-request-response.md (2026-11-04)
+  - id: bedrock/stability.stable-image-ultra-v1:1
+    provider: bedrock
+    media_type: image
+    display_name: Stable Image Ultra (Bedrock)
+    description: Stability AI's Stable Image Ultra on Amazon Bedrock (us-west-2) — photorealistic text-to-image and image-to-image.
+    docs_url: https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-stable-ultra-text-image-request-response.html
+    # "Stable Image Ultra | Price per generated image": $0.14 (us-west-2).
+    pricing: { base_cost_usd: 0.14 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      # Text-to-image only; image-to-image keeps its image's shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+      # "strength – … How much influence the image parameter has on the
+      # generated image … Range: 0.0 to 1.0. Default: 0.35."
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.35 }
+    # "image – (string) The Base64 image to use as the starting point for the
+    # generation. Supported formats: JPEG, PNG, WebP."
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image, premium, photorealistic]
+
+  # ─── Video: Luma Ray 2 ───────────────────────────────────────────────────
+  # Luma's Ray 2 on Bedrock, carried beside luma/ray-2 under the hub-route
+  # policy (2026-11-04): billed to the customer's AWS account. Asynchronous:
+  # `POST /async-invoke` {modelId, modelInput, outputDataConfig} answers an
+  # invocationArn; `GET /async-invoke/{arn}` says InProgress | Completed |
+  # Failed. "The model output will be placed in the specified output Amazon
+  # S3 bucket", so the credential (or the operator's options) names that
+  # bucket as `s3_output_uri`, in us-west-2 ("Check that your S3 bucket has
+  # proper write permissions and the bucket exists in the same region as your
+  # Bedrock service"). litegen reads the MP4 back from it with the same AWS
+  # credential (s3:GetObject, and s3:ListBucket for the fallback) and keeps
+  # the bytes: no link is handed out. In-Region in us-west-2 only ("bedrock-
+  # runtime | luma.ray-v2:0 | https://bedrock-runtime.us-west-2.amazonaws.com |
+  # Not supported | Not supported"), so the adapter calls and signs for
+  # us-west-2 whatever region a credential names.
+  # @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-luma.md (2026-11-10)
+  # @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-luma-ai-ray2.md (2026-11-10)
+  # @see https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_StartAsyncInvoke.html (2026-11-10)
+  - id: bedrock/luma.ray-v2:0
+    provider: bedrock
+    media_type: video
+    display_name: Luma Ray 2 (Bedrock)
+    description: Luma's Ray 2 through Amazon Bedrock on your AWS account (us-west-2) — text-to-video or first/last-frame image-to-video, 5 or 9 s, 540p or 720p; the MP4 lands in your S3 bucket and litegen reads it back.
+    docs_url: https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-luma.html
+    # "Luma AI models | Video resolution | Price per second of video
+    # generated": "Luma Ray2 | 720p, 24 fps | $1.50", "540p, 24 fps | $0.75"
+    # (AWS's metered unit map, US West (Oregon), published 2026-11-09). The
+    # default request (720p, 5 s) is 5 × $1.50 = $7.50; 9 s at 720p $13.50.
+    # @see https://aws.amazon.com/bedrock/pricing/ (2026-11-10)
+    # @see https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/bedrockfoundationmodels/USD/current/bedrockfoundationmodels.json (2026-11-10)
+    pricing:
+      base_cost_usd: 7.5
+      variable_pricing:
+        - { per_second_usd: 1.5 }
+        - { when: { resolution: 540p }, per_second_usd: 0.75 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "prompt – (string) … The request field accepts 1–5,000 characters. The
+    # model input is also limited to 300 tokens" (the token limit can't be
+    # declared; Bedrock refuses a longer prompt before generating).
+    prompt: { required: true, max_length: 5000 }
+    params:
+      # "loop – (boolean) Whether to loop the output video"; sent only when
+      # asked. As on luma/ray-2, a loop with a last frame is refused ("Loop is
+      # not supported for keyframes", https://docs.lumalabs.ai/docs/errors.md).
+      loop: { kind: bool, default: false }
+      # "duration – (enum) … ("5s", "9s")", sent as that string, always.
+      duration_seconds: { kind: float, min: 5.0, max: 9.0, default: 5.0, values: [5.0, 9.0] }
+      # "aspect_ratio – (enum) … ("1:1", "16:9", "9:16", "4:3", "3:4", "21:9",
+      # "9:21")", sent only when asked (Bedrock's basic request omits it).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21"]
+      # "resolution – (enum) … ("540p", "720p")", sent always so the price is
+      # the one asked for (720p unless asked).
+      resolution: { kind: string, enum_values: [540p, 720p], default: 720p }
+    # "keyframes – (object) Define start (frame0) and/or end (frame1)
+    # keyframes", each {"type": "image", "source": {"type": "base64",
+    # "media_type": "image/jpeg", "data": …}}; "Images must be in supported
+    # formats (JPEG, PNG)".
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, premium]

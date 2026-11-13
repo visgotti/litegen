@@ -15,6 +15,9 @@ const MODELS = {
   'bfl/flux-2-pro': 'flux-2-pro',
   'bfl/flux-2-max': 'flux-2-max',
   'bfl/flux-2-klein-9b': 'flux-2-klein-9b',
+  'bfl/flux-2-flex': 'flux-2-flex',
+  'bfl/flux-3-image': 'flux-3-image',
+  'bfl/flux-3-image-klein': 'flux-3-image-klein',
 };
 
 // The endpoints the adapter calls — one per carried model.
@@ -54,10 +57,6 @@ export default {
       reason: 'FLUX.1 Finetuning API deprecated 2025-10-31 (docs.bfl.ml/release-notes: "No migration path available"); the spec still lists it',
     },
     { id: 'flux-2-klein-4b', reason: 'skipped 2026-09-11: a near-duplicate of flux-2-klein-9b, which we carry' },
-    {
-      id: 'flux-2-flex',
-      reason: 'skipped 2026-10-30: priced per megapixel ($0.05 the first and each further MP, per BFL\'s price feed), which a flat row cannot bill; carrying it is the user\'s call',
-    },
     { id: 'flux-3-video', reason: 'skipped 2026-09-11: FLUX 3 is video; it needs a BFL video adapter' },
     ...['flux-pro-1.0-fill', 'flux-pro-1.0-expand'].map((id) => ({
       id,

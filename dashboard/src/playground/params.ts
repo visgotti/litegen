@@ -13,12 +13,18 @@ type AnySpec = { kind: string; [k: string]: unknown };
 interface LooseSchema {
   media_type?: string;
   params?: Record<string, AnySpec>;
+  /** Fields litegen applies itself, with its bounds (see `paramsOf`). */
+  litegen_params?: Record<string, AnySpec>;
   prompt?: { required?: boolean; max_length?: number | null };
   ref_inputs?: {
     max_total?: number;
+    /** The sides a model reads its views by position, in that order. */
+    view_order?: string[];
     roles?: Record<string, { required?: boolean; min_count?: number; max_count?: number }>;
   } | null;
   extra_allowlist?: string[];
+  /** The vendor's type for an allowlisted key, when the catalog gives one. */
+  extra_params?: Record<string, AnySpec>;
 }
 
 const loose = (schema: ModelSchema | undefined): LooseSchema => (schema ?? {}) as unknown as LooseSchema;
@@ -59,6 +65,10 @@ function stringList(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
+function numberList(v: unknown): number[] {
+  return Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number') : [];
+}
+
 /**
  * Human-facing label for a param row: the schema's declared `label` (every
  * ParamSpec variant may carry one so clients need not show raw API keys),
@@ -92,18 +102,9 @@ export function defaultForSpec(spec: ParamSpec): unknown {
     case 'int':
     case 'float': return typeof s.default === 'number' ? s.default : '';
     case 'string': return typeof s.default === 'string' ? s.default : '';
-    case 'string_array': {
-      // The spec's `default` is already an array here. Without one the server
-      // resolves to glb (every 3D model can emit it), so that is what the
-      // control shows; failing that, the first declared value — never all of
-      // them: each extra container is a file the caller pays for and a format
-      // the generation can now fail on.
-      const d = stringList(s.default);
-      if (d.length) return d;
-      const ev = stringList(s.enum_values);
-      if (ev.includes('glb')) return ['glb'];
-      return ev.length ? [ev[0]] : [];
-    }
+    // The served default: for `output_formats`, `GET /v1/models/{id}` serves
+    // the list an omitted value resolves to, so the page invents none (E11d).
+    case 'string_array': return stringList(s.default);
     case 'aspect_ratio': return typeof s.default === 'string' ? s.default : '';
     case 'size': return '';
     case 'seed': return ''; // empty = random
@@ -117,7 +118,7 @@ export function defaultForSpec(spec: ParamSpec): unknown {
 // derives containers locally from any one it can read, and the server lists
 // exactly those in `derivable_values` (served on GET /v1/models/{id}): any
 // subset of them costs ONE job. A format litegen cannot convert would be a job
-// of its own. Since litegen converts between all ten of its containers
+// of its own. Since litegen converts between all eleven of its containers
 // (docs/superpowers/3d-format-conversion.md) every served format is derivable
 // and the cap cannot bind — `allShareOneJob` — but the rule stands for a model
 // that offers one it cannot. Which formats are derivable is the server's
@@ -174,6 +175,14 @@ function mergeSpec(a: AnySpec, b: AnySpec): AnySpec {
   const out: AnySpec = { ...a };
   if ('min' in a || 'min' in b) out.min = maxDefined(a.min as number, b.min as number);
   if ('max' in a || 'max' in b) out.max = minDefined(a.max as number, b.max as number);
+  // Listed numbers: offer what every listing model takes. A model with a
+  // range rather than a list takes any of them it allows.
+  if (a.kind === 'int' || a.kind === 'float') {
+    const av = numberList(a.values);
+    const bv = numberList(b.values);
+    if (av.length && bv.length) out.values = av.filter(v => bv.includes(v));
+    else if (bv.length) out.values = bv;
+  }
   if (Array.isArray(a.enum_values) && Array.isArray(b.enum_values)) {
     out.enum_values = intersect(a.enum_values as string[], b.enum_values as string[]);
   }
@@ -243,13 +252,19 @@ export function mergeParams(
     });
 }
 
-/** Clamp a numeric value to a spec's min/max; passthrough otherwise. */
-export function clampToSpec(spec: AnySpec, value: unknown): unknown {
+/**
+ * A value as one model is sent it; `undefined` leaves the param off for that
+ * model. A number goes as typed, in its bounds or not: the server's check
+ * says what the model takes (N5). In a Compare run (`compare`), one shared
+ * value meets several models, so a model that lists its values is sent only
+ * one it lists, and otherwise applies its own default (E11e); Single mode
+ * sends the value picked, and the server says why it will not do.
+ */
+export function clampToSpec(spec: AnySpec, value: unknown, opts: { compare?: boolean } = {}): unknown {
   if ((spec.kind === 'int' || spec.kind === 'float') && typeof value === 'number') {
-    let v = value;
-    if (typeof spec.min === 'number') v = Math.max(spec.min, v);
-    if (typeof spec.max === 'number') v = Math.min(spec.max, v);
-    return v;
+    const listed = numberList(spec.values);
+    if (opts.compare && listed.length) return listed.includes(value) ? value : undefined;
+    return value;
   }
   // Compare mode shares one value across models that declare different sets, so
   // a `string_array` has to be narrowed to each model's own — otherwise picking
@@ -268,57 +283,19 @@ export function clampToSpec(spec: AnySpec, value: unknown): unknown {
   return value;
 }
 
-// ─── Fields a model takes without declaring them ─────────────────────────────
-
-/** The server's caps on mask growth and the kept edge's feather (validator.rs). */
-export const MAX_MASK_GROW_PX = 100;
-export const MAX_FEATHER_PX = 256;
-/** The tallest a mesh is scaled to (validator.rs MAX_PLACEMENT_HEIGHT_M). */
-export const MAX_PLACEMENT_HEIGHT_M = 10_000;
+// ─── The fields a model takes ────────────────────────────────────────────────
 
 /**
- * Request fields a model takes by its shape rather than a declared param —
- * the server's own rule (`check_image_edit`, `supports_preserve_unmasked`):
- * wherever it takes a mask or a region, `mask_grow_px` widens it and
- * `preserve_unmasked` (with `feather_px`) pastes the untouched pixels back;
- * and every 3D model's mesh is placed (`ground`, `center`, `height_m`). A
- * model that declares one of these itself keeps its own spec (`paramsOf`).
+ * A model's params: what it declares (`params`), plus the request fields
+ * litegen applies to it itself (`litegen_params`, served by
+ * `GET /v1/models/{id}`: placement on a 3D model, mask growth and kept pixels
+ * on an image edit), each with the bounds the server holds it to (E11a). The
+ * page derives none from the model's shape. A declared param keeps its own
+ * spec; the server serves no name in both maps.
  */
-export function derivedParams(schema: ModelSchema | undefined): Record<string, AnySpec> {
-  const l = loose(schema);
-  // 3D doc §3D: litegen places any mesh it delivers (`supports_placement`).
-  if (l.media_type === 'model3d') {
-    return {
-      ground: { kind: 'bool', default: false, label: 'Ground', description: "Put the mesh's lowest point at y = 0." },
-      center: { kind: 'bool', default: false, label: 'Center', description: "Centre the mesh's bounds on x and z." },
-      height_m: {
-        kind: 'float', min: 0.001, max: MAX_PLACEMENT_HEIGHT_M, label: 'Height (m)',
-        description: 'Scale the mesh to this height, in metres.',
-      },
-    };
-  }
-  const takesMask = l.ref_inputs?.roles?.mask != null;
-  const takesRegion = l.params?.region?.kind === 'region';
-  if (!takesMask && !takesRegion) return {};
-  return {
-    mask_grow_px: {
-      kind: 'int', min: 0, max: MAX_MASK_GROW_PX, label: 'Mask grow (px)',
-      description: 'Widen the mask or region by this many pixels before the edit.',
-    },
-    preserve_unmasked: {
-      kind: 'bool', default: false, label: 'Keep unmasked pixels',
-      description: 'Paste the original pixels back outside the mask or region.',
-    },
-    feather_px: {
-      kind: 'int', min: 0, max: MAX_FEATHER_PX, label: 'Feather (px)',
-      description: 'Soften the kept edge. Needs Keep unmasked pixels.',
-    },
-  };
-}
-
-/** A model's params: what it declares, plus what its shape implies. */
 export function paramsOf(schema: ModelSchema | undefined): Record<string, AnySpec> {
-  return { ...derivedParams(schema), ...(loose(schema).params ?? {}) };
+  const l = loose(schema);
+  return { ...(l.litegen_params ?? {}), ...(l.params ?? {}) };
 }
 
 // ─── Structured params: the draft a control edits, the value the wire takes ──
@@ -340,26 +317,19 @@ const whole = (v: unknown): number | undefined => {
   const n = num(v);
   return Number.isInteger(n) && n >= 0 ? n : undefined;
 };
-const fraction = (v: unknown): number | undefined => {
-  const n = num(v);
-  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
-};
-
-/** A legal clip name (validator.rs `animation_name_invalid`). */
-export const CLIP_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
-
-/** A layout draft's box when it lies inside the canvas with an area — the
- *  server refuses the request otherwise — else undefined. */
+/** A layout draft's box once all four of its numbers are typed, as typed;
+ *  else undefined. Whether it lies inside the canvas, with an area, is the
+ *  server's to say (N4). */
 export function layoutBox(d: Draft): { x: number; y: number; w: number; h: number } | undefined {
-  const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => fraction(d[k]));
-  if (x === undefined || y === undefined || !w || !h) return undefined;
-  return x + w <= 1 + 1e-9 && y + h <= 1 + 1e-9 ? { x, y, w, h } : undefined;
+  const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => num(d[k]));
+  return [x, y, w, h].every(Number.isFinite) ? { x, y, w, h } : undefined;
 }
 
 /**
  * The wire form of a structured param's draft, or undefined while it is not
  * complete enough to send. Incomplete is "unset", never a half-filled object
- * the server would only reject.
+ * the server would only reject. A complete value goes as typed: whether it
+ * is in range is the server's to say, in its words (N4).
  */
 export function wireValue(spec: AnySpec, value: unknown): unknown {
   const max = typeof spec.max_items === 'number' ? spec.max_items : Infinity;
@@ -381,17 +351,11 @@ export function wireValue(spec: AnySpec, value: unknown): unknown {
       if (!isDraft(value)) return undefined;
       const start = num(value.start_s);
       const end = num(value.end_s);
-      return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start
-        ? { start_s: start, end_s: end }
-        : undefined;
+      return Number.isFinite(start) && Number.isFinite(end) ? { start_s: start, end_s: end } : undefined;
     }
     case 'palette': {
-      const cap = typeof spec.max_colors === 'number' ? spec.max_colors : Infinity;
-      const out: string[] = [];
-      for (const c of Array.isArray(value) ? value : []) {
-        const hex = text(c).toLowerCase();
-        if (/^#[0-9a-f]{6}$/.test(hex) && !out.includes(hex) && out.length < cap) out.push(hex);
-      }
+      // Every colour filled in, as typed; the control adds at most max_colors.
+      const out = (Array.isArray(value) ? value : []).map(text).filter(c => c !== '');
       return out.length ? out : undefined;
     }
     case 'layout': {
@@ -409,22 +373,16 @@ export function wireValue(spec: AnySpec, value: unknown): unknown {
       return out.length ? out : undefined;
     }
     case 'animation_list': {
-      // A clip's name is "1–64 characters of A–Z, a–z, 0–9, _ . -" and
-      // unique: a blank one is the preset's canonical name, else its id made
-      // legal; a typed one that is not legal is not sent.
-      const canonical = new Map(drafts(spec.presets).map(p => [text(p.id), text(p.canonical)]));
-      const names = new Set<string>();
+      // A clip needs a preset or a motion prompt; one with neither is still
+      // a draft. Its name goes as typed, and none when left blank: litegen
+      // names an unnamed clip and judges a typed name (E11c).
       const out: Draft[] = [];
       for (const d of drafts(value)) {
         const preset = text(d.preset);
         const prompt = text(d.prompt);
         if ((!preset && !prompt) || out.length >= max) continue;
-        const typed = text(d.name);
-        if (typed && !CLIP_NAME.test(typed)) continue;
-        let name = typed || canonical.get(preset) || preset.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64) || `clip-${out.length + 1}`;
-        for (let n = 2; names.has(name); n++) name = `${(typed || canonical.get(preset) || preset.replace(/[^A-Za-z0-9_.-]/g, '_')).slice(0, 60)}-${n}`;
-        names.add(name);
-        const clip: Draft = { name };
+        const clip: Draft = {};
+        if (typeof d.name === 'string' && d.name.trim() !== '') clip.name = d.name;
         if (preset) clip.preset = preset;
         if (prompt) clip.prompt = prompt;
         const duration = num(d.duration_s);
@@ -457,7 +415,7 @@ export function wireValue(spec: AnySpec, value: unknown): unknown {
           const y = num(d.y);
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
           const label = num(d.label);
-          out.push(label === 0 || label === 1 ? { type: 'point', x, y, label } : { type: 'point', x, y });
+          out.push(Number.isFinite(label) ? { type: 'point', x, y, label } : { type: 'point', x, y });
         } else if (d.type === 'box') {
           const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => num(d[k]));
           if ([x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) out.push({ type: 'box', x, y, w, h });
@@ -542,8 +500,10 @@ export function mergeRefRoles(schemasById: Record<string, ModelSchema>): MergedR
     if (!roles) continue;
     for (const [role, spec] of Object.entries(roles)) {
       const max = typeof spec.max_count === 'number' ? spec.max_count : 0;
-      const min = typeof spec.min_count === 'number' ? spec.min_count : 0;
-      const requires = spec.required === true && min > 0;
+      // A required role needs an image whatever its min_count says: the
+      // server refuses one sent none.
+      const requires = spec.required === true;
+      const min = requires ? Math.max(typeof spec.min_count === 'number' ? spec.min_count : 0, 1) : 0;
       const entry = byRole.get(role);
       if (!entry) {
         byRole.set(role, {
@@ -564,6 +524,20 @@ export function mergeRefRoles(schemasById: Record<string, ModelSchema>): MergedR
     }
   }
   return [...byRole.values()].sort((a, b) => roleRank(a.role) - roleRank(b.role) || a.role.localeCompare(b.role));
+}
+
+/** The largest request the server takes for every selected model
+ *  (`capabilities.max_request_bytes` on `GET /v1/models`, N2); undefined when
+ *  it states none. The SDK types it as always sent; the guard still skips a
+ *  missing or zero value, so a server that states none leaves it to its 413. */
+export function maxRequestBytesOf(models: ModelInfo[], ids: string[]): number | undefined {
+  let out: number | undefined;
+  for (const m of models) {
+    if (!ids.includes(m.id)) continue;
+    const b = (m.capabilities as { max_request_bytes?: unknown } | undefined)?.max_request_bytes;
+    if (typeof b === 'number' && b > 0) out = out === undefined ? b : Math.min(out, b);
+  }
+  return out;
 }
 
 /** The most reference images any one request may carry across the selection. */
@@ -602,19 +576,20 @@ export function refsForModel(schema: ModelSchema | undefined, refs: RefEntry[]):
 
 // ─── Provider passthrough (`extra`) ──────────────────────────────────────────
 
-/** Union of `extra_allowlist` keys across the selected models. */
+/** Union of `extra_allowlist` keys across the selected models, each with the
+ *  vendor's type for it (`extra_params`) where a model gives one. */
 export function mergeExtras(schemasById: Record<string, ModelSchema>): MergedExtra[] {
-  const byKey = new Map<string, string[]>();
+  const byKey = new Map<string, MergedExtra>();
   for (const [modelId, schema] of Object.entries(schemasById)) {
+    const typed = loose(schema).extra_params ?? {};
     for (const key of stringList(loose(schema).extra_allowlist)) {
-      const models = byKey.get(key);
-      if (models) models.push(modelId);
-      else byKey.set(key, [modelId]);
+      const entry = byKey.get(key) ?? { key, models: [] };
+      entry.models.push(modelId);
+      if (!entry.spec && typed[key]) entry.spec = typed[key] as unknown as ParamSpec;
+      byKey.set(key, entry);
     }
   }
-  return [...byKey.entries()]
-    .map(([key, models]) => ({ key, models }))
-    .sort((a, b) => a.key.localeCompare(b.key));
+  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
 /**
@@ -632,17 +607,41 @@ export function parseExtraValue(raw: string): unknown {
   }
 }
 
-/** The `extra` object one model is sent: only its allowlisted keys, blanks
- *  omitted. Undefined when nothing applies, so the field stays off the wire. */
+/**
+ * A passthrough value as one model is sent it. A key the catalog types
+ * (`extra_params`) goes as that type, since the server checks it like a param
+ * and refuses another (`param_invalid`): a `string` as its text (fal FLUX's
+ * `safety_tolerance` "2" is not the number 2), a number, a flag, a list. An
+ * untyped key goes as `parseExtraValue` reads it. Blank is "not set".
+ */
+export function extraValue(spec: AnySpec | undefined, raw: string): unknown {
+  const t = raw.trim();
+  if (t === '') return undefined;
+  const parsed = parseExtraValue(t);
+  switch (spec?.kind) {
+    // A JSON string (`"512"`, how history keeps text that looks like a number) is its text.
+    case 'string': return typeof parsed === 'string' ? parsed : t;
+    case 'int':
+    case 'float': return Number.isFinite(Number(t)) ? Number(t) : t;
+    case 'bool': return t === 'true' ? true : t === 'false' ? false : t;
+    case 'string_array': return Array.isArray(parsed) ? parsed : t.split(',').map(s => s.trim()).filter(Boolean);
+    default: return parsed;
+  }
+}
+
+/** The `extra` object one model is sent: only its allowlisted keys, each as
+ *  its type (`extraValue`), blanks omitted. Undefined when nothing applies, so
+ *  the field stays off the wire. */
 export function extraForModel(
   schema: ModelSchema | undefined,
   extra: Record<string, string>,
 ): Record<string, unknown> | undefined {
   const allowed = new Set(stringList(loose(schema).extra_allowlist));
+  const typed = loose(schema).extra_params ?? {};
   const out: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(extra)) {
     if (!allowed.has(key)) continue;
-    const v = parseExtraValue(raw);
+    const v = extraValue(typed[key], raw);
     if (v !== undefined) out[key] = v;
   }
   return Object.keys(out).length ? out : undefined;
@@ -650,54 +649,8 @@ export function extraForModel(
 
 // ─── Request building ────────────────────────────────────────────────────────
 
-/**
- * Why this model cannot be run with the current inputs, in words a user can act
- * on — empty when it can. Mirrors the server's own checks (check_prompt,
- * check_refs) so a run that would be rejected is blocked before it is sent.
- */
-export function requestProblems(
-  schema: ModelSchema | undefined,
-  shared: Pick<SharedFormState, 'prompt' | 'refs'>,
-): string[] {
-  const problems: string[] = [];
-  const sent = refsForModel(schema, shared.refs);
-  const roles = loose(schema).ref_inputs?.roles ?? {};
-  const minOf = (spec: { min_count?: number }) => (typeof spec.min_count === 'number' ? spec.min_count : 0);
-  const requiresARole = Object.values(roles).some(spec => spec.required === true && minOf(spec) > 0);
-  const usage = promptUsage(schema);
-  // An `unused` prompt is simply not sent to this model, so it cannot be wrong.
-  if (usage !== 'unused') {
-    if (!shared.prompt.trim()) {
-      if (usage === 'required') {
-        problems.push('needs a prompt');
-      } else if (sent.length === 0 && Object.keys(roles).length > 0 && !requiresARole) {
-        // A prompt-optional model that takes images still needs SOMETHING to
-        // generate from: with neither, the server reads the request as
-        // text-to-3D and rejects it with prompt_required.
-        problems.push('needs a prompt or a reference image');
-      }
-    }
-    const max = promptMaxLength(schema);
-    if (max != null && promptLength(shared.prompt) > max) {
-      problems.push(`takes a prompt of at most ${max.toLocaleString()} characters`);
-    }
-  }
-  for (const [role, spec] of Object.entries(roles)) {
-    const min = minOf(spec);
-    const count = sent.filter(r => r.role === role).length;
-    // The server's rule exactly: an optional role may be left empty, but once
-    // used it must reach its minimum; a required one must always.
-    if (count < min && (spec.required === true || count > 0)) {
-      problems.push(role === 'init'
-        ? (min === 1 ? 'needs an input image' : `needs ${min} input images`)
-        : `needs ${min} image${min === 1 ? '' : 's'} for the ${roleLabel(role).toLowerCase()}`);
-    }
-  }
-  return problems;
-}
-
-/** Build a schema-valid request for one model: shared values, minus params the
- *  model doesn't declare, clamped to that model's own bounds. */
+/** Build the request for one model of a Compare run: the shared values,
+ *  minus the params the model doesn't declare, narrowed to what it lists. */
 export function buildRequestForModel(
   modelId: string,
   schema: ModelSchema,
@@ -713,18 +666,19 @@ export function buildRequestForModel(
   // No `n`: litegen returns one image per request and refuses more (L13), so
   // Compare mode makes N images as N requests (`fanOutJobs`).
   if (shared.seed !== '' && 'seed' in params) body.seed = parseInt(shared.seed, 10);
-  return { ...body, ...schemaInputs(schema, shared) } as unknown as ImageGenerationRequest;
+  return { ...body, ...schemaInputs(schema, shared, { compare: true }) } as unknown as ImageGenerationRequest;
 }
 
 /**
  * The schema-driven half of a request — the params the user set, the
  * reference images and the passthrough `extra` — narrowed to what this one
  * model declares. Single Mode adds it to the fields it has dedicated controls
- * for; Compare Mode builds every request from it.
+ * for; Compare Mode builds every request from it (`compare`: see `clampToSpec`).
  */
 export function schemaInputs(
   schema: ModelSchema | undefined,
   shared: Pick<SharedFormState, 'params'> & Partial<Pick<SharedFormState, 'refs' | 'extra'>>,
+  opts: { compare?: boolean } = {},
 ): Record<string, unknown> {
   const params = paramsOf(schema);
   const body: Record<string, unknown> = {};
@@ -740,7 +694,8 @@ export function schemaInputs(
       v = wireValue(params[name], v);
       if (v === undefined) continue;          // still being filled in
     }
-    v = clampToSpec(params[name], v);
+    v = clampToSpec(params[name], v, opts);
+    if (v === undefined) continue;            // not one this model lists (Compare)
     // An empty set means "unset", not "no formats": the API rejects an
     // explicitly empty list, and omitting the field is what makes the model's
     // own default apply. Narrowing above can empty it out for a model whose
@@ -759,7 +714,7 @@ export function schemaInputs(
  * The calls one Compare run makes, one tile each: N one-image requests per
  * image model (litegen returns one image per request), one job per 3D model.
  */
-export function fanOutJobs<T extends { modelId: string; mediaType: 'image' | 'model3d'; request: object }>(
+export function fanOutJobs<T extends { modelId: string; mediaType: 'image' | 'model3d'; request: object; seedMax?: number }>(
   requests: T[],
   imagesPerModel: number,
 ): Array<T & { index: number; key: string }> {
@@ -768,8 +723,29 @@ export function fanOutJobs<T extends { modelId: string; mediaType: 'image' | 'mo
     const one = { ...(r.request as Record<string, unknown>) };
     delete one.n;
     const count = r.mediaType === 'image' ? n : 1;
-    return Array.from({ length: count }, (_, index) => ({ ...r, request: one as T['request'], index, key: `${r.modelId}#${index}` }));
+    return Array.from({ length: count }, (_, index) => ({
+      ...r,
+      request: seededCopy(one, index, r.seedMax) as T['request'],
+      index,
+      key: `${r.modelId}#${index}`,
+    }));
   });
+}
+
+/** The highest seed a model takes, when its schema bounds it. */
+export function seedMaxOf(schema: ModelSchema | undefined): number | undefined {
+  const max = (paramsOf(schema).seed as { max?: unknown } | undefined)?.max;
+  return typeof max === 'number' ? max : undefined;
+}
+
+/** Copy `index` of a fixed-seed request takes seed + index, wrapped into the
+ *  model's range (`seedMax`): N copies of one seed would be one image billed
+ *  N times. A request with no seed is left to vary on its own. */
+function seededCopy(req: Record<string, unknown>, index: number, seedMax?: number): Record<string, unknown> {
+  const seed = req.seed;
+  if (index === 0 || typeof seed !== 'number' || !Number.isInteger(seed)) return req;
+  const next = seedMax != null && seedMax >= 0 ? (seed + index) % (seedMax + 1) : seed + index;
+  return { ...req, seed: next };
 }
 
 // ─── Restoring a stored request (Playground history) ─────────────────────────
@@ -781,11 +757,23 @@ const NON_PARAM_FIELDS = new Set([
   'reference_images', 'extra', 'metadata', 'response_format',
 ]);
 
+/** A stored value as the draft its control edits: a layout item's wire form
+ *  `{kind, text, box: {x, y, w, h}}` is the draft `{kind, text, x, y, w, h}`
+ *  (`layoutBox` reads the box flat). Other values are their own drafts. */
+function draftOfStored(v: unknown): unknown {
+  if (!Array.isArray(v)) return v;
+  return v.map(item => {
+    if (!isDraft(item) || !isDraft(item.box)) return item;
+    const { box, ...rest } = item;
+    return { ...rest, ...box };
+  });
+}
+
 /** The schema params a stored request body set, ready for `SharedFormState.params`. */
 export function paramsFromBody(body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
-    if (!NON_PARAM_FIELDS.has(k) && v != null) out[k] = v;
+    if (!NON_PARAM_FIELDS.has(k) && v != null) out[k] = draftOfStored(v);
   }
   return out;
 }
@@ -795,9 +783,12 @@ export function paramsFromBody(body: Record<string, unknown>): Record<string, un
 export function refsFromBody(body: Record<string, unknown>): RefEntry[] {
   const refs = Array.isArray(body.reference_images) ? body.reference_images : [];
   return refs.flatMap((r, i) => {
-    const ref = r as { type?: unknown; value?: unknown; role?: unknown } | null;
+    const ref = r as { type?: unknown; value?: unknown; role?: unknown; time_s?: unknown } | null;
     if (ref?.type !== 'url' || typeof ref.value !== 'string' || typeof ref.role !== 'string') return [];
-    return [{ id: `restored-${i}`, role: ref.role, type: 'url' as const, value: ref.value }];
+    const entry: RefEntry = { id: `restored-${i}`, role: ref.role, type: 'url', value: ref.value };
+    // A keyframe's time, as the picker's field holds it (text as typed).
+    if (typeof ref.time_s === 'number') entry.time_s = String(ref.time_s);
+    return [entry];
   });
 }
 

@@ -7,10 +7,13 @@
 //! - `Header` / `QueryParam` — API key in a header (Bearer, "Token ", x-key,
 //!   x-goog-api-key, Api-Key, API-KEY) or a query parameter (Google `?key=`).
 //! - `AwsSigV4` — AWS Signature V4 request signing (Amazon Bedrock).
-//! - `KlingJwt` — Kling per-request HS256 JWT minted from access/secret key.
 //! - `TencentTc3` — Tencent Cloud TC3-HMAC-SHA256 request signing (Hunyuan).
 //!
-//! Simple schemes (`Header`, `QueryParam`, `KlingJwt`) are applied to a
+//! Kling's per-request JWT (from an access/secret key pair) is gone: since
+//! 2026-11-03 both Kling adapters use its API key (`bearer()`), which "must be
+//! used to call Kling AI API".
+//!
+//! Simple schemes (`Header`, `QueryParam`) are applied to a
 //! `reqwest::RequestBuilder` via [`apply`]. Signing schemes (`AwsSigV4`,
 //! `TencentTc3`) need the finalized request body to compute the signature, so
 //! their providers call [`sigv4::sign`] / [`tc3::sign`] directly with the body
@@ -20,7 +23,6 @@ use crate::providers::ProviderError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub mod kling_jwt;
 pub mod sigv4;
 pub mod tc3;
 
@@ -43,10 +45,6 @@ pub enum AuthSpec {
     /// (e.g. `"bedrock"`); `default_region` is used when no per-request region
     /// is supplied.
     AwsSigV4 { service: String, default_region: String },
-
-    /// Kling per-request JWT: HS256 over `{iss: access_key, exp: now+1800,
-    /// nbf: now-5}`, sent as `Authorization: Bearer <jwt>`.
-    KlingJwt,
 
     /// Tencent Cloud TC3-HMAC-SHA256 request signing. `service` is the API
     /// service name (e.g. `"hunyuan"`, `"vclm"`).
@@ -76,7 +74,6 @@ impl AuthSpec {
             AuthSpec::Header { .. } => "header",
             AuthSpec::QueryParam { .. } => "query_param",
             AuthSpec::AwsSigV4 { .. } => "aws_sigv4",
-            AuthSpec::KlingJwt => "kling_jwt",
             AuthSpec::TencentTc3 { .. } => "tencent_tc3",
         }
     }
@@ -87,7 +84,6 @@ impl AuthSpec {
         match self {
             AuthSpec::Header { .. } | AuthSpec::QueryParam { .. } => &["api_key"],
             AuthSpec::AwsSigV4 { .. } => &["key_id", "key_secret", "region"],
-            AuthSpec::KlingJwt => &["key_id", "key_secret"],
             AuthSpec::TencentTc3 { .. } => &["key_id", "key_secret", "region"],
         }
     }
@@ -111,15 +107,15 @@ impl AuthSpec {
 /// weighted [`crate::providers::ApiKeyPool`] from `api_keys` if present.
 #[derive(Debug, Clone, Default)]
 pub struct ProviderCredentials {
-    /// Single API key (header/query/bearer/jwt-secret-less schemes).
+    /// Single API key (header, query and bearer schemes).
     pub api_key: Option<String>,
     /// Weighted multi-key pool entries (header schemes).
     pub api_keys: Vec<crate::types::ApiKeyEntry>,
-    /// Weighted multi-credential pool entries (signing schemes: SigV4/TC3/JWT).
+    /// Weighted multi-credential pool entries (signing schemes: SigV4, TC3).
     pub credential_sets: Vec<crate::types::CredentialEntry>,
-    /// Access key id (SigV4) / secret id (TC3) / access key (Kling).
+    /// Access key id (SigV4) / secret id (TC3).
     pub key_id: Option<String>,
-    /// Secret access key (SigV4) / secret key (TC3, Kling).
+    /// Secret access key (SigV4) / secret key (TC3).
     pub key_secret: Option<String>,
     /// Region (SigV4 / TC3). Non-secret; part of the host and credential scope.
     pub region: Option<String>,
@@ -259,7 +255,7 @@ impl ProviderCredentials {
 
 /// Apply a *non-signing* auth scheme to a request builder.
 ///
-/// Handles `Header`, `QueryParam`, and `KlingJwt`. Signing schemes
+/// Handles `Header` and `QueryParam`. Signing schemes
 /// (`AwsSigV4`, `TencentTc3`) return an error here — their providers must call
 /// [`sigv4::sign`] / [`tc3::sign`] with the request body bytes instead.
 pub fn apply(
@@ -276,16 +272,25 @@ pub fn apply(
             let key = require_api_key(creds)?;
             Ok(builder.query(&[(name.as_str(), key.as_str())]))
         }
-        AuthSpec::KlingJwt => {
-            let jwt = kling_jwt::mint(creds)?;
-            Ok(builder.header("Authorization", format!("Bearer {jwt}")))
-        }
         AuthSpec::AwsSigV4 { .. } | AuthSpec::TencentTc3 { .. } => {
             Err(ProviderError::InvalidRequest(format!(
                 "auth scheme '{}' must be applied via its signer with request body bytes",
                 spec.scheme_name()
             )))
         }
+    }
+}
+
+/// [`apply`] as a step in a request chain, for an adapter that has picked
+/// its key (from its pool) itself:
+/// `client.post(url).authorized(&self.auth, &key)?.json(&body)`.
+pub trait Authorize: Sized {
+    fn authorized(self, spec: &AuthSpec, api_key: &str) -> Result<Self, ProviderError>;
+}
+
+impl Authorize for reqwest::RequestBuilder {
+    fn authorized(self, spec: &AuthSpec, api_key: &str) -> Result<Self, ProviderError> {
+        apply(spec, &ProviderCredentials { api_key: Some(api_key.to_string()), ..Default::default() }, self)
     }
 }
 
@@ -318,7 +323,6 @@ mod tests {
                 .required_fields(),
             &["key_id", "key_secret", "region"]
         );
-        assert_eq!(AuthSpec::KlingJwt.required_fields(), &["key_id", "key_secret"]);
         assert_eq!(
             AuthSpec::TencentTc3 { service: "hunyuan".into(), default_region: "ap-guangzhou".into() }
                 .required_fields(),

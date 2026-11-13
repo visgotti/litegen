@@ -12,17 +12,19 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:mt": "playwright test --config playwright.multitenant.config.ts",
+    "test:stories": "playwright test --config playwright.stories.config.ts",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },
   "dependencies": {
-    "@google/model-viewer": "^4.3.1",
+    "@litegen/3d-viewer": "file:../packages/3d-viewer",
     "@litegen/sdk": "file:../sdks/typescript",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-router-dom": "^7.14.0",
-    "recharts": "^3.8.1"
+    "react-router-dom": "^7.18.5",
+    "recharts": "^3.8.1",
+    "three": "0.183.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

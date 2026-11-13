@@ -31,6 +31,13 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","4:3","1:1","3:4","9:16"]
+        # img/generate's properties (model, prompt, duration, quality, seed,
+        # img_id, ...) and transition/generate's (prompt, model, duration,
+        # quality, seed, first_frame_img, last_frame_img, ...) hold no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-11)
+        # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-11-11)
+        frames_set_shape: without_references
     # No last frame: transition/generate's model enum is "c1 - v6 - v5.6 - v5".
     # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-10-30)
     ref_inputs:
@@ -84,6 +91,13 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","4:3","1:1","3:4","9:16"]
+        # img/generate's properties (model, prompt, duration, quality, seed,
+        # img_id, ...) and transition/generate's (prompt, model, duration,
+        # quality, seed, first_frame_img, last_frame_img, ...) hold no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-11)
+        # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -95,9 +109,10 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    # No generate_audio_switch: "Supported in v5.5/v5.6/v6/c1 models". No
+    # No generate_audio_switch: img/ "Generate native audio with V5.5, V5.6, V6,
+    # or C1." (text/ and transition/ now give it no per-model note). No
     # negative_prompt or motion_mode: text/, img/ and transition/ define neither.
-    # https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-10-30)
+    # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-09)
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -266,7 +281,14 @@ models:
     params:
       seed: { kind: seed, min: 0, max: 2147483647 }
       # "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older
-      # models: 5 or 8." (img/generate)
+      # models: 5 or 8." (img/generate). Not 8 s at 1080p: img/'s schema keeps
+      # that as a branch naming no model ("not: properties: duration: enum: - 8
+      # quality: enum: - 1080p"); the text/ and transition/ descriptions that
+      # pinned it to v3.5 ("v3.5 1080p cannot use 8", read 2026-10-31) became
+      # bare enums by 2026-11-09. Two params the catalog cannot pair, so the
+      # adapter refuses 8 s at 1080p before anything is sent
+      # (v3_5_makes_no_8_s_clip_at_1080p).
+      # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-09)
       duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0, values: [5.0, 8.0] }
       resolution:
         kind: string
@@ -275,6 +297,13 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","4:3","1:1","3:4","9:16"]
+        # img/generate's properties (model, prompt, duration, quality, seed,
+        # img_id, ...) and transition/generate's (prompt, model, duration,
+        # quality, seed, first_frame_img, last_frame_img, ...) hold no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-11)
+        # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-11-11)
+        frames_set_shape: without_references
     # No last frame: transition/generate's model enum is "c1 - v6 - v5.6 - v5".
     # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-10-30)
     ref_inputs:
@@ -331,16 +360,29 @@ models:
       # text/generate: "duration: type: integer minimum: 1 maximum: 15"; img/:
       # "C1/V6: 1-15".
       # https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-10-30)
-      duration_seconds: { kind: float, min: 1.0, max: 15.0, default: 5.0 }
+      # `integer`: whole seconds, so a fraction is rounded once, before the
+      # per-second price (C5) — 5.5 s was billed and then sent as 5.
+      duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
       resolution:
         kind: string
         enum_values: [360p, 540p, 720p, 1080p]
         default: 540p
       aspect_ratio:
         kind: aspect_ratio
-        # "v6/c1 models : 16:9, 4:3, 1:1, 3:4, 9:16, 2:3, 3:2, 21:9" (text/generate;
-        # img/ and transition/ take the shape of the image).
+        # text/generate's enum "- '16:9' - '9:16' - '4:3' - '3:4' - '1:1' - '2:3'
+        # - '3:2' - '21:9'" and the capability map's V6 "16:9 / 9:16 / 4:3 / 3:4 /
+        # 1:1 / 2:3 / 3:2 / 21:9" (img/ and transition/ take the shape of the
+        # image).
+        # @see https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-11-09)
+        # @see https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md (2026-11-09)
         allowed: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"]
+        # img/generate's properties (model, prompt, duration, quality, seed,
+        # img_id, ...) and transition/generate's (prompt, model, duration,
+        # quality, seed, first_frame_img, last_frame_img, ...) hold no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-11)
+        # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -352,12 +394,17 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    # generate_audio_switch (default false; "Supported in v5.5/v5.6/v6/c1") and
-    # generate_multi_clip_switch ("Supported in v5.5/v6"; text/ and img/ only).
-    # Audio is priced by the rules above (9 credits/s at 540p). No
-    # negative_prompt, motion_mode or sound_effect_* / lip_sync_* (v5 and below).
-    # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
+    # generate_audio_switch (default false; img/ "Generate native audio with
+    # V5.5, V5.6, V6, or C1.") and generate_multi_clip_switch (img/ "Enable
+    # multi-clip generation with V5.5 or V6. Not supported with other models or
+    # template_id."; text/ and img/ only). Audio is priced by the rules above
+    # (9 credits/s at 540p). No negative_prompt, motion_mode or sound_effect_* /
+    # lip_sync_* (v5 and below).
+    # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-09)
     extra_allowlist: [generate_multi_clip_switch]
+    extra_params:
+      # From PixVerse's OpenAPI (drift snapshot pixverse/image-to-video.txt: boolean).
+      generate_multi_clip_switch: { kind: bool }
     tags: [text-to-video, image-to-video]
 
   - id: pixverse/c1
@@ -393,16 +440,28 @@ models:
       seed: { kind: seed, min: 0, max: 2147483647 }
       # img/: "Duration in seconds. C1/V6: 1-15"; text/: "minimum: 1 maximum: 15".
       # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
-      duration_seconds: { kind: float, min: 1.0, max: 15.0, default: 5.0 }
+      # `integer`: whole seconds, so a fraction is rounded once, before the
+      # per-second price (C5) — 5.5 s was billed and then sent as 5.
+      duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
       resolution:
         kind: string
         enum_values: [360p, 540p, 720p, 1080p]
         default: 540p
       aspect_ratio:
         kind: aspect_ratio
-        # "v6/c1 models : 16:9, 4:3, 1:1, 3:4, 9:16, 2:3, 3:2, 21:9" (text/generate).
-        # https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-10-30)
+        # text/generate's enum "- '16:9' - '9:16' - '4:3' - '3:4' - '1:1' - '2:3'
+        # - '3:2' - '21:9'" and the capability map's C1 "16:9 / 9:16 / 4:3 / 3:4 /
+        # 1:1 / 2:3 / 3:2 / 21:9".
+        # @see https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-11-09)
+        # @see https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md (2026-11-09)
         allowed: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"]
+        # img/generate's properties (model, prompt, duration, quality, seed,
+        # img_id, ...) and transition/generate's (prompt, model, duration,
+        # quality, seed, first_frame_img, last_frame_img, ...) hold no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-11)
+        # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -420,3 +479,68 @@ models:
     # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
     extra_allowlist: []
     tags: [text-to-video, image-to-video, premium]
+  # PixVerse V6 Max (new 2026-11-03): "V6 MAX (v6-max) Only support
+  # text-to-video/image-to-video now" — text/ and img/generate (both `model`
+  # enums list v6-max), never transition/ ("c1, v6, v5.6, v5"), so no last
+  # frame. The capability map: "1-15 seconds", "360p / 540p / 720p / 1080p",
+  # "16:9 / 9:16 / 4:3 / 3:4 / 1:1 / 2:3 / 3:2 / 21:9", "Text-to-video and
+  # image-to-video with optional native audio". No multi-clip switch (img/:
+  # "Enable multi-clip generation with V5.5 or V6").
+  # @see https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md (2026-11-03)
+  # @see https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-11-03)
+  - id: pixverse/v6-max
+    provider: pixverse
+    media_type: video
+    display_name: PixVerse V6 Max
+    description: PixVerse V6 Max text/image-to-video (first frame), 1-15s, optional native audio.
+    docs_url: https://docs.platform.pixverse.ai/text-to-video-13016634e0
+    # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-11-03)
+    # "V6 Max | Off | 6 Credits/s … | 9 Credits/s USD 0.040/s | 11 Credits/s |
+    # 22 Credits/s" and "On | 9 | 11 | 15 | 28" (360p | 540p | 720p | 1080p);
+    # "USD amounts use total Credits ÷ 225". Default request (540p, 5 s, no
+    # audio): 9 x 5 = 45 credits = $0.20.
+    pricing:
+      base_cost_usd: 0.2
+      variable_pricing:
+        - { per_second_usd: 0.04 }
+        - { when: { resolution: 360p }, per_second_usd: 0.0266667 }
+        - { when: { resolution: 720p }, per_second_usd: 0.0488889 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0977778 }
+        - { when: { audio: true }, per_second_usd: 0.0488889 }
+        - { when: { resolution: 360p, audio: true }, per_second_usd: 0.04 }
+        - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0666667 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1244444 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # img/generate: "prompt: type: string … maxLength: 2048" (text/ takes
+    # 5000), and one limit serves both modes.
+    prompt: { required: true, max_length: 2048 }
+    params:
+      # PixelGenie L10: audio is sent as generate_audio_switch (default false).
+      audio: { kind: bool, default: false }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      # "duration … `integer` … 1-15": whole seconds (C5).
+      duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
+      resolution:
+        kind: string
+        enum_values: [360p, 540p, 720p, 1080p]
+        default: 540p
+      # text/generate only: img/ takes the shape of the image.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"]
+        # img/generate's properties (model, prompt, duration, quality, seed,
+        # img_id, ...) hold no aspect_ratio, so a frame sets the shape (E5).
+        # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: image
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+

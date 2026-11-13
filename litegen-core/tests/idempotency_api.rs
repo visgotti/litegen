@@ -149,3 +149,167 @@ async fn a_client_that_hangs_up_mid_call_gets_the_recorded_outcome_on_retry() {
     assert_eq!(s, StatusCode::GATEWAY_TIMEOUT, "{b}");
     assert!(replayed(&h), "the abandoned run's outcome, replayed: {b}");
 }
+
+/// E12: a client that hangs up mid-call without an `Idempotency-Key` leaves
+/// nothing reserved. The request runs to its end in a task of its own, as a
+/// keyed one does, so the vendor's refusal releases the key's quota and its
+/// limits' spend, and the failure is logged. The handler used to be dropped
+/// at the vendor call, leaving both reservations held for good.
+#[tokio::test]
+async fn a_client_that_hangs_up_without_a_key_leaves_nothing_reserved() {
+    use litegen::db::DatabaseStore;
+    use litegen::management::types::EntityType;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    const MASTER: &str = "sk-e12-master";
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fal-ai/flux/dev"))
+        .respond_with(
+            ResponseTemplate::new(422)
+                .set_body_json(json!({ "detail": [{ "msg": "refused", "type": "x" }] }))
+                .set_delay(std::time::Duration::from_millis(1500)),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = std::sync::Arc::new(litegen::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let uri = server.uri();
+    let app = harness::app_over_with(
+        db.clone(),
+        dir.path(),
+        move |c| {
+            c.providers.insert("fal".into(), serde_json::from_value(json!({ "enabled": true, "api_key": "k", "api_base": uri })).unwrap());
+        },
+        Some(MASTER),
+        litegen::config::Mode::SingleTenant,
+    )
+    .await;
+    let send = |method: &str, uri: &str, bearer: &str, body: Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let created = app.clone().oneshot(send("POST", "/v1/keys", MASTER, json!({ "name": "e12", "token_quota": 10.0 }))).await.unwrap();
+    let created: Value = serde_json::from_slice(&axum::body::to_bytes(created.into_body(), 1 << 20).await.unwrap()).unwrap();
+    let (key_id, secret) = (created["id"].as_str().unwrap().to_string(), created["key"].as_str().unwrap().to_string());
+    let limits = app
+        .clone()
+        .oneshot(send("PUT", &format!("/v1/keys/{key_id}/limits"), MASTER, json!({ "max_budget_usd": 5.0 })))
+        .await
+        .unwrap();
+    assert_eq!(limits.status(), StatusCode::OK);
+    let key_uuid: uuid::Uuid = key_id.parse().unwrap();
+    let held = || {
+        let db = db.clone();
+        let key_id = key_id.clone();
+        async move {
+            let tokens = db.get_api_key(&key_uuid).await.unwrap().unwrap().tokens_used;
+            let spend = db.management().unwrap().get_limits(EntityType::Key, &key_id).await.unwrap().unwrap().spend_usd;
+            let failed = db.get_request_logs(1, 100).await.unwrap().0.iter().filter(|r| r.status == litegen::types::GenerationStatus::Failed).count();
+            (tokens, spend, failed)
+        }
+    };
+
+    // No Idempotency-Key. The client hangs up once the vendor has the call.
+    let call = tokio::spawn(app.clone().oneshot(send(
+        "POST",
+        "/v1/images/generations",
+        &secret,
+        json!({ "model": "fal/flux-dev", "prompt": "a lighthouse, abandoned" }),
+    )));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while server.received_requests().await.unwrap().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the vendor never got the call");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let (tokens, spend, _) = held().await;
+    assert!(tokens > 0.0 && spend > 0.0, "the request holds its price while the vendor works: key {tokens}, limits {spend}");
+    call.abort();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (mut tokens, mut spend, mut failed) = held().await;
+    while (tokens, spend, failed) != (0.0, 0.0, 1) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        (tokens, spend, failed) = held().await;
+    }
+    assert_eq!(
+        (tokens, spend),
+        (0.0, 0.0),
+        "the client hung up and the vendor refused: {tokens} USD still reserved on the key, {spend} on its limits"
+    );
+    assert_eq!(failed, 1, "the request ran to its end and logged its failure");
+}
+
+/// E9: an adapter's refusal before any call (MiniMax Hailuo makes only 6 s
+/// at 1080P) is the caller's to fix: a 400 `validation_error` /
+/// `request_unsupported` naming the model, and the key isn't spent, so the
+/// corrected request may reuse it. It used to answer `invalid_request_error`
+/// and record the key, so the corrected request got 409
+/// `idempotency_key_reused`.
+#[tokio::test]
+async fn an_adapter_refusal_does_not_spend_its_key() {
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "base_resp": { "status_code": 2013, "status_msg": "refused" } })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let uri = server.uri();
+    let (app, _db) = harness::app_with(dir.path(), move |c| {
+        c.providers.insert("minimax".into(), serde_json::from_value(json!({ "enabled": true, "api_key": "k", "api_base": uri })).unwrap());
+    })
+    .await;
+    let asked = json!({ "model": "minimax/MiniMax-Hailuo-02", "prompt": "a wave", "duration_seconds": 10, "resolution": "1080P" });
+    let (s1, _, b1) = post(&app, "/v1/videos/generations", Some("pg-adapter-refusal"), &asked).await;
+    assert_eq!(s1, StatusCode::BAD_REQUEST, "{b1}");
+    let e = &b1["error"];
+    assert_eq!((e["type"].as_str(), e["code"].as_str()), (Some("validation_error"), Some("request_unsupported")), "{b1}");
+    assert_eq!(e["model"], "minimax/MiniMax-Hailuo-02", "{b1}");
+    assert_eq!(e["retryable"], json!(false), "{b1}");
+    assert!(server.received_requests().await.unwrap().is_empty(), "refused before any call");
+
+    let corrected = json!({ "model": "minimax/MiniMax-Hailuo-02", "prompt": "a wave", "duration_seconds": 6, "resolution": "1080P" });
+    let (s2, _, b2) = post(&app, "/v1/videos/generations", Some("pg-adapter-refusal"), &corrected).await;
+    assert_ne!(s2, StatusCode::CONFLICT, "the refused request spent the key: {b2}");
+    assert_eq!(b2["error"]["code"], "vendor_rejected", "the corrected request reached the vendor: {b2}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// N1 (P9): a keyed body is read through the same body budget as any other,
+/// so a burst of large keyed bodies past `max_in_flight` × 25 MiB is refused
+/// as an unkeyed burst is. It used to be read outside every bound.
+#[tokio::test]
+async fn keyed_bodies_count_against_the_buffering_bound() {
+    use futures::StreamExt;
+    const MIB: usize = 1024 * 1024;
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _db) = harness::app_with(dir.path(), |c| c.backpressure.max_in_flight = 1).await;
+    // 20 MiB, then nothing more; `taken_in` fires when the server asks for
+    // more after the last chunk, so it has taken in all 20 MiB.
+    let (taken_in_tx, taken_in_rx) = tokio::sync::oneshot::channel::<()>();
+    let chunks = futures::stream::iter((0..20).map(|_| Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; MIB]))));
+    let stall = futures::stream::once(async move {
+        let _ = taken_in_tx.send(());
+        futures::future::pending::<Result<axum::body::Bytes, std::io::Error>>().await
+    });
+    let held = Request::post("/v1/images/generations")
+        .header("content-type", "application/json")
+        .header("idempotency-key", "n1-held")
+        .body(Body::from_stream(chunks.chain(stall)))
+        .unwrap();
+    let held = tokio::spawn(app.clone().oneshot(held));
+    taken_in_rx.await.unwrap();
+    let padded = json!({ "model": "mock/image-gen", "prompt": "x", "pad": "x".repeat(10 * MIB) });
+    let (status, _, body) = post(&app, "/v1/images/generations", Some("n1-second"), &padded).await;
+    held.abort();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["code"], "server_at_capacity", "{body}");
+}

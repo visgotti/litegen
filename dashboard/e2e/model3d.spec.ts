@@ -9,12 +9,13 @@ import type { APIRequestContext, Locator, Page, Response } from '@playwright/tes
 //
 // This is the only gate on the TypeScript `MediaType` copies (the dashboard's
 // string comparisons compile fine with a missed spot), and the only proof the
-// mock GLB actually parses in three.js: <model-viewer> sets `loaded` only once
-// GLTFLoader has parsed the file.
+// mock's meshes actually parse in three.js: the shared viewer
+// (@litegen/3d-viewer) reports `data-state="loaded"` only once three.js's
+// loader for the format has parsed the file and drawn it.
 //
 // Timeouts are deliberately generous: the machine this runs on is often under
-// heavy load, and a mesh load involves a lazy ~1MB bundle, a WebGL context and
-// a cross-origin fetch. Every wait is a web-first assertion or expect.poll —
+// heavy load, and a mesh load involves a lazy three.js chunk, a WebGL context
+// and a cross-origin fetch. Every wait is a web-first assertion or expect.poll —
 // no fixed sleeps.
 
 const MASTER_KEY = process.env.PLAYWRIGHT_MASTER_KEY ?? 'test-master-key-please-rotate';
@@ -47,10 +48,10 @@ const authHeaders = { Authorization: `Bearer ${MASTER_KEY}` };
 /** Submit a mock/mesh-3d job straight to the gateway and wait for it to
  *  complete, so the Generations and Logs tests don't depend on another test
  *  having run first. Returns the generation id (which is also the log id). */
-async function createCompletedMesh(request: APIRequestContext, prompt: string): Promise<string> {
+async function createCompletedMesh(request: APIRequestContext, prompt: string, extra: Record<string, unknown> = {}): Promise<string> {
   const res = await request.post(`${API_BASE}/v1/models3d/generations`, {
     headers: authHeaders,
-    data: { model: MESH_MODEL, prompt },
+    data: { model: MESH_MODEL, prompt, ...extra },
   });
   expect(res.ok(), `submit failed: ${res.status()} ${await res.text()}`).toBeTruthy();
   const { id } = (await res.json()) as { id: string };
@@ -86,33 +87,27 @@ async function paramSpecs(request: APIRequestContext, modelId: string): Promise<
 }
 
 /**
- * The `<model-viewer>` element must be a real model-viewer and reach
- * `loaded === true` — model-viewer only sets it after GLTFLoader has parsed the
- * file, so this is the proof the mesh is valid rather than well-formed bytes.
- * Scrolled into view first: model-viewer's default `loading="auto"` defers the
- * fetch until the element is near the viewport.
+ * The shared viewer must reach `data-state="loaded"`, which it sets only once
+ * three.js's loader for the format has parsed the file and drawn it, and the
+ * drawing must cover part of the frame: the proof the mesh is valid rather
+ * than well-formed bytes. Scrolled into view first: the dashboard's viewers
+ * draw only near the viewport (`mountWhenVisible`).
  */
-async function expectMeshLoaded(viewer: Locator) {
+async function expectMeshLoaded(viewer: Locator, format = 'glb') {
   await expect(viewer).toBeAttached({ timeout: MESH_LOAD_TIMEOUT });
-  expect(await viewer.evaluate(el => el.tagName.toLowerCase())).toBe('model-viewer');
   await viewer.scrollIntoViewIfNeeded();
-  await expect
-    .poll(async () => viewer.evaluate((el: HTMLElement & { loaded?: boolean }) => el.loaded === true), {
-      timeout: MESH_LOAD_TIMEOUT,
-      message: 'model-viewer never reached loaded === true (GLTFLoader did not parse the mesh)',
-    })
-    .toBe(true);
+  await expect(viewer, 'three.js never drew the mesh').toHaveAttribute('data-state', 'loaded', { timeout: MESH_LOAD_TIMEOUT });
+  await expect(viewer).toHaveAttribute('data-format', format);
+  expect(Number(await viewer.getAttribute('data-coverage')), 'the mesh covers part of the frame').toBeGreaterThanOrEqual(0.01);
 }
 
-/** First-attempt src: absolute (a relative mesh URL is a contract violation)
- *  and a .glb. A retry would append `#retry-N`, so this also proves no retry
- *  was needed. Read as the element PROPERTY: React 19 assigns props that exist
- *  on an upgraded custom element as properties, and model-viewer does not
- *  reflect `src` back to an attribute, so getAttribute('src') is null. */
-async function expectFirstAttemptGlbSrc(viewer: Locator) {
-  const src = await viewer.evaluate((el: HTMLElement & { src?: string }) => el.src ?? el.getAttribute('src'));
-  expect(src, 'mesh src must be absolute — a relative URL is a contract violation').toMatch(/^https?:\/\//);
-  expect(src, 'first-attempt src must be the raw .glb URL (no #retry-N fragment)').toMatch(/\.glb$/);
+/** The URL the viewer downloaded, as the API gave it: absolute (a relative
+ *  mesh URL is a contract violation) and the container's own file. The
+ *  viewer retries only when the user asks, so a loaded viewer got it on the
+ *  first attempt. */
+async function expectAbsoluteMeshSrc(viewer: Locator, format = 'glb') {
+  await expect(viewer, 'mesh src must be absolute — a relative URL is a contract violation').toHaveAttribute('data-src', /^https?:\/\//);
+  await expect(viewer).toHaveAttribute('data-src', new RegExp(`\\.${format}$`));
 }
 
 async function openCompareMode(page: Page) {
@@ -160,12 +155,13 @@ test.describe('3D model generation', () => {
     await expect(inspector).toBeVisible({ timeout: JOB_TIMEOUT });
     const viewer = page.getByTestId('playground-mesh-viewer');
     await expectMeshLoaded(viewer);
-    await expectFirstAttemptGlbSrc(viewer);
+    await expectAbsoluteMeshSrc(viewer);
     await expect(inspector).toHaveAttribute('data-state', 'loaded', { timeout: MESH_LOAD_TIMEOUT });
 
-    await expect(page.getByTestId('playground-mesh-stat-polycount').locator('dd')).toHaveText(MOCK_POLYCOUNT);
+    await expect(page.getByTestId('playground-mesh-stat-triangles').locator('dd')).toHaveText(MOCK_POLYCOUNT);
     await expect(page.getByTestId('playground-mesh-stat-format').locator('dd')).toHaveText('GLB');
-    // Once loaded, dimensions come from getDimensions() — no longer "measuring…".
+    // Dimensions come from the manifest's bounds (or, without them, the
+    // viewer's measure once drawn): never left at "measuring…".
     await expect(page.getByTestId('playground-mesh-stat-dimensions')).not.toContainText('measuring');
     await expect(page.getByTestId('playground-mesh-error')).toHaveCount(0);
     await expect(page.getByTestId('playground-mesh-viewer-fallback')).toHaveCount(0);
@@ -206,7 +202,9 @@ test.describe('3D model generation', () => {
     await expect(page.getByTestId('pg-selected-count')).toContainText('2 selected');
     await page.getByTestId('pg-prompt').fill('a low-poly fox');
 
-    const meshEstimate = () => estimates.find(e => e.path === '/v1/models3d/cost' && e.model === MESH_MODEL);
+    // The latest quote the server gave: the page's checks also ask about the
+    // body before the prompt is typed, which the server refuses (prompt_required).
+    const meshEstimate = () => estimates.filter(e => e.path === '/v1/models3d/cost' && e.model === MESH_MODEL && e.status === 200).at(-1);
     await expect.poll(() => meshEstimate()?.status, { timeout: 30_000 }).toBe(200);
     expect(Number(meshEstimate()!.body.base_cost_usd), '3D estimate must be the model\'s catalog price')
       .toBe(meshPrice);
@@ -238,7 +236,7 @@ test.describe('3D model generation', () => {
 
     const viewer = page.getByTestId(`pg-tile-mesh-${MESH_MODEL}`);
     await expectMeshLoaded(viewer);
-    await expectFirstAttemptGlbSrc(viewer);
+    await expectAbsoluteMeshSrc(viewer);
     await expect(progress).toHaveCount(0);
     await expect(page.getByTestId(`pg-tile-error-${MESH_MODEL}`)).toHaveCount(0);
     await expect(page.getByTestId(`pg-tile-${MESH_MODEL}`)).toHaveCount(1);
@@ -277,21 +275,21 @@ test.describe('3D model generation', () => {
     await expect(page.getByTestId(`gen-status-${id}`)).toHaveText('completed');
 
     // The row thumbnail is a flat image (the preview asset) — never a GL
-    // canvas per row. No model-viewer anywhere until a row is expanded.
+    // canvas per row. No viewer anywhere until a row is expanded.
     const thumb = page.getByTestId(`gen-thumb-${id}`);
     await expect(thumb).toBeVisible();
     expect(await thumb.evaluate(el => el.tagName.toLowerCase())).toBe('img');
-    await expect(row.locator('model-viewer')).toHaveCount(0);
-    await expect(page.locator('model-viewer')).toHaveCount(0);
+    await expect(row.locator('[data-viewer]')).toHaveCount(0);
+    await expect(page.locator('[data-viewer]')).toHaveCount(0);
 
     await page.getByTestId(`gen-expand-${id}`).click();
     const inspector = page.getByTestId(`gen-media-${id}`);
     await expect(inspector).toBeVisible({ timeout: 30_000 });
     await expectMeshLoaded(page.getByTestId(`gen-media-${id}-viewer`));
-    await expectFirstAttemptGlbSrc(page.getByTestId(`gen-media-${id}-viewer`));
+    await expectAbsoluteMeshSrc(page.getByTestId(`gen-media-${id}-viewer`));
     await expect(inspector).toHaveAttribute('data-state', 'loaded', { timeout: MESH_LOAD_TIMEOUT });
 
-    await expect(page.getByTestId(`gen-media-${id}-stat-polycount`).locator('dd')).toHaveText(MOCK_POLYCOUNT);
+    await expect(page.getByTestId(`gen-media-${id}-stat-triangles`).locator('dd')).toHaveText(MOCK_POLYCOUNT);
 
     // Asset list: the mesh and the preview, nothing else.
     const assetRows = page.getByTestId(`gen-media-${id}-assets`).locator('tbody tr');
@@ -305,6 +303,51 @@ test.describe('3D model generation', () => {
     await expect(previewRow).toContainText('PNG');
     await expect(meshRow.locator('a[data-testid$="-open"]')).toHaveAttribute('href', /^https?:\/\/.+\.glb$/);
     await expect(previewRow.locator('a[data-testid$="-open"]')).toHaveAttribute('href', /^https?:\/\/.+\.png$/);
+  });
+
+  test('a result whose meshes hold no glTF is drawn in the inspector: an OBJ, through three.js', async ({ page, request }) => {
+    // <model-viewer> drew glTF only, so such a result showed "3D preview
+    // isn't available". Delivery keeps a vendor's own file as a mesh unless
+    // litegen changed the scene (turned it upright, say): then that file is
+    // the `original`, and only the requested containers are meshes. No mock
+    // model's scene changes on delivery, so the list the page reads marks
+    // the vendor's glb `original`, exactly as delivery would. The OBJ itself
+    // is litegen's own, derived and served by the real gateway.
+    const id = await createCompletedMesh(request, 'an obj teapot', { model: 'mock/textured-3d', output_formats: ['obj'] });
+    const generation = await getJson<{ assets?: Array<{ kind: string; format: string; polycount?: number | null; scene?: { triangle_count?: number } | null }> }>(
+      request, `/v1/models3d/${encodeURIComponent(id)}`,
+    );
+    const obj = generation.assets?.find(a => a.kind === 'mesh' && a.format === 'obj');
+    expect(obj, 'the result carries the derived OBJ mesh').toBeTruthy();
+    const triangles = obj!.scene?.triangle_count ?? obj!.polycount;
+    expect(triangles, 'the API counts the OBJ mesh').toBeGreaterThan(0);
+
+    type Row = { id: string; metadata?: { assets?: Array<{ kind: string; format: string }> } | null };
+    let rewritten = 0;
+    await page.route(/\/v1\/generations\?/, async route => {
+      const response = await route.fetch();
+      const body = (await response.json()) as { data: Row[] };
+      for (const row of body.data) {
+        if (row.id !== id || !row.metadata?.assets) continue;
+        row.metadata.assets = row.metadata.assets.map(a => (a.kind === 'mesh' && a.format === 'glb' ? { ...a, kind: 'original' } : a));
+        rewritten += 1;
+      }
+      await route.fulfill({ response, json: body });
+    });
+
+    await page.goto('/generations');
+    await expect(page.getByTestId(`gen-row-${id}`)).toBeVisible({ timeout: 30_000 });
+    expect(rewritten, 'the list carried the row').toBeGreaterThan(0);
+    await page.getByTestId(`gen-expand-${id}`).click();
+    const inspector = page.getByTestId(`gen-media-${id}`);
+    await expect(inspector).toBeVisible({ timeout: 30_000 });
+    const viewer = page.getByTestId(`gen-media-${id}-viewer`);
+    await expectMeshLoaded(viewer, 'obj');
+    await expectAbsoluteMeshSrc(viewer, 'obj');
+    await expect(inspector).toHaveAttribute('data-state', 'loaded', { timeout: MESH_LOAD_TIMEOUT });
+    await expect(page.getByTestId(`gen-media-${id}-stat-format`).locator('dd')).toHaveText('OBJ');
+    await expect(page.getByTestId(`gen-media-${id}-stat-triangles`).locator('dd')).toHaveText(triangles!.toLocaleString('en-US'));
+    await expect(page.getByTestId(`gen-media-${id}-viewer-fallback`)).toHaveCount(0);
   });
 
   test('Models page: the 3D filter shows mock/mesh-3d and excludes image models', async ({ page }) => {
@@ -347,12 +390,12 @@ test.describe('3D model generation', () => {
     await expect(completed).toBeVisible({ timeout: JOB_TIMEOUT });
     const viewer = completed.getByTestId('generation-output-3d-viewer');
     await expectMeshLoaded(viewer);
-    await expectFirstAttemptGlbSrc(viewer);
+    await expectAbsoluteMeshSrc(viewer);
     await expect(completed.getByTestId('generation-output-3d')).toHaveAttribute('data-state', 'loaded', {
       timeout: MESH_LOAD_TIMEOUT,
     });
     await expect(panel).not.toContainText('Output URL not yet available');
-    await expect(panel.getByTestId('generation-output-3d-stat-polycount').locator('dd')).toHaveText(MOCK_POLYCOUNT);
+    await expect(panel.getByTestId('generation-output-3d-stat-triangles').locator('dd')).toHaveText(MOCK_POLYCOUNT);
   });
 
   test('ParamField rows show the schema label and description, not the raw key', async ({ page, request }) => {

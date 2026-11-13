@@ -1,3 +1,4 @@
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use reqwest::Client;
@@ -18,25 +19,31 @@ use crate::types::*;
 /// V1 engine (SDXL): JSON body → base64 response
 /// V2 endpoints (SD 3.5, Core, Ultra, edit): multipart form → raw image bytes
 ///
-/// @see <https://docs.stability.ai/api-reference> (2026-10-30) — "The Stability AI API reference has
-///   moved to https://docs.stability.ai/api-reference."
+/// @see <https://platform.stability.ai/docs/api-reference> (2026-11-09) — "The Stability AI API reference
+///   has moved to https://docs.stability.ai/api-reference."
 /// @see <https://docs.stability.ai/api-reference/generate/stable-diffusion-35> — V2beta generate (SD 3.5/Core/Ultra)
 /// @see <https://docs.stability.ai/api-reference/sdxl-10/text-to-image> — V1 `POST /v1/generation/{engine}/text-to-image`
 pub struct StabilityProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
 }
 
 impl StabilityProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::auth::AuthSpec::bearer(),
         }
     }
 
@@ -68,8 +75,8 @@ impl StabilityProvider {
 
     fn resolve_model(&self, model_id: &str) -> String {
         if let Some(cfg) = &self.config {
-            if let Some(mapped) = cfg.model_mapping.get(model_id) {
-                return mapped.clone();
+            if let Some(mapped) = cfg.mapped_model(model_id) {
+                return mapped.to_string();
             }
         }
         let native = Self::native_model_id(model_id);
@@ -97,7 +104,7 @@ impl StabilityProvider {
     /// machine-readable `name` and a list of human-readable `errors`". It may
     /// be sent again only when Stability turned the call away (429, 5xx).
     /// @see <https://docs.stability.ai/api-reference/index.md> (2026-10-30)
-    fn vendor_error(status: reqwest::StatusCode, text: &str) -> ProviderError {
+    fn vendor_error(status: reqwest::StatusCode, retry_after: Option<u64>, text: &str) -> ProviderError {
         let body: Option<Value> = serde_json::from_str(text).ok();
         let said = body
             .as_ref()
@@ -109,6 +116,9 @@ impl StabilityProvider {
                     .or_else(|| b["message"].as_str().map(str::to_string))
             })
             .unwrap_or_else(|| text.chars().take(200).collect());
+        if let Some(e) = crate::providers::rate_limited("stability", status, retry_after, &format!("Stability API error: {said}"), body.as_ref()) {
+            return e;
+        }
         ProviderError::RequestFailed {
             message: format!("Stability API error: {said}"),
             status_code: Some(status.as_u16()),
@@ -210,6 +220,7 @@ impl ImageProvider for StabilityProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -251,13 +262,27 @@ impl ImageProvider for StabilityProvider {
             // and `down`; its prompt is optional.
             let outpaint = route == "edit/outpaint";
 
+            // Search and Replace (3D doc §4) finds the area `mask_prompt` names.
+            let search = route == "edit/search-and-replace";
+            // Stability refuses an outpaint with no side above 0 and a search
+            // with nothing to find; refuse first, before anything is sent.
+            if outpaint && extras.expand.is_none_or(|e| e.left == 0 && e.top == 0 && e.right == 0 && e.bottom == 0) {
+                return Err(ProviderError::InvalidRequest(
+                    "outpaint needs `expand` with at least one side above 0".into(),
+                ));
+            }
+            if search && extras.mask_prompt.as_deref().is_none_or(|p| p.trim().is_empty()) {
+                return Err(ProviderError::InvalidRequest(
+                    "search-and-replace needs `mask_prompt`: what to find and replace".into(),
+                ));
+            }
+
             let mut form = reqwest::multipart::Form::new();
             if !matting && !(outpaint && base.prompt.trim().is_empty()) {
                 form = form.text("prompt", base.prompt.clone());
             }
-            // Search and Replace (3D doc §4) finds the area `mask_prompt` names;
-            // `grow_mask` goes as 0, as for inpaint (its default 3 blurs it).
-            let search = route == "edit/search-and-replace";
+            // Search and Replace's `grow_mask` goes as 0, as for inpaint (its
+            // default 3 blurs it).
             if search {
                 form = form.text("search_prompt", extras.mask_prompt.clone().unwrap_or_default()).text("grow_mask", "0");
             }
@@ -313,6 +338,14 @@ impl ImageProvider for StabilityProvider {
                 form = form.text("style_preset", style.to_string());
             }
 
+            // /generate/sd3 only: "cfg_scale … How strictly the diffusion
+            // process adheres to the prompt text" (1–10; "The _Large_ and
+            // _Medium_ models use a default of `4`. The _Turbo_ … `1`").
+            // @see https://api.stability.ai/v2alpha/openapi (/generate/sd3 cfg_scale, 2026-11-09)
+            if let (true, Some(gs)) = (endpoint == "sd3", extras.guidance_scale) {
+                form = form.text("cfg_scale", gs.to_string());
+            }
+
             // Aspect ratio: prefer direct aspect_ratio field, fallback to size
             // derivation. Skipped in image-to-image mode — the spec says
             // "This parameter is only valid for text-to-image requests";
@@ -348,19 +381,15 @@ impl ImageProvider for StabilityProvider {
             // parts could run sd3.5-large at sd3.5-medium's price.
             const V2_OWNED_FIELDS: &[&str] = &[
                 "prompt", "model", "mode", "strength", "aspect_ratio", "output_format", "seed", "negative_prompt", "image",
-                "mask", "grow_mask", "search_prompt", "left", "up", "right", "down",
+                "mask", "grow_mask", "search_prompt", "left", "up", "right", "down", "cfg_scale",
             ];
-            if let Some(Value::Object(extra_map)) = &extras.extra {
-                for (k, v) in extra_map {
-                    if V2_OWNED_FIELDS.contains(&k.as_str()) || (k == "style_preset" && extras.style.is_some()) {
-                        continue;
-                    }
-                    let val_str = match v {
-                        Value::String(s) => s.clone(),
-                        _ => v.to_string(),
-                    };
-                    form = form.text(k.clone(), val_str);
-                }
+            let owned = |k: &str| V2_OWNED_FIELDS.contains(&k) || (k == "style_preset" && extras.style.is_some());
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                };
+                form = form.text(k.clone(), val_str);
             }
 
             // Attach any multipart ref images
@@ -377,7 +406,7 @@ impl ImageProvider for StabilityProvider {
             let resp = crate::providers::inject_trace_headers(
                 self.client
                     .post(&url)
-                    .header("Authorization", format!("Bearer {api_key}"))
+                    .authorized(&self.auth, &api_key)?
                     .header("Accept", "image/*")
                     .multipart(form),
             )
@@ -394,8 +423,9 @@ impl ImageProvider for StabilityProvider {
 
             let status = resp.status();
             if !status.is_success() {
+                let retry_after = crate::providers::retry_after_ms(resp.headers());
                 let error_body = resp.text().await.unwrap_or_default();
-                return Err(Self::vendor_error(status, &error_body));
+                return Err(Self::vendor_error(status, retry_after, &error_body));
             }
             let finish_reason = resp.headers().get("finish-reason").and_then(|v| v.to_str().ok()).map(str::to_string);
             if let Some(reason) = finish_reason.as_deref() {
@@ -451,7 +481,7 @@ impl ImageProvider for StabilityProvider {
                 }
             }
             // Masking is `required: ["text_prompts","init_image","mask_source"]`.
-            // @see <https://docs.stability.ai/openapi-v1.json> (2026-10-30)
+            // @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-a-mask.md> (2026-11-09)
             if has_mask && !has_init {
                 return Err(ProviderError::InvalidRequest(format!("'{}' masks an image: send an init image with the mask", model.id)));
             }
@@ -459,8 +489,13 @@ impl ImageProvider for StabilityProvider {
             // What litegen itself sends on v1; `extra` cannot replace it.
             const V1_OWNED_FIELDS: &[&str] = &[
                 "text_prompts", "samples", "steps", "cfg_scale", "seed", "image_strength", "mask_source", "init_image",
-                "mask_image", "width", "height",
+                "mask_image", "width", "height", "style_preset",
             ];
+            // "style_preset" on text-to-image, image-to-image and masking alike.
+            // @see https://docs.stability.ai/api-reference/sdxl-10/text-to-image.md (2026-11-09)
+            // @see https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-prompt.md (2026-11-09)
+            // @see https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-a-mask.md (2026-11-09)
+            let style_preset = extras.style.as_deref();
 
             let resp = if use_multipart {
                 // Multipart image-to-image / masking path.
@@ -495,6 +530,10 @@ impl ImageProvider for StabilityProvider {
                     form = form.text("cfg_scale", gs.to_string());
                 }
 
+                if let Some(style) = style_preset {
+                    form = form.text("style_preset", style.to_string());
+                }
+
                 if let Some(seed) = base.seed {
                     form = form.text("seed", seed.to_string());
                 }
@@ -514,14 +553,12 @@ impl ImageProvider for StabilityProvider {
                 }
 
                 // extra fields shallow-merged (allowlist enforced by validator).
-                if let Some(Value::Object(extra_map)) = &extras.extra {
-                    for (k, v) in extra_map.iter().filter(|(k, _)| !V1_OWNED_FIELDS.contains(&k.as_str()) && !k.starts_with("text_prompts[")) {
-                        let val_str = match v {
-                            Value::String(s) => s.clone(),
-                            _ => v.to_string(),
-                        };
-                        form = form.text(k.clone(), val_str);
-                    }
+                for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| V1_OWNED_FIELDS.contains(&k) || k.starts_with("text_prompts[")) {
+                    let val_str = match v {
+                        Value::String(s) => s.clone(),
+                        _ => v.to_string(),
+                    };
+                    form = form.text(k.clone(), val_str);
                 }
 
                 // Attach materialized init_image / mask_image ref bytes.
@@ -538,7 +575,7 @@ impl ImageProvider for StabilityProvider {
                 crate::providers::inject_trace_headers(
                     self.client
                         .post(&url)
-                        .header("Authorization", format!("Bearer {api_key}"))
+                        .authorized(&self.auth, &api_key)?
                         .header("Accept", "application/json")
                         .multipart(form),
                 )
@@ -590,23 +627,25 @@ impl ImageProvider for StabilityProvider {
                     body["cfg_scale"] = json!(gs);
                 }
 
+                if let Some(style) = style_preset {
+                    body["style_preset"] = Value::String(style.to_string());
+                }
+
                 if let Some(seed) = base.seed {
                     body["seed"] = Value::Number(seed.into());
                 }
 
                 // Shallow-merge extra, never over what litegen sends.
-                if let Some(Value::Object(extra_map)) = &extras.extra {
-                    if let Some(body_map) = body.as_object_mut() {
-                        for (k, v) in extra_map.iter().filter(|(k, _)| !V1_OWNED_FIELDS.contains(&k.as_str())) {
-                            body_map.insert(k.clone(), v.clone());
-                        }
+                if let Some(body_map) = body.as_object_mut() {
+                    for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| V1_OWNED_FIELDS.contains(&k)) {
+                        body_map.insert(k.clone(), v.clone());
                     }
                 }
 
                 crate::providers::inject_trace_headers(
                     self.client
                         .post(&url)
-                        .header("Authorization", format!("Bearer {api_key}"))
+                        .authorized(&self.auth, &api_key)?
                         .header("Content-Type", "application/json")
                         .header("Accept", "application/json")
                         .json(&body),
@@ -622,9 +661,10 @@ impl ImageProvider for StabilityProvider {
             };
 
             let status = resp.status();
+            let retry_after = crate::providers::retry_after_ms(resp.headers());
             let text = resp.text().await.unwrap_or_default();
             if !status.is_success() {
-                return Err(Self::vendor_error(status, &text));
+                return Err(Self::vendor_error(status, retry_after, &text));
             }
             let resp_json: Value = serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
                 message: format!("Failed to parse Stability response: {e}"),
@@ -690,7 +730,7 @@ impl ImageProvider for StabilityProvider {
 
     /// Validate the API key via `GET {api_base}/v1/engines/list`.
     ///
-    /// @see <https://docs.stability.ai/openapi-v1.json> — list engines (`GET /v1/engines/list`)
+    /// @see <https://docs.stability.ai/api-reference/engines/list-engines.md> — list engines (`GET /v1/engines/list`, 2026-11-09)
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -700,14 +740,15 @@ impl ImageProvider for StabilityProvider {
             };
         }
         let start = std::time::Instant::now();
-        match self
+        let request = match self
             .client
             .get(format!("{}/v1/engines/list", self.api_base()))
-            .header("Authorization", format!("Bearer {}", self.api_key().unwrap_or_default()))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
+            .authorized(&self.auth, &self.api_key().unwrap_or_default())
         {
+            Ok(request) => request,
+            Err(e) => return HealthCheckResult { healthy: false, message: format!("Stability health check failed: {e}"), latency_ms: None },
+        };
+        match request.timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => HealthCheckResult {
                 healthy: true,
                 message: "Stability API key valid".into(),
@@ -737,6 +778,8 @@ impl Default for ModelCapabilities {
             supported_sizes: Vec::new(),
             max_reference_images: 1,
             max_images: 1,
+            // Not stated: only the server knows its body limit.
+            max_request_bytes: 0,
             supports_text_to_video: false,
             supports_image_to_video: false,
             supports_first_frame: false,
@@ -827,7 +870,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: None,
-            aspect_ratio: Some("1:1".to_string()),
+            resolution: None, aspect_ratio: Some("1:1".to_string()),
             quality: None,
             style: None,
             steps: None,
@@ -1147,7 +1190,7 @@ mod tests {
         };
         let mut base = make_base("", "stability/remove-background");
         base.seed = None;
-        let extras = ImageExtras { aspect_ratio: None, size: None, style: None, strength: None, ..make_extras_sd3() };
+        let extras = ImageExtras { resolution: None, aspect_ratio: None, size: None, style: None, strength: None, ..make_extras_sd3() };
         let out = make_provider(&server.uri())
             .generate(&ref_schema("stability/remove-background"), &base, &extras, &materialized)
             .await
@@ -1187,7 +1230,7 @@ mod tests {
         let mut base = make_base("more sky", "stability/outpaint");
         base.seed = None;
         let extras = ImageExtras {
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             size: None,
             style: None,
             strength: None,
@@ -1206,6 +1249,42 @@ mod tests {
         for absent in ["model", "mode", "strength", "aspect_ratio", "grow_mask"] {
             assert!(multipart_field(body, absent).is_none(), "{absent} is not an outpaint field");
         }
+    }
+
+    /// Outpaint needs a side to grow and Search and Replace a thing to find;
+    /// without them Stability refuses, so litegen refuses first, unsent.
+    /// @see <https://api.stability.ai/v2alpha/openapi> ("At least one outpainting direction must be supplied with a non-zero value"; `search_prompt` required)
+    #[tokio::test]
+    async fn an_edit_missing_what_it_needs_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        let materialized = || crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let provider = make_provider(&server.uri());
+        for expand in [None, Some(crate::types::Expand { left: 0, top: 0, right: 0, bottom: 0 })] {
+            let extras = ImageExtras { resolution: None, aspect_ratio: None, size: None, style: None, strength: None, expand, ..make_extras_sd3() };
+            let err = provider
+                .generate(&ref_schema("stability/outpaint"), &make_base("", "stability/outpaint"), &extras, &materialized())
+                .await
+                .expect_err("nothing to grow");
+            assert!(matches!(err, ProviderError::InvalidRequest(ref m) if m.contains("expand")), "{err:?}");
+        }
+        let extras = ImageExtras { resolution: None, aspect_ratio: None, size: None, style: None, strength: None, mask_prompt: Some("  ".into()), ..make_extras_sd3() };
+        let err = provider
+            .generate(&ref_schema("stability/search-and-replace"), &make_base("a cat", "stability/search-and-replace"), &extras, &materialized())
+            .await
+            .expect_err("nothing to find");
+        assert!(matches!(err, ProviderError::InvalidRequest(ref m) if m.contains("mask_prompt")), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing was sent");
     }
 
     /// Search and Replace takes the area as text (`search_prompt`) beside the
@@ -1233,7 +1312,7 @@ mod tests {
         };
         let mut base = make_base("a red door", "stability/search-and-replace");
         base.seed = None;
-        let extras = ImageExtras { aspect_ratio: None, size: None, style: None, strength: None, mask_prompt: Some("the door".into()), ..make_extras_sd3() };
+        let extras = ImageExtras { resolution: None, aspect_ratio: None, size: None, style: None, strength: None, mask_prompt: Some("the door".into()), ..make_extras_sd3() };
         let out = make_provider(&server.uri())
             .generate(&ref_schema("stability/search-and-replace"), &base, &extras, &materialized)
             .await
@@ -1354,7 +1433,7 @@ mod tests {
 
     /// F8: masking is `required: ["text_prompts","init_image","mask_source"]`,
     /// so a mask without an init image is refused before any call.
-    /// @see <https://docs.stability.ai/openapi-v1.json> (image-to-image/masking, 2026-10-30)
+    /// @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-a-mask.md> (2026-11-09)
     #[tokio::test]
     async fn a_mask_without_an_init_image_is_refused_before_any_call() {
         let server = MockServer::start().await;
@@ -1370,7 +1449,8 @@ mod tests {
     /// input"; v1's `image_strength` close to 1 yields "images very similar to
     /// the `init_image`". The canonical strength goes inverted, and only to
     /// `/image-to-image` (masking has no `image_strength`).
-    /// @see <https://docs.stability.ai/openapi-v1.json> (2026-10-30)
+    /// @see <https://api.stability.ai/v2alpha/openapi> (/generate/sd3 strength, 2026-11-09)
+    /// @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-prompt.md> (image_strength, 2026-11-09)
     #[tokio::test]
     async fn sdxl_strength_is_sent_inverted_and_only_to_image_to_image() {
         let server = MockServer::start().await;
@@ -1389,6 +1469,60 @@ mod tests {
         assert_eq!(multipart_field(&received[0].body, "image_strength").as_deref(), Some("0.70"));
         assert_eq!(received[1].url.path(), format!("{SDXL_ENGINE}/image-to-image/masking"));
         assert!(multipart_field(&received[1].body, "image_strength").is_none());
+    }
+
+    // ─── Vendor feature audit, 2026-11-03 ───────────────────────────────────
+
+    /// /generate/sd3: "cfg_scale … How strictly the diffusion process adheres
+    /// to the prompt text" (1–10) is the canonical `guidance_scale`, sent once
+    /// (`extra` cannot add a second part); /ultra and /core define no
+    /// cfg_scale, so it never goes there.
+    /// @see <https://api.stability.ai/v2alpha/openapi> (2026-11-09)
+    #[tokio::test]
+    async fn guidance_goes_as_cfg_scale_and_only_to_the_sd3_route() {
+        let server = MockServer::start().await;
+        mock_v2(&server, "sd3").await;
+        mock_v2(&server, "ultra").await;
+        let provider = make_provider(&server.uri());
+        let mut extras = make_extras_sd3();
+        extras.guidance_scale = Some(4.5);
+        extras.extra = Some(json!({ "cfg_scale": 9 }));
+        for id in ["stability/sd3-large", "stability/ultra"] {
+            provider.generate(&ref_schema(id), &make_base("a dune", id), &extras, &empty_materialized()).await.expect(id);
+        }
+        let received = server.received_requests().await.unwrap();
+        let sd3 = String::from_utf8_lossy(&received[0].body).to_string();
+        assert_eq!(sd3.matches("name=\"cfg_scale\"").count(), 1, "{sd3}");
+        assert_eq!(multipart_field(&received[0].body, "cfg_scale").as_deref(), Some("4.5"));
+        assert!(multipart_field(&received[1].body, "cfg_scale").is_none(), "ultra has no cfg_scale");
+    }
+
+    /// The v1 SDXL engine takes "style_preset" on text-to-image (JSON),
+    /// image-to-image and masking (multipart): the canonical `style` goes as
+    /// it on all three.
+    /// @see <https://docs.stability.ai/api-reference/sdxl-10/text-to-image.md> (2026-11-09)
+    /// @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-prompt.md> (2026-11-09)
+    /// @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-a-mask.md> (2026-11-09)
+    #[tokio::test]
+    async fn sdxl_sends_style_as_style_preset_on_every_v1_route() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "name": "stop", "errors": ["stop"] })))
+            .mount(&server)
+            .await;
+        let provider = make_provider(&server.uri());
+        let mut extras = make_extras_sd3();
+        extras.aspect_ratio = None;
+        extras.style = Some("anime".into());
+        for fields in [&[][..], &["init_image"][..], &["init_image", "mask_image"][..]] {
+            let _ = provider.generate(&ref_schema("stability/sdxl"), &make_base("x", "stability/sdxl"), &extras, &uploaded(fields)).await;
+        }
+        let received = server.received_requests().await.unwrap();
+        let json_body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(json_body["style_preset"], "anime", "{json_body}");
+        for r in &received[1..] {
+            assert_eq!(multipart_field(&r.body, "style_preset").as_deref(), Some("anime"), "{}", r.url.path());
+        }
     }
 
     /// Stability answers in the same call, so one that timed out may have run

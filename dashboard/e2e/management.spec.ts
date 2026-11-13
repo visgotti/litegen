@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { feature, nextCall } from './support';
 
 // Management pages (Gateway, Budgets, End users, Spend) against the real
 // backend. Runs as the master key, so it never creates users and stays out of
@@ -28,6 +29,7 @@ async function openAsMaster(page: Page, path: string) {
 
 test('management pages drive budgets, end users, spend and gateway config', async ({ page, request }) => {
   // ─── Gateway: add a runtime model through the page ────────────────────────
+  await feature('Gateway — add a runtime model; refuse a bad one; disable and enable it');
   await openAsMaster(page, '/gateway');
   await page.getByTestId('gateway-model-json').fill(JSON.stringify({
     id: MODEL,
@@ -46,12 +48,20 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
 
   // An invalid schema is refused with the server's message.
   await page.getByTestId('gateway-model-json').fill('{"id": "mock/broken"}');
+  const refusedCreate = nextCall(page, 'POST', /^\/v1\/admin\/models$/);
   await page.getByTestId('gateway-model-create').click();
-  await expect(page.getByTestId('gateway-models-error')).toBeVisible();
+  const refusal = await refusedCreate;
+  expect(refusal.status(), 'the server refused the schema').toBeGreaterThanOrEqual(400);
+  const refusalMessage = ((await refusal.json()) as { error: { message: string } }).error.message;
+  await expect(page.getByTestId('gateway-models-error')).toContainText(refusalMessage);
+  expect((await request.get(`${API_BASE}/v1/models/mock/broken`, { headers: auth })).status(), 'nothing was added').toBe(404);
 
-  // Disable, then enable again.
+  // Disable, then enable again — and the gateway follows: a disabled model is
+  // neither served nor run.
   await page.getByTestId(`gateway-model-toggle-${MODEL}`).click();
   await expect(modelRow).toContainText('disabled');
+  expect((await request.get(`${API_BASE}/v1/models/${encodeURIComponent(MODEL)}`, { headers: auth })).status(), 'a disabled model is not served').toBe(404);
+  expect((await generate(request, MASTER_KEY)).status(), 'nor run').toBeGreaterThanOrEqual(400);
   await page.getByTestId(`gateway-model-toggle-${MODEL}`).click();
   await expect(modelRow).toContainText('enabled');
 
@@ -60,6 +70,7 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   expect(served.status()).toBe(200);
 
   // ─── Gateway: provider config (api_base only, no secret) then reset ───────
+  await feature('Gateway — a provider\'s base URL set at runtime, then reset');
   await page.getByTestId('gateway-tab-providers').click();
   await page.getByTestId('gateway-provider-edit-openai').click();
   await page.getByTestId('gateway-provider-base').fill('https://openai-proxy.e2e.invalid/v1');
@@ -67,10 +78,15 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   const openai = page.getByTestId('gateway-provider-openai');
   await expect(openai).toContainText('openai-proxy.e2e.invalid');
   await expect(openai).toContainText('runtime');
+  const providerCfg = await (await request.get(`${API_BASE}/v1/admin/providers/openai`, { headers: auth })).json();
+  expect(JSON.stringify(providerCfg), 'the server holds the base URL').toContain('openai-proxy.e2e.invalid');
   await page.getByTestId('gateway-provider-reset-openai').click();
   await expect(openai).not.toContainText('openai-proxy.e2e.invalid');
+  const resetCfg = await (await request.get(`${API_BASE}/v1/admin/providers/openai`, { headers: auth })).json();
+  expect(JSON.stringify(resetCfg), 'and has dropped it').not.toContain('openai-proxy.e2e.invalid');
 
   // ─── Gateway: routes ──────────────────────────────────────────────────────
+  await feature('Gateway — routes: an unknown provider refused, a route saved, then reset');
   await page.getByTestId('gateway-tab-routes').click();
   await expect(page.getByTestId('gateway-routes-source')).toHaveText('config');
   await page.getByTestId('gateway-routes-json').fill('[{"model": "nope/*", "deployments": [{"provider": "not-a-provider"}]}]');
@@ -83,6 +99,7 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   await expect(page.getByTestId('gateway-routes-source')).toHaveText('config');
 
   // ─── Gateway: settings ────────────────────────────────────────────────────
+  await feature('Gateway — settings validated and saved');
   await page.getByTestId('gateway-tab-settings').click();
   await page.getByTestId('gateway-eu-budget').fill('abc');
   await page.getByTestId('gateway-settings-save').click();
@@ -99,6 +116,7 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   await expect(page.getByTestId('gateway-effective-markup')).toContainText('0%');
 
   // ─── Budgets: a key budget set through the page is enforced ───────────────
+  await feature('Budgets — a key budget set on the page is enforced by the gateway');
   const created = await request.post(`${API_BASE}/v1/keys`, { headers: auth, data: { name: `e2e-budget-${RUN}` } });
   expect(created.ok()).toBeTruthy();
   const { id: keyId, key: rawKey } = await created.json();
@@ -132,6 +150,7 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   expect((await generate(request, rawKey, tagged)).status()).toBe(200);
 
   // ─── End users: auto-registered, blocked, budgeted ────────────────────────
+  await feature('End users — auto-registered, blocked (403), budgeted, deleted');
   await page.goto('/end-users');
   const euRow = page.getByTestId(`end-user-row-${END_USER}`);
   await expect(euRow).toBeVisible({ timeout: 10_000 });
@@ -159,8 +178,10 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   expect(vipLimits.max_budget_usd).toBe(5);
   await page.getByTestId(`end-user-delete-${vip}`).click();
   await expect(page.getByTestId(`end-user-row-${vip}`)).toHaveCount(0);
+  expect((await request.get(`${API_BASE}/v1/end-users/${vip}`, { headers: auth })).status(), 'deleted on the server').toBe(404);
 
   // ─── Spend: grouped and itemised ──────────────────────────────────────────
+  await feature('Spend — totals and groupings for one end user');
   await page.goto('/spend');
   await page.getByTestId('spend-end-user').fill(END_USER);
   await page.getByTestId('spend-apply').click();

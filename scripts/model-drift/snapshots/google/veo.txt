@@ -13,21 +13,21 @@
 | resolution | `"720p"` (default), `"1080p"` (only supports 8s duration), `"4k"` (only supports 8s duration) * `"720p"` only for extension* | `"720p"` (default), `"1080p"` (only supports 8s duration) | `"720p"` (default), `"1080p"` (only supports 8s duration), `"4k"` (only supports 8s duration) * `"720p"` only for extension* |
 
 # model versions
-### Veo 3.1 Preview
+### Veo 3.1 Preview (Deprecated)
 | Property | Description |
 |---|---|
 | Model code | **Gemini API** `veo-3.1-generate-preview` |
 | Supported data types | **Input** Text, Image **Output** Video with audio |
 | Limits | **Text input** 1,024 tokens **Output video** 1 |
 
-### Veo 3.1 Fast Preview
+### Veo 3.1 Fast Preview (Deprecated)
 | Property | Description |
 |---|---|
 | Model code | **Gemini API** `veo-3.1-fast-generate-preview` |
 | Supported data types | **Input** Text, Image **Output** Video with audio |
 | Limits | **Text input** 1,024 tokens **Output video** 1 |
 
-### Veo 3.1 Lite Preview
+### Veo 3.1 Lite Preview (Deprecated)
 | Property | Description |
 |---|---|
 | Model code | **Gemini API** `veo-3.1-lite-generate-preview` |

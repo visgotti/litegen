@@ -38,16 +38,19 @@ pub struct RecraftProvider {
 }
 
 impl RecraftProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(
+            client: Self::api_client(&Default::default()),
+            asset_client: crate::util::ssrf::public_only_download_client(
                 std::time::Duration::from_secs(120),
                 std::time::Duration::from_secs(30),
             ),
@@ -96,10 +99,14 @@ impl RecraftProvider {
     /// @see <https://www.recraft.ai/docs/api-reference/error-handling.md> (2026-10-30)
     async fn read_reply(resp: reqwest::Response) -> Result<Value, ProviderError> {
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             let data: Option<Value> = serde_json::from_str(&text).ok();
             let said = data.as_ref().map(Value::to_string).unwrap_or_else(|| text.chars().take(200).collect());
+            if let Some(e) = crate::providers::rate_limited("recraft", status, retry_after, &format!("Recraft API error: {said}"), data.as_ref()) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
                 message: format!("Recraft API error: {said}"),
                 status_code: Some(status.as_u16()),
@@ -160,10 +167,9 @@ impl RecraftProvider {
         if let Some(np) = base.negative_prompt.as_deref() {
             form = form.text("negative_prompt", np.to_string());
         }
-        if let Some(Value::Object(extra)) = &extras.extra {
-            for (k, v) in extra.iter().filter(|(k, _)| !["image", "prompt", "model", "negative_prompt", "response_format", "image_format"].contains(&k.as_str())) {
-                form = form.text(k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
-            }
+        let owned = |k: &str| ["image", "prompt", "model", "negative_prompt", "response_format", "image_format"].contains(&k);
+        for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+            form = form.text(k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
         }
         let url = format!("{}/images/replaceBackground", self.api_base());
         let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.post(&url).multipart(form))?;
@@ -241,6 +247,7 @@ impl ImageProvider for RecraftProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -273,7 +280,7 @@ impl ImageProvider for RecraftProvider {
 
         let mut body = json!({
             "prompt": base.prompt,
-            "model": native,
+            "model": crate::providers::wire_model(self.config.as_ref(), &model.id, native),
             "n": base.n.max(1),
             "response_format": "b64_json",
         });
@@ -283,7 +290,10 @@ impl ImageProvider for RecraftProvider {
         if !is_vector {
             body["image_format"] = Value::String("png".into());
         }
-        if let Some(size) = extras.size.as_deref() {
+        // `size` takes an exact `WxH` or a `w:h` ratio ("Works with every
+        // model. Prefer it."); an exact size the caller sent wins.
+        // @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("Image sizes", 2026-11-03)
+        if let Some(size) = extras.size.as_deref().or(extras.aspect_ratio.as_deref()) {
             body["size"] = Value::String(size.to_string());
         }
         // Recraft only accepts `style` (and `style_id`) on V2/V3 models. V4/V4.1
@@ -304,11 +314,9 @@ impl ImageProvider for RecraftProvider {
         if let Some(seed) = base.seed {
             body["random_seed"] = Value::Number(seed.into());
         }
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
-                    obj.insert(k.clone(), v.clone());
-                }
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L16: a palette as preferred colours, inside whatever
@@ -379,7 +387,7 @@ impl ImageProvider for RecraftProvider {
         };
 
         let mut metadata = HashMap::new();
-        metadata.insert("model".to_string(), Value::String(native.to_string()));
+        metadata.insert("model".to_string(), Value::String(crate::providers::wire_model(self.config.as_ref(), &model.id, native).to_string()));
 
         Ok(GenerationOutput {
             data: bytes,
@@ -489,7 +497,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: Some("1024x1024".to_string()),
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             quality: None,
             style: Some("digital_illustration".to_string()),
             steps: None,
@@ -503,6 +511,33 @@ mod tests {
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
             palette: None, directions: None,
+        }
+    }
+
+    /// An aspect ratio goes as `size: "w:h"` ("Works with every model.
+    /// Prefer it."); an exact `size` the caller also sent wins.
+    /// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("Image sizes"), read 2026-11-03
+    #[tokio::test]
+    async fn an_aspect_ratio_goes_as_size_and_an_exact_size_wins() {
+        for (size, ratio, want) in [(None, Some("16:9"), "16:9"), (Some("1024x1024"), Some("16:9"), "1024x1024")] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/images/generations"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [{ "b64_json": "iVBORw0KGgo=" }] })))
+                .mount(&server)
+                .await;
+            let extras = ImageExtras {
+                size: size.map(str::to_string),
+                resolution: None, aspect_ratio: ratio.map(str::to_string),
+                style: None,
+                ..make_extras()
+            };
+            let _ = make_provider(&server.uri())
+                .generate(&ref_schema("recraft/recraftv4_1"), &make_base("a lighthouse", "recraft/recraftv4_1"), &extras, &MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() })
+                .await;
+            let req = &server.received_requests().await.unwrap()[0];
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(body["size"], want, "{body}");
         }
     }
 

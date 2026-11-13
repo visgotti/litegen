@@ -1,3 +1,4 @@
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -19,20 +20,43 @@ use crate::types::*;
 /// - Versioned: POST /v1/predictions with version hash
 /// - Official: POST /v1/models/{owner}/{name}/predictions
 ///
-/// @see <https://replicate.com/docs/reference/http#create-a-prediction> — versioned create (`POST /v1/predictions`)
-/// @see <https://replicate.com/docs/reference/http#create-a-prediction-using-an-official-model> — official create (`POST /v1/models/{owner}/{name}/predictions`)
-/// @see <https://replicate.com/docs/reference/http#get-a-prediction> — poll (`GET /v1/predictions/{id}`)
+/// @see <https://replicate.com/docs/reference/http#predictions.create> — versioned create (`POST /v1/predictions`)
+/// @see <https://replicate.com/docs/reference/http#models.predictions.create> — official create (`POST /v1/models/{owner}/{name}/predictions`)
+/// @see <https://replicate.com/docs/reference/http#predictions.get> — poll (`GET /v1/predictions/{id}`)
 /// What litegen itself sends in a prediction's `input`; `extra` cannot
 /// replace it.
 const OWNED_FIELDS: &[&str] = &[
     "prompt", "aspect_ratio", "width", "height", "seed", "negative_prompt", "guidance", "guidance_scale", "cfg",
-    "steps", "num_inference_steps", "prompt_strength", "image", "output_format",
+    "steps", "num_inference_steps", "prompt_strength", "image", "images", "resolution", "output_format",
 ];
+
+/// FLUX 3 Image takes its references as one list: "images … Up to 10
+/// reference images the prompt edits or draws from".
+/// @see <https://replicate.com/black-forest-labs/flux-3-image/api/schema> (2026-11-03)
+fn takes_an_images_list(owner_name: &str) -> bool {
+    owner_name == "black-forest-labs/flux-3-image"
+}
+
+/// litegen's tier as FLUX 3 Image's `resolution` on Replicate: "768sq", "1k",
+/// "1.5k", "2k", "4k" ("Resolution of the output image").
+/// @see <https://replicate.com/black-forest-labs/flux-3-image/api/schema> (2026-11-03)
+fn replicate_resolution(resolution: &str) -> Option<&'static str> {
+    match resolution {
+        "0.75K" => Some("768sq"),
+        "1K" => Some("1k"),
+        "1.5K" => Some("1.5k"),
+        "2K" => Some("2k"),
+        "4K" => Some("4k"),
+        _ => None,
+    }
+}
 
 pub struct ReplicateProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
     /// Result downloads: no redirects, so a URL that passed the public-address
     /// check cannot bounce into a private one.
     asset_client: Client,
@@ -42,15 +66,19 @@ pub struct ReplicateProvider {
 }
 
 impl ReplicateProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(300), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .build()
-                .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::auth::AuthSpec::bearer(),
+            asset_client: crate::util::ssrf::public_only_download_client(
                 std::time::Duration::from_secs(120),
                 std::time::Duration::from_secs(30),
             ),
@@ -79,12 +107,12 @@ impl ReplicateProvider {
     /// Returns (owner/name, optional_version_hash).
     fn resolve_model_version(&self, model_id: &str) -> (String, Option<String>) {
         if let Some(cfg) = &self.config {
-            if let Some(mapped) = cfg.model_mapping.get(model_id) {
+            if let Some(mapped) = cfg.mapped_model(model_id) {
                 let parts: Vec<&str> = mapped.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     return (parts[0].to_string(), Some(parts[1].to_string()));
                 }
-                return (mapped.clone(), None);
+                return (mapped.to_string(), None);
             }
         }
 
@@ -102,11 +130,19 @@ impl ReplicateProvider {
             "flux-1.1-pro" => ("black-forest-labs/flux-1.1-pro".into(), None),
             "flux-dev" => ("black-forest-labs/flux-dev".into(), None),
             "flux-schnell" => ("black-forest-labs/flux-schnell".into(), None),
+            // Official, versionless: "POST /v1/models/black-forest-labs/flux-3-image/predictions".
+            // @see <https://replicate.com/black-forest-labs/flux-3-image/api/schema> (2026-11-03)
+            "flux-3-image" => ("black-forest-labs/flux-3-image".into(), None),
             "sdxl" => (
                 "stability-ai/sdxl".into(),
                 Some("39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b".into()),
             ),
             "sd3" => ("stability-ai/stable-diffusion-3".into(), None),
+            // Official, versionless: "POST /v1/models/stability-ai/stable-diffusion-3.5-large/predictions".
+            // @see <https://replicate.com/stability-ai/stable-diffusion-3.5-large/api/schema> (2026-11-04)
+            "sd3.5-large" => ("stability-ai/stable-diffusion-3.5-large".into(), None),
+            "sd3.5-large-turbo" => ("stability-ai/stable-diffusion-3.5-large-turbo".into(), None),
+            "sd3.5-medium" => ("stability-ai/stable-diffusion-3.5-medium".into(), None),
             _ => (native.to_string(), None),
         }
     }
@@ -136,6 +172,8 @@ impl ReplicateProvider {
             "black-forest-labs/flux-pro" => ("guidance", "steps"),
             "black-forest-labs/flux-dev" => ("guidance", "num_inference_steps"),
             "stability-ai/stable-diffusion-3" => ("cfg", "steps"),
+            // SD 3.5: `cfg`; it has no steps input (its rows declare none).
+            "stability-ai/stable-diffusion-3.5-large" | "stability-ai/stable-diffusion-3.5-large-turbo" | "stability-ai/stable-diffusion-3.5-medium" => ("cfg", "steps"),
             // stability-ai/sdxl, and black-forest-labs/flux-schnell (whose
             // steps field is `num_inference_steps`; it has no guidance input).
             _ => ("guidance_scale", "num_inference_steps"),
@@ -145,21 +183,23 @@ impl ReplicateProvider {
     /// Poll a prediction to completion via `GET {api_base}/predictions/{id}`,
     /// reading the `status` field (`succeeded` / `failed` / `canceled`).
     ///
-    /// @see <https://replicate.com/docs/reference/http#get-a-prediction> — Get a prediction
+    /// @see <https://replicate.com/docs/reference/http#predictions.get> — Get a prediction
     async fn poll_prediction(
         &self,
         prediction_id: &str,
         api_key: &str,
     ) -> Result<Value, ProviderError> {
         let poll_url = format!("{}/predictions/{}", self.api_base(), prediction_id);
-        let max_attempts = 120; // 120 * 2s = 4 minutes
-        for _ in 0..max_attempts {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // As long as litegen waits for this call (the vendor timeout,
+        // docs/gateway-settings.md); 240 s when called directly.
+        let started = std::time::Instant::now();
+        let mut budget = crate::providers::PollBudget::new(std::time::Duration::from_secs(240), std::time::Duration::from_secs(2));
+        while budget.next().await {
 
             let resp = match crate::providers::inject_trace_headers(
                 self.client
                     .get(&poll_url)
-                    .header("Authorization", format!("Bearer {api_key}")),
+                    .authorized(&self.auth, api_key)?,
             )
             .send()
             .await
@@ -178,10 +218,8 @@ impl ReplicateProvider {
             match result["status"].as_str() {
                 Some("succeeded") => return Ok(result),
                 Some("starting") | Some("processing") => continue,
-                // failed, canceled, aborted ("terminated before it started
-                // running") — or a status outside the documented enum.
-                other => {
-                    let status = other.unwrap_or("with no status");
+                // failed, canceled, aborted ("terminated before it started running").
+                Some(status @ ("failed" | "canceled" | "aborted")) => {
                     let message = match result["error"].as_str().filter(|e| !e.is_empty()) {
                         Some(e) => format!("Replicate prediction {status}: {e}"),
                         None => format!("Replicate prediction {status}"),
@@ -193,16 +231,17 @@ impl ReplicateProvider {
                         retryable: false,
                     });
                 }
+                other => return Err(super::unknown_state("replicate", other)),
             }
         }
 
-        Err(ProviderError::Timeout { timeout_ms: max_attempts * 2000 })
+        Err(ProviderError::Timeout { timeout_ms: budget.total_ms(started) })
     }
 
     /// Download the rendered image from the prediction `output` URL (a plain
     /// HTTPS GET of the Replicate-hosted asset, not a REST endpoint).
     ///
-    /// @see <https://replicate.com/docs/reference/http#get-a-prediction> — `output` URL field
+    /// @see <https://replicate.com/docs/reference/http#predictions.get> — `output` URL field
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
         super::fetch_result(&self.asset_client, url, self.public_assets_only, "replicate image").await
     }
@@ -211,6 +250,45 @@ impl ReplicateProvider {
 impl Default for ReplicateProvider {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ReplicateProvider {
+    /// A finished job's result, as `generate` returns it: its image
+    /// downloaded, with the vendor's ids.
+    async fn finish(&self, prediction_id: &str, final_result: Value) -> Result<GenerationOutput, ProviderError> {
+        // Extract output URL — Replicate returns output as array of URLs or a single URL
+        let image_url = match &final_result["output"] {
+            Value::Array(arr) => arr
+                .first()
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        }
+        .ok_or_else(|| ProviderError::RequestFailed {
+            message: "Replicate output missing image URL".to_string(),
+            status_code: None,
+            provider_error: Some(final_result.clone()),
+            retryable: false,
+        })?;
+
+        let image_bytes = self.fetch_image_bytes(&image_url).await?;
+        // The FLUX and SD3 schemas default `output_format` to webp, and litegen
+        // sends one only when the caller names it: label the bytes as what they
+        // are. @see <https://replicate.com/black-forest-labs/flux-dev/api/schema> (2026-11-09)
+        let content_type = crate::proxy::materializer::sniff_image_mime(&image_bytes).unwrap_or("image/png");
+
+        let mut metadata = HashMap::new();
+        metadata.insert("prediction_id".to_string(), Value::String(prediction_id.to_string()));
+        metadata.insert("url".to_string(), Value::String(image_url));
+
+        Ok(GenerationOutput {
+            data: image_bytes,
+            content_type: content_type.to_string(),
+            metadata,
+            more: Vec::new(),
+        })
     }
 }
 
@@ -224,6 +302,7 @@ impl ImageProvider for ReplicateProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -236,9 +315,9 @@ impl ImageProvider for ReplicateProvider {
     /// Create a prediction (versioned `POST /v1/predictions` or official-model
     /// `POST /v1/models/{owner}/{name}/predictions`), then poll for the result.
     ///
-    /// @see <https://replicate.com/docs/reference/http#create-a-prediction> — versioned create.
+    /// @see <https://replicate.com/docs/reference/http#predictions.create> — versioned create.
     ///   Proves the `{version, input}` body and the `id`/`status`/`output` response fields.
-    /// @see <https://replicate.com/docs/reference/http#create-a-prediction-using-an-official-model> — official-model create (`{input}` body, no version)
+    /// @see <https://replicate.com/docs/reference/http#models.predictions.create> — official-model create (`{input}` body, no version)
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -293,25 +372,35 @@ impl ImageProvider for ReplicateProvider {
             input["prompt_strength"] = json!(strength);
         }
 
-        // Reference image as a URL, or a data URI of its own type.
+        if let Some(tier) = extras.resolution.as_deref() {
+            let r = replicate_resolution(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: Replicate has no resolution {tier}", model.id)))?;
+            input["resolution"] = Value::String(r.into());
+        }
+
+        // Reference image as a URL, or a data URI of its own type: one
+        // `image`, or every reference in order where the model takes a list.
+        let list = takes_an_images_list(&owner_name);
+        let mut images = Vec::new();
         for r in &materialized.refs {
-            match &r.form {
-                MaterializedRefForm::Url(url) => {
-                    input["image"] = Value::String(url.clone());
-                }
-                MaterializedRefForm::Base64(b64) => {
-                    input["image"] = Value::String(crate::proxy::materializer::base64_data_uri(b64, Some("image/png")));
-                }
-                _ => {}
+            let image = match &r.form {
+                MaterializedRefForm::Url(url) => url.clone(),
+                MaterializedRefForm::Base64(b64) => crate::proxy::materializer::base64_data_uri(b64, Some("image/png")),
+                _ => continue,
+            };
+            if list {
+                images.push(Value::String(image));
+            } else {
+                input["image"] = Value::String(image);
             }
+        }
+        if !images.is_empty() {
+            input["images"] = Value::Array(images);
         }
 
         // Shallow-merge extra, never over what litegen sends.
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(input_obj) = input.as_object_mut() {
-                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
-                    input_obj.insert(k.clone(), v.clone());
-                }
+        if let Some(input_obj) = input.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                input_obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L9: the asked container, in Replicate's spelling
@@ -335,7 +424,7 @@ impl ImageProvider for ReplicateProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(&post_url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("Content-Type", "application/json")
                 .json(&body),
         )
@@ -351,10 +440,14 @@ impl ImageProvider for ReplicateProvider {
         })?;
 
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             let prediction: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
             let err = prediction["detail"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(200).collect());
+            if let Some(e) = crate::providers::rate_limited("replicate", status, retry_after, &format!("Replicate API error: {err}"), Some(&prediction)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
                 message: format!("Replicate API error: {err}"),
                 status_code: Some(status.as_u16()),
@@ -391,35 +484,21 @@ impl ImageProvider for ReplicateProvider {
         } else {
             self.poll_prediction(&prediction_id, &api_key).await?
         };
+        self.finish(&prediction_id, final_result).await
+    }
 
-        // Extract output URL — Replicate returns output as array of URLs or a single URL
-        let image_url = match &final_result["output"] {
-            Value::Array(arr) => arr
-                .first()
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            Value::String(s) => Some(s.clone()),
-            _ => None,
+    fn resumable(&self, _model: &ModelSchema) -> bool {
+        true
+    }
+
+    /// One look at an accepted job, read as `generate`'s own poll loop reads it.
+    async fn poll_job(&self, _model: &str, job: &str, _resume: Option<&Value>) -> Result<crate::providers::ImageJobPoll, ProviderError> {
+        let api_key = self.api_key()?;
+        match super::poll_once(self.poll_prediction(job, &api_key)).await {
+            Ok(Some(result)) => self.finish(job, result).await.map(crate::providers::ImageJobPoll::Done),
+            Ok(None) => Ok(crate::providers::ImageJobPoll::Running),
+            Err(e) => super::job_failed(e),
         }
-        .ok_or_else(|| ProviderError::RequestFailed {
-            message: "Replicate output missing image URL".to_string(),
-            status_code: None,
-            provider_error: Some(final_result.clone()),
-            retryable: false,
-        })?;
-
-        let image_bytes = self.fetch_image_bytes(&image_url).await?;
-
-        let mut metadata = HashMap::new();
-        metadata.insert("prediction_id".to_string(), Value::String(prediction_id.to_string()));
-        metadata.insert("url".to_string(), Value::String(image_url));
-
-        Ok(GenerationOutput {
-            data: image_bytes,
-            content_type: "image/png".to_string(),
-            metadata,
-            more: Vec::new(),
-        })
     }
 
     async fn estimate_cost(
@@ -437,7 +516,7 @@ impl ImageProvider for ReplicateProvider {
 
     /// Validate the API token via `GET {api_base}/account`.
     ///
-    /// @see <https://replicate.com/docs/reference/http#get-the-authenticated-account> — Get the authenticated account
+    /// @see <https://replicate.com/docs/reference/http#account.get> — Get the authenticated account
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -447,14 +526,15 @@ impl ImageProvider for ReplicateProvider {
             };
         }
         let start = std::time::Instant::now();
-        match self
+        let request = match self
             .client
             .get(format!("{}/account", self.api_base()))
-            .header("Authorization", format!("Bearer {}", self.api_key().unwrap_or_default()))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
+            .authorized(&self.auth, &self.api_key().unwrap_or_default())
         {
+            Ok(request) => request,
+            Err(e) => return HealthCheckResult { healthy: false, message: format!("Replicate health check failed: {e}"), latency_ms: None },
+        };
+        match request.timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => HealthCheckResult {
                 healthy: true,
                 message: "Replicate API token valid".into(),
@@ -530,7 +610,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: None,
-            aspect_ratio: Some("1:1".to_string()),
+            resolution: None, aspect_ratio: Some("1:1".to_string()),
             quality: None,
             style: None,
             steps: Some(28),
@@ -625,6 +705,38 @@ mod tests {
     /// @see <https://replicate.com/black-forest-labs/flux-dev/api/schema>
     /// @see <https://replicate.com/black-forest-labs/flux-pro/api/schema>
     /// @see <https://replicate.com/stability-ai/stable-diffusion-3/api/schema>
+    /// SD 3.5 (Large, Large Turbo, Medium) on Replicate, official and
+    /// versionless: guidance is `cfg` ("cfg … minimum 1, maximum 10"), no steps
+    /// input; jpeg goes as "jpg".
+    /// @see <https://replicate.com/stability-ai/stable-diffusion-3.5-large/api/schema> (2026-11-04)
+    #[tokio::test]
+    async fn sd3_5_rows_send_cfg_to_their_own_official_model() {
+        for (catalog_id, slug) in [
+            ("replicate/sd3.5-large", "stability-ai/stable-diffusion-3.5-large"),
+            ("replicate/sd3.5-large-turbo", "stability-ai/stable-diffusion-3.5-large-turbo"),
+            ("replicate/sd3.5-medium", "stability-ai/stable-diffusion-3.5-medium"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!("/v1/models/{slug}/predictions")))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": "pred-1", "status": "succeeded", "output": [format!("{}/img.png", server.uri())] })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET")).and(path("/img.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"PNG".to_vec())).mount(&server).await;
+            let provider = make_provider(&format!("{}/v1", server.uri()));
+            let mut extras = make_extras();
+            extras.steps = None;
+            extras.guidance_scale = Some(4.5);
+            extras.output_format = Some("jpeg".into());
+            provider.generate(&ref_schema(catalog_id), &make_base("a koi pond", catalog_id), &extras, &empty_materialized()).await.expect("generate");
+            let received = server.received_requests().await.unwrap();
+            let post = received.iter().find(|r| r.method == wiremock::http::Method::POST).unwrap();
+            let input = &serde_json::from_slice::<Value>(&post.body).unwrap()["input"];
+            assert_eq!((input["cfg"].as_f64(), input["output_format"].as_str()), (Some(4.5), Some("jpg")), "{catalog_id}: {input}");
+            assert!(input.get("guidance_scale").is_none() && input.get("steps").is_none(), "{catalog_id}: {input}");
+        }
+    }
+
     #[tokio::test]
     async fn guidance_and_steps_use_each_models_own_input_names() {
         for (catalog_id, slug, guidance_key, steps_key) in [
@@ -877,5 +989,96 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
         assert!(cdn.received_requests().await.unwrap().is_empty(), "a private address was fetched");
+    }
+
+    /// The FLUX and SD3 schemas default `output_format` to webp ("webp", "jpg",
+    /// "png"; default webp), and litegen sends one only when the caller names
+    /// it: the result is labelled by its own bytes, not as png.
+    /// @see <https://replicate.com/black-forest-labs/flux-dev/api/schema> (2026-11-09)
+    #[tokio::test]
+    async fn a_result_is_labelled_with_the_type_its_bytes_are() {
+        for (bytes, want) in [
+            (b"RIFF\x24\x00\x00\x00WEBPVP8 ".to_vec(), "image/webp"),
+            (b"\xFF\xD8\xFF\xE0\x00\x10JFIF".to_vec(), "image/jpeg"),
+            (b"\x89PNG\r\n\x1a\n\x00\x00".to_vec(), "image/png"),
+        ] {
+            let server = MockServer::start().await;
+            let cdn = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                    "id": "p1", "status": "succeeded", "output": [format!("{}/out-0", cdn.uri())]
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(bytes)).mount(&cdn).await;
+            let out = make_provider(&server.uri())
+                .generate(&ref_schema("replicate/flux-dev"), &make_base("x", "replicate/flux-dev"), &make_extras(), &empty_materialized())
+                .await
+                .expect("generate");
+            assert_eq!(out.content_type, want);
+        }
+    }
+
+    /// As bfl: polling ends at litegen's deadline for the call.
+    #[tokio::test]
+    async fn an_endless_pending_ends_at_litegens_deadline() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": "p-slow", "status": "starting" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/predictions/p-slow"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "p-slow", "status": "processing" })))
+            .mount(&server)
+            .await;
+        let started = std::time::Instant::now();
+        // Bounded, so an adapter that ignores the deadline fails here rather than polling for minutes.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            crate::providers::with_deadline(
+                std::time::Instant::now() + std::time::Duration::from_secs(3),
+                make_provider(&server.uri()).generate(&ref_schema("replicate/flux-dev"), &make_base("x", "replicate/flux-dev"), &make_extras(), &empty_materialized()),
+            ),
+        )
+        .await
+        .expect("the adapter polled past litegen's deadline");
+        assert!(result.is_err());
+        let took = started.elapsed();
+        assert!(took >= std::time::Duration::from_secs(2) && took < std::time::Duration::from_secs(6), "{took:?}");
+    }
+
+    /// FLUX 3 Image on Replicate (an official model, versionless): "images …
+    /// Up to 10 reference images the prompt edits or draws from", the tier as
+    /// `resolution` (`768sq`, `1k`, `1.5k`, `2k`, `4k`). Every reference goes in
+    /// that list, never as `image`, and `extra` replaces neither.
+    /// @see <https://replicate.com/black-forest-labs/flux-3-image/api/schema> (2026-11-03)
+    #[tokio::test]
+    async fn flux_3_image_sends_its_references_as_images_and_its_tier_as_resolution() {
+        let server = refusing_server().await;
+        let mut extras = make_extras();
+        extras.steps = None;
+        extras.guidance_scale = None;
+        extras.aspect_ratio = Some("16:9".into());
+        extras.resolution = Some("1.5K".into());
+        extras.extra = Some(json!({ "images": ["other"], "resolution": "4k", "grounding": false }));
+        let refs = crate::proxy::materializer::MaterializedRequest {
+            refs: ["https://x/a.png", "https://x/b.png"]
+                .iter()
+                .map(|u| crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url((*u).into()), time_s: None })
+                .collect(),
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let mut base = make_base("a red kite", "replicate/flux-3-image");
+        base.seed = None;
+        let _ = make_provider(&server.uri()).generate(&ref_schema("replicate/flux-3-image"), &base, &extras, &refs).await;
+        let path = server.received_requests().await.unwrap()[0].url.path().to_string();
+        // The base is `https://api.replicate.com/v1` in production.
+        assert_eq!(path, "/models/black-forest-labs/flux-3-image/predictions", "official: no version");
+        let input = sent_input(&server).await;
+        assert_eq!(input["images"], json!(["https://x/a.png", "https://x/b.png"]), "{input}");
+        assert!(input.get("image").is_none(), "{input}");
+        assert_eq!((input["resolution"].as_str(), input["aspect_ratio"].as_str()), (Some("1.5k"), Some("16:9")), "{input}");
+        assert_eq!(input["grounding"], false, "{input}");
     }
 }

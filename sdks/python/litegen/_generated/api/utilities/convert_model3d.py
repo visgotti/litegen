@@ -6,9 +6,11 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.convert_model_3d_ktx_2_textures import ConvertModel3DKtx2Textures
+from ...models.convert_model_3d_package import ConvertModel3DPackage
 from ...models.error_response import ErrorResponse
 from ...models.model_3d_format import Model3DFormat
-from ...types import UNSET, File, Response
+from ...types import UNSET, File, Response, Unset
 
 
 def _get_kwargs(
@@ -16,6 +18,18 @@ def _get_kwargs(
     body: File,
     from_: Model3DFormat,
     to: Model3DFormat,
+    units: Union[Unset, str] = UNSET,
+    up: Union[Unset, str] = UNSET,
+    from_units: Union[Unset, str] = UNSET,
+    from_up: Union[Unset, str] = UNSET,
+    fbx_color_space: Union[Unset, str] = UNSET,
+    package: Union[Unset, ConvertModel3DPackage] = UNSET,
+    ktx2_textures: Union[Unset, ConvertModel3DKtx2Textures] = UNSET,
+    fbx_light_units: Union[Unset, str] = UNSET,
+    usd_light_units: Union[Unset, str] = UNSET,
+    dae_morphs: Union[Unset, str] = UNSET,
+    usdz_root: Union[Unset, str] = UNSET,
+    usd_clips: Union[Unset, str] = UNSET,
 ) -> Dict[str, Any]:
     headers: Dict[str, Any] = {}
 
@@ -26,6 +40,38 @@ def _get_kwargs(
 
     json_to = to.value
     params["to"] = json_to
+
+    params["units"] = units
+
+    params["up"] = up
+
+    params["from_units"] = from_units
+
+    params["from_up"] = from_up
+
+    params["fbx_color_space"] = fbx_color_space
+
+    json_package: Union[Unset, str] = UNSET
+    if not isinstance(package, Unset):
+        json_package = package.value
+
+    params["package"] = json_package
+
+    json_ktx2_textures: Union[Unset, str] = UNSET
+    if not isinstance(ktx2_textures, Unset):
+        json_ktx2_textures = ktx2_textures.value
+
+    params["ktx2_textures"] = json_ktx2_textures
+
+    params["fbx_light_units"] = fbx_light_units
+
+    params["usd_light_units"] = usd_light_units
+
+    params["dae_morphs"] = dae_morphs
+
+    params["usdz_root"] = usdz_root
+
+    params["usd_clips"] = usd_clips
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -55,6 +101,10 @@ def _parse_response(
         response_400 = ErrorResponse.from_dict(response.json())
 
         return response_400
+    if response.status_code == 408:
+        response_408 = ErrorResponse.from_dict(response.json())
+
+        return response_408
     if response.status_code == 413:
         response_413 = ErrorResponse.from_dict(response.json())
 
@@ -63,6 +113,10 @@ def _parse_response(
         response_422 = ErrorResponse.from_dict(response.json())
 
         return response_422
+    if response.status_code == 500:
+        response_500 = ErrorResponse.from_dict(response.json())
+
+        return response_500
     if response.status_code == 503:
         response_503 = ErrorResponse.from_dict(response.json())
 
@@ -90,13 +144,34 @@ def sync_detailed(
     body: File,
     from_: Model3DFormat,
     to: Model3DFormat,
+    units: Union[Unset, str] = UNSET,
+    up: Union[Unset, str] = UNSET,
+    from_units: Union[Unset, str] = UNSET,
+    from_up: Union[Unset, str] = UNSET,
+    fbx_color_space: Union[Unset, str] = UNSET,
+    package: Union[Unset, ConvertModel3DPackage] = UNSET,
+    ktx2_textures: Union[Unset, ConvertModel3DKtx2Textures] = UNSET,
+    fbx_light_units: Union[Unset, str] = UNSET,
+    usd_light_units: Union[Unset, str] = UNSET,
+    dae_morphs: Union[Unset, str] = UNSET,
+    usdz_root: Union[Unset, str] = UNSET,
+    usd_clips: Union[Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, File]]:
     r"""POST /v1/utils/models3d/convert — Convert a mesh between containers without generating anything.
 
      The body is the raw file. The response is the converted file, with the
     target's `Content-Type`. Whatever the target container can hold survives
     (materials, textures, skins, animation); what it cannot is dropped and
-    named in `X-Litegen-Conversion-Losses`.
+    named in `X-Litegen-Conversion-Losses`. WebP and KTX2 (Basis Universal)
+    textures are re-encoded as PNG, as generations deliver them, so no
+    container drops them and, by default, no glTF requires
+    `EXT_texture_webp` or `KHR_texture_basisu` (`ktx2_textures=keep` leaves a
+    KTX2 in a glb or gltf, which then requires `KHR_texture_basisu`). By
+    default the output is one file: OBJ carries its materials as vertex
+    colours, and Collada, USDA and USDC leave textures out (named as losses).
+    `package=zip` answers with a zip of the file and its sidecars instead,
+    which keeps them. A USD file (`.usda`, `.usdc`, or a `.usd` holding either)
+    is read with `from=usda` or `from=usdc`, whichever encoding it is in.
 
     Live: `curl --data-binary @fox.glb
     \"https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj\" -H \"Authorization: Bearer
@@ -139,6 +214,21 @@ def sync_detailed(
             Requests carry these as plain, case-insensitive strings — validation, not
             deserialisation, owns the error, so it can name what IS deliverable. This
             type pins the vocabulary for OpenAPI and for the catalog loader.
+        units (Union[Unset, str]):
+        up (Union[Unset, str]):
+        from_units (Union[Unset, str]):
+        from_up (Union[Unset, str]):
+        fbx_color_space (Union[Unset, str]):
+        package (Union[Unset, ConvertModel3DPackage]): What the converter answers with
+            (`package`).
+        ktx2_textures (Union[Unset, ConvertModel3DKtx2Textures]): What the converter does with a
+            KTX2 (Basis Universal) texture
+            (`ktx2_textures`).
+        fbx_light_units (Union[Unset, str]):
+        usd_light_units (Union[Unset, str]):
+        dae_morphs (Union[Unset, str]):
+        usdz_root (Union[Unset, str]):
+        usd_clips (Union[Unset, str]):
         body (File): A mesh file as raw bytes, for the spec only: the handler reads the `Body`
             directly. Without this, `Vec<u8>` documents as an array of integers and the
             SDK generators type the upload as `number[]`.
@@ -155,6 +245,18 @@ def sync_detailed(
         body=body,
         from_=from_,
         to=to,
+        units=units,
+        up=up,
+        from_units=from_units,
+        from_up=from_up,
+        fbx_color_space=fbx_color_space,
+        package=package,
+        ktx2_textures=ktx2_textures,
+        fbx_light_units=fbx_light_units,
+        usd_light_units=usd_light_units,
+        dae_morphs=dae_morphs,
+        usdz_root=usdz_root,
+        usd_clips=usd_clips,
     )
 
     response = client.get_httpx_client().request(
@@ -170,13 +272,34 @@ def sync(
     body: File,
     from_: Model3DFormat,
     to: Model3DFormat,
+    units: Union[Unset, str] = UNSET,
+    up: Union[Unset, str] = UNSET,
+    from_units: Union[Unset, str] = UNSET,
+    from_up: Union[Unset, str] = UNSET,
+    fbx_color_space: Union[Unset, str] = UNSET,
+    package: Union[Unset, ConvertModel3DPackage] = UNSET,
+    ktx2_textures: Union[Unset, ConvertModel3DKtx2Textures] = UNSET,
+    fbx_light_units: Union[Unset, str] = UNSET,
+    usd_light_units: Union[Unset, str] = UNSET,
+    dae_morphs: Union[Unset, str] = UNSET,
+    usdz_root: Union[Unset, str] = UNSET,
+    usd_clips: Union[Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, File]]:
     r"""POST /v1/utils/models3d/convert — Convert a mesh between containers without generating anything.
 
      The body is the raw file. The response is the converted file, with the
     target's `Content-Type`. Whatever the target container can hold survives
     (materials, textures, skins, animation); what it cannot is dropped and
-    named in `X-Litegen-Conversion-Losses`.
+    named in `X-Litegen-Conversion-Losses`. WebP and KTX2 (Basis Universal)
+    textures are re-encoded as PNG, as generations deliver them, so no
+    container drops them and, by default, no glTF requires
+    `EXT_texture_webp` or `KHR_texture_basisu` (`ktx2_textures=keep` leaves a
+    KTX2 in a glb or gltf, which then requires `KHR_texture_basisu`). By
+    default the output is one file: OBJ carries its materials as vertex
+    colours, and Collada, USDA and USDC leave textures out (named as losses).
+    `package=zip` answers with a zip of the file and its sidecars instead,
+    which keeps them. A USD file (`.usda`, `.usdc`, or a `.usd` holding either)
+    is read with `from=usda` or `from=usdc`, whichever encoding it is in.
 
     Live: `curl --data-binary @fox.glb
     \"https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj\" -H \"Authorization: Bearer
@@ -219,6 +342,21 @@ def sync(
             Requests carry these as plain, case-insensitive strings — validation, not
             deserialisation, owns the error, so it can name what IS deliverable. This
             type pins the vocabulary for OpenAPI and for the catalog loader.
+        units (Union[Unset, str]):
+        up (Union[Unset, str]):
+        from_units (Union[Unset, str]):
+        from_up (Union[Unset, str]):
+        fbx_color_space (Union[Unset, str]):
+        package (Union[Unset, ConvertModel3DPackage]): What the converter answers with
+            (`package`).
+        ktx2_textures (Union[Unset, ConvertModel3DKtx2Textures]): What the converter does with a
+            KTX2 (Basis Universal) texture
+            (`ktx2_textures`).
+        fbx_light_units (Union[Unset, str]):
+        usd_light_units (Union[Unset, str]):
+        dae_morphs (Union[Unset, str]):
+        usdz_root (Union[Unset, str]):
+        usd_clips (Union[Unset, str]):
         body (File): A mesh file as raw bytes, for the spec only: the handler reads the `Body`
             directly. Without this, `Vec<u8>` documents as an array of integers and the
             SDK generators type the upload as `number[]`.
@@ -236,6 +374,18 @@ def sync(
         body=body,
         from_=from_,
         to=to,
+        units=units,
+        up=up,
+        from_units=from_units,
+        from_up=from_up,
+        fbx_color_space=fbx_color_space,
+        package=package,
+        ktx2_textures=ktx2_textures,
+        fbx_light_units=fbx_light_units,
+        usd_light_units=usd_light_units,
+        dae_morphs=dae_morphs,
+        usdz_root=usdz_root,
+        usd_clips=usd_clips,
     ).parsed
 
 
@@ -245,13 +395,34 @@ async def asyncio_detailed(
     body: File,
     from_: Model3DFormat,
     to: Model3DFormat,
+    units: Union[Unset, str] = UNSET,
+    up: Union[Unset, str] = UNSET,
+    from_units: Union[Unset, str] = UNSET,
+    from_up: Union[Unset, str] = UNSET,
+    fbx_color_space: Union[Unset, str] = UNSET,
+    package: Union[Unset, ConvertModel3DPackage] = UNSET,
+    ktx2_textures: Union[Unset, ConvertModel3DKtx2Textures] = UNSET,
+    fbx_light_units: Union[Unset, str] = UNSET,
+    usd_light_units: Union[Unset, str] = UNSET,
+    dae_morphs: Union[Unset, str] = UNSET,
+    usdz_root: Union[Unset, str] = UNSET,
+    usd_clips: Union[Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, File]]:
     r"""POST /v1/utils/models3d/convert — Convert a mesh between containers without generating anything.
 
      The body is the raw file. The response is the converted file, with the
     target's `Content-Type`. Whatever the target container can hold survives
     (materials, textures, skins, animation); what it cannot is dropped and
-    named in `X-Litegen-Conversion-Losses`.
+    named in `X-Litegen-Conversion-Losses`. WebP and KTX2 (Basis Universal)
+    textures are re-encoded as PNG, as generations deliver them, so no
+    container drops them and, by default, no glTF requires
+    `EXT_texture_webp` or `KHR_texture_basisu` (`ktx2_textures=keep` leaves a
+    KTX2 in a glb or gltf, which then requires `KHR_texture_basisu`). By
+    default the output is one file: OBJ carries its materials as vertex
+    colours, and Collada, USDA and USDC leave textures out (named as losses).
+    `package=zip` answers with a zip of the file and its sidecars instead,
+    which keeps them. A USD file (`.usda`, `.usdc`, or a `.usd` holding either)
+    is read with `from=usda` or `from=usdc`, whichever encoding it is in.
 
     Live: `curl --data-binary @fox.glb
     \"https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj\" -H \"Authorization: Bearer
@@ -294,6 +465,21 @@ async def asyncio_detailed(
             Requests carry these as plain, case-insensitive strings — validation, not
             deserialisation, owns the error, so it can name what IS deliverable. This
             type pins the vocabulary for OpenAPI and for the catalog loader.
+        units (Union[Unset, str]):
+        up (Union[Unset, str]):
+        from_units (Union[Unset, str]):
+        from_up (Union[Unset, str]):
+        fbx_color_space (Union[Unset, str]):
+        package (Union[Unset, ConvertModel3DPackage]): What the converter answers with
+            (`package`).
+        ktx2_textures (Union[Unset, ConvertModel3DKtx2Textures]): What the converter does with a
+            KTX2 (Basis Universal) texture
+            (`ktx2_textures`).
+        fbx_light_units (Union[Unset, str]):
+        usd_light_units (Union[Unset, str]):
+        dae_morphs (Union[Unset, str]):
+        usdz_root (Union[Unset, str]):
+        usd_clips (Union[Unset, str]):
         body (File): A mesh file as raw bytes, for the spec only: the handler reads the `Body`
             directly. Without this, `Vec<u8>` documents as an array of integers and the
             SDK generators type the upload as `number[]`.
@@ -310,6 +496,18 @@ async def asyncio_detailed(
         body=body,
         from_=from_,
         to=to,
+        units=units,
+        up=up,
+        from_units=from_units,
+        from_up=from_up,
+        fbx_color_space=fbx_color_space,
+        package=package,
+        ktx2_textures=ktx2_textures,
+        fbx_light_units=fbx_light_units,
+        usd_light_units=usd_light_units,
+        dae_morphs=dae_morphs,
+        usdz_root=usdz_root,
+        usd_clips=usd_clips,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -323,13 +521,34 @@ async def asyncio(
     body: File,
     from_: Model3DFormat,
     to: Model3DFormat,
+    units: Union[Unset, str] = UNSET,
+    up: Union[Unset, str] = UNSET,
+    from_units: Union[Unset, str] = UNSET,
+    from_up: Union[Unset, str] = UNSET,
+    fbx_color_space: Union[Unset, str] = UNSET,
+    package: Union[Unset, ConvertModel3DPackage] = UNSET,
+    ktx2_textures: Union[Unset, ConvertModel3DKtx2Textures] = UNSET,
+    fbx_light_units: Union[Unset, str] = UNSET,
+    usd_light_units: Union[Unset, str] = UNSET,
+    dae_morphs: Union[Unset, str] = UNSET,
+    usdz_root: Union[Unset, str] = UNSET,
+    usd_clips: Union[Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, File]]:
     r"""POST /v1/utils/models3d/convert — Convert a mesh between containers without generating anything.
 
      The body is the raw file. The response is the converted file, with the
     target's `Content-Type`. Whatever the target container can hold survives
     (materials, textures, skins, animation); what it cannot is dropped and
-    named in `X-Litegen-Conversion-Losses`.
+    named in `X-Litegen-Conversion-Losses`. WebP and KTX2 (Basis Universal)
+    textures are re-encoded as PNG, as generations deliver them, so no
+    container drops them and, by default, no glTF requires
+    `EXT_texture_webp` or `KHR_texture_basisu` (`ktx2_textures=keep` leaves a
+    KTX2 in a glb or gltf, which then requires `KHR_texture_basisu`). By
+    default the output is one file: OBJ carries its materials as vertex
+    colours, and Collada, USDA and USDC leave textures out (named as losses).
+    `package=zip` answers with a zip of the file and its sidecars instead,
+    which keeps them. A USD file (`.usda`, `.usdc`, or a `.usd` holding either)
+    is read with `from=usda` or `from=usdc`, whichever encoding it is in.
 
     Live: `curl --data-binary @fox.glb
     \"https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj\" -H \"Authorization: Bearer
@@ -372,6 +591,21 @@ async def asyncio(
             Requests carry these as plain, case-insensitive strings — validation, not
             deserialisation, owns the error, so it can name what IS deliverable. This
             type pins the vocabulary for OpenAPI and for the catalog loader.
+        units (Union[Unset, str]):
+        up (Union[Unset, str]):
+        from_units (Union[Unset, str]):
+        from_up (Union[Unset, str]):
+        fbx_color_space (Union[Unset, str]):
+        package (Union[Unset, ConvertModel3DPackage]): What the converter answers with
+            (`package`).
+        ktx2_textures (Union[Unset, ConvertModel3DKtx2Textures]): What the converter does with a
+            KTX2 (Basis Universal) texture
+            (`ktx2_textures`).
+        fbx_light_units (Union[Unset, str]):
+        usd_light_units (Union[Unset, str]):
+        dae_morphs (Union[Unset, str]):
+        usdz_root (Union[Unset, str]):
+        usd_clips (Union[Unset, str]):
         body (File): A mesh file as raw bytes, for the spec only: the handler reads the `Body`
             directly. Without this, `Vec<u8>` documents as an array of integers and the
             SDK generators type the upload as `number[]`.
@@ -390,5 +624,17 @@ async def asyncio(
             body=body,
             from_=from_,
             to=to,
+            units=units,
+            up=up,
+            from_units=from_units,
+            from_up=from_up,
+            fbx_color_space=fbx_color_space,
+            package=package,
+            ktx2_textures=ktx2_textures,
+            fbx_light_units=fbx_light_units,
+            usd_light_units=usd_light_units,
+            dae_morphs=dae_morphs,
+            usdz_root=usdz_root,
+            usd_clips=usd_clips,
         )
     ).parsed

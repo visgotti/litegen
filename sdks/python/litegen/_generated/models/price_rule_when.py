@@ -9,9 +9,11 @@ T = TypeVar("T", bound="PriceRuleWhen")
 @_attrs_define
 class PriceRuleWhen:
     """Request facts the rule needs: a param (as sent, else its default), an
-    `extra.<field>`, or a derived fact (`views`, `keyframes`, `animations`
-    counts, `duration_seconds`, `megapixels`), mapped to the value it must
-    have — or `"*"` for any value present.
+    `extra.<field>`, or a derived fact (the `views`, `added_views`,
+    `keyframes`, `animations` and `references` counts, `duration_seconds`,
+    `megapixels`), each mapped to the value it must have, `"*"` for any
+    value present, or a range a number must fall in, such as
+    `{"gt": 1.048576, "lte": 4.194304}` (`gt`, `gte`, `lt`, `lte`).
 
     """
 

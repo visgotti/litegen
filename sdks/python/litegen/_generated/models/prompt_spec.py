@@ -1,7 +1,6 @@
-from typing import Any, Dict, List, Type, TypeVar, Union, cast
+from typing import Any, Dict, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
-from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
@@ -20,12 +19,19 @@ class PromptSpec:
         required (Union[Unset, bool]): An empty or omitted prompt is refused with `prompt_required`. 3D models
             that take images set this false, yet still need a prompt when a request
             carries no image (text-to-3D).
+        required_for_text_to_video (Union[Unset, bool]): A video model whose text-to-video mode needs the prompt though
+            its
+            image-to-video mode does not (so `required` is false): a request with
+            no `first_frame` or `init` image and an empty prompt is refused with
+            `prompt_required` before anything is quoted or reserved. Absent
+            (false): an empty text-to-video request goes to the vendor, as for a
+            vendor whose shots can carry the prompts.
     """
 
     max_length: Union[None, Unset, int] = UNSET
     min_length: Union[None, Unset, int] = UNSET
     required: Union[Unset, bool] = UNSET
-    additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
+    required_for_text_to_video: Union[Unset, bool] = UNSET
 
     def to_dict(self) -> Dict[str, Any]:
         max_length: Union[None, Unset, int]
@@ -42,8 +48,9 @@ class PromptSpec:
 
         required = self.required
 
+        required_for_text_to_video = self.required_for_text_to_video
+
         field_dict: Dict[str, Any] = {}
-        field_dict.update(self.additional_properties)
         field_dict.update({})
         if max_length is not UNSET:
             field_dict["max_length"] = max_length
@@ -51,6 +58,8 @@ class PromptSpec:
             field_dict["min_length"] = min_length
         if required is not UNSET:
             field_dict["required"] = required
+        if required_for_text_to_video is not UNSET:
+            field_dict["required_for_text_to_video"] = required_for_text_to_video
 
         return field_dict
 
@@ -78,27 +87,13 @@ class PromptSpec:
 
         required = d.pop("required", UNSET)
 
+        required_for_text_to_video = d.pop("required_for_text_to_video", UNSET)
+
         prompt_spec = cls(
             max_length=max_length,
             min_length=min_length,
             required=required,
+            required_for_text_to_video=required_for_text_to_video,
         )
 
-        prompt_spec.additional_properties = d
         return prompt_spec
-
-    @property
-    def additional_keys(self) -> List[str]:
-        return list(self.additional_properties.keys())
-
-    def __getitem__(self, key: str) -> Any:
-        return self.additional_properties[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.additional_properties[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self.additional_properties[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.additional_properties

@@ -24,6 +24,9 @@ describe("images.segment", () => {
     expectTypeOf<ImageSegmentationResponse["masks"]>().toEqualTypeOf<SegmentationMask[]>();
     expectTypeOf<ModelCapabilities["segmentation_prompts"]>().toEqualTypeOf<SegmentationPromptType[] | undefined>();
     expectTypeOf<ModelCapabilities["supports_segmentation"]>().toEqualTypeOf<boolean | undefined>();
+    // Like every generation request: `strict: false` drops a field the request
+    // has no such name for and names it in X-Litegen-Dropped-Params.
+    expectTypeOf<ImageSegmentationRequest["strict"]>().toEqualTypeOf<boolean | undefined>();
   });
 
   it("posts the request, with an Idempotency-Key when given, and returns the masks", async () => {

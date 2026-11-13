@@ -23,22 +23,12 @@
 //                      hunyuan `Image` struct it nests (ContentImage) and the
 //                      QueryHunyuanImageJob response struct
 //
-// 2. TokenHub (大模型服务平台 TokenHub), where Tencent is moving every Hunyuan
-//    model: "迁移后，原平台将不再新增模型能力，并停止支持新购模型服务" (the
-//    hunyuan / vclm / aiart billing pages, 2026). New Hunyuan models therefore
-//    show up only here, as `model` values of a Bearer-key HTTP API, not as TC3
-//    actions. Tencent's docs center server-renders these pages (Slate HTML),
-//    and each has a 模型列表 table whose `model 参数值` column we compare:
-//      tokenhub-hy-image  Hy 生图调用指南: hy-image-v3 (Hunyuan Image 3.0 —
-//                      the model the retired hunyuan/hunyuan-image-3 served —
-//                      now a synchronous TokenHub call) and its successors. The
-//                      snapshot is the model list, the Hy-Image-3.0 endpoint
-//                      and parameter tables, and the appendix (preset sizes,
-//                      reference-image limits). It replaced the
-//                      aiart-hunyuan-image-3 source (the SubmitTextToImageJob
-//                      request struct), whose struct no longer exists.
-//      tokenhub-hy-video  Hy 生视频调用指南: hy-video-v1.5 and its successors;
-//                      snapshot the model list and the submit/query tables.
+// TokenHub (大模型服务平台 TokenHub), where Tencent moves every Hunyuan model
+// ("迁移后，原平台将不再新增模型能力，并停止支持新购模型服务。用户已购买的模型服务可继续
+// 使用" — the hunyuan / vclm / aiart billing pages, 2026), is a provider of its
+// own since 2026-11-04: `tokenhub` (providers/tokenhub.mjs), a Bearer-key
+// API. This definition keeps the old platform's TC3 actions, which existing
+// buyers still call.
 //
 // Mapping mirrors litegen-core/src/providers/image/hunyuan.rs (action
 // SubmitHunyuanImageJob on hunyuan; no model field) and video/hunyuan.rs (action
@@ -49,11 +39,11 @@
 //
 // aiart release 31 (2026-09-22, https://cloud.tencent.com/document/product/1668/88078)
 // deleted SubmitTextToImageJob and QueryTextToImageJob, the two actions
-// hunyuan-image-3 ran on; the row was retired 2026-10-30 (its successor is
-// TokenHub's hy-image-v3, which needs a TokenHub key litegen does not have).
+// hunyuan-image-3 ran on; the row was retired 2026-10-30 (its successor on
+// TokenHub, hy-image-v3, retires there on 2026-11-12; tokenhub carries
+// hy-image-v3.5-preview).
 
 const SDK = 'https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud';
-const TOKENHUB_DOCS = 'https://cloud.tencent.com/document/product/1823';
 
 /** Acknowledge a list of upstream ids with one reason (ids compare case-insensitively). */
 const skip = (reason, ids) => ids.map((id) => ({ id, reason: `skipped 2026-09-11: ${reason}` }));
@@ -84,89 +74,7 @@ function modelValues(go, struct) {
   return [...comment.matchAll(/[：:]\s*([A-Za-z][\w.-]*)/g)].map((m) => m[1]);
 }
 
-// ─── Tencent docs center (TokenHub) pages ────────────────────────────────────
 
-const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
-
-/** Visible text of an HTML fragment, whitespace collapsed (zero-width and BOM characters dropped). */
-const htmlText = (s) =>
-  s
-    .replace(/<br\s*\/?>|<\/(?:div|p|li)>/gi, ' ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|(\w+));/gi, (m, dec, hex, name) =>
-      dec ? String.fromCodePoint(+dec) : hex ? String.fromCodePoint(parseInt(hex, 16)) : (ENTITIES[name.toLowerCase()] ?? m),
-    )
-    .replace(/[​‌‍﻿]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-/**
- * A docs page as its structural blocks, in document order: headings (h2-h4),
- * tables (rows of cell text) and endpoint lines (a `<code>` that is exactly
- * "GET|POST https://…"). Prose paragraphs are left out: they churn, and the
- * contract is in the tables.
- */
-function docBlocks(html) {
-  const body = html.replace(/<script\b[\s\S]*?<\/script>/gi, '');
-  const blocks = [];
-  for (const m of body.matchAll(/<h([2-4])\b[^>]*>([\s\S]*?)<\/h\1>|<table\b[\s\S]*?<\/table>|<code>([\s\S]*?)<\/code>/gi)) {
-    if (m[1]) {
-      blocks.push({ kind: 'heading', level: Number(m[1]), text: htmlText(m[2]) });
-    } else if (m[3] === undefined) {
-      const rows = [...m[0].matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map((r) =>
-        [...r[0].matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) => htmlText(c[1]).replace(/\|/g, '\\|')),
-      );
-      blocks.push({ kind: 'table', rows });
-    } else if (/^(?:GET|POST) https:\/\/\S+$/.test(htmlText(m[3]))) {
-      blocks.push({ kind: 'endpoint', text: htmlText(m[3]) });
-    }
-  }
-  if (!blocks.some((b) => b.kind === 'table')) throw new Error('no tables on the page — the docs center stopped server-rendering it, or it moved');
-  return blocks;
-}
-
-/** The `model` column of the page's model-list table ("model 参数值" / "model 参数值（模型 ID）"). */
-function tokenhubModelIds(html) {
-  const table = docBlocks(html).find((b) => b.kind === 'table' && b.rows[0]?.some((c) => /^model 参数值/.test(c)));
-  if (!table) throw new Error('no model list table (a "model 参数值" column) — the page was restructured');
-  const col = table.rows[0].findIndex((c) => /^model 参数值/.test(c));
-  const ids = table.rows.slice(1).map((r) => r[col] ?? '');
-  const bad = ids.filter((id) => !/^[a-z][\w.-]*$/i.test(id));
-  if (bad.length) throw new Error(`model list cells that are not ids: ${bad.join(', ')} — the table layout changed`);
-  return ids;
-}
-
-/**
- * The page's endpoints and tables under the h2 sections `keep` matches, each
- * headed by its "h2 › h3 › h4" path, skipping h3 subsections `drop` matches
- * (error codes, request/response examples). Throws when a kept section is gone.
- */
-function tokenhubExcerpt(html, { keep, drop }) {
-  const out = [];
-  const path = [];
-  const seen = new Set();
-  let printed = '';
-  for (const b of docBlocks(html)) {
-    if (b.kind === 'heading') {
-      path.length = b.level - 2;
-      path[b.level - 2] = b.text;
-      continue;
-    }
-    const h2 = path[0] ?? '';
-    const pattern = keep.find((k) => k.test(h2));
-    if (!pattern || (path[1] && drop.test(path[1]))) continue;
-    seen.add(pattern);
-    const at = path.filter(Boolean).join(' › ');
-    if (at !== printed) out.push(`\n## ${at}`);
-    printed = at;
-    out.push(b.kind === 'endpoint' ? b.text : b.rows.map((r) => `| ${r.join(' | ')} |`).join('\n'));
-  }
-  const gone = keep.filter((k) => !seen.has(k));
-  if (gone.length) throw new Error(`no endpoint or table under a section matching ${gone.join(', ')} — the page was restructured`);
-  return out.join('\n').trim() + '\n';
-}
-
-const NOT_CONTRACT = /错误码|示例/; // error-code and example subsections
 
 export default {
   provider: 'hunyuan',
@@ -212,20 +120,6 @@ export default {
       expect: 'text',
       extract: (go) => goFields(go, 'SubmitHunyuanImageJobRequestParams'),
       snapshot: (go) => actionStructs(go, 'SubmitHunyuanImageJob', ['Image', 'QueryHunyuanImageJobResponseParams']),
-    },
-    {
-      key: 'tokenhub-hy-image',
-      url: `${TOKENHUB_DOCS}/135745`,
-      expect: 'html',
-      extract: (html) => tokenhubModelIds(html),
-      snapshot: (html) => tokenhubExcerpt(html, { keep: [/^概述$/, /^Hy-Image-3\.0 /, /^附录$/], drop: NOT_CONTRACT }),
-    },
-    {
-      key: 'tokenhub-hy-video',
-      url: `${TOKENHUB_DOCS}/137202`,
-      expect: 'html',
-      extract: (html) => tokenhubModelIds(html),
-      snapshot: (html) => tokenhubExcerpt(html, { keep: [/^概述$/, /^视频生成$/, /^查询任务结果$/], drop: NOT_CONTRACT }),
     },
   ],
   acknowledged: [

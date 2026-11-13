@@ -1,37 +1,36 @@
 /**
- * Build-time sync: fetch GET /v1/models from a running gateway, derive the
- * per-provider packet vocabulary, and write capabilities.generated.ts.
+ * Build-time sync: derive the per-provider packet vocabulary from the repo's
+ * models/*.yaml (read the way GET /v1/models projects each row) and write
+ * capabilities.generated.ts. The catalog, not a running gateway, is the source:
+ * the Cloudflare Pages build has none, and a dev gateway would add its mock
+ * provider and runtime models.
  *
- * Fail-open: if the gateway is unreachable / returns nothing, keep the existing
- * committed snapshot (so `next build` never breaks offline). If no snapshot
- * exists yet, write the baked FALLBACK so imports always resolve.
+ * If the catalog can't be read, the build fails and the committed snapshot is
+ * left as it is. With LITEGEN_SYNC_KEEP_COMMITTED=1 (see sync-failure.mjs) it
+ * warns and builds with the committed snapshot instead, or, if none exists
+ * yet, writes an empty one so imports always resolve.
  */
 import { writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { deriveCapabilities, renderGeneratedTs, FALLBACK_CAPABILITIES } from './derive-capabilities.mjs';
+import { capabilitiesFromCatalog, renderGeneratedTs } from './derive-capabilities.mjs';
+import { readCatalog } from './catalog.mjs';
+import { syncFailed } from './sync-failure.mjs';
 
-const BASE = process.env.LITEGEN_API_URL ?? 'http://localhost:4000';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, '..', 'src', 'components', 'infra-flow', 'capabilities.generated.ts');
 
 try {
-  // GET /v1/models needs a key; without one a gateway answers 401 and the
-  // committed snapshot is kept (fail-open, as below).
-  const key = process.env.LITEGEN_API_KEY;
-  const res = await fetch(`${BASE}/v1/models`, key ? { headers: { Authorization: `Bearer ${key}` } } : undefined);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = await res.json();
-  const caps = deriveCapabilities(json.data ?? []);
-  if (Object.keys(caps).length === 0) throw new Error('no models returned');
+  const caps = capabilitiesFromCatalog(readCatalog());
+  if (Object.keys(caps).length === 0) throw new Error('no providers in the catalog');
   writeFileSync(OUT, renderGeneratedTs(caps));
-  console.log(`[sync-capabilities] wrote ${Object.keys(caps).length} providers from ${BASE}/v1/models`);
+  console.log(`[sync-capabilities] wrote ${Object.keys(caps).length} providers from models/*.yaml`);
 } catch (err) {
   const msg = err instanceof Error ? err.message : String(err);
   if (existsSync(OUT)) {
-    console.warn(`[sync-capabilities] warning: ${msg}; keeping existing committed snapshot`);
-    process.exit(0);
+    syncFailed('sync-capabilities', msg, 'keeping existing committed snapshot');
+  } else {
+    syncFailed('sync-capabilities', msg, 'no snapshot exists, writing an empty one');
+    writeFileSync(OUT, renderGeneratedTs({}));
   }
-  console.warn(`[sync-capabilities] warning: ${msg}; no snapshot exists, writing baked fallback`);
-  writeFileSync(OUT, renderGeneratedTs(FALLBACK_CAPABILITIES));
 }

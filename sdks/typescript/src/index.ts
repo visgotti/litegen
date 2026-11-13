@@ -11,10 +11,16 @@ export {
   type LiteGenResponseInfo,
   type JobSubmission,
   type IdempotencyOptions,
+  type KeepOutputsOptions,
   type ImageGenerateOptions,
+  type ImageSubmitOptions,
+  type ImageGenerationAccepted,
+  type ImageSubmitResult,
+  isAccepted,
   type JobGenerateOptions,
   type ListModelsOptions,
   type Model3dConversion,
+  type Model3dUnit,
   type ConvertModel3dOptions,
   type LiteGenClientOptions,
   type FetchLike,
@@ -122,6 +128,7 @@ export const Model3dAssetKind = {
   Texture: "texture",
   Preview: "preview",
   Original: "original",
+  Package: "package",
 } as const;
 export type Model3dAssetKind = (typeof Model3dAssetKind)[keyof typeof Model3dAssetKind];
 
@@ -166,9 +173,10 @@ export type SegmentationPromptType = components["schemas"]["SegmentationPromptTy
  */
 export type ImageView = components["schemas"]["ImageView"];
 /**
- * Where a model is in its vendor's lifecycle (`ModelInfo.status`): a
- * `deprecated` model is still served until the day after its `retires_at`;
- * `replaced_by` names the catalog model to move to.
+ * Where a model is in its vendor's lifecycle (`ModelInfo.status`, and
+ * `ModelSchema.status`, derived from its dates and ignored when a schema is
+ * posted back): a `deprecated` model is still served until the day after its
+ * `retires_at`; `replaced_by` names the catalog model to move to.
  */
 export type ModelStatus = components["schemas"]["ModelStatus"];
 /** A video's camera (`camera`): `fixed` holds the shot still (`supports_fixed_camera`). */
@@ -187,6 +195,16 @@ export type VendorError = components["schemas"]["VendorError"];
  * the start of the clip to its end.
  */
 export type KeyframeTiming = components["schemas"]["KeyframeTiming"];
+/**
+ * When a video model's frame image sets the clip's shape
+ * (`params.aspect_ratio.frames_set_shape` in `models.get(id)`): with a
+ * `first_frame`, `last_frame` or `init` image its vendor takes no ratio, so
+ * `aspect_ratio` is refused (`param_unsupported`) when `strict` and dropped
+ * and named otherwise. `always`: with any frame image; `without_references`:
+ * unless a `reference` image goes too, which sends the request to a vendor
+ * mode that takes a ratio. Absent: the ratio applies with any image.
+ */
+export type FramesSetShape = components["schemas"]["FramesSetShape"];
 /**
  * One rule of a model's `pricing.variable_pricing`: applied in order to a
  * running price that starts at `base_cost_usd`, when every `when` entry
@@ -239,9 +257,52 @@ export type Model3dSymmetry = components["schemas"]["Model3dSymmetry"];
 export type Model3dSkeleton = components["schemas"]["Model3dSkeleton"];
 /** The joint names a rig is delivered with (`joint_naming`); `vendor` keeps the vendor's own. */
 export type Model3dJointNaming = components["schemas"]["Model3dJointNaming"];
+export type Model3dFbxColorSpace = components["schemas"]["Model3dFbxColorSpace"];
+export type Model3dFormatSource = components["schemas"]["Model3dFormatSource"];
+/**
+ * What delivery does with a KTX2 (Basis Universal) texture (`ktx2_textures`):
+ * `png` (the default) re-encodes it as PNG in every container; `keep` leaves
+ * it in `glb` and `gltf`, which then require `KHR_texture_basisu`.
+ */
+export type Model3dKtx2Textures = components["schemas"]["Model3dKtx2Textures"];
+/**
+ * How a delivered or read FBX or USD stores its light strengths
+ * (`fbx_light_units`, `usd_light_units`): `photometric` (the default; the
+ * scene's own, glTF's candela and lux) or `blender` (Blender's `energy`, so
+ * the lights open in Blender as bright as the glTF does).
+ */
+export type Model3dLightUnits = components["schemas"]["Model3dLightUnits"];
+/**
+ * How a Collada (`dae`) file litegen writes stores a mesh's morph targets
+ * (`dae_morphs`): `bake` (the default; each node's mesh at that node's
+ * weights, which every Collada reader opens) or `keep` (`<morph>` controllers
+ * with their weight animation, which SceneKit and Godot read and three.js and
+ * assimp refuse).
+ */
+export type Model3dDaeMorphs = components["schemas"]["Model3dDaeMorphs"];
+/**
+ * What the root layer of a `usdz` litegen writes is (`usdz_root`): `usda`
+ * (the default; text, which `usdchecker --arkit` accepts and `<model-viewer>`
+ * hands to AR Quick Look) or `usdc` (the binary crate, as Apple's own
+ * packagers write it). A request that keeps nothing can't ask for `usdc`
+ * (`option_needs_keeping`).
+ */
+export type Model3dUsdzRoot = components["schemas"]["Model3dUsdzRoot"];
+/**
+ * Which animation clips a USD file litegen writes holds (`usd_clips`): `all`
+ * (every clip as an alternative, chosen by a variant set `Animation`; rigid
+ * node motion is the first clip's only, the others' named in the losses) or
+ * `first` (the first, the rest named in the losses). Unset is the
+ * container's default: `all` for `usda` and `usdc`, `first` for `usdz`. A
+ * request that keeps nothing can't ask for `all` (`option_needs_keeping`).
+ */
+export type Model3dUsdClips = components["schemas"]["Model3dUsdClips"];
 /**
  * One clip an `animate` model makes (`animations[]`): exactly one of `preset`
- * and `prompt`, delivered as a glTF animation named exactly `name`, in order.
+ * and `prompt`, delivered as a glTF animation, in order, named its `name`. A
+ * clip that leaves `name` out (or sends `null`) is named by litegen: after its
+ * canonical preset (`walk`) or else its preset id, a prompt clip `clip-<n>` by
+ * its place, with `-2`, `-3`, … on a name already taken.
  */
 export type AnimationRequest = components["schemas"]["AnimationRequest"];
 /** The canonical presets; a model maps the ones it plays onto its own ids. */
@@ -265,11 +326,18 @@ export type SourceRef = components["schemas"]["SourceRef"];
 export type SourceKind = components["schemas"]["SourceKind"];
 export type ReferenceImage = components["schemas"]["ReferenceImage"];
 export type ModelInfo = components["schemas"]["ModelInfo"];
+/**
+ * One model's full schema (`models.get(id)`), also the admin API's input.
+ * `litegen_params` (read-only) holds the request fields litegen applies to the
+ * model itself, in the same `ParamSpec` shape as `params`; `extra_params`
+ * types the `extra_allowlist` keys.
+ */
 export type ModelSchema = components["schemas"]["ModelSchema"];
 export type CostEstimate = components["schemas"]["CostEstimate"];
 export type UsageInfo = components["schemas"]["UsageInfo"];
 export type ProxyStats = components["schemas"]["ProxyStats"];
 export type RequestLog = components["schemas"]["RequestLog"];
+/** One entry of `health.check()`: a provider, the `modality` it checked, and how it answered. */
 export type ProviderHealth = components["schemas"]["ProviderHealth"];
 export type ApiKeyInfo = components["schemas"]["ApiKeyInfo"];
 export type ApiKeyCreatedResponse = components["schemas"]["ApiKeyCreatedResponse"];
@@ -286,6 +354,13 @@ export type OrganizationMember = components["schemas"]["OrganizationMember"];
 export type ProviderCredentialInfo = components["schemas"]["ProviderCredentialInfo"];
 export type AppStorageInfo = components["schemas"]["AppStorageInfo"];
 export type PutAppStorageRequest = components["schemas"]["PutAppStorageRequest"];
+export type AccessMode = components["schemas"]["AccessMode"];
+export type OwnerScope = components["schemas"]["OwnerScope"];
+export type AccessSettings = components["schemas"]["AccessSettings"];
+export type AppAccessSettings = components["schemas"]["AppAccessSettings"];
+export type PutAppAccessRequest = components["schemas"]["PutAppAccessRequest"];
+export type LinksRevoked = components["schemas"]["LinksRevoked"];
+export type SignedLinks = components["schemas"]["SignedLinks"];
 export type CreateOrgRequest = components["schemas"]["CreateOrgRequest"];
 export type UpdateOrgRequest = components["schemas"]["UpdateOrgRequest"];
 export type CreateAppRequest = components["schemas"]["CreateAppRequest"];
@@ -313,9 +388,19 @@ export type RefInputSpec = components["schemas"]["RefInputSpec"];
 export type RefRoleSpec = components["schemas"]["RefRoleSpec"];
 export type RefProviderFormat = components["schemas"]["RefProviderFormat"];
 export type RefProviderFormatMultipart = components["schemas"]["RefProviderFormatMultipart"];
+/**
+ * A model's prompt rules (`prompt` in `models.get(id)`). `required_for_text_to_video`:
+ * a video model needs the prompt without a `first_frame` or `init` image
+ * (`prompt_required` before anything is quoted), though not with one.
+ */
 export type PromptSpec = components["schemas"]["PromptSpec"];
 export type ModelCapabilityFlags = components["schemas"]["ModelCapabilityFlags"];
-/** The `capabilities` projection on each `GET /v1/models` entry (incl. the 3D `supports_*`, `output_formats`, `max_polycount`). */
+/**
+ * The `capabilities` projection on each `GET /v1/models` entry (incl. the 3D
+ * `supports_*`, `output_formats`, `max_polycount`, and `max_request_bytes`,
+ * on every model: the largest generation or quote body the server reads
+ * before a 413).
+ */
 export type ModelCapabilities = components["schemas"]["ModelCapabilities"];
 
 // Management API (budgets/limits, end users, spend, gateway admin).

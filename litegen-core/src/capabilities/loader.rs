@@ -154,10 +154,11 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             }
         }
     }
-    let edits_part = m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask")) || m.params.contains_key("region");
-    if m.preserves_unmasked.is_some() && !edits_part {
+    if m.preserves_unmasked.is_some() && !m.edits_part_of_an_image() {
         return Err(bad(format!(
-            "model '{}' declares preserves_unmasked but takes neither a mask nor a region", m.id
+            "model '{}' declares preserves_unmasked but edits no part of an image: it is an image model's promise \
+             about a mask or a region it takes",
+            m.id
         )));
     }
     if let Some(ParamSpec::Region(r)) = m.params.get("region") {
@@ -350,13 +351,48 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             return Err(bad(format!("model '{}' camera value '{v}' is not one of [\"fixed\", \"auto\"]", m.id)));
         }
     }
-    let listed: Vec<f64> = match m.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => f.values.iter().copied().filter(|v| f.min.is_some_and(|m| *v < m) || f.max.is_some_and(|m| *v > m)).collect(),
-        Some(ParamSpec::Int(i)) => i.values.iter().copied().filter(|v| i.min.is_some_and(|m| *v < m) || i.max.is_some_and(|m| *v > m)).map(|v| v as f64).collect(),
-        _ => Vec::new(),
-    };
-    if let Some(v) = listed.first() {
-        return Err(bad(format!("model '{}' duration_seconds value {v} is outside its min/max", m.id)));
+    // E4b: a typed extra is an allowlisted key that is no param of the row,
+    // of a plain JSON kind, whose default is a value it takes.
+    for (key, spec) in &m.extra_params {
+        if !m.extra_allowlist.contains(key) {
+            return Err(bad(format!("model '{}' extra_params '{key}' is not on the allowlist; add it to extra_allowlist", m.id)));
+        }
+        if !ParamSpec::EXTRA_KINDS.contains(&spec.kind()) {
+            return Err(bad(format!(
+                "model '{}' extra_params '{key}' is kind `{}`; an extra is one of {}",
+                m.id, spec.kind(), ParamSpec::EXTRA_KINDS.join(", ")
+            )));
+        }
+        if m.params.contains_key(key) {
+            return Err(bad(format!("model '{}' extra_params '{key}' is one of the row's params; type it there only", m.id)));
+        }
+        if let Some(why) = super::pricing::param_default(spec).and_then(|d| spec.extra_misfit(&d)) {
+            return Err(bad(format!("model '{}' extra_params '{key}' default is not a value it takes: {why}", m.id)));
+        }
+    }
+
+    // N4: a `pattern` is a regular expression, on a param or a typed extra.
+    for (key, spec) in m.params.iter().chain(&m.extra_params) {
+        if let ParamSpec::String(ParamSpecString { pattern: Some(p), .. }) = spec {
+            if let Err(e) = regex::Regex::new(p) {
+                return Err(bad(format!("model '{}' {key} pattern {p:?} is not a regular expression: {e}", m.id)));
+            }
+        }
+    }
+
+    // Any number param's list lies inside its own range, a typed extra's too.
+    let extras: Vec<(String, &ParamSpec)> = m.extra_params.iter().map(|(k, s)| (format!("extra.{k}"), s)).collect();
+    let mut numbers: Vec<(&String, &ParamSpec)> = m.params.iter().chain(extras.iter().map(|(k, s)| (k, *s))).collect();
+    numbers.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, spec) in numbers {
+        let listed: Vec<f64> = match spec {
+            ParamSpec::Float(f) => f.values.iter().copied().filter(|v| f.min.is_some_and(|m| *v < m) || f.max.is_some_and(|m| *v > m)).collect(),
+            ParamSpec::Int(i) => i.values.iter().copied().filter(|v| i.min.is_some_and(|m| *v < m) || i.max.is_some_and(|m| *v > m)).map(|v| v as f64).collect(),
+            _ => Vec::new(),
+        };
+        if let Some(v) = listed.first() {
+            return Err(bad(format!("model '{}' {key} value {v} is outside its min/max", m.id)));
+        }
     }
 
     // L14: lifecycle dates are calendar days, a model retires no earlier
@@ -404,16 +440,53 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         {
             return Err(bad(format!("model '{}' pricing rule has a negative price or factor", m.id)));
         }
-        for fact in rule.when.keys() {
+        for (fact, want) in &rule.when {
+            if let serde_json::Value::Object(range) = want {
+                let bounds = super::pricing::RANGE_BOUNDS;
+                if range.is_empty() || range.iter().any(|(b, n)| !bounds.contains(&b.as_str()) || !n.is_number()) {
+                    return Err(bad(format!(
+                        "model '{}' pricing rule's range for '{fact}' must give a number for one or more of {bounds:?}",
+                        m.id
+                    )));
+                }
+            }
             let known = m.params.contains_key(fact)
                 || super::pricing::DERIVED_FACTS.contains(&fact.as_str())
-                || fact.strip_prefix("extra.").is_some_and(|f| m.extra_allowlist.iter().any(|a| a == f));
+                || fact.strip_prefix("extra.").is_some_and(|f| m.extra_allowlist.iter().any(|a| a == f))
+                || fact
+                    .strip_prefix("references.")
+                    .is_some_and(|role| m.ref_inputs.as_ref().is_some_and(|ri| ri.roles.contains_key(role)));
             if !known {
                 return Err(bad(format!(
                     "model '{}' pricing rule reads '{fact}', which is not a param, an allowlisted extra.<field> or one of {:?}",
                     m.id,
                     super::pricing::DERIVED_FACTS
                 )));
+            }
+            // E4b, N3: a price compares an extra exactly as sent (`true` is
+            // not `"true"`), so the extra is typed and the rule's value is one
+            // a request could send: `"*"`, a range for a number, or a value
+            // of its type.
+            if let Some(extra) = fact.strip_prefix("extra.") {
+                let Some(spec) = m.extra_params.get(extra) else {
+                    return Err(bad(format!(
+                        "model '{}' pricing rule reads '{fact}', an untyped extra: type it in extra_params, since a price compares the value exactly",
+                        m.id
+                    )));
+                };
+                let fits = match want {
+                    serde_json::Value::String(s) if s == "*" => Ok(()),
+                    serde_json::Value::Object(_) if matches!(spec, ParamSpec::Int(_) | ParamSpec::Float(_)) => Ok(()),
+                    serde_json::Value::Object(_) => Err("a range is for a number".to_string()),
+                    v => spec.extra_misfit(v).map_or(Ok(()), |why| Err(why.to_string())),
+                };
+                if let Err(why) = fits {
+                    return Err(bad(format!(
+                        "model '{}' pricing rule's `when` value {want} for '{fact}' is not one its {} extra takes: {why}",
+                        m.id,
+                        spec.kind()
+                    )));
+                }
             }
         }
     }
@@ -470,6 +543,21 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             "model '{}' prompt is required but max_length is 0 (which means no prompt)", m.id
         )));
     }
+    // N3: it refuses a text-to-video request with no prompt, which only a video
+    // model with a text-to-video mode can be sent.
+    if m.prompt.required_for_text_to_video && !(m.media_type == MediaType::Video && m.capabilities.text_to_video) {
+        return Err(bad(format!(
+            "model '{}' sets prompt.required_for_text_to_video, which only a video model with a text-to-video mode takes", m.id
+        )));
+    }
+
+    // E4a: where a result goes, where it is stored and who sees it are
+    // litegen's, whatever a vendor documents.
+    if let Some((key, why)) = m.extra_allowlist.iter().find_map(|k| gateway_owned_extra(k).map(|why| (k, why))) {
+        return Err(bad(format!(
+            "model '{}' extra_allowlist names '{key}', a field litegen owns ({why}); remove it", m.id
+        )));
+    }
 
     for (k, spec) in &m.params {
         if !KNOWN_PARAMS.contains(&k.as_str()) {
@@ -491,8 +579,11 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
     }
 
     if let Some(url) = &m.docs_url {
-        let ok = reqwest::Url::parse(url)
-            .is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some_and(|h| !h.is_empty()));
+        // No whitespace: `Url::parse` would percent-encode it, so a docs_url
+        // that swallowed a folded `description:` line would load.
+        let ok = !url.chars().any(char::is_whitespace)
+            && reqwest::Url::parse(url)
+                .is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some_and(|h| !h.is_empty()));
         if !ok {
             return Err(bad(format!(
                 "model '{}' docs_url '{}' must be an absolute https:// URL", m.id, url
@@ -524,6 +615,11 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
                 m.id
             )));
         }
+    }
+    // E11a: computed by the server from the fields litegen applies itself. A
+    // catalog able to set it could serve bounds the validator does not keep.
+    if !m.litegen_params.is_empty() {
+        return Err(bad(format!("model '{}' sets litegen_params, which the server computes; remove it", m.id)));
     }
     match (m.media_type, m.params.get("output_format"), m.params.get("background")) {
         (MediaType::Model3d, Some(ParamSpec::String(s)), _) => in_vocab("output_format", &s.enum_values, &formats)?,

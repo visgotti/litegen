@@ -1,6 +1,11 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+pub mod connections;
+pub mod load;
+
+pub use load::{config_file, load_config_from, load_config_with, parse_args, Args, ConfigFile, USAGE};
+
 /// Runtime tenancy mode.
 /// `SingleTenant` (default) preserves the original single-deployment behavior;
 /// `Hosted` enables multi-tenant features (enforced by later tasks).
@@ -48,8 +53,11 @@ impl Default for AuthConfig {
     }
 }
 
-/// Top-level application configuration.
-/// Loaded from `litegen.yaml`, environment variables, and CLI args.
+/// Top-level application configuration, loaded from the config file
+/// (`litegen.yaml` in the working directory, or the file `--config` or
+/// `LITEGEN_CONFIG_FILE_PATH` names) and environment variables
+/// ([`load_config_with`], `docs/configuration.md`). `--config` is the only
+/// command-line argument; no setting is read from the command line.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     /// Server settings.
@@ -101,9 +109,39 @@ pub struct AppConfig {
     /// Authentication configuration (password-auth toggle, etc.).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Generation call hooks (`docs/hooks.md`): Python, Node or Bun files run
+    /// around the generation routes, in this order.
+    #[serde(default)]
+    pub hooks: Vec<crate::hooks::HookConfig>,
+    /// Who may open stored outputs (`docs/storage-access.md`): the defaults
+    /// under the gateway setting and each app's own.
+    #[serde(default)]
+    pub storage_access: StorageAccessConfig,
+    /// litegen's own AWS identity, with which it assumes the IAM roles that
+    /// apps' buckets trust (`credential_mode: assume_role`).
+    #[serde(default)]
+    pub aws: AwsConfig,
+    /// How retryable vendor errors are tried again (`docs/gateway-settings.md`).
+    #[serde(default)]
+    pub retries: RetriesConfig,
     /// The MCP endpoints (`/mcp` and `/admin/mcp`).
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Where keys' webhooks may point (`docs/management-api.md`).
+    #[serde(default)]
+    pub webhooks: WebhooksConfig,
+    /// Redis, shared by replicas (`docs/scaling.md`). Set by `LITEGEN_REDIS_URL`
+    /// or `LITEGEN_REDIS_HOST` and their companions, never by `litegen.yaml`;
+    /// `None` is one replica, as before.
+    #[serde(skip)]
+    pub redis: Option<connections::RedisSettings>,
+    /// Settings that lost to a higher-precedence one, named for the log at
+    /// startup (`main` logs each).
+    #[serde(skip)]
+    pub startup_warnings: Vec<String>,
+    /// The config file read ([`config_file`]), or `None` when there was none.
+    #[serde(skip)]
+    pub config_file: Option<std::path::PathBuf>,
 }
 
 /// LiteGen's MCP server. `/mcp` serves the AI API and `/admin/mcp` the
@@ -153,11 +191,25 @@ pub struct McpOAuthConfig {
     /// Requests each address may make a minute to `/oauth/register` and
     /// `/oauth/authorize`, which anyone may call; 0 turns the limit off.
     pub rate_limit_per_minute: u32,
+    /// Hosts whose redirect URIs get an authorization request's error back
+    /// automatically, before anyone has signed in (RFC 9700 §4.11.2), for
+    /// example `claude.ai`. Matched exactly, ignoring case and port. Loopback
+    /// redirect URIs (native apps) always do. Any other app's error is shown
+    /// on a LiteGen page with a link back, since anyone may register a client
+    /// with any `https` redirect URI. Default: none.
+    pub trusted_redirect_hosts: Vec<String>,
 }
 
 impl Default for McpOAuthConfig {
     fn default() -> Self {
-        Self { enabled: true, consent_url: None, access_token_ttl_secs: 3600, refresh_token_ttl_days: 30, rate_limit_per_minute: 30 }
+        Self {
+            enabled: true,
+            consent_url: None,
+            access_token_ttl_secs: 3600,
+            refresh_token_ttl_days: 30,
+            rate_limit_per_minute: 30,
+            trusted_redirect_hosts: Vec::new(),
+        }
     }
 }
 
@@ -180,7 +232,15 @@ impl Default for AppConfig {
             secrets_key: None,
             dev: DevFlags::default(),
             auth: AuthConfig::default(),
+            hooks: Vec::new(),
+            storage_access: StorageAccessConfig::default(),
+            aws: AwsConfig::default(),
+            retries: RetriesConfig::default(),
             mcp: McpConfig::default(),
+            webhooks: WebhooksConfig::default(),
+            redis: None,
+            startup_warnings: Vec::new(),
+            config_file: None,
         }
     }
 }
@@ -208,6 +268,57 @@ fn host_is_loopback(host: &str) -> bool {
 }
 
 impl AppConfig {
+    /// Settings this config sets that litegen no longer uses, one line each;
+    /// the loader adds them to `startup_warnings`.
+    pub fn retired_setting_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.server.request_timeout_seconds.is_some() {
+            warnings.push(
+                "server.request_timeout_seconds is no longer used and will be removed: litegen sets no limit on a whole request. \
+                 A vendor call is limited by server.vendor_timeout_secs, request headers by server.header_read_timeout_secs, \
+                 a request body by server.request_body_timeout_secs, and shutdown by server.shutdown_grace_secs."
+                    .to_string(),
+            );
+        }
+        warnings
+    }
+
+    /// What's wrong with the providers' config, one line each, naming the
+    /// provider: today, `extra_headers` that can't be sent. `main` refuses to
+    /// start on any.
+    pub fn provider_config_errors(&self) -> Vec<String> {
+        let mut names: Vec<&String> = self.providers.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .filter_map(|name| {
+                crate::providers::check_extra_headers(&self.providers[name].extra_headers)
+                    .err()
+                    .map(|e| format!("providers.{name}.extra_headers: {e}"))
+            })
+            .collect()
+    }
+
+    /// Provider credentials that no longer authenticate anything, one line
+    /// each; `main` logs them at startup. Kling takes an API key since
+    /// 2026-11-03 ("API Key authentication must be used to call Kling AI
+    /// API"); its access/secret key pair works only on the legacy API design
+    /// litegen left.
+    /// @see <https://kling.ai/document-api/api/get-started/authentication.md> (2026-11-03)
+    pub fn provider_credential_warnings(&self) -> Vec<String> {
+        let Some(kling) = self.providers.get("kling") else { return Vec::new() };
+        let has = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        let has_key = has(&kling.api_key) || has(&kling.api_keys);
+        if (has(&kling.key_id) || has(&kling.key_secret)) && !has_key {
+            return vec![
+                "providers.kling: Kling takes an API key since 2026-11-03 (KLING_API_KEY, or providers.kling.api_key); \
+                 the access/secret key pair (KLING_ACCESS_KEY, KLING_SECRET_KEY) no longer authenticates, so Kling is not configured"
+                    .to_string(),
+            ];
+        }
+        Vec::new()
+    }
+
     /// Pre-bind security self-check.
     ///
     /// The `auth_middleware` no-credential dev-bypass is only active in
@@ -225,7 +336,7 @@ impl AppConfig {
         let has_master_key = self
             .master_key
             .as_deref()
-            .map_or(false, |k| !k.trim().is_empty());
+            .is_some_and(|k| !k.trim().is_empty());
         if self.mode == Mode::SingleTenant
             && !has_master_key
             && !host_is_loopback(&self.server.host)
@@ -239,8 +350,16 @@ impl AppConfig {
     }
 }
 
+/// The database litegen opens when no setting names one: `data/litegen.db` in
+/// the working directory, beside the kept files (`data/assets`), created with
+/// its directory on the first start (`mode=rwc`). In the Docker image that is
+/// `/app/data/litegen.db`, inside the `/app/data` volume. A `litegen.db` the
+/// old default (`sqlite://litegen.db`) left in the working directory is still
+/// used until `data/litegen.db` exists ([`connections::default_database_in`]).
+pub const DEFAULT_DATABASE_URL: &str = "sqlite://data/litegen.db?mode=rwc";
+
 fn default_database_url() -> String {
-    "sqlite://litegen.db".to_string()
+    DEFAULT_DATABASE_URL.to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,9 +368,12 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    /// Request timeout in seconds.
-    #[serde(default = "default_request_timeout")]
-    pub request_timeout_seconds: u64,
+    /// Retired: accepted and ignored, and named in a startup warning. litegen
+    /// sets no limit on a whole request (see `vendor_timeout_secs`,
+    /// `header_read_timeout_secs`, `request_body_timeout_secs` and
+    /// `shutdown_grace_secs`). `Some` means the config set it.
+    #[serde(default)]
+    pub request_timeout_seconds: Option<u64>,
     /// Externally reachable origin for URLs litegen mints and hands to clients
     /// (currently 3D asset URLs, which MUST be absolute). Set this behind a
     /// proxy — e.g. `https://app.litegen.ai/api`. Defaults to
@@ -259,10 +381,29 @@ pub struct ServerConfig {
     #[serde(default)]
     pub public_base_url: Option<String>,
     /// Seconds one vendor call may take before litegen stops waiting
-    /// (default 120). A call that ran out of time is answered 504 and never
-    /// sent again: the vendor may still finish, and bill, the job.
-    #[serde(default)]
+    /// (default 120, 5 to 3600). A call that ran out of time is answered 504
+    /// and never sent again: the vendor may still finish, and bill, the job.
+    #[serde(default, deserialize_with = "vendor_timeout_secs")]
     pub vendor_timeout_secs: Option<u64>,
+    /// Seconds a connection may take to send a request's headers (default
+    /// 130, 1 to 3600). The same deadline closes a connection that sends
+    /// nothing, and a keep-alive connection idle that long, so a reverse
+    /// proxy's upstream idle timeout must stay below it (Caddy's is 120 s).
+    /// HTTP/1 only: an HTTP/2 connection without TLS (h2c) has neither
+    /// deadline once its preface is in.
+    #[serde(default, deserialize_with = "header_read_timeout_secs")]
+    pub header_read_timeout_secs: Option<u64>,
+    /// Seconds a stop (SIGTERM, ctrl-c) gives the open requests and the
+    /// poller's current rows before they are cut (1 to 3600; unset: the
+    /// effective vendor timeout + 30, which may pass 3600).
+    #[serde(default, deserialize_with = "shutdown_grace_secs")]
+    pub shutdown_grace_secs: Option<u64>,
+    /// Seconds a generation, quote or segmentation body (and an MCP request's)
+    /// may take to arrive, whole (default 300, 1 to 3600); a slower one is
+    /// answered 408 `body_timeout`. At the default a 25 MiB body needs about
+    /// 87 KB/s.
+    #[serde(default, deserialize_with = "request_body_timeout_secs")]
+    pub request_body_timeout_secs: Option<u64>,
 }
 
 impl Default for ServerConfig {
@@ -270,9 +411,12 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
-            request_timeout_seconds: default_request_timeout(),
+            request_timeout_seconds: None,
             public_base_url: None,
             vendor_timeout_secs: None,
+            header_read_timeout_secs: None,
+            shutdown_grace_secs: None,
+            request_body_timeout_secs: None,
         }
     }
 }
@@ -280,10 +424,40 @@ impl Default for ServerConfig {
 /// How long a direct vendor call may take when the config does not say.
 pub const DEFAULT_VENDOR_TIMEOUT_SECS: u64 = 120;
 
+/// How long a connection may take to send a request's headers, or sit idle
+/// between keep-alive requests, when the config does not say: above the
+/// upstream idle timeouts of Caddy (120 s), nginx and AWS ALB (60 s), so the
+/// proxy closes an idle connection before litegen does.
+pub const DEFAULT_HEADER_READ_TIMEOUT_SECS: u64 = 130;
+
+/// How long a request body may take to arrive when the config does not say:
+/// Node's `requestTimeout`.
+pub const DEFAULT_REQUEST_BODY_TIMEOUT_SECS: u64 = 300;
+
 impl ServerConfig {
     /// The per-call vendor timeout.
     pub fn vendor_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.vendor_timeout_secs.unwrap_or(DEFAULT_VENDOR_TIMEOUT_SECS).max(1))
+    }
+
+    /// How long a connection may take to send a request's headers.
+    pub fn header_read_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.header_read_timeout_secs.unwrap_or(DEFAULT_HEADER_READ_TIMEOUT_SECS))
+    }
+
+    /// How long a request body may take to arrive.
+    pub fn request_body_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.request_body_timeout_secs.unwrap_or(DEFAULT_REQUEST_BODY_TIMEOUT_SECS))
+    }
+
+    /// How long a stop waits for open requests and the poller's current rows,
+    /// given the effective vendor timeout: a synchronous generation started
+    /// just before the stop still has its vendor's time, unless set.
+    pub fn shutdown_grace(&self, vendor_timeout: std::time::Duration) -> std::time::Duration {
+        match self.shutdown_grace_secs {
+            Some(secs) => std::time::Duration::from_secs(secs),
+            None => vendor_timeout + std::time::Duration::from_secs(30),
+        }
     }
 
     /// The absolute origin to mint client-facing URLs from.
@@ -328,9 +502,6 @@ fn default_host() -> String {
 fn default_port() -> u16 {
     4000
 }
-fn default_request_timeout() -> u64 {
-    300
-}
 
 /// Provider settings loaded from config or env vars.
 #[derive(Debug, Clone, Deserialize)]
@@ -353,10 +524,11 @@ pub struct ProviderEnvConfig {
     /// Provider-specific options.
     #[serde(default)]
     pub options: Option<serde_json::Value>,
-    /// Access key id (SigV4) / secret id (TC3) / access key (Kling).
+    /// Access key id (SigV4) / secret id (TC3). Kling's old access key still
+    /// loads here only so that `provider_credential_warnings` can name it.
     #[serde(default)]
     pub key_id: Option<String>,
-    /// Secret access key (SigV4) / secret key (TC3, Kling).
+    /// Secret access key (SigV4) / secret key (TC3).
     #[serde(default)]
     pub key_secret: Option<String>,
     /// Region for signing schemes (SigV4 / TC3). Non-secret.
@@ -374,7 +546,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ModelRouteConfig {
     /// Model pattern (e.g. "dall-e-3", "openai/*", "*").
     pub model: String,
@@ -389,7 +561,7 @@ pub struct ModelRouteConfig {
     pub cache: Option<CacheRouteConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct DeploymentConfig {
     pub provider: String,
     #[serde(default = "default_weight")]
@@ -412,7 +584,7 @@ fn default_timeout() -> u64 {
     120
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct CacheRouteConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -429,12 +601,144 @@ pub struct CacheGlobalConfig {
     /// Enable the generation cache globally.
     #[serde(default)]
     pub enabled: bool,
-    /// Default TTL in seconds.
-    #[serde(default = "default_cache_ttl")]
+    /// Default TTL in seconds, 1 to 604800 (a week).
+    #[serde(default = "default_cache_ttl", deserialize_with = "cache_ttl_seconds")]
     pub default_ttl_seconds: u64,
-    /// Max total cached items.
-    #[serde(default = "default_max_items")]
+    /// Max total cached items, 1 to 1000000.
+    #[serde(default = "default_max_items", deserialize_with = "cache_max_items")]
     pub max_items: u64,
+    /// About how much memory the cached answers may take on each replica, in
+    /// bytes, 1048576 (1 MiB) to 68719476736 (64 GiB); default 268435456
+    /// (256 MiB). An answer weighs about its JSON size, and a `b64_json`
+    /// image is megabytes. Whichever of this and `max_items` is reached
+    /// first evicts.
+    #[serde(default = "default_cache_max_bytes", deserialize_with = "cache_max_bytes")]
+    pub max_bytes: u64,
+}
+
+/// A whole number within `lo..=hi`, or an error naming `field`: config that
+/// would make a setting meaningless never loads (see `docs/gateway-settings.md`).
+fn in_range<'de, D: serde::Deserializer<'de>>(d: D, field: &str, lo: u64, hi: u64) -> Result<u64, D::Error> {
+    let v = u64::deserialize(d)?;
+    if !(lo..=hi).contains(&v) {
+        return Err(serde::de::Error::custom(format!("{field} must be between {lo} and {hi}, not {v}")));
+    }
+    Ok(v)
+}
+
+fn cache_ttl_seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    in_range(d, "cache.default_ttl_seconds", 1, 604_800)
+}
+
+fn cache_max_items<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    in_range(d, "cache.max_items", 1, 1_000_000)
+}
+
+fn cache_max_bytes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    in_range(d, "cache.max_bytes", 1_048_576, 68_719_476_736)
+}
+
+fn vendor_timeout_secs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    in_range(d, "server.vendor_timeout_secs", 5, 3600).map(Some)
+}
+
+fn header_read_timeout_secs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    in_range(d, "server.header_read_timeout_secs", 1, 3600).map(Some)
+}
+
+fn shutdown_grace_secs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    in_range(d, "server.shutdown_grace_secs", 1, 3600).map(Some)
+}
+
+fn request_body_timeout_secs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    in_range(d, "server.request_body_timeout_secs", 1, 3600).map(Some)
+}
+
+fn breaker_threshold<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    in_range(d, "circuit_breaker.threshold", 1, 1000).map(|v| v as u32)
+}
+
+fn breaker_open_for_seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    in_range(d, "circuit_breaker.open_for_seconds", 1, 3600)
+}
+
+/// `webhooks` in `litegen.yaml` (review 2026-11-11 SEC-STWEBHOOK).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WebhooksConfig {
+    /// Whose keys' webhooks may reach the deployment's own network (private,
+    /// loopback and link-local addresses) in single-tenant mode. In hosted
+    /// mode no tenant's webhook ever may.
+    #[serde(default)]
+    pub internal_targets: InternalTargets,
+}
+
+/// `webhooks.internal_targets`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InternalTargets {
+    /// Only the deployment's own keys: made with the master key (no owner),
+    /// or owned by an active Owner or Admin of the deployment's org.
+    #[default]
+    Admins,
+    /// Any key's, as before 2026-11 (opt-in).
+    Everyone,
+}
+
+/// `retries` in `litegen.yaml`: how a vendor call turned away with a
+/// retryable error is tried again (`docs/gateway-settings.md`). Whether a
+/// call may be sent again at all is never a setting: never after a timeout,
+/// never once the vendor accepted the job.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "RetriesInput")]
+pub struct RetriesConfig {
+    /// Tries after the first, 0 to 5.
+    pub max_retries: u32,
+    /// The longest first wait, in ms (0 to 60000); each retry may wait up to twice the last.
+    pub backoff_ms: u64,
+    /// The longest any wait may be, in ms (up to 60000, at least `backoff_ms`).
+    pub max_backoff_ms: u64,
+}
+
+impl Default for RetriesConfig {
+    fn default() -> Self {
+        Self { max_retries: 2, backoff_ms: 500, max_backoff_ms: 10_000 }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetriesInput {
+    #[serde(default)]
+    max_retries: Option<u32>,
+    #[serde(default)]
+    backoff_ms: Option<u64>,
+    #[serde(default)]
+    max_backoff_ms: Option<u64>,
+}
+
+impl TryFrom<RetriesInput> for RetriesConfig {
+    type Error = String;
+    fn try_from(r: RetriesInput) -> Result<Self, String> {
+        let d = RetriesConfig::default();
+        let c = RetriesConfig {
+            max_retries: r.max_retries.unwrap_or(d.max_retries),
+            backoff_ms: r.backoff_ms.unwrap_or(d.backoff_ms),
+            max_backoff_ms: r.max_backoff_ms.unwrap_or(d.max_backoff_ms),
+        };
+        if c.max_retries > 5 {
+            return Err(format!("retries.max_retries must be between 0 and 5, not {}", c.max_retries));
+        }
+        if c.backoff_ms > 60_000 {
+            return Err(format!("retries.backoff_ms must be between 0 and 60000, not {}", c.backoff_ms));
+        }
+        if c.max_backoff_ms > 60_000 || c.max_backoff_ms < c.backoff_ms {
+            return Err(format!(
+                "retries.max_backoff_ms must be between retries.backoff_ms ({}) and 60000, not {}",
+                c.backoff_ms, c.max_backoff_ms
+            ));
+        }
+        Ok(c)
+    }
 }
 
 impl Default for CacheGlobalConfig {
@@ -443,12 +747,20 @@ impl Default for CacheGlobalConfig {
             enabled: false,
             default_ttl_seconds: 3600,
             max_items: 10_000,
+            max_bytes: default_cache_max_bytes(),
         }
     }
 }
 
 fn default_max_items() -> u64 {
     10_000
+}
+
+/// 256 MiB: the cache's memory per replica when nothing sets it (P7, code
+/// review 2026-11-11). It holds about 90 answers that carry a 2.8 MB
+/// `b64_json` image, or many thousands of URL answers.
+fn default_cache_max_bytes() -> u64 {
+    268_435_456
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -459,12 +771,46 @@ pub struct ObservabilityConfig {
     /// Enable JSON structured logging.
     #[serde(default)]
     pub json_logs: bool,
-    /// Enable Prometheus metrics endpoint.
+    /// Serve Prometheus metrics (default true). `false` mounts no metrics
+    /// route and records nothing.
     #[serde(default = "default_true")]
     pub metrics_enabled: bool,
-    /// Metrics endpoint path.
-    #[serde(default = "default_metrics_path")]
+    /// Where the metrics are served (default `/metrics`): a static path that
+    /// litegen does not already serve (see [`RESERVED_METRICS_SEGMENTS`]).
+    #[serde(default = "default_metrics_path", deserialize_with = "metrics_path")]
     pub metrics_path: String,
+    /// Whether the metrics need a credential that may read the deployment
+    /// (default false): the master key, or in single-tenant mode a key with
+    /// `read` in the deployment's org. LiteLLM's
+    /// `require_auth_for_metrics_endpoint`.
+    #[serde(default)]
+    pub metrics_require_auth: bool,
+}
+
+/// The first path segments litegen serves itself, which
+/// `observability.metrics_path` may not start with.
+/// `every_route_litegen_serves_is_kept_from_metrics_path` keeps it whole.
+pub const RESERVED_METRICS_SEGMENTS: [&str; 9] = ["v1", "health", "openapi.json", "mock", "auth", "mcp", "admin", "oauth", ".well-known"];
+
+/// `observability.metrics_path`: an absolute path of plain segments
+/// (`A-Za-z0-9._~-`, no `.` or `..`, no empty one, no trailing `/`), not `/`,
+/// whose first segment is not one litegen serves. Anything else would
+/// overlap a route (axum panics at startup), capture other paths, or be
+/// rewritten by clients and proxies before it arrives.
+fn metrics_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let path = String::deserialize(d)?;
+    let servable = path.strip_prefix('/').is_some_and(|rest| {
+        let segments: Vec<&str> = rest.split('/').collect();
+        segments.iter().all(|s| {
+            !s.is_empty() && *s != "." && *s != ".." && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._~-".contains(&b))
+        }) && !RESERVED_METRICS_SEGMENTS.contains(&segments[0])
+    });
+    if !servable {
+        return Err(serde::de::Error::custom(format!(
+            "observability.metrics_path must be a static path litegen does not already serve, such as /metrics or /internal/metrics, not {path:?}"
+        )));
+    }
+    Ok(path)
 }
 
 impl Default for ObservabilityConfig {
@@ -474,6 +820,7 @@ impl Default for ObservabilityConfig {
             json_logs: false,
             metrics_enabled: true,
             metrics_path: default_metrics_path(),
+            metrics_require_auth: false,
         }
     }
 }
@@ -487,11 +834,12 @@ fn default_metrics_path() -> String {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CircuitBreakerConfig {
-    /// Number of consecutive failures before opening the breaker.
-    #[serde(default = "default_cb_threshold")]
+    /// Number of consecutive failures before opening the breaker (1 to 1000).
+    #[serde(default = "default_cb_threshold", deserialize_with = "breaker_threshold")]
     pub threshold: u32,
-    /// Seconds to keep the breaker open before allowing a trial request.
-    #[serde(default = "default_cb_open_for")]
+    /// Seconds to keep the breaker open before calls go through again; the
+    /// first failure after that opens it for another window (1 to 3600).
+    #[serde(default = "default_cb_open_for", deserialize_with = "breaker_open_for_seconds")]
     pub open_for_seconds: u64,
 }
 
@@ -532,6 +880,109 @@ pub struct CorsConfig {
     /// Set Access-Control-Allow-Credentials header.
     #[serde(default)]
     pub allow_credentials: bool,
+}
+
+/// `storage_access` in `litegen.yaml`: how the URLs litegen hands out for
+/// stored files work, unless the gateway setting or an app's own says
+/// otherwise (`docs/storage-access.md`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageAccessConfig {
+    /// `public` (default), `signed` or `private`.
+    #[serde(default)]
+    pub mode: crate::access::AccessMode,
+    /// Which keys may open a file: `key` (default, the one that made it),
+    /// `app` or `org`.
+    #[serde(default)]
+    pub owner_scope: crate::access::OwnerScope,
+    /// How long a signed link works: 60 to 604800 seconds (a week).
+    #[serde(default = "default_signed_url_ttl_seconds", deserialize_with = "signed_url_ttl_seconds")]
+    pub signed_url_ttl_seconds: u32,
+    /// Whether litegen keeps a copy of each output (default `true`). `false`
+    /// keeps nothing: answers carry the vendor's own link, or the image itself.
+    #[serde(default = "default_keep_outputs")]
+    pub keep_outputs: bool,
+    /// Days after which kept files are deleted, 0 to 36500; 0 (the default)
+    /// keeps them until they are deleted.
+    #[serde(default, deserialize_with = "retention_days")]
+    pub retention_days: u32,
+    /// Who signs a signed link: `store` (default) or `litegen`.
+    #[serde(default)]
+    pub signed_links: crate::access::SignedLinks,
+    /// Tests only: fetch a vendor's file (an output litegen didn't keep)
+    /// without the public-address check, so wiremock on 127.0.0.1 answers. The
+    /// connect-time guard still refuses a *name* that resolves inside; an IP
+    /// literal never reaches it. No config file or variable can set this; in a
+    /// running litegen, vendor files come from public hosts.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub unchecked_vendor_hosts: bool,
+    /// Tests only: skip the public-address check on a hosted app's own bucket,
+    /// so wiremock on 127.0.0.1 answers. Its requests still go through the
+    /// guarded client, which refuses a *name* that resolves inside (an IP
+    /// literal never reaches it). No config file or variable can set this; in
+    /// a running hosted litegen, an app's bucket must be on a public address.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub unchecked_app_storage_hosts: bool,
+}
+
+impl Default for StorageAccessConfig {
+    fn default() -> Self {
+        Self {
+            mode: crate::access::AccessMode::default(),
+            owner_scope: crate::access::OwnerScope::default(),
+            signed_url_ttl_seconds: default_signed_url_ttl_seconds(),
+            keep_outputs: default_keep_outputs(),
+            retention_days: 0,
+            signed_links: crate::access::SignedLinks::default(),
+            unchecked_vendor_hosts: false,
+            unchecked_app_storage_hosts: false,
+        }
+    }
+}
+
+fn default_signed_url_ttl_seconds() -> u32 {
+    3600
+}
+
+fn default_keep_outputs() -> bool {
+    true
+}
+
+fn retention_days<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let v = i64::deserialize(d)?;
+    if !crate::access::retention_in_range(v) {
+        return Err(serde::de::Error::custom(format!(
+            "storage_access.retention_days must be between 0 and {} days, not {v}",
+            crate::access::MAX_RETENTION_DAYS,
+        )));
+    }
+    Ok(v as u32)
+}
+
+fn signed_url_ttl_seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let v = i64::deserialize(d)?;
+    if !crate::access::ttl_in_range(v) {
+        return Err(serde::de::Error::custom(format!(
+            "storage_access.signed_url_ttl_seconds must be between {} and {} seconds, not {v}",
+            crate::access::MIN_SIGNED_URL_TTL_SECONDS,
+            crate::access::MAX_SIGNED_URL_TTL_SECONDS,
+        )));
+    }
+    Ok(v as u32)
+}
+
+/// Whether `storage_access` is set, in the config file litegen read (`file`,
+/// from [`config_file`]) or in a `LITEGEN__STORAGE_ACCESS__*` variable of
+/// `env`. litegen refuses to start on its defaults when a config that sets it
+/// fails to load: the default is `public`, so falling back would open files
+/// the operator meant to close.
+pub fn storage_access_in(file: Option<&ConfigFile>, mut env: impl Iterator<Item = (String, String)>) -> bool {
+    if env.any(|(k, _)| k.to_ascii_uppercase().starts_with("LITEGEN__STORAGE_ACCESS")) {
+        return true;
+    }
+    file.is_some_and(|f| f.get::<config::Value>("storage_access").is_ok_and(|v| v.is_some()))
 }
 
 /// Image storage configuration.
@@ -610,15 +1061,24 @@ fn default_storage_backend() -> String {
 /// Works with AWS S3, MinIO, Cloudflare R2, DigitalOcean Spaces, etc.
 #[derive(Debug, Clone, Deserialize)]
 pub struct S3StorageConfig {
-    /// S3 bucket name.
+    /// S3 bucket name (or `LITEGEN_S3_BUCKET`). Required when
+    /// `image_storage.backend` is `s3`: litegen refuses to start without one.
+    #[serde(default)]
     pub bucket_name: String,
     /// AWS region (e.g. "us-east-1") or region identifier for compatible services.
     #[serde(default = "default_s3_region")]
     pub region: String,
-    /// AWS access key ID (or set AWS_ACCESS_KEY_ID / LITEGEN_S3_ACCESS_KEY_ID env var).
+    /// AWS access key ID (or `LITEGEN_S3_ACCESS_KEY_ID`). Unset or blank, the
+    /// S3 client takes its credentials from the AWS chain: `AWS_ACCESS_KEY_ID`,
+    /// `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, then a profile, then
+    /// web identity when `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` are
+    /// set, then a container or instance role. Set, it needs
+    /// `secret_access_key` too: S3 storage with a key and no secret refuses to
+    /// start.
     #[serde(default)]
     pub access_key_id: Option<String>,
-    /// AWS secret access key (or set AWS_SECRET_ACCESS_KEY / LITEGEN_S3_SECRET_ACCESS_KEY env var).
+    /// AWS secret access key (or `LITEGEN_S3_SECRET_ACCESS_KEY`); unset or
+    /// blank, the AWS chain's, as for `access_key_id`.
     #[serde(default)]
     pub secret_access_key: Option<String>,
     /// Custom S3 endpoint URL for S3-compatible services (MinIO, R2, Spaces, etc.).
@@ -629,41 +1089,62 @@ pub struct S3StorageConfig {
     /// Example: "https://cdn.example.com" → images served at https://cdn.example.com/litegen/images/...
     #[serde(default)]
     pub custom_public_url: Option<String>,
+    /// The session token of temporary credentials (an assumed role's); a
+    /// blank one counts as unset.
+    #[serde(default)]
+    pub session_token: Option<String>,
+    /// When temporary credentials stop working: a presigned link that would
+    /// outlive them isn't minted. Never set from config.
+    #[serde(skip)]
+    pub credentials_expire_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 fn default_s3_region() -> String {
     "us-east-1".to_string()
 }
 
-/// Load configuration from litegen.yaml + env vars + LITEGEN_ prefix.
-pub fn load_config() -> Result<AppConfig, config::ConfigError> {
-    let mut builder = config::Config::builder();
-
-    // 1. Default values
-    builder = builder.add_source(config::Config::try_from(&AppConfig::default())?);
-
-    // 2. Config file (optional)
-    builder = builder.add_source(
-        config::File::with_name("litegen")
-            .required(false),
-    );
-
-    // 3. Environment variables (LITEGEN_ prefix, __ for nesting)
-    builder = builder.add_source(
-        config::Environment::with_prefix("LITEGEN")
-            .separator("__")
-            .try_parsing(true),
-    );
-
-    // Also load common env vars directly for provider convenience.
-    // e.g. OPENAI_API_KEY → providers.openai.api_key
-    load_provider_env_overrides(&mut builder);
-
-    builder.build()?.try_deserialize()
+/// `aws` in `litegen.yaml`: litegen's own AWS identity, which assumes the
+/// roles apps' buckets trust (docs/storage-access.md). Unset keys use the
+/// standard chain: environment, profile, instance or container metadata,
+/// web identity.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwsConfig {
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+    #[serde(default)]
+    pub session_token: Option<String>,
+    /// The STS region (default us-east-1).
+    #[serde(default)]
+    pub region: Option<String>,
+    /// STS's URL (default `https://sts.{region}.amazonaws.com`).
+    #[serde(default)]
+    pub sts_endpoint: Option<String>,
+    /// The principal a customer's role must trust, shown with each app's
+    /// external ID. Unset, litegen asks STS (`GetCallerIdentity`) when its
+    /// keys or STS endpoint are configured.
+    #[serde(default)]
+    pub principal_arn: Option<String>,
 }
 
-/// Map common env vars (OPENAI_API_KEY, etc.) into the config tree.
-fn load_provider_env_overrides(builder: &mut config::ConfigBuilder<config::builder::DefaultState>) {
+/// Load configuration as `main` does with no arguments: in the process's
+/// working directory, from its environment ([`load_config_from`]).
+pub fn load_config() -> Result<AppConfig, config::ConfigError> {
+    let cwd = std::env::current_dir().map_err(|e| config::ConfigError::Message(format!("cannot read the working directory: {e}")))?;
+    let env: HashMap<String, String> = std::env::vars().collect();
+    load_config_from(&cwd, None, &env)
+}
+
+/// The vendors' own variables (`OPENAI_API_KEY`, `FAL_KEY`, …), each with the
+/// setting it fills. They rank above the config file and below `LITEGEN__`
+/// variables (`docs/configuration.md`). A blank one counts as unset, so
+/// compose's `${OPENAI_API_KEY:-}` never blanks a key set elsewhere. Of two
+/// names for one setting, the later in the table wins (`ARK_API_KEY` over
+/// `BYTEDANCE_API_KEY`), and a startup warning names the other. A new
+/// vendor's variables go in this table.
+fn load_provider_env_overrides(env: &HashMap<String, String>) -> Vec<load::Setting> {
     let env_mappings = [
         ("OPENAI_API_KEY", "providers.openai.api_key"),
         ("OPENAI_API_KEYS", "providers.openai.api_keys"),
@@ -696,9 +1177,19 @@ fn load_provider_env_overrides(builder: &mut config::ConfigBuilder<config::build
         ("TRIPO_API_KEY", "providers.tripo.api_key"),
         ("TRIPO_API_BASE", "providers.tripo.api_base"),
         ("MESHY_API_KEY", "providers.meshy.api_key"),
-        // ── Signing-scheme vendors (key_id/key_secret/region) ──
+        // Tencent TokenHub: one Bearer API key for every model ("鉴权方式为请求头
+        // Authorization: Bearer YOUR_API_KEY"); the TC3 pair below is the old
+        // Tencent Cloud API's (`hunyuan`).
+        ("TOKENHUB_API_KEY", "providers.tokenhub.api_key"),
+        ("TOKENHUB_API_KEYS", "providers.tokenhub.api_keys"),
+        ("TOKENHUB_API_BASE", "providers.tokenhub.api_base"),
+        // Kling: an API key since 2026-11-03 ("API Key authentication must be
+        // used to call Kling AI API"). The old pair still loads, only so that
+        // `provider_credential_warnings` can name it at startup.
+        ("KLING_API_KEY", "providers.kling.api_key"),
         ("KLING_ACCESS_KEY", "providers.kling.key_id"),
         ("KLING_SECRET_KEY", "providers.kling.key_secret"),
+        // ── Signing-scheme vendors (key_id/key_secret/region) ──
         ("BEDROCK_ACCESS_KEY_ID", "providers.bedrock.key_id"),
         ("BEDROCK_SECRET_ACCESS_KEY", "providers.bedrock.key_secret"),
         ("BEDROCK_REGION", "providers.bedrock.region"),
@@ -709,32 +1200,13 @@ fn load_provider_env_overrides(builder: &mut config::ConfigBuilder<config::build
         // single vendor name (registered as image+video in the provider
         // registry), so their video impls reuse the vendor key above — no
         // separate "*-video" provider entries are needed.
-        // S3 storage credentials
-        ("AWS_ACCESS_KEY_ID", "image_storage.s3.access_key_id"),
-        ("AWS_SECRET_ACCESS_KEY", "image_storage.s3.secret_access_key"),
-        ("LITEGEN_S3_ACCESS_KEY_ID", "image_storage.s3.access_key_id"),
-        ("LITEGEN_S3_SECRET_ACCESS_KEY", "image_storage.s3.secret_access_key"),
-        ("LITEGEN_S3_BUCKET", "image_storage.s3.bucket_name"),
-        ("LITEGEN_S3_REGION", "image_storage.s3.region"),
-        ("LITEGEN_S3_ENDPOINT_URL", "image_storage.s3.endpoint_url"),
-        // Local asset storage
-        ("LITEGEN_ASSET_DIR", "image_storage.local_dir"),
-        ("LITEGEN_ASSET_RETENTION_DAYS", "image_storage.retention_days"),
+        // Not AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY: ambient credentials
+        // that hosts set for every AWS tool. The S3 backend reads them itself,
+        // with AWS_SESSION_TOKEN, through the AWS credential chain when no key
+        // is configured. litegen's own LITEGEN_S3_* and LITEGEN_ASSET_* rank
+        // higher: `load::LITEGEN_ALIASES`.
     ];
-
-    for (env_var, _config_path) in &env_mappings {
-        if let Ok(val) = std::env::var(env_var) {
-            // Store in a way the config system can pick up.
-            // The environment source with LITEGEN_ prefix handles structured mapping.
-            // For direct env vars, we set them via the LITEGEN prefix:
-            let litegen_key = format!("LITEGEN__{}", _config_path.replace('.', "__").to_uppercase());
-            std::env::set_var(&litegen_key, &val);
-        }
-    }
-
-    // Rebuild environment source to pick up the new vars
-    // (This is handled by the caller re-adding the Environment source)
-    let _ = builder;
+    load::named_settings(env, &env_mappings)
 }
 
 impl serde::Serialize for AppConfig {
@@ -759,10 +1231,9 @@ impl<'a> serde::Serialize for ServerConfigSerialize<'a> {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(4))?;
+        let mut map = serializer.serialize_map(Some(3))?;
         map.serialize_entry("host", &self.0.host)?;
         map.serialize_entry("port", &self.0.port)?;
-        map.serialize_entry("request_timeout_seconds", &self.0.request_timeout_seconds)?;
         map.serialize_entry("public_base_url", &self.0.public_base_url)?;
         map.end()
     }
@@ -772,19 +1243,140 @@ impl<'a> serde::Serialize for ServerConfigSerialize<'a> {
 mod tests {
     use super::*;
 
+    /// SEC-STWEBHOOK: `webhooks.internal_targets` is `admins` unless set,
+    /// takes `everyone`, and refuses anything else.
+    #[test]
+    fn webhooks_internal_targets_default_to_admins() {
+        assert_eq!(AppConfig::default().webhooks.internal_targets, InternalTargets::Admins);
+        let read = |v: serde_json::Value| serde_json::from_value::<WebhooksConfig>(v).map(|w| w.internal_targets);
+        assert_eq!(read(serde_json::json!({})).unwrap(), InternalTargets::Admins);
+        assert_eq!(read(serde_json::json!({ "internal_targets": "everyone" })).unwrap(), InternalTargets::Everyone);
+        assert!(read(serde_json::json!({ "internal_targets": "nobody" })).is_err());
+    }
+
+    #[test]
+    fn provider_config_errors_name_the_provider_and_the_header() {
+        let mut cfg = AppConfig::default();
+        let provider = |headers: serde_json::Value| -> ProviderEnvConfig {
+            serde_json::from_value(serde_json::json!({ "api_key": "k", "extra_headers": headers })).unwrap()
+        };
+        cfg.providers.insert("openai".into(), provider(serde_json::json!({ "OpenAI-Organization": "org-1" })));
+        assert!(cfg.provider_config_errors().is_empty());
+        cfg.providers.insert("fal".into(), provider(serde_json::json!({ "Host": "evil.example" })));
+        let errors = cfg.provider_config_errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("fal") && errors[0].contains("Host"), "{errors:?}");
+    }
+
+    /// Kling takes an API key since 2026-11-03 ("API Key authentication must
+    /// be used to call Kling AI API"): a config still holding only the old
+    /// access/secret key pair is named at startup instead of failing quietly
+    /// at the first call.
+    /// @see <https://kling.ai/document-api/api/get-started/authentication.md> (2026-11-03)
+    #[test]
+    fn a_kling_key_pair_without_an_api_key_is_named() {
+        let mut cfg = AppConfig::default();
+        let kling = |v: serde_json::Value| -> ProviderEnvConfig { serde_json::from_value(v).unwrap() };
+        cfg.providers.insert("kling".into(), kling(serde_json::json!({ "key_id": "ak", "key_secret": "sk" })));
+        let warnings = cfg.provider_credential_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("KLING_API_KEY"), "{warnings:?}");
+        cfg.providers.insert("kling".into(), kling(serde_json::json!({ "api_key": "k", "key_id": "ak", "key_secret": "sk" })));
+        assert!(cfg.provider_credential_warnings().is_empty());
+    }
+
     #[test]
     fn an_empty_public_base_url_counts_as_unset() {
         // Compose passes an unset `${VAR:-}` as "", which config-rs keeps; it
         // must not turn every minted asset URL relative.
-        let mut s = ServerConfig::default();
-        s.port = 4000;
-        s.host = "0.0.0.0".into();
-        s.public_base_url = Some("".into());
+        let mut s = ServerConfig { port: 4000, host: "0.0.0.0".into(), public_base_url: Some("".into()), ..Default::default() };
         assert_eq!(s.public_base_url(), "http://127.0.0.1:4000");
         s.public_base_url = Some("  ".into());
         assert_eq!(s.public_base_url(), "http://127.0.0.1:4000");
         s.public_base_url = Some("https://app.litegen.ai/api/".into());
         assert_eq!(s.public_base_url(), "https://app.litegen.ai/api");
+    }
+
+    /// P11 and P9: the server's deadlines. The header deadline sits above the
+    /// upstream idle timeouts of common proxies (Caddy 120 s, nginx and ALB
+    /// 60 s), so a proxy always closes an idle connection first; the stop's
+    /// grace follows the vendor timeout unless set, and may pass 3600 then.
+    #[test]
+    fn the_server_deadlines_have_their_defaults_and_ranges() {
+        use std::time::Duration;
+        let s = ServerConfig::default();
+        assert_eq!(s.header_read_timeout(), Duration::from_secs(130));
+        assert_eq!(s.shutdown_grace(Duration::from_secs(120)), Duration::from_secs(150), "unset: the vendor timeout + 30 s");
+        assert_eq!(s.shutdown_grace(Duration::from_secs(3600)), Duration::from_secs(3630));
+        let set: ServerConfig = serde_json::from_value(serde_json::json!({ "header_read_timeout_secs": 20, "shutdown_grace_secs": 25 })).unwrap();
+        assert_eq!(set.header_read_timeout(), Duration::from_secs(20));
+        assert_eq!(set.shutdown_grace(Duration::from_secs(120)), Duration::from_secs(25), "set: whatever the vendor timeout");
+        for field in ["header_read_timeout_secs", "shutdown_grace_secs"] {
+            for bad in [0, 3601] {
+                let refused = serde_json::from_value::<ServerConfig>(serde_json::json!({ field: bad })).map(|_| ()).unwrap_err().to_string();
+                assert!(refused.contains(&format!("server.{field} must be between 1 and 3600, not {bad}")), "{field} = {bad}: {refused}");
+            }
+        }
+    }
+
+    /// P9: a request body gets 300 s to arrive (Node's `requestTimeout`) unless
+    /// set; a 25 MiB body then needs about 87 KB/s.
+    #[test]
+    fn the_request_body_deadline_has_its_default_and_range() {
+        use std::time::Duration;
+        assert_eq!(ServerConfig::default().request_body_timeout(), Duration::from_secs(300));
+        let set: ServerConfig = serde_json::from_value(serde_json::json!({ "request_body_timeout_secs": 45 })).unwrap();
+        assert_eq!(set.request_body_timeout(), Duration::from_secs(45));
+        for bad in [0, 3601] {
+            let refused = serde_json::from_value::<ServerConfig>(serde_json::json!({ "request_body_timeout_secs": bad })).map(|_| ()).unwrap_err().to_string();
+            assert!(refused.contains(&format!("server.request_body_timeout_secs must be between 1 and 3600, not {bad}")), "{bad}: {refused}");
+        }
+    }
+
+    /// S7: `observability.metrics_path` is honoured, so it must be a static
+    /// path litegen does not already serve: one that overlaps a route would
+    /// stop startup (axum panics on the overlap), a `{capture}` would match
+    /// other paths, and a `.` or `..` segment is one clients and proxies
+    /// rewrite before it arrives.
+    #[test]
+    fn a_metrics_path_litegen_cannot_serve_is_refused() {
+        let bad_paths = [
+            "", "metrics", "/", "/v1/metrics", "/health", "/mcp", "/admin/metrics", "/oauth", "/auth/m", "/mock/m",
+            "/openapi.json", "/.well-known/x", "/x/{id}", "/a b", "/metrics/", "//metrics", "/../metrics", "/a/./b",
+            "/a/../b", "/metrics?x=1", "/métrics",
+        ];
+        for bad in bad_paths {
+            match serde_json::from_value::<ObservabilityConfig>(serde_json::json!({ "metrics_path": bad })) {
+                Ok(_) => panic!("metrics_path {bad:?} loaded"),
+                Err(e) => assert!(e.to_string().contains("observability.metrics_path"), "{bad:?}: {e}"),
+            }
+        }
+        for good in ["/metrics", "/internal/metrics", "/prometheus", "/x-metrics_1.0~"] {
+            let ok: ObservabilityConfig = serde_json::from_value(serde_json::json!({ "metrics_path": good })).unwrap_or_else(|e| panic!("{good:?}: {e}"));
+            assert_eq!(ok.metrics_path, good);
+        }
+    }
+
+    /// Guard for the reserved first segments: a `metrics_path` equal to any
+    /// path litegen serves (each capture filled in) is refused, so a new
+    /// top-level route the list misses fails here.
+    #[test]
+    fn every_route_litegen_serves_is_kept_from_metrics_path() {
+        use utoipa::OpenApi;
+        let mut paths: Vec<String> = crate::api::openapi::ApiDoc::openapi().paths.paths.keys().cloned().collect();
+        paths.extend(
+            ["/health/live", "/health/ready", "/mcp", "/admin/mcp", "/auth/redirect", "/mock/video/x", "/oauth/token", "/.well-known/oauth-authorization-server", "/openapi.json"]
+                .map(String::from),
+        );
+        for path in paths {
+            let concrete: String = path
+                .split('/')
+                .map(|s| if s.starts_with('{') { "x" } else { s })
+                .collect::<Vec<_>>()
+                .join("/");
+            let refused = serde_json::from_value::<ObservabilityConfig>(serde_json::json!({ "metrics_path": concrete })).is_err();
+            assert!(refused, "metrics_path {concrete:?} (litegen serves {path}) loaded");
+        }
     }
 
     #[test]
@@ -820,8 +1412,7 @@ mod tests {
 
     #[test]
     fn setting_master_key_makes_startup_safe() {
-        let mut cfg = AppConfig::default();
-        cfg.master_key = Some("a-long-random-master-secret".to_string());
+        let cfg = AppConfig { master_key: Some("a-long-random-master-secret".to_string()), ..Default::default() };
         assert!(matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok));
     }
 
@@ -843,8 +1434,7 @@ mod tests {
     fn hosted_mode_without_master_key_is_safe_to_start() {
         // In Hosted mode the no-auth dev-bypass is disabled (anonymous requests
         // get 401), so a missing master key is not a network exposure of admin.
-        let mut cfg = AppConfig::default();
-        cfg.mode = Mode::Hosted;
+        let cfg = AppConfig { mode: Mode::Hosted, ..Default::default() };
         assert!(matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok));
     }
 
@@ -855,8 +1445,8 @@ mod tests {
         // token as full admin (constant_time_eq does not trim). The guard must
         // treat it as "no master key" and flag the exposure, not return Ok.
         for blank in ["", "   ", "\t", "\n "] {
-            let mut cfg = AppConfig::default(); // SingleTenant + 0.0.0.0
-            cfg.master_key = Some(blank.to_string());
+            // SingleTenant + 0.0.0.0
+            let cfg = AppConfig { master_key: Some(blank.to_string()), ..Default::default() };
             assert!(
                 matches!(
                     cfg.startup_security_check(),
@@ -867,11 +1457,128 @@ mod tests {
         }
     }
 
+    fn load_yaml(yaml: &str) -> Result<AppConfig, config::ConfigError> {
+        config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()?
+            .try_deserialize()
+    }
+
+    #[test]
+    fn storage_access_defaults_to_public_key_and_an_hour() {
+        use crate::access::{AccessMode, OwnerScope};
+        let cfg = load_yaml("cost_markup_percent: 0\n").unwrap();
+        assert_eq!(cfg.storage_access.mode, AccessMode::Public);
+        assert_eq!(cfg.storage_access.owner_scope, OwnerScope::Key);
+        assert_eq!(cfg.storage_access.signed_url_ttl_seconds, 3600);
+        let cfg = load_yaml("storage_access:\n  mode: signed\n").unwrap();
+        assert_eq!(cfg.storage_access.mode, AccessMode::Signed);
+        assert_eq!(cfg.storage_access.owner_scope, OwnerScope::Key);
+        assert_eq!(cfg.storage_access.signed_url_ttl_seconds, 3600);
+        let cfg = load_yaml("storage_access:\n  mode: private\n  owner_scope: org\n  signed_url_ttl_seconds: 600\n").unwrap();
+        assert_eq!(
+            (cfg.storage_access.mode, cfg.storage_access.owner_scope, cfg.storage_access.signed_url_ttl_seconds),
+            (AccessMode::Private, OwnerScope::Org, 600)
+        );
+    }
+
+    #[test]
+    fn storage_access_refuses_a_ttl_outside_a_minute_to_a_week() {
+        for bad in [0, 59, 604_801] {
+            let e = load_yaml(&format!("storage_access:\n  signed_url_ttl_seconds: {bad}\n")).unwrap_err().to_string();
+            assert!(e.contains("signed_url_ttl_seconds") && e.contains("60") && e.contains("604800"), "{bad}: {e}");
+        }
+        for good in [60, 604_800] {
+            let cfg = load_yaml(&format!("storage_access:\n  signed_url_ttl_seconds: {good}\n")).unwrap();
+            assert_eq!(cfg.storage_access.signed_url_ttl_seconds, good);
+        }
+    }
+
+    #[test]
+    fn storage_access_refuses_unknown_fields_and_values() {
+        let e = load_yaml("storage_access:\n  mode: privat\n").unwrap_err().to_string();
+        assert!(e.contains("privat"), "{e}");
+        let e = load_yaml("storage_access:\n  owner_scope: team\n").unwrap_err().to_string();
+        assert!(e.contains("team"), "{e}");
+        let e = load_yaml("storage_access:\n  ttl: 60\n").unwrap_err().to_string();
+        assert!(e.contains("ttl"), "{e}");
+    }
+
+    #[test]
+    fn storage_access_keeps_everything_forever_by_default_and_loads_the_new_fields() {
+        use crate::access::SignedLinks;
+        let cfg = load_yaml("cost_markup_percent: 0\n").unwrap();
+        assert!(cfg.storage_access.keep_outputs);
+        assert_eq!(cfg.storage_access.retention_days, 0);
+        assert_eq!(cfg.storage_access.signed_links, SignedLinks::Store);
+        let cfg = load_yaml("storage_access:\n  keep_outputs: false\n  retention_days: 36500\n  signed_links: litegen\n").unwrap();
+        assert!(!cfg.storage_access.keep_outputs);
+        assert_eq!(cfg.storage_access.retention_days, 36_500);
+        assert_eq!(cfg.storage_access.signed_links, SignedLinks::Litegen);
+    }
+
+    #[test]
+    fn storage_access_refuses_bad_new_fields() {
+        let e = load_yaml("storage_access:\n  keep_outputs: maybe\n").unwrap_err().to_string();
+        assert!(e.contains("keep_outputs") || e.contains("maybe"), "{e}");
+        let e = load_yaml("storage_access:\n  retention_days: 36501\n").unwrap_err().to_string();
+        assert!(e.contains("retention_days") && e.contains("36500"), "{e}");
+        let e = load_yaml("storage_access:\n  signed_links: cdn\n").unwrap_err().to_string();
+        assert!(e.contains("cdn"), "{e}");
+    }
+
+    #[test]
+    fn retries_default_to_two_with_half_a_second_backoff_and_refuse_bad_values() {
+        let cfg = load_yaml("cost_markup_percent: 0\n").unwrap();
+        assert_eq!((cfg.retries.max_retries, cfg.retries.backoff_ms, cfg.retries.max_backoff_ms), (2, 500, 10_000));
+        let cfg = load_yaml("retries:\n  max_retries: 0\n  backoff_ms: 0\n").unwrap();
+        assert_eq!((cfg.retries.max_retries, cfg.retries.backoff_ms), (0, 0));
+        // The cache, the vendor timeout and the breaker are held to their ranges too.
+        for (yaml, field) in [
+            ("retries:\n  max_retries: 6\n", "max_retries"),
+            ("retries:\n  backoff_ms: 60001\n", "backoff_ms"),
+            ("retries:\n  backoff_ms: 2000\n  max_backoff_ms: 1000\n", "max_backoff_ms"),
+            ("retries:\n  attempts: 3\n", "attempts"),
+            ("cache:\n  default_ttl_seconds: 0\n", "default_ttl_seconds"),
+            ("cache:\n  max_items: 0\n", "max_items"),
+            ("cache:\n  max_items: 1000001\n", "max_items"),
+            ("cache:\n  max_bytes: 1024\n", "max_bytes"),
+            ("cache:\n  max_bytes: 68719476737\n", "max_bytes"),
+            ("server:\n  vendor_timeout_secs: 4\n", "vendor_timeout_secs"),
+            ("circuit_breaker:\n  threshold: 0\n", "threshold"),
+            ("circuit_breaker:\n  open_for_seconds: 3601\n", "open_for_seconds"),
+        ] {
+            let e = load_yaml(yaml).unwrap_err().to_string();
+            assert!(e.contains(field), "{yaml}: {e}");
+        }
+        let cfg = load_yaml("cache:\n  enabled: true\n  default_ttl_seconds: 60\n  max_items: 5\nserver:\n  vendor_timeout_secs: 5\ncircuit_breaker:\n  threshold: 1\n  open_for_seconds: 3600\n").unwrap();
+        assert_eq!((cfg.cache.default_ttl_seconds, cfg.cache.max_items, cfg.server.vendor_timeout_secs), (60, 5, Some(5)));
+        // The cache's byte budget (P7): 256 MiB unless set, both ends of its range load.
+        assert_eq!(cfg.cache.max_bytes, 268_435_456);
+        assert_eq!(load_yaml("cache:\n  max_bytes: 1048576\n").unwrap().cache.max_bytes, 1_048_576);
+        assert_eq!(load_yaml("cache:\n  max_bytes: 68719476736\n").unwrap().cache.max_bytes, 68_719_476_736);
+    }
+
+    #[test]
+    fn storage_access_is_noticed_in_the_file_or_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |dir: &std::path::Path| config_file(dir, None, &HashMap::new()).unwrap();
+        assert!(!storage_access_in(file(dir.path()).as_ref(), std::iter::empty()));
+        std::fs::write(dir.path().join("litegen.yaml"), "cost_markup_percent: lots\n").unwrap();
+        assert!(!storage_access_in(file(dir.path()).as_ref(), std::iter::empty()));
+        std::fs::write(dir.path().join("litegen.yaml"), "storage_access:\n  mode: privat\n").unwrap();
+        assert!(storage_access_in(file(dir.path()).as_ref(), std::iter::empty()));
+        let empty = tempfile::tempdir().unwrap();
+        let env = [("LITEGEN__STORAGE_ACCESS__MODE".to_string(), "privat".to_string())];
+        assert!(storage_access_in(file(empty.path()).as_ref(), env.into_iter()));
+        let env = [("LITEGEN__SERVER__PORT".to_string(), "4000".to_string())];
+        assert!(!storage_access_in(file(empty.path()).as_ref(), env.into_iter()));
+    }
+
     #[test]
     fn nonblank_master_key_with_surrounding_space_is_still_a_real_key() {
         // A key with real content (even if padded) is a genuine secret -> safe.
-        let mut cfg = AppConfig::default();
-        cfg.master_key = Some("  s3cret-key  ".to_string());
+        let cfg = AppConfig { master_key: Some("  s3cret-key  ".to_string()), ..Default::default() };
         assert!(matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok));
     }
 }

@@ -70,7 +70,7 @@ and returns the result or the progress so far.
 
 ## Check it works
 
-`tools/list` with an AI key lists 21 tools (22 for a signed-in user, who
+`tools/list` with an AI key lists 23 tools (24 for a signed-in user, who
 also gets `get_current_user`); `tools/call list_models` returns the models
 your key may use.
 

@@ -12,8 +12,11 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1000 }
     params:
-      # "Luma always returns JPEG" (PixelGenie L9): no format choice is sent.
-      output_format: { kind: string, enum_values: [jpeg], default: jpeg }
+      # "format … The format of the image": ImageFormat `jpg | png` ("default":
+      # "jpg"), sent as `format` (jpeg → jpg). PixelGenie L9's "Luma always
+      # returns JPEG" predates it.
+      # @see https://docs.lumalabs.ai/reference/generateimage.md (2026-11-03)
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","3:4","4:3","9:16","16:9","9:21","21:9"]
@@ -32,7 +35,7 @@ models:
         style:     { required: false, min_count: 0, max_count: 4 }
         character: { required: false, min_count: 0, max_count: 4 }
         modify:    { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [format]
+    extra_allowlist: []
     tags: [text-to-image, image-to-image]
 
   - id: luma/photon-flash-1
@@ -45,8 +48,11 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1000 }
     params:
-      # "Luma always returns JPEG" (PixelGenie L9): no format choice is sent.
-      output_format: { kind: string, enum_values: [jpeg], default: jpeg }
+      # "format … The format of the image": ImageFormat `jpg | png` ("default":
+      # "jpg"), sent as `format` (jpeg → jpg). PixelGenie L9's "Luma always
+      # returns JPEG" predates it.
+      # @see https://docs.lumalabs.ai/reference/generateimage.md (2026-11-03)
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","3:4","4:3","9:16","16:9","9:21","21:9"]
@@ -65,7 +71,7 @@ models:
         style:     { required: false, min_count: 0, max_count: 4 }
         character: { required: false, min_count: 0, max_count: 4 }
         modify:    { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [format]
+    extra_allowlist: []
     tags: [text-to-image, image-to-image, fast]
 
   - id: luma/dream-machine
@@ -74,7 +80,15 @@ models:
     display_name: Luma Dream Machine
     description: Luma Dream Machine text/image-to-video (sent as ray-2) with first and last keyframes, 5 or 9 s, optional loop.
     docs_url: https://docs.lumalabs.ai/reference/creategeneration
-    pricing: { base_cost_usd: 0.35 }
+    # Sent as ray-2, so priced as luma/ray-2 at 1080p and 4k: "Create cost (for
+    # 5s Ray 2 video)" "1080p | 0.95", "4k | 1.05". Luma publishes no 9 s price
+    # and none below 1080p, so 9 s bills the 5 s price and the base stays as set.
+    # @see https://docs.lumalabs.ai/changelog/upscale.md (2026-11-09)
+    pricing:
+      base_cost_usd: 0.35
+      variable_pricing:
+        - { when: { resolution: 1080p }, usd: 0.95 }
+        - { when: { resolution: 4k }, usd: 1.05 }
     capabilities: { text_to_video: true, image_to_video: true }
     # "Prompt is too short, minimum length is 3 characters", "Prompt is too long,
     # maximum length is 5000 characters".
@@ -107,7 +121,6 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [callback_url]
     tags: [text-to-video, image-to-video]
 
   - id: luma/ray-2
@@ -116,7 +129,15 @@ models:
     display_name: Luma Ray 2
     description: Luma Ray 2 text/image-to-video with first and last keyframes, 5 or 9 s, 540p to 4K, optional loop.
     docs_url: https://docs.lumalabs.ai/reference/creategeneration
-    pricing: { base_cost_usd: 0.40 }
+    # "Create cost (for 5s Ray 2 video)": "1080p | 0.95", "4k | 1.05". Luma
+    # publishes no 9 s price and none below 1080p, so 9 s bills the 5 s price
+    # and the base stays as set.
+    # @see https://docs.lumalabs.ai/changelog/upscale.md (2026-11-09)
+    pricing:
+      base_cost_usd: 0.40
+      variable_pricing:
+        - { when: { resolution: 1080p }, usd: 0.95 }
+        - { when: { resolution: 4k }, usd: 1.05 }
     capabilities: { text_to_video: true, image_to_video: true }
     # "Prompt is too short, minimum length is 3 characters", "Prompt is too long,
     # maximum length is 5000 characters".

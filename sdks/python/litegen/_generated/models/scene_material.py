@@ -12,7 +12,11 @@ T = TypeVar("T", bound="SceneMaterial")
 class SceneMaterial:
     """
     Attributes:
-        maps (List[str]): `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`.
+        maps (List[str]): `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`,
+            and the layer maps `clearcoat`, `clearcoat_roughness`,
+            `clearcoat_normal`, `transmission`, `volume_thickness`, `specular`,
+            `specular_color`, `sheen_color`, `sheen_roughness`, `iridescence`,
+            `iridescence_thickness`, `anisotropy`.
         name (Union[None, Unset, str]):
     """
 

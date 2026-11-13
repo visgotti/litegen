@@ -26,13 +26,22 @@ class ImageGenerationRequest:
     """
     Attributes:
         model (str):
-        extra (Union[Unset, Any]):
+        extra (Union[Unset, Any]): Vendor fields with no canonical param, sent to the vendor as given:
+            only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`),
+            each of the type its `extra_params` entry gives, when it has one (a
+            wrong value is refused in either mode, with `param: "extra.<key>"`).
+            Strict mode refuses any other key (`extra_key_unsupported`); `strict:
+            false` drops it and names it in `X-Litegen-Dropped-Params`. Where a
+            job's result is sent or stored, and whether the vendor publishes it,
+            are litegen's: it polls every job and fires your key's webhook.
         metadata (Union['BaseGenerationRequestMetadataType0', None, Unset]): Your own labels for the job (PixelGenie
             L17): a map of string values,
             keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. Kept on
             the generation, echoed on every answer and webhook, and filters
             `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`.
-        n (Union[Unset, int]):
+        n (Union[Unset, int]): One image, video or mesh per request: more than 1 is refused
+            (`param_out_of_range`); send several requests for several. 0 is the
+            same as 1.
         negative_prompt (Union[None, Unset, str]):
         prompt (Union[Unset, str]): Whether a prompt is required is decided per model, by its
             `prompt.required` in `GET /v1/models/{id}` — never by the wire format.
@@ -41,7 +50,14 @@ class ImageGenerationRequest:
             answers with `prompt_required`.
         reference_images (Union[Unset, List['ReferenceImage']]):
         seed (Union[None, Unset, int]):
-        strict (Union[Unset, bool]):
+        strict (Union[Unset, bool]): `true` (the default) refuses a field the request has no such name for,
+            and a param the model does not take, with `param_unsupported`; `false`
+            drops both and names them in `X-Litegen-Dropped-Params`. A field inside
+            one of the request's objects is named by its path, such as
+            `reference_images[0].weight`. A bad value for a param the model does
+            take is refused either way. A top-level field the model passes through
+            (its `extra_allowlist` in `GET /v1/models/{id}`, such as OpenAI's
+            `user`) is sent on as if it were in `extra`, in both modes.
         aspect_ratio (Union[None, Unset, str]):
         background (Union[ImageBackground, None, Unset]):
         directions (Union[None, Unset, int]): A character in 4 or 8 facings, one labelled image each (PixelGenie L16).
@@ -66,6 +82,11 @@ class ImageGenerationRequest:
             region, a lossless container and an output the init's size.
         quality (Union[None, Unset, str]):
         region (Union['Region', None, Unset]):
+        resolution (Union[None, Unset, str]): The output tier, on a model that has tiers: one of its
+            `params.resolution` values, on one scale for every vendor (`0.5K`,
+            `0.75K`, `1K`, `1.5K`, `2K`, `4K`, about that many thousand pixels a
+            side; FLUX 3 Image adds `match_input`, an edit at its reference's
+            size). An exact `size` wins where a model takes both.
         response_format (Union[Unset, str]):
         size (Union[None, Unset, str]):
         steps (Union[None, Unset, int]):
@@ -98,6 +119,7 @@ class ImageGenerationRequest:
     preserve_unmasked: Union[None, Unset, bool] = UNSET
     quality: Union[None, Unset, str] = UNSET
     region: Union["Region", None, Unset] = UNSET
+    resolution: Union[None, Unset, str] = UNSET
     response_format: Union[Unset, str] = UNSET
     size: Union[None, Unset, str] = UNSET
     steps: Union[None, Unset, int] = UNSET
@@ -251,6 +273,12 @@ class ImageGenerationRequest:
         else:
             region = self.region
 
+        resolution: Union[None, Unset, str]
+        if isinstance(self.resolution, Unset):
+            resolution = UNSET
+        else:
+            resolution = self.resolution
+
         response_format = self.response_format
 
         size: Union[None, Unset, str]
@@ -340,6 +368,8 @@ class ImageGenerationRequest:
             field_dict["quality"] = quality
         if region is not UNSET:
             field_dict["region"] = region
+        if resolution is not UNSET:
+            field_dict["resolution"] = resolution
         if response_format is not UNSET:
             field_dict["response_format"] = response_format
         if size is not UNSET:
@@ -599,6 +629,15 @@ class ImageGenerationRequest:
 
         region = _parse_region(d.pop("region", UNSET))
 
+        def _parse_resolution(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        resolution = _parse_resolution(d.pop("resolution", UNSET))
+
         response_format = d.pop("response_format", UNSET)
 
         def _parse_size(data: object) -> Union[None, Unset, str]:
@@ -683,6 +722,7 @@ class ImageGenerationRequest:
             preserve_unmasked=preserve_unmasked,
             quality=quality,
             region=region,
+            resolution=resolution,
             response_format=response_format,
             size=size,
             steps=steps,

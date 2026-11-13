@@ -54,7 +54,11 @@ describe('ScrapeService resilience', () => {
       get: () => ({ timeoutMs: 1000, staleAfterFailures: 3 }),
     };
     const providerRepo: any = { findOne: async () => provider, save: providerSave };
-    const modelRepo: any = { find: async () => models };
+    // Honours `where.active`: a model without the field is active.
+    const modelRepo: any = {
+      find: async ({ where }: any = {}) =>
+        models.filter((m) => where?.active === undefined || (m.active ?? true) === where.active),
+    };
     const priceRepo: any = {
       find: async (query?: any) => {
         const op = query?.where?.modelId;
@@ -113,6 +117,7 @@ describe('ScrapeService resilience', () => {
     const throwing: ProviderScraper = {
       providerId: 'p1',
       implemented: true,
+      modelIds: ['p1/a', 'p1/b'],
       scrape: async () => {
         throw new Error('boom');
       },
@@ -136,6 +141,7 @@ describe('ScrapeService resilience', () => {
     const partial: ProviderScraper = {
       providerId: 'p1',
       implemented: true,
+      modelIds: ['p1/a', 'p1/b'],
       // returns only model a, with a changed price; model b is missing
       scrape: async () => [{ modelId: 'p1/a', unit: PriceUnit.PER_IMAGE, amountUsd: 2 }],
     };
@@ -155,5 +161,38 @@ describe('ScrapeService resilience', () => {
     expect(b.freshness).toBe(Freshness.STALE);
     expect(b.consecutiveFailures).toBe(1);
     expect(provider.lastScrapeStatus).toBe(ScrapeStatus.PARTIAL);
+  });
+
+  it('leaves a retired model alone: not scraped, not degraded', async () => {
+    const { service, models, prices } = setup();
+    models.push({ id: 'p1/old', providerId: 'p1', modeOverride: null, active: false });
+    prices.push({
+      modelId: 'p1/old',
+      unit: PriceUnit.PER_IMAGE,
+      tierKey: '*',
+      amountUsd: 3,
+      unitAmount: 1,
+      currency: 'USD',
+      freshness: Freshness.FRESH,
+      source: PriceSource.FALLBACK,
+      consecutiveFailures: 0,
+    });
+    const both: ProviderScraper = {
+      providerId: 'p1',
+      implemented: true,
+      modelIds: ['p1/a', 'p1/b'],
+      scrape: async () => [
+        { modelId: 'p1/a', unit: PriceUnit.PER_IMAGE, amountUsd: 1 },
+        { modelId: 'p1/b', unit: PriceUnit.PER_IMAGE, amountUsd: 5 },
+      ],
+    };
+    service.registry = registryWith(both, 'http://x');
+
+    const run = await service.scrapeProvider('p1');
+
+    expect(run.status).toBe(ScrapeStatus.SUCCESS);
+    const old = prices.find((p) => p.modelId === 'p1/old');
+    expect(old.freshness).toBe(Freshness.FRESH);
+    expect(old.consecutiveFailures).toBe(0);
   });
 });

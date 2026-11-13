@@ -1,10 +1,15 @@
 # LiteGen configuration example
-# Copy to litegen.yaml and customize
+# Copy to litegen.yaml in the directory litegen runs in and customize, or
+# name the file: litegen --config <file> (or LITEGEN_CONFIG_FILE_PATH).
+# Environment variables beat this file; see docs/configuration.md.
 
 server:
   host: "0.0.0.0"
   port: 4000
-  request_timeout_seconds: 300
+  # Server limits (docs/gateway-settings.md, "Server limits"), each 1 to 3600:
+  # header_read_timeout_secs: 130    # headers, and a keep-alive connection's idle time; keep a proxy's upstream idle timeout below it
+  # request_body_timeout_secs: 300   # a request body's time to arrive, else 408 body_timeout
+  # shutdown_grace_secs: 150         # what a stop gives open requests (default: the vendor timeout + 30)
   # Externally reachable origin for client-facing URLs (e.g. 3D asset URLs,
   # which MUST be absolute — a client fetching one from a worker cannot resolve
   # a relative path). Env: LITEGEN__SERVER__PUBLIC_BASE_URL.
@@ -17,14 +22,17 @@ server:
   # prefix:
   # public_base_url: "https://app.litegen.ai/api"
 
-# Database (SQLite for dev, Postgres for prod)
-database_url: "sqlite://litegen.db"
+# Database. Left out, litegen keeps SQLite in data/litegen.db in its working
+# directory, created with that directory on the first start
+# (/app/data/litegen.db in the Docker image). Postgres for production.
+# database_url: "sqlite://data/litegen.db?mode=rwc"   # the default
+# database_url: "postgres://user:pass@host:5432/litegen"
 
-# Model registry directory (loaded at startup).
-# Each <provider>.yaml file declares the models that provider serves and
-# their input contracts (allowed sizes, aspect ratios, ref-image roles,
-# extra-passthrough allowlist, etc.). Override with LITEGEN_MODELS_DIR.
-models_dir: "./models"
+# The model registry (loaded at startup) is the models/ directory: each
+# <provider>.yaml declares the models that provider serves and their input
+# contracts (allowed sizes, aspect ratios, ref-image roles, extra-passthrough
+# allowlist, etc.). It is not set in this file: set the environment variable
+# LITEGEN_MODELS_DIR to use another directory.
 
 # Master API key. Optional for LOCAL dev (loopback bind), but REQUIRED when
 # bound to a non-loopback address (e.g. host: "0.0.0.0" above) in single-tenant
@@ -43,12 +51,19 @@ models_dir: "./models"
 # Cost markup percentage (0 = no markup)
 cost_markup_percent: 0.0
 
-# Provider configurations
+# Provider configurations. A vendor's own variable (OPENAI_API_KEY, …) beats a
+# key here, and LITEGEN__PROVIDERS__<P>__API_KEY beats both; a blank variable
+# counts as unset. LiteLLM's form also works: api_key: os.environ/OPENAI_API_KEY
 providers:
   openai:
     api_key: ""  # or set OPENAI_API_KEY env var
     # api_keys: "sk-key1:3,sk-key2:1"  # weighted multi-key support
-    # api_base: "https://api.openai.com/v1"
+    # api_base: "https://api.openai.com/v1"  # or a proxy / AI gateway
+    # extra_headers:                         # on every call to the vendor's API
+    #   OpenAI-Organization: "org-..."
+    # model_mapping:                         # the name the vendor sees
+    #   openai/gpt-image-2: "my-deployment"
+    # Every provider takes these fields: docs/provider-config.md
   stability:
     api_key: ""  # or set STABILITY_API_KEY env var
   replicate:
@@ -88,10 +103,12 @@ providers:
     api_key: ""  # or VIDU_API_KEY (Authorization: Token)
   pixverse:
     api_key: ""  # or PIXVERSE_API_KEY (API-KEY header)
-  # ── Signing-scheme vendors ──
   kling:
-    key_id: ""      # access key   (or KLING_ACCESS_KEY) — per-request JWT auth
-    key_secret: ""  # secret key   (or KLING_SECRET_KEY)
+    api_key: ""     # or KLING_API_KEY (Authorization: Bearer) — the old access/secret key pair works only on Kling's legacy API
+  tokenhub:
+    api_key: ""     # or TOKENHUB_API_KEY (Authorization: Bearer) — Tencent TokenHub, Hunyuan's new home
+    # api_base: "https://tokenhub.tencentmaas.com/v1"  # or TOKENHUB_API_BASE
+  # ── Signing-scheme vendors ──
   bedrock:
     key_id: ""      # AWS access key id     (or BEDROCK_ACCESS_KEY_ID) — SigV4
     key_secret: ""  # AWS secret access key (or BEDROCK_SECRET_ACCESS_KEY)
@@ -102,8 +119,9 @@ providers:
     key_secret: ""  # Tencent SecretKey (or TENCENT_SECRET_KEY)
     region: "ap-guangzhou"  # or TENCENT_REGION (ap-guangzhou only)
 
-# Model routing rules (optional — auto-discovery works without these)
-model_routes:
+# Model routing rules (optional — auto-discovery works without these). With
+# routes, replace `[]` by the list: an empty `model_routes:` stops startup.
+model_routes: []
   # Example: route gpt-image-2 through OpenAI with Stability as fallback
   # - model: "gpt-image-2"
   #   strategy: "fallback"
@@ -127,10 +145,26 @@ model_routes:
   #       weight: 1
 
 # Cache configuration
+# Image answers, cached in memory on each replica, with a shared tier in Redis
+# when Redis is set (docs/gateway-settings.md, docs/scaling.md). A
+# model route's `cache` decides for its models; a request opts out with
+# Cache-Control: no-cache / no-store. The dashboard (Gateway → Settings)
+# overrides these at runtime.
 cache:
   enabled: false
-  default_ttl_seconds: 3600
-  max_items: 10000
+  default_ttl_seconds: 3600      # 1 to 604800
+  max_items: 10000               # 1 to 1000000
+  max_bytes: 268435456           # about this much memory per replica: 1048576 to 68719476736
+
+# How a vendor call turned away with a retryable error (429, 408, 5xx) is tried
+# again: a random wait up to backoff_ms, doubling each retry, never above
+# max_backoff_ms, and never less than the vendor's Retry-After (one longer
+# than max_backoff_ms is not waited for). A timeout or an accepted job is
+# never retried. Also editable on the dashboard.
+# retries:
+#   max_retries: 2               # 0 to 5
+#   backoff_ms: 500
+#   max_backoff_ms: 10000        # up to 60000
 
 # Image storage configuration
 # Controls where generated images are persisted.
@@ -147,28 +181,71 @@ image_storage:
   # S3 configuration (required when backend = "s3")
   # Works with AWS S3, MinIO, Cloudflare R2, DigitalOcean Spaces, etc.
   # s3:
-  #   bucket_name: "my-litegen-bucket"
-  #   region: "us-east-1"
-  #   access_key_id: ""      # or set AWS_ACCESS_KEY_ID env var
-  #   secret_access_key: ""  # or set AWS_SECRET_ACCESS_KEY env var
+  #   bucket_name: "my-litegen-bucket"  # or LITEGEN_S3_BUCKET; required for backend s3
+  #   region: "us-east-1"               # or LITEGEN_S3_REGION
+  #   # A key and its secret, both or neither (or LITEGEN_S3_ACCESS_KEY_ID and
+  #   # LITEGEN_S3_SECRET_ACCESS_KEY). Left unset or blank, the S3 client uses
+  #   # the AWS credential chain: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and
+  #   # AWS_SESSION_TOKEN, a profile, web identity, or a container or instance
+  #   # role.
+  #   # access_key_id: "AKIA..."
+  #   # secret_access_key: "..."
   #   # For S3-compatible services (MinIO, R2, Spaces):
   #   # endpoint_url: "https://minio.example.com:9000"
   #   # custom_public_url: "https://cdn.example.com"
+
+# ─── Who may open stored outputs ─────────────────────────────────────────────
+# How the URLs litegen hands out for kept images, videos and 3D files work:
+#   public  — the stored URL; anyone holding it (the default)
+#   signed  — links that expire (recommended for new deployments)
+#   private — litegen's file route, which wants a key
+# The gateway setting (dashboard: Gateway → Settings) and each app's own
+# (Organization → Access to stored files) override these, field by field.
+# For signed and private, keep the bucket itself private. A bad value here
+# stops litegen from starting. See docs/storage-access.md.
+# storage_access:
+#   mode: signed
+#   owner_scope: key               # key | app | org: which keys open a file through litegen
+#   signed_url_ttl_seconds: 3600   # 60 to 604800 (a week)
 
 # Observability
 observability:
   log_level: "info"
   json_logs: false
-  metrics_enabled: true
-  metrics_path: "/metrics"
+  metrics_enabled: true           # false: no metrics route, nothing recorded
+  metrics_path: "/metrics"        # a static path litegen doesn't serve itself (not under /v1, /health, /mcp, …)
+  # metrics_require_auth: false   # true: the master key, or a key with read in the deployment's org
+
+# Where keys' webhooks may point (docs/management-api.md). In single-tenant
+# mode only the deployment's own keys (made with the master key, or owned by
+# an Owner or Admin of its org) may reach its own network; `everyone` lets
+# any key's webhook reach it. Hosted mode: public addresses only, always.
+# webhooks:
+#   internal_targets: admins      # admins | everyone
 
 # ─── CORS ────────────────────────────────────────────────────────────────────
 # Default is locked down (no origins allowed).
 # Set LITEGEN__CORS__ALLOWED_ORIGINS=https://your-dashboard.com,https://other.com
 # Or LITEGEN__CORS__ALLOWED_ORIGINS=* for dev convenience.
+# LITEGEN_CORS_ORIGINS, the same comma list, replaces both when set.
 # cors:
 #   allowed_origins: []       # CSV via env or list here
-#   allow_credentials: false
+#   allow_credentials: false  # only with a listed origin, never with *
+
+# ─── Generation call hooks ───────────────────────────────────────────────────
+# Python, Node or Bun files run around the generation routes, in this order:
+# pre_call sees the raw request before authentication, post_call the finished
+# response. Paths are relative to this file's folder (the directory litegen
+# runs in, for a litegen.yaml found there).
+# See docs/hooks.md and examples/hooks/.
+# hooks:
+#   - path: hooks/custom_auth.py     # .py → python3
+#     timeout_ms: 2000               # per call
+#     on_error: refuse               # refuse | allow
+#     env:
+#       ACME_TOKENS: "alice-token:alice"
+#   - path: hooks/rewrite.ts         # .ts → bun
+#   - path: hooks/tag_results.mjs    # .js/.mjs/.cjs → node
 
 # OpenTelemetry distributed tracing (optional)
 # Set OTEL_EXPORTER_OTLP_ENDPOINT to enable OTLP gRPC export, e.g.:
@@ -193,3 +270,4 @@ observability:
 #     access_token_ttl_secs: 3600
 #     refresh_token_ttl_days: 30
 #     rate_limit_per_minute: 30   # /oauth/register + /oauth/authorize requests per address a minute; 0 = off
+#     trusted_redirect_hosts: []  # hosts whose sign-in errors go straight back, e.g. ["claude.ai"]; loopback always does

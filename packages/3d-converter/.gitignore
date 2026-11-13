@@ -1,0 +1,9 @@
+# Build outputs and local tools of the 3D converter workspace.
+target/
+.tools/
+js/dist/
+python/dist/
+.venv*/
+__pycache__/
+*.so
+*.pyd

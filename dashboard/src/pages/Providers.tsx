@@ -16,7 +16,9 @@ export default function Providers() {
   const [enabled, setEnabled] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<ModelInfo | null>(null);
 
-  useEffect(() => { void client.models.list().then(setCatalog).catch(() => {}); }, []);
+  // Every served model, not only the org pool's: this page edits the pool,
+  // so a model it leaves out must stay listed to be enabled again.
+  useEffect(() => { void client.models.list({ all: true }).then(setCatalog).catch(() => {}); }, []);
   useEffect(() => { void client.providers.list().then(setProviders).catch(() => {}); }, []);
 
   const loadCreds = useCallback(async () => {

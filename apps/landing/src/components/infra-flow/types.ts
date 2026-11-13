@@ -28,7 +28,7 @@ export interface FlowHandle {
 }
 
 // ---- std140 uniform layout (mirrored by shader.ts / shader-glsl.ts) ---------
-// There are 20 live nodes (app + gateway + 18 providers); the cap is 24 so every
+// There are 19 live nodes (app + gateway + 17 providers); the cap is 24 so every
 // provider gets links/halos/media with headroom. Bump this *and* the three
 // `array<vec4, N>` sizes in BOTH shaders together or the std140 layout desyncs.
 export const MAX_NODES = 24;

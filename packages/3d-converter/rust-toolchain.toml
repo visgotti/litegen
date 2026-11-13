@@ -1,0 +1,8 @@
+# Read by rustup's cargo only (Homebrew's cargo ignores it). The same version
+# as the repo root's rust-toolchain.toml, plus the wasm32 target the npm build
+# needs.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+targets = ["wasm32-unknown-unknown"]
+components = ["clippy", "rustfmt"]

@@ -1,4 +1,5 @@
-//! ZIP archives: the outer container of USDZ and 3MF.
+//! ZIP archives: the outer container of USDZ and 3MF, and of a package
+//! delivered as one download ([`write_package`]).
 //!
 //! # Reading untrusted archives
 //!
@@ -54,8 +55,12 @@ const METHOD_DEFLATE: u16 = 8;
 /// handful of textures and some metadata; tens of thousands of entries is
 /// a directory scan waiting to happen.
 const MAX_ENTRIES: usize = 10_000;
-/// Total bytes all entries may inflate to, together.
-const MAX_TOTAL_UNCOMPRESSED: u64 = 4 * super::MAX_INPUT_BYTES as u64;
+/// Total bytes all entries may inflate to, together: the expansion budget
+/// every compressed container shares ([`super::MAX_EXPANDED_BYTES`]). Four
+/// times the input cap, as this was until 2026-11, refused litegen's own
+/// textured 3MF near the scene caps: its model XML inflates to seven to nine
+/// times the package.
+pub(super) const MAX_TOTAL_UNCOMPRESSED: u64 = super::MAX_EXPANDED_BYTES as u64;
 
 fn malformed(detail: impl Into<String>) -> MeshError {
     MeshError::Malformed(format!("zip: {}", detail.into()))
@@ -508,6 +513,46 @@ impl Writer {
     }
 }
 
+/// Extensions of the text files a package holds: deflated. Everything else
+/// (PNG and JPEG are compressed already; a `.bin` is opaque) is stored.
+const TEXT_EXTENSIONS: [&str; 5] = ["obj", "mtl", "dae", "usda", "gltf"];
+
+/// A written [`package::Package`] as one zip, for a client that downloads a
+/// multi-file container as one file: each file under its package path, the
+/// primary first, so unzipping it gives the folder a reader resolves the
+/// primary's references in. Deterministic: one package always zips to the
+/// same bytes.
+///
+/// Every path must already be a plain relative path inside the package,
+/// unchanged by [`package::normalize_relative`] (writers name their sidecars
+/// so), and no two may differ only in case: on macOS and Windows those unzip
+/// over each other. A package that breaks either is an error, never a zip
+/// that escapes its folder or loses a file when unpacked.
+pub fn write_package(package: &package::Package) -> Result<Vec<u8>, MeshError> {
+    let mut folded: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(package.files.len());
+    let mut w = Writer::new();
+    for f in &package.files {
+        if package::normalize_relative(&f.path).as_deref() != Some(f.path.as_str()) {
+            return Err(malformed(format!(
+                "package path {:?} is not a plain relative path inside the package",
+                truncate(&f.path, 80)
+            )));
+        }
+        if !folded.insert(f.path.to_lowercase()) {
+            return Err(malformed(format!(
+                "package path {:?} names a file the package already has (paths that differ only in case are one file on macOS and Windows)",
+                truncate(&f.path, 80)
+            )));
+        }
+        let text = f
+            .path
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| TEXT_EXTENSIONS.iter().any(|t| ext.eq_ignore_ascii_case(t)));
+        w.add(&f.path, &f.bytes, if text { Store::Deflated } else { Store::Stored { align: 1 } })?;
+    }
+    Ok(w.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,6 +785,193 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    // ── write_package ──
+
+    use super::super::package::{MemorySidecars, Package, PackageFile};
+    use super::super::{fixtures, read_scene, write_scene, MeshFormat, Scene, WriteOptions};
+
+    /// The containers whose packages carry sidecars.
+    const PACKAGED: [MeshFormat; 5] = [MeshFormat::Obj, MeshFormat::Dae, MeshFormat::Usda, MeshFormat::Usdc, MeshFormat::Gltf];
+
+    fn package_of(scene: &Scene, fmt: MeshFormat) -> Package {
+        write_scene(scene, fmt, WriteOptions { self_contained: false, ..Default::default() })
+            .unwrap_or_else(|e| panic!("write {fmt}: {e}"))
+            .package
+    }
+
+    fn unzip(bytes: &[u8]) -> Vec<PackageFile> {
+        let a = Archive::parse(bytes).expect("a package zip parses");
+        a.entries
+            .iter()
+            .map(|e| PackageFile { path: e.name.clone(), bytes: a.read(e).expect("every entry inflates and passes its CRC") })
+            .collect()
+    }
+
+    /// How many texture bindings `scene`'s materials make, and the image
+    /// bytes they reach.
+    fn bound_images(scene: &Scene) -> (usize, std::collections::BTreeSet<Vec<u8>>) {
+        let mut count = 0;
+        let mut images = std::collections::BTreeSet::new();
+        for m in &scene.materials {
+            for (_, r) in m.texture_refs() {
+                count += 1;
+                let image = scene.textures.get(r.texture).and_then(|t| scene.images.get(t.image));
+                images.insert(image.expect("a binding resolves to an image").data.clone());
+            }
+        }
+        (count, images)
+    }
+
+    /// Triangles drawn: each node's mesh, once per node, so a container that
+    /// writes an instanced mesh once per instance (USD) counts the same.
+    fn drawn_triangles(scene: &Scene) -> usize {
+        scene.nodes.iter().filter_map(|n| n.mesh).map(|m| scene.meshes[m].primitives.iter().map(|p| p.triangle_count()).sum::<usize>()).sum()
+    }
+
+    fn pkg(paths: &[&str]) -> Package {
+        Package { files: paths.iter().map(|p| PackageFile { path: p.to_string(), bytes: b"x".to_vec() }).collect() }
+    }
+
+    #[test]
+    fn write_package_round_trips_through_the_archive_reader() {
+        let mut sidecars = 0;
+        for (name, fixture) in fixtures::all() {
+            for fmt in PACKAGED {
+                let package = package_of(&fixture, fmt);
+                let zip = write_package(&package).unwrap_or_else(|e| panic!("{name} {fmt}: {e}"));
+                assert_eq!(write_package(&package).unwrap(), zip, "{name} {fmt}: one package zips to the same bytes every time");
+                let a = Archive::parse(&zip).unwrap_or_else(|e| panic!("{name} {fmt}: {e}"));
+                let names: Vec<&str> = a.entries.iter().map(|e| e.name.as_str()).collect();
+                let paths: Vec<&str> = package.files.iter().map(|f| f.path.as_str()).collect();
+                assert_eq!(names, paths, "{name} {fmt}: the package's files, primary first, in order");
+                for (e, f) in a.entries.iter().zip(&package.files) {
+                    let read = a.read(e).unwrap_or_else(|err| panic!("{name} {fmt} {}: {err}", e.name));
+                    assert_eq!(read, f.bytes, "{name} {fmt} {}: the entry is the file", e.name);
+                    let text = ["obj", "mtl", "dae", "usda", "gltf"].iter().any(|x| e.name.ends_with(&format!(".{x}")));
+                    assert_eq!(e.is_stored(), !text, "{name} {fmt} {}: text is deflated, images and buffers are stored", e.name);
+                }
+                sidecars += package.files.len() - 1;
+            }
+        }
+        assert!(sidecars > 0, "some package has sidecars to carry");
+    }
+
+    #[test]
+    fn a_package_zip_reads_back_as_its_container() {
+        let opts = WriteOptions { self_contained: false, ..Default::default() };
+        for (name, fixture) in fixtures::all() {
+            for fmt in PACKAGED {
+                let files = unzip(&write_package(&package_of(&fixture, fmt)).unwrap());
+                assert!(!files.is_empty(), "{name} {fmt}: the zip holds the package");
+                let got = read_scene(&files[0].bytes, fmt, &MemorySidecars { files: &files })
+                    .unwrap_or_else(|e| panic!("{name} {fmt}: reading the unzipped primary: {e}"))
+                    .scene;
+                let want = fmt.prepare(&fixture, opts).unwrap_or_else(|e| panic!("{name} {fmt}: prepare: {e}"));
+                assert_eq!(got.materials.len(), want.materials.len(), "{name} {fmt}: materials");
+                assert_eq!(drawn_triangles(&got), drawn_triangles(&want), "{name} {fmt}: triangles");
+                assert_eq!(bound_images(&got), bound_images(&want), "{name} {fmt}: every texture binding reaches the same image");
+                if name == "textured" {
+                    assert!(
+                        got.materials.iter().any(|m| m.base_color_texture.is_some()),
+                        "{name} {fmt}: the base-colour texture survives the package"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The textured fixture with three maps named "Wood", "wood" and "wood"
+    /// (exact twins, and a pair no case-insensitive filesystem tells apart),
+    /// each a solid 2 × 2 PNG of its own shade, bound to box_mat, panel_mat
+    /// and a third material on a second box.
+    fn maps_named_alike() -> (Scene, impl Fn(u8) -> Vec<u8>) {
+        use super::super::scene::{Image, ImageFormat, Material, Node, Texture, TextureRef};
+        let png = |v: u8| fixtures::encode_png(2, 2, &[v; 16]);
+        let mut s = fixtures::textured();
+        s.images = [("Wood", 40u8), ("wood", 120), ("wood", 200)]
+            .into_iter()
+            .map(|(n, v)| Image { name: Some(n.into()), format: ImageFormat::Png, data: png(v) })
+            .collect();
+        s.textures = (0..3).map(|image| Texture { name: None, image, sampler: Default::default() }).collect();
+        s.materials.push(Material { name: Some("third".into()), ..s.materials[0].clone() });
+        for (material, texture) in [(0, 0), (2, 1), (3, 2)] {
+            s.materials[material].base_color_texture = Some(TextureRef { texture, uv_set: 0, transform: None });
+        }
+        let mut second = s.meshes[0].clone();
+        second.name = Some("box2".into());
+        second.primitives[0].material = Some(3);
+        s.meshes.push(second);
+        s.nodes.push(Node { name: Some("box2_node".into()), mesh: Some(s.meshes.len() - 1), ..Default::default() });
+        let node = s.nodes.len() - 1;
+        s.nodes[0].children.push(node);
+        (s, png)
+    }
+
+    #[test]
+    fn textures_named_alike_unzip_to_distinct_files() {
+        let (scene, png) = maps_named_alike();
+        for fmt in PACKAGED {
+            let package = package_of(&scene, fmt);
+            let paths: Vec<&str> = package.files.iter().map(|f| f.path.as_str()).collect();
+            let maps: Vec<&str> = paths.iter().copied().filter(|p| p.ends_with(".png")).collect();
+            assert_eq!(maps.len(), 3, "{fmt}: one .png per map: {paths:?}");
+            let folded: std::collections::HashSet<String> = maps.iter().map(|p| p.to_ascii_lowercase()).collect();
+            assert_eq!(folded.len(), 3, "{fmt}: three files on a case-insensitive filesystem too: {paths:?}");
+            let files = unzip(&write_package(&package).unwrap_or_else(|e| panic!("{fmt}: {e}")));
+            let back = read_scene(&files[0].bytes, fmt, &MemorySidecars { files: &files }).unwrap().scene;
+            for (material, shade) in [("box_mat", 40u8), ("panel_mat", 120), ("third", 200)] {
+                let m = back.materials.iter().find(|m| m.name.as_deref() == Some(material)).unwrap_or_else(|| panic!("{fmt}: no {material}"));
+                let t = m.base_color_texture.as_ref().unwrap_or_else(|| panic!("{fmt}: {material} lost its map"));
+                assert!(back.images[back.textures[t.texture].image].data == png(shade), "{fmt}: {material} reads another map");
+            }
+        }
+    }
+
+    /// `MeshFormat::writes_sidecars` says which containers a package can be
+    /// more than one file of: exactly those the writers ever give sidecars.
+    #[test]
+    fn only_containers_that_write_sidecars_make_packages() {
+        for fmt in MeshFormat::ALL {
+            let most = fixtures::all().iter().map(|(_, s)| package_of(s, fmt).files.len()).max().unwrap_or(0);
+            assert_eq!(fmt.writes_sidecars(), most > 1, "{fmt}: a package of up to {most} file(s)");
+        }
+    }
+
+    #[test]
+    fn package_entry_names_never_escape() {
+        for bad in ["../x.png", "/abs.png", "C:x.png", "textures/../../x.png", "..\\x.png", "http://example.com/x.png"] {
+            assert!(write_package(&pkg(&["model.obj", bad])).is_err(), "sidecar {bad:?}");
+            assert!(write_package(&pkg(&[bad, "model.mtl"])).is_err(), "primary {bad:?}");
+        }
+    }
+
+    #[test]
+    fn package_entry_names_are_canonical_and_unique() {
+        // Inside the package, but not the name a reader gives it back: the
+        // archive reader would list another name than the one written.
+        for odd in ["./model.mtl", "textures//a.png", "textures\\a.png", "textures/./a.png", "a/../model.mtl", " model.mtl"] {
+            assert!(write_package(&pkg(&["model.obj", odd])).is_err(), "{odd:?}");
+        }
+        // One file twice, or two names that differ only in case: unzipped on
+        // macOS or Windows, the second overwrites the first.
+        for [a, b] in [["textures/a.png", "textures/a.png"], ["textures/Wood.png", "textures/wood.png"]] {
+            assert!(write_package(&pkg(&["model.obj", a, b])).is_err(), "{a:?} beside {b:?}");
+        }
+        // Distinct names are written as given, Unicode included, flagged UTF-8.
+        let want = ["model.obj", "model.mtl", "textures/a.png", "textures/b.png", "textures/テクスチャ.png"];
+        let zip = write_package(&pkg(&want)).unwrap();
+        let names: Vec<String> = Archive::parse(&zip).unwrap().entries.into_iter().map(|e| e.name).collect();
+        assert_eq!(names, want);
+        let eocd = zip.len() - 22;
+        let (count, mut at) = (u16_at(&zip, eocd + 10).unwrap(), u32_at(&zip, eocd + 16).unwrap() as usize);
+        for _ in 0..count {
+            assert_eq!(u32_at(&zip, at), Some(SIG_CENTRAL));
+            assert_ne!(u16_at(&zip, at + 8).unwrap() & 0x0800, 0, "general-purpose bit 11: the name is UTF-8");
+            let lens = [28, 30, 32].map(|o| u16_at(&zip, at + o).unwrap() as usize);
+            at += 46 + lens.iter().sum::<usize>();
         }
     }
 }

@@ -22,6 +22,24 @@ async fn post(app: &axum::Router, body: Value) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
+/// `POST /v1/models3d/cost`: validation only, no vendor is called.
+async fn quote(app: &axum::Router, body: Value) -> (StatusCode, Value) {
+    let resp = app
+        .clone()
+        .oneshot(Request::post("/v1/models3d/cost").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+async fn get(app: &axum::Router, uri: &str) -> Value {
+    let resp = app.clone().oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+    serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap()).unwrap()
+}
+
 async fn finished(app: &axum::Router, body: Value) -> Value {
     let (status, sub) = post(app, body).await;
     assert_eq!(status, StatusCode::OK, "{sub}");
@@ -118,5 +136,56 @@ async fn placement_is_offered_on_every_3d_model_and_a_height_must_be_one() {
     let list: Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap()).unwrap();
     for m in list["data"].as_array().unwrap() {
         assert_eq!(m["capabilities"]["supports_placement"], true, "{}", m["id"]);
+    }
+}
+
+/// E11a: the placement fields are litegen's own, so `GET /v1/models/{id}`
+/// serves them in `litegen_params` with the bounds the validator keeps. A
+/// client renders them from there and holds no copy of the rule or the caps.
+#[tokio::test]
+async fn every_3d_model_serves_its_placement_fields_with_the_bounds_the_validator_keeps() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let mesh = get(&app, "/v1/models/mock/mesh-3d").await;
+    let lp = &mesh["litegen_params"];
+    for f in ["ground", "center"] {
+        assert_eq!((lp[f]["kind"].as_str(), lp[f]["default"].as_bool()), (Some("bool"), Some(false)), "{f}: {mesh}");
+        assert!(mesh["params"].get(f).is_none(), "{f} is litegen's, not the vendor's: {mesh}");
+    }
+    let height = &lp["height_m"];
+    assert_eq!((height["kind"].as_str(), &height["min"]), (Some("float"), &Value::Null), "above 0 is no inclusive minimum: {height}");
+    assert!(mesh["params"].get("height_m").is_none(), "{mesh}");
+    let max = height["max"].as_f64().unwrap_or_else(|| panic!("a ceiling: {height}"));
+    // The served ceiling is the validator's.
+    let (s, resp) = quote(&app, json!({ "model": "mock/mesh-3d", "prompt": "a crate", "height_m": max })).await;
+    assert_eq!(s, StatusCode::OK, "{resp}");
+    let (s, resp) = quote(&app, json!({ "model": "mock/mesh-3d", "prompt": "a crate", "height_m": max + 1.0 })).await;
+    assert_eq!((s, resp["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("param_out_of_range")), "{resp}");
+    // Every 3D model the listing says is placed serves the fields.
+    let list = get(&app, "/v1/models?media_type=model3d").await;
+    for m in list["data"].as_array().unwrap() {
+        let id = m["id"].as_str().unwrap();
+        let served = get(&app, &format!("/v1/models/{id}")).await;
+        assert_eq!(served["litegen_params"].get("ground").is_some(), m["capabilities"]["supports_placement"] == true, "{id}: {served}");
+    }
+}
+
+/// E11a: a row that declares its own `height_m` without a ceiling is held to
+/// litegen's (the validator's `unwrap_or`), so that is the ceiling it is
+/// served with; the field stays in `params`, once.
+#[tokio::test]
+async fn a_declared_height_without_a_ceiling_is_served_with_the_ceiling_the_validator_keeps() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    for id in ["meshy/rig", "fal/meshy-rig"] {
+        let rig = get(&app, &format!("/v1/models/{id}")).await;
+        let max = rig["params"]["height_m"]["max"].as_f64();
+        assert_eq!(max, Some(10_000.0), "{id}: {}", rig["params"]["height_m"]);
+        assert!(rig["litegen_params"].get("height_m").is_none(), "{id}: declared once, in params: {}", rig["litegen_params"]);
+        let body = |h: f64| json!({ "model": id, "source_model": { "type": "generation", "value": "litegen-3d-x" }, "height_m": h });
+        let (s, resp) = quote(&app, body(max.unwrap() + 1.0)).await;
+        assert_eq!((s, resp["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("param_out_of_range")), "{id}: {resp}");
+        // At the ceiling it passes validation; with no vendor key the quote
+        // then stops at the provider.
+        let (_, resp) = quote(&app, body(max.unwrap())).await;
+        assert_ne!(resp["error"]["code"].as_str(), Some("param_out_of_range"), "{id}: {resp}");
     }
 }

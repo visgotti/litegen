@@ -119,10 +119,10 @@ def test_nullability_matches_the_schema(schema_name: str) -> None:
             )
 
 
-# `n` is on the request base shared with images and video, but it means nothing
-# for 3D: a job always produces exactly one result, and the 3D validator never
-# reads it. Model3dGenerateParams leaves it out on purpose. Anything else
-# missing is drift.
+# `n` is on the request base shared with images and video, but a 3D job always
+# makes exactly one mesh: the server refuses `n` above 1 (`param_out_of_range`),
+# and 0 or 1 is what leaving it out already means. Model3dGenerateParams leaves
+# it out on purpose. Anything else missing is drift.
 REQUEST_EXCLUSIONS = {"n"}
 
 
@@ -154,9 +154,17 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("ModelTask", t.ModelTask),
         ("Model3dSkeleton", t.Model3dSkeleton),
         ("Model3dJointNaming", t.Model3dJointNaming),
+        ("Model3dFbxColorSpace", t.Model3dFbxColorSpace),
+        ("Model3dFormatSource", t.Model3dFormatSource),
+        ("Model3dKtx2Textures", t.Model3dKtx2Textures),
+        ("Model3dLightUnits", t.Model3dLightUnits),
+        ("Model3dDaeMorphs", t.Model3dDaeMorphs),
+        ("Model3dUsdzRoot", t.Model3dUsdzRoot),
+        ("Model3dUsdClips", t.Model3dUsdClips),
         ("Model3dAnimationPreset", t.Model3dAnimationPreset),
         ("ImageView", t.ImageView),
         ("KeyframeTiming", t.KeyframeTiming),
+        ("FramesSetShape", t.FramesSetShape),
         ("ModelStatus", t.ModelStatus),
         ("ImageOutputFormat", t.ImageOutputFormat),
         ("VideoCamera", t.VideoCamera),

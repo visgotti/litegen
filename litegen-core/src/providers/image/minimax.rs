@@ -18,7 +18,8 @@ use crate::types::*;
 /// Synchronous: `POST /v1/image_generation` returns `{data: {image_base64: [..]},
 /// base_resp: {status_code, status_msg}}`. We request `response_format: "base64"`
 /// to get bytes inline. Bearer auth. Region split via api_base (api.minimax.io
-/// international vs api.minimaxi.com China).
+/// international vs api.minimax.cn China: the platform.minimax.cn specs say
+/// `servers: - url: https://api.minimax.cn`, 2026-11-09).
 ///
 /// @see <https://platform.minimax.io/docs/guides/image-generation>
 ///   Verbatim: "headers = {\"Authorization\": f\"Bearer {api_key}\"} ... payload = {\"model\": \"image-01\", \"prompt\": ..., \"aspect_ratio\": \"16:9\", \"response_format\": \"base64\"}; endpoint https://api.minimax.io/v1/image_generation"
@@ -30,15 +31,18 @@ pub struct MiniMaxImageProvider {
 }
 
 impl MiniMaxImageProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -82,6 +86,7 @@ impl ImageProvider for MiniMaxImageProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -99,7 +104,7 @@ impl ImageProvider for MiniMaxImageProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
-        let native = Self::resolve_model(&model.id);
+        let native = crate::providers::wire_model(self.config.as_ref(), &model.id, Self::resolve_model(&model.id));
         let url = format!("{}/image_generation", self.api_base());
 
         let mut body = json!({
@@ -109,8 +114,20 @@ impl ImageProvider for MiniMaxImageProvider {
             // returns and bills one; the default is 1.
             "response_format": "base64",
         });
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
+        // "width … height … Range [512, 2048], must be divisible by 8. If both
+        // `width/height` and `aspect_ratio` are provided, `aspect_ratio` takes
+        // priority": an exact size goes alone, so the ratio cannot override it.
+        // @see https://platform.minimax.io/docs/api-reference/image-generation-t2i.md (2026-11-03)
+        let size = extras.size.as_deref().and_then(|s| s.split_once('x')).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
+        if let Some((w, h)) = size {
+            body["width"] = Value::Number(w.into());
+            body["height"] = Value::Number(h.into());
+        } else if let Some(ar) = extras.aspect_ratio.as_deref() {
             body["aspect_ratio"] = Value::String(ar.to_string());
+        }
+        // "seed … Using the same seed and parameters produces reproducible images."
+        if let Some(seed) = base.seed {
+            body["seed"] = Value::Number(seed.into());
         }
         // subject_reference: [{type: "character", image_file: <url or data-uri>}]
         let mut subject_ref: Vec<Value> = Vec::new();
@@ -129,8 +146,9 @@ impl ImageProvider for MiniMaxImageProvider {
         }
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11).
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "prompt" | "n" | "response_format" | "aspect_ratio" | "subject_reference")) {
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| matches!(k, "model" | "prompt" | "n" | "response_format" | "aspect_ratio" | "subject_reference" | "width" | "height" | "seed");
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
                 obj.insert(k.clone(), v.clone());
             }
         }
@@ -247,7 +265,7 @@ mod tests {
     fn make_extras() -> ImageExtras {
         ImageExtras {
             vendor_job: Default::default(),
-            size: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
+            size: None, resolution: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
             edit: None, views: Vec::new(),
             output_format: None, background: None,
@@ -307,6 +325,31 @@ mod tests {
         make_provider(&server.uri()).generate(&ref_schema("minimax/image-01"), &base, &make_extras(), &crate::proxy::materializer::MaterializedRequest::default()).await.unwrap();
         let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert!(body.get("n").is_none(), "{body}");
+    }
+
+    /// "width … height … Range [512, 2048], must be divisible by 8. If both
+    /// `width/height` and `aspect_ratio` are provided, `aspect_ratio` takes
+    /// priority": an exact size goes as width/height without the ratio that
+    /// would override it, and `seed` goes as MiniMax's own; `extra` cannot
+    /// replace any of them.
+    /// @see <https://platform.minimax.io/docs/api-reference/image-generation-t2i.md> (2026-11-03)
+    #[tokio::test]
+    async fn a_size_goes_as_width_and_height_and_a_seed_goes_too() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/image_generation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": { "image_base64": [B64.encode(b"IMG")] }, "base_resp": { "status_code": 0 } })))
+            .mount(&server)
+            .await;
+        let mut base = make_base("a fox", "minimax/image-01");
+        base.seed = Some(42);
+        let mut extras = make_extras();
+        extras.size = Some("1024x768".into());
+        extras.extra = Some(json!({ "width": 512, "height": 512, "seed": 1 }));
+        make_provider(&server.uri()).generate(&ref_schema("minimax/image-01"), &base, &extras, &crate::proxy::materializer::MaterializedRequest::default()).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["width"].as_u64(), body["height"].as_u64(), body["seed"].as_i64()), (Some(1024), Some(768), Some(42)), "{body}");
+        assert!(body.get("aspect_ratio").is_none(), "the ratio would take priority over the size: {body}");
     }
 
     /// W14: a submit that timed out may still run, and bill, at the vendor:

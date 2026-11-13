@@ -1,0 +1,14 @@
+{
+  "//": "A project as a user might set one up: ES2022 without the disposable lib, and library checks on. The package's types must compile here.",
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2022"],
+    "types": [],
+    "strict": true,
+    "skipLibCheck": false,
+    "noEmit": true
+  },
+  "files": ["usage.ts"]
+}

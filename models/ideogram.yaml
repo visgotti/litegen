@@ -7,7 +7,16 @@ models:
     display_name: Ideogram 3.0
     description: Ideogram 3.0 text-to-image with style/character reference images.
     docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3
-    pricing: { base_cost_usd: 0.06 }
+    # Ideogram's price catalog (US$ micros): "Ideogram 3.0 Default" 60000 ($0.06),
+    # "Ideogram 3.0 Default with Character Reference" 150000 ($0.15). The v3
+    # page: "Generations with character reference are subject to the character
+    # reference pricing"; a style reference keeps the model's rate.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
+    # @see https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3.md (2026-11-09)
+    pricing:
+      base_cost_usd: 0.06
+      variable_pricing:
+        - { when: { references.character: '*' }, usd: 0.15 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
@@ -21,6 +30,24 @@ models:
       style:
         kind: string
         enum_values: [AUTO, GENERAL, REALISTIC, DESIGN, FICTION]
+      # "resolution … The resolutions supported for Ideogram 3.0" (ResolutionV3),
+      # sent as `resolution`; "aspect_ratio … Cannot be combined with
+      # resolution", so an exact size wins and no ratio goes beside it.
+      # @see https://developer.ideogram.ai/openapi/ideogram-api-v1.json (2026-11-03)
+      size:
+        kind: size
+        mode: enum
+        values: [
+          [512,1536],[576,1408],[576,1472],[576,1536],[640,1344],[640,1408],[640,1472],[640,1536],
+          [704,1152],[704,1216],[704,1280],[704,1344],[704,1408],[704,1472],[736,1312],[768,1088],
+          [768,1216],[768,1280],[768,1344],[800,1280],[832,960],[832,1024],[832,1088],[832,1152],
+          [832,1216],[832,1248],[864,1152],[896,960],[896,1024],[896,1088],[896,1120],[896,1152],
+          [960,832],[960,896],[960,1024],[960,1088],[1024,832],[1024,896],[1024,960],[1024,1024],
+          [1088,768],[1088,832],[1088,896],[1088,960],[1120,896],[1152,704],[1152,832],[1152,864],
+          [1152,896],[1216,704],[1216,768],[1216,832],[1248,832],[1280,704],[1280,768],[1280,800],
+          [1312,736],[1344,640],[1344,704],[1344,768],[1408,576],[1408,640],[1408,704],[1472,576],
+          [1472,640],[1472,704],[1536,512],[1536,576],[1536,640]
+        ]
     ref_inputs:
       max_total: 3
       default_role: style
@@ -33,6 +60,11 @@ models:
         style:     { required: false, min_count: 0, max_count: 3 }
         character: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [magic_prompt, style_codes, style_preset, color_palette]
+    extra_params:
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi.txt, POST /v1/ideogram-v3/generate); color_palette (an object) stays untyped.
+      magic_prompt: { kind: string, enum_values: ["AUTO", "ON", "OFF"] }
+      style_codes: { kind: string_array }
+      style_preset: { kind: string, enum_values: ["80S_ILLUSTRATION", "90S_NOSTALGIA", "ABSTRACT_ORGANIC", "ANALOG_NOSTALGIA", "ART_BRUT", "ART_DECO", "ART_POSTER", "AURA", "AVANT_GARDE", "BAUHAUS", "BLUEPRINT", "BLURRY_MOTION", "BRIGHT_ART", "C4D_CARTOON", "CHILDRENS_BOOK", "COLLAGE", "COLORING_BOOK_I", "COLORING_BOOK_II", "CUBISM", "DARK_AURA", "DOODLE", "DOUBLE_EXPOSURE", "DRAMATIC_CINEMA", "EDITORIAL", "EMOTIONAL_MINIMAL", "ETHEREAL_PARTY", "EXPIRED_FILM", "FLAT_ART", "FLAT_VECTOR", "FOREST_REVERIE", "GEO_MINIMALIST", "GLASS_PRISM", "GOLDEN_HOUR", "GRAFFITI_I", "GRAFFITI_II", "HALFTONE_PRINT", "HIGH_CONTRAST", "HIPPIE_ERA", "ICONIC", "JAPANDI_FUSION", "JAZZY", "LONG_EXPOSURE", "MAGAZINE_EDITORIAL", "MINIMAL_ILLUSTRATION", "MIXED_MEDIA", "MONOCHROME", "NIGHTLIFE", "OIL_PAINTING", "OLD_CARTOONS", "PAINT_GESTURE", "POP_ART", "RETRO_ETCHING", "RIVIERA_POP", "SPOTLIGHT_80S", "STYLIZED_RED", "SURREAL_COLLAGE", "TRAVEL_POSTER", "VINTAGE_GEO", "VINTAGE_POSTER", "WATERCOLOR", "WEIRD", "WOODBLOCK_PRINT"] }
     tags: [text-to-image, image-to-image]
 
   - id: ideogram/ideogram-v3-turbo
@@ -41,7 +73,13 @@ models:
     display_name: Ideogram 3.0 Turbo
     description: Ideogram 3.0 with TURBO rendering speed (faster, cheaper).
     docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3
-    pricing: { base_cost_usd: 0.03 }
+    # "Ideogram 3.0 Turbo" 30000 ($0.03); "Ideogram 3.0 Turbo with Character
+    # Reference" 100000 ($0.10), as ideogram/ideogram-v3.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
+    pricing:
+      base_cost_usd: 0.03
+      variable_pricing:
+        - { when: { references.character: '*' }, usd: 0.10 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
@@ -55,6 +93,24 @@ models:
       style:
         kind: string
         enum_values: [AUTO, GENERAL, REALISTIC, DESIGN, FICTION]
+      # "resolution … The resolutions supported for Ideogram 3.0" (ResolutionV3),
+      # sent as `resolution`; "aspect_ratio … Cannot be combined with
+      # resolution", so an exact size wins and no ratio goes beside it.
+      # @see https://developer.ideogram.ai/openapi/ideogram-api-v1.json (2026-11-03)
+      size:
+        kind: size
+        mode: enum
+        values: [
+          [512,1536],[576,1408],[576,1472],[576,1536],[640,1344],[640,1408],[640,1472],[640,1536],
+          [704,1152],[704,1216],[704,1280],[704,1344],[704,1408],[704,1472],[736,1312],[768,1088],
+          [768,1216],[768,1280],[768,1344],[800,1280],[832,960],[832,1024],[832,1088],[832,1152],
+          [832,1216],[832,1248],[864,1152],[896,960],[896,1024],[896,1088],[896,1120],[896,1152],
+          [960,832],[960,896],[960,1024],[960,1088],[1024,832],[1024,896],[1024,960],[1024,1024],
+          [1088,768],[1088,832],[1088,896],[1088,960],[1120,896],[1152,704],[1152,832],[1152,864],
+          [1152,896],[1216,704],[1216,768],[1216,832],[1248,832],[1280,704],[1280,768],[1280,800],
+          [1312,736],[1344,640],[1344,704],[1344,768],[1408,576],[1408,640],[1408,704],[1472,576],
+          [1472,640],[1472,704],[1536,512],[1536,576],[1536,640]
+        ]
     ref_inputs:
       max_total: 3
       default_role: style
@@ -67,6 +123,11 @@ models:
         style:     { required: false, min_count: 0, max_count: 3 }
         character: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [magic_prompt, style_codes, style_preset, color_palette]
+    extra_params:
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi.txt, POST /v1/ideogram-v3/generate); color_palette (an object) stays untyped.
+      magic_prompt: { kind: string, enum_values: ["AUTO", "ON", "OFF"] }
+      style_codes: { kind: string_array }
+      style_preset: { kind: string, enum_values: ["80S_ILLUSTRATION", "90S_NOSTALGIA", "ABSTRACT_ORGANIC", "ANALOG_NOSTALGIA", "ART_BRUT", "ART_DECO", "ART_POSTER", "AURA", "AVANT_GARDE", "BAUHAUS", "BLUEPRINT", "BLURRY_MOTION", "BRIGHT_ART", "C4D_CARTOON", "CHILDRENS_BOOK", "COLLAGE", "COLORING_BOOK_I", "COLORING_BOOK_II", "CUBISM", "DARK_AURA", "DOODLE", "DOUBLE_EXPOSURE", "DRAMATIC_CINEMA", "EDITORIAL", "EMOTIONAL_MINIMAL", "ETHEREAL_PARTY", "EXPIRED_FILM", "FLAT_ART", "FLAT_VECTOR", "FOREST_REVERIE", "GEO_MINIMALIST", "GLASS_PRISM", "GOLDEN_HOUR", "GRAFFITI_I", "GRAFFITI_II", "HALFTONE_PRINT", "HIGH_CONTRAST", "HIPPIE_ERA", "ICONIC", "JAPANDI_FUSION", "JAZZY", "LONG_EXPOSURE", "MAGAZINE_EDITORIAL", "MINIMAL_ILLUSTRATION", "MIXED_MEDIA", "MONOCHROME", "NIGHTLIFE", "OIL_PAINTING", "OLD_CARTOONS", "PAINT_GESTURE", "POP_ART", "RETRO_ETCHING", "RIVIERA_POP", "SPOTLIGHT_80S", "STYLIZED_RED", "SURREAL_COLLAGE", "TRAVEL_POSTER", "VINTAGE_GEO", "VINTAGE_POSTER", "WATERCOLOR", "WEIRD", "WOODBLOCK_PRINT"] }
     tags: [text-to-image, fast]
 
   - id: ideogram/ideogram-v3-quality
@@ -75,7 +136,13 @@ models:
     display_name: Ideogram 3.0 Quality
     description: Ideogram 3.0 with QUALITY rendering speed.
     docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3
-    pricing: { base_cost_usd: 0.09 }
+    # "Ideogram 3.0 Quality" 90000 ($0.09); "Ideogram 3.0 Quality with Character
+    # Reference" 200000 ($0.20), as ideogram/ideogram-v3.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
+    pricing:
+      base_cost_usd: 0.09
+      variable_pricing:
+        - { when: { references.character: '*' }, usd: 0.20 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
@@ -89,6 +156,24 @@ models:
       style:
         kind: string
         enum_values: [AUTO, GENERAL, REALISTIC, DESIGN, FICTION]
+      # "resolution … The resolutions supported for Ideogram 3.0" (ResolutionV3),
+      # sent as `resolution`; "aspect_ratio … Cannot be combined with
+      # resolution", so an exact size wins and no ratio goes beside it.
+      # @see https://developer.ideogram.ai/openapi/ideogram-api-v1.json (2026-11-03)
+      size:
+        kind: size
+        mode: enum
+        values: [
+          [512,1536],[576,1408],[576,1472],[576,1536],[640,1344],[640,1408],[640,1472],[640,1536],
+          [704,1152],[704,1216],[704,1280],[704,1344],[704,1408],[704,1472],[736,1312],[768,1088],
+          [768,1216],[768,1280],[768,1344],[800,1280],[832,960],[832,1024],[832,1088],[832,1152],
+          [832,1216],[832,1248],[864,1152],[896,960],[896,1024],[896,1088],[896,1120],[896,1152],
+          [960,832],[960,896],[960,1024],[960,1088],[1024,832],[1024,896],[1024,960],[1024,1024],
+          [1088,768],[1088,832],[1088,896],[1088,960],[1120,896],[1152,704],[1152,832],[1152,864],
+          [1152,896],[1216,704],[1216,768],[1216,832],[1248,832],[1280,704],[1280,768],[1280,800],
+          [1312,736],[1344,640],[1344,704],[1344,768],[1408,576],[1408,640],[1408,704],[1472,576],
+          [1472,640],[1472,704],[1536,512],[1536,576],[1536,640]
+        ]
     ref_inputs:
       max_total: 3
       default_role: style
@@ -101,6 +186,11 @@ models:
         style:     { required: false, min_count: 0, max_count: 3 }
         character: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [magic_prompt, style_codes, style_preset, color_palette]
+    extra_params:
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi.txt, POST /v1/ideogram-v3/generate); color_palette (an object) stays untyped.
+      magic_prompt: { kind: string, enum_values: ["AUTO", "ON", "OFF"] }
+      style_codes: { kind: string_array }
+      style_preset: { kind: string, enum_values: ["80S_ILLUSTRATION", "90S_NOSTALGIA", "ABSTRACT_ORGANIC", "ANALOG_NOSTALGIA", "ART_BRUT", "ART_DECO", "ART_POSTER", "AURA", "AVANT_GARDE", "BAUHAUS", "BLUEPRINT", "BLURRY_MOTION", "BRIGHT_ART", "C4D_CARTOON", "CHILDRENS_BOOK", "COLLAGE", "COLORING_BOOK_I", "COLORING_BOOK_II", "CUBISM", "DARK_AURA", "DOODLE", "DOUBLE_EXPOSURE", "DRAMATIC_CINEMA", "EDITORIAL", "EMOTIONAL_MINIMAL", "ETHEREAL_PARTY", "EXPIRED_FILM", "FLAT_ART", "FLAT_VECTOR", "FOREST_REVERIE", "GEO_MINIMALIST", "GLASS_PRISM", "GOLDEN_HOUR", "GRAFFITI_I", "GRAFFITI_II", "HALFTONE_PRINT", "HIGH_CONTRAST", "HIPPIE_ERA", "ICONIC", "JAPANDI_FUSION", "JAZZY", "LONG_EXPOSURE", "MAGAZINE_EDITORIAL", "MINIMAL_ILLUSTRATION", "MIXED_MEDIA", "MONOCHROME", "NIGHTLIFE", "OIL_PAINTING", "OLD_CARTOONS", "PAINT_GESTURE", "POP_ART", "RETRO_ETCHING", "RIVIERA_POP", "SPOTLIGHT_80S", "STYLIZED_RED", "SURREAL_COLLAGE", "TRAVEL_POSTER", "VINTAGE_GEO", "VINTAGE_POSTER", "WATERCOLOR", "WEIRD", "WOODBLOCK_PRINT"] }
     tags: [text-to-image, quality]
 
   # Ideogram 4.0 (api.ideogram.ai). Sync. Auth: Api-Key header. The adapter
@@ -121,8 +211,9 @@ models:
     display_name: Ideogram 4.0
     description: Ideogram 4.0 text-to-image, Ideogram's flagship for prompt fidelity and text rendering.
     docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4
-    # "4.0 Default": US $0.06 (1K and 2K alike), read 2026-09-11.
-    # @see https://ideogram.ai/pricing/?pricing_tab=api
+    # Ideogram's price catalog (US$ micros): "Ideogram 4.0 Default" 60000
+    # ($0.06), one rate with no size dimension, so 1K and 2K cost the same.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
     pricing: { base_cost_usd: 0.06 }
     capabilities: { text_to_image: true }
     prompt: { required: true }
@@ -134,6 +225,9 @@ models:
         # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1296,3168],[3168,1296],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[720,1280],[1280,720],[720,1440],[1440,720],[512,1536],[1536,512]]
     extra_allowlist: [enable_copyright_detection]
+    extra_params:
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi-v2.txt: boolean).
+      enable_copyright_detection: { kind: bool }
     tags: [text-to-image]
 
   - id: ideogram/ideogram-v4-turbo
@@ -142,8 +236,9 @@ models:
     display_name: Ideogram 4.0 Turbo
     description: Ideogram 4.0 with TURBO rendering speed (faster, cheaper).
     docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4
-    # "4.0 Turbo": US $0.03 (1K and 2K alike), read 2026-09-11.
-    # @see https://ideogram.ai/pricing/?pricing_tab=api
+    # Ideogram's price catalog (US$ micros): "Ideogram 4.0 Turbo" 30000
+    # ($0.03), one rate with no size dimension, so 1K and 2K cost the same.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
     pricing: { base_cost_usd: 0.03 }
     capabilities: { text_to_image: true }
     prompt: { required: true }
@@ -155,6 +250,9 @@ models:
         # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1296,3168],[3168,1296],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[720,1280],[1280,720],[720,1440],[1440,720],[512,1536],[1536,512]]
     extra_allowlist: [enable_copyright_detection]
+    extra_params:
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi-v2.txt: boolean).
+      enable_copyright_detection: { kind: bool }
     tags: [text-to-image, fast]
 
   - id: ideogram/ideogram-v4-quality
@@ -163,8 +261,9 @@ models:
     display_name: Ideogram 4.0 Quality
     description: Ideogram 4.0 with QUALITY rendering speed.
     docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4
-    # "4.0 Quality": US $0.10 (1K and 2K alike), read 2026-09-11.
-    # @see https://ideogram.ai/pricing/?pricing_tab=api
+    # Ideogram's price catalog (US$ micros): "Ideogram 4.0 Quality" 100000
+    # ($0.10), one rate with no size dimension, so 1K and 2K cost the same.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
     pricing: { base_cost_usd: 0.10 }
     capabilities: { text_to_image: true }
     prompt: { required: true }
@@ -176,6 +275,9 @@ models:
         # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1296,3168],[3168,1296],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[720,1280],[1280,720],[720,1440],[1440,720],[512,1536],[1536,512]]
     extra_allowlist: [enable_copyright_detection]
+    extra_params:
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi-v2.txt: boolean).
+      enable_copyright_detection: { kind: bool }
     tags: [text-to-image, quality]
 
   # ─── Edits (PixelGenie 3D doc §4) ──────────────────────────────────────────
@@ -199,10 +301,13 @@ models:
       and a mask goes in Ideogram's black-edits convention. Pixels the edit
       did not meaningfully change come back exactly.
     docs_url: https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5
-    # @see https://ideogram.ai/pricing/?pricing_tab=api (rendered 2026-10-30):
-    #   "4.5 Precise Edit Very Low / Low / Medium / High" US $0.008 / $0.03 /
-    #   $0.06 / $0.22 (1K = 2K); "This is the only field that affects the
-    #   price" (quality). Default medium → $0.06.
+    # Ideogram's price catalog (US$ micros): "Ideogram 4.5 Precise Edit Very
+    # Low 1K" 8000 ($0.008), "… Low 1K" 30000 ($0.03), "… Medium 1K" 60000
+    # ($0.06), "… High 1K" 220000 ($0.22); each 2K label costs the same. The
+    # v2 spec on `quality`: "This is the only field that affects the price".
+    # Default medium → $0.06.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
+    # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-09)
     pricing:
       base_cost_usd: 0.06
       variable_pricing:
@@ -227,12 +332,424 @@ models:
         max_aspect: 6.0
         label: Region
         description: The rectangle to edit, as Ideogram's context_window.
+    # "`reference_images` … Optional images to guide the edit (max 4 …). They
+    # are never edited themselves … A request with a `mask` can include at
+    # most three, because the mask takes up one reference slot": the image
+    # plus 4 shared slots is 5 in all; the adapter refuses 4 references beside
+    # a mask it drew from a region.
+    # @see https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md (2026-11-03)
     ref_inputs:
-      max_total: 2
+      max_total: 5
       default_role: init
-      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      provider_format: { form: multipart, field_map: { init: image, mask: mask, reference: reference_images } }
       roles:
         init: { required: true, min_count: 1, max_count: 1 }
         mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }
+        reference: { required: false, min_count: 0, max_count: 4 }
     extra_allowlist: []
     tags: [image-to-image, inpainting, region-edit]
+
+  # Ideogram 4.5 (v2 only): POST /v2/image/generate/ideogram-4-5, multipart:
+  # prompt, magic_prompt (auto | on | off), images ("Optional source images to
+  # edit (max 5 …). The first image is the one being edited; any others are
+  # extra references"), mask (black edits; "A masked request can include at
+  # most three other source images … With a mask, the output is always the
+  # first source image's own size, so `size` cannot be set" — the adapter
+  # refuses both), size, background (transparent | opaque | auto), quality
+  # ("Defaults to `medium` with source images and `high` without. `very_low`
+  # … requires source images" — refused without one), seed, num_images
+  # (litegen asks for one), enable_copyright_detection, async (litegen waits)
+  # and webhook_url (litegen fires its own).
+  # @see https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5.md (2026-11-03)
+  # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-03)
+  - id: ideogram/ideogram-4-5
+    provider: ideogram
+    media_type: image
+    display_name: Ideogram 4.5
+    description: Ideogram 4.5 — text-to-image and editing with up to five source images and an optional mask.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5
+    # Ideogram's price catalog (US$ micros): "Ideogram 4.5 Generate Low 1K"
+    # 30000 ($0.03), Medium 60000 ($0.06), High 100000 ($0.10); "Generate has
+    # its own rates when the request includes source images": "Ideogram 4.5
+    # Generate Very Low 1K with source images" 8000 ($0.008), Low 30000
+    # ($0.03), Medium 60000 ($0.06), High 220000 ($0.22) — each 2K label costs
+    # the same. The default request is text-to-image at high, $0.10; with
+    # source images the default is medium, $0.06 (the first rule).
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
+    pricing:
+      base_cost_usd: 0.10
+      variable_pricing:
+        - { when: { references: '*' }, usd: 0.06 }
+        - { when: { quality: low }, usd: 0.03 }
+        - { when: { quality: medium }, usd: 0.06 }
+        - { when: { quality: high }, usd: 0.10 }
+        - { when: { quality: high, references: '*' }, usd: 0.22 }
+        - { when: { quality: very_low }, usd: 0.008 }
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
+    # `prompt`: "minLength: 1", "maxLength: 10000".
+    # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (/v2/image/generate/ideogram-4-5, 2026-11-09)
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # No default: Ideogram's differs by mode (high without images, medium
+      # with them), and the price follows the one it applies.
+      quality:
+        kind: string
+        enum_values: [very_low, low, medium, high]
+        label: Quality
+        description: Rendering quality, the setting that changes Ideogram's price; very_low needs a source image.
+      background: { kind: string, enum_values: [transparent, opaque] }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      # A region is drawn as the mask (black edits), as on every mask-taking row.
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
+      # "Without source images, an exact size must be one of the supported
+      # 1K/2K presets" (the ResolutionV4 enum, "The 1K and 2K resolutions
+      # supported for Ideogram 4.0"); with them "both sides a multiple of 32
+      # and at least 256px, a total of at most 2048x2048 pixels, and an aspect
+      # ratio of at most 6:1" — the presets that hold in both modes (all but
+      # 1296x3168, 3168x1296, 720x1280, 1280x720, 720x1440, 1440x720).
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[512,1536],[1536,512]]
+    ref_inputs:
+      max_total: 6
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: images, reference: images, mask: mask } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 4 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }
+    extra_allowlist: [magic_prompt, enable_copyright_detection]
+    extra_params:
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi-v2.txt); magic_prompt's values are unstated.
+      magic_prompt: { kind: string }
+      enable_copyright_detection: { kind: bool }
+    tags: [text-to-image, image-to-image, inpainting]
+
+  # ── Models Ideogram resells on v2 ───────────────────────────────────────────
+  # Carried as Ideogram routes beside google/* (the user, 2026-11-04: "like how
+  # litellm can still use openrouter"): POST /v2/image/generate/{model}
+  # (multipart, synchronous by default), answered in the same `data[]` shape as
+  # Ideogram 4.5. Fields: prompt ("passed to the model as written"), images
+  # ("max 10, max 25MB each; JPEG, PNG, or WEBP"; the edited one first),
+  # aspect_ratio, resolution_tier, seed, num_images (litegen sends 1). Not async
+  # or webhook_url.
+  # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-03)
+  # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
+  - id: ideogram/nano-banana-2
+    provider: ideogram
+    media_type: image
+    display_name: Nano Banana 2 (Ideogram)
+    description: Google's Nano Banana 2 (Gemini) through Ideogram — text-to-image and edits from up to 10 images, 1K to 4K.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/images/generate/nano-banana-2
+    # Ideogram's price catalog (US$ micros): "Nano Banana 2 Generate 1K" 67200
+    # ($0.0672), "… 2K" 100800 ($0.1008), "… 4K" 151200 ($0.1512).
+    pricing:
+      base_cost_usd: 0.0672
+      variable_pricing:
+        - { when: { resolution: 2K }, usd: 0.1008 }
+        - { when: { resolution: 4K }, usd: 0.1512 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # Ideogram's own limit is `prompt` "maxLength: 10000"
+    # (https://developer.ideogram.ai/openapi/ideogram-api-v2.json, 2026-11-09);
+    # Gemini's 8000 characters (google/* rows) is the stricter.
+    prompt: { required: true, max_length: 8000 }
+    params:
+      # "Output aspect ratios Nano Banana 2 serves" (unset is "auto": the model chooses).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "21:9", "4:1", "1:4", "8:1", "1:8"]
+      # resolution_tier "1K","2K","4K" (1K when none is asked).
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: images, reference: images } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: ideogram/nano-banana-pro
+    provider: ideogram
+    media_type: image
+    display_name: Nano Banana Pro (Ideogram)
+    description: Google's Nano Banana Pro (Gemini 3 Pro Image) through Ideogram — text-to-image and edits from up to 10 images, 1K to 4K.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/images/generate/nano-banana-pro
+    # Ideogram's price catalog (US$ micros): "Nano Banana Pro Generate 1K"
+    # 134400 ($0.1344), "… 2K" 134400 ($0.1344), "… 4K" 240000 ($0.24).
+    pricing:
+      base_cost_usd: 0.1344
+      variable_pricing:
+        - { when: { resolution: 4K }, usd: 0.24 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 8000 }
+    params:
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "21:9"]
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: images, reference: images } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  # P-Image on Ideogram v2 (`POST /v2/image/generate/p-image-ideogram`, JSON),
+  # Ideogram's budget tier: prompt (maxLength 10000), quality (very_low, low,
+  # medium, high, very_high; "Defaults to `medium`"), resolution "1k" | "2k"
+  # ("Defaults to `1k`"; litegen's 1K | 2K), aspect_ratio (15, as "16x9"),
+  # seed, magic_prompt, enable_copyright_detection; text to image only. The
+  # adapter always sends a quality, so the bill is deterministic.
+  # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-04)
+  - id: ideogram/p-image-ideogram
+    provider: ideogram
+    media_type: image
+    display_name: P-Image Ideogram
+    description: Ideogram's fast, low-cost P-Image text-to-image, priced by quality and resolution.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/images/generate/p-image-ideogram
+    # Ideogram's price catalog (US$ micros), group "P-Image Ideogram" ("Fast,
+    # low-cost generation priced by quality and resolution"): "P-Image Ideogram
+    # Very Low 1K" 3000 ($0.003), Very Low 2K 6000, Low 1K 7500, Low 2K 15000,
+    # Medium 1K 10000, Medium 2K 20000, High 1K 15000, High 2K 30000, Very High
+    # 1K 33000, Very High 2K 66000. The default (medium, 1K) is $0.01.
+    # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
+    pricing:
+      base_cost_usd: 0.01
+      variable_pricing:
+        - { when: { quality: very_low }, usd: 0.003 }
+        - { when: { quality: very_low, resolution: 2K }, usd: 0.006 }
+        - { when: { quality: low }, usd: 0.0075 }
+        - { when: { quality: low, resolution: 2K }, usd: 0.015 }
+        - { when: { quality: medium, resolution: 2K }, usd: 0.02 }
+        - { when: { quality: high }, usd: 0.015 }
+        - { when: { quality: high, resolution: 2K }, usd: 0.03 }
+        - { when: { quality: very_high }, usd: 0.033 }
+        - { when: { quality: very_high, resolution: 2K }, usd: 0.066 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      quality: { kind: string, enum_values: [very_low, low, medium, high, very_high], default: medium }
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:3", "3:1", "1:2", "2:1", "9:16", "16:9", "10:16", "16:10", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "1:1"]
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    # magic_prompt (auto | on | off), enable_copyright_detection.
+    extra_allowlist: [magic_prompt, enable_copyright_detection]
+    extra_params:
+      # From the comment above.
+      magic_prompt: { kind: string, enum_values: ["auto", "on", "off"] }
+      enable_copyright_detection: { kind: bool }
+    tags: [text-to-image, fast]
+
+  # ─── Video, resold on v2 ─────────────────────────────────────────────────
+  # The video models Ideogram resells, carried as Ideogram routes (the hub-
+  # route policy, 2026-11-04), through video/ideogram.rs. Each has
+  # `POST /v2/video/generate/{model}-text-to-video` (JSON), `…-image-to-video`
+  # ("Upload the first frame as `image`, and optionally a final frame as
+  # `end_image`, using `multipart/form-data`") and, but Kling, `…-reference-
+  # to-video` (`reference_images`, multipart). Each answers {generation_id,
+  # created}; `GET /v2/generations/{generation_id}` says pending | completed |
+  # failed, and a completed one's data[] holds a `video.generation` with "The
+  # direct link to the generated video". Frames and references go to
+  # different endpoints, so they aren't mixed; `reference_audios` and
+  # `webhook_url` are not sent. Prices: "Billed per second of output at the
+  # provider's list rate" (US$ micros in the catalog). Not carried: Kling 4.0
+  # (priced at /v2/video/generate/kling-4, but in neither the spec nor the
+  # docs) and the Seedance 2.0 video edit (no endpoint documented).
+  # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-10)
+  # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-10)
+  - id: ideogram/kling-3-standard
+    provider: ideogram
+    media_type: video
+    display_name: Kling 3.0 Standard (Ideogram)
+    description: Kling's 3.0 Standard through Ideogram — text-to-video or first/last-frame image-to-video, 3–15 s at 1080p, with optional audio.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/video/generate/kling-3-standard-text-to-video
+    # "Kling 3.0 Standard … Audio costs 1.5 times the silent rate": "1080p |
+    # silent 84000 | audio 126000" US$ micros a second. The default request
+    # (5 s, silent) is 5 × $0.084 = $0.42.
+    pricing:
+      base_cost_usd: 0.42
+      variable_pricing:
+        - { per_second_usd: 0.084 }
+        - { when: { audio: true }, per_second_usd: 0.126 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # prompt "minLength: 1, maxLength: 2000" (both endpoints).
+    prompt: { required: true, max_length: 2000 }
+    params:
+      # duration "minimum: 3, maximum: 15"; "Defaults to 5 seconds when omitted".
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # generate_audio "default: false".
+      audio: { kind: bool, default: false }
+      negative_prompt: { kind: string, max_length: 2000 }
+      # Text-to-video's aspect_ratio "16x9" | "9x16" | "1x1" (default 16x9),
+      # sent as Ideogram spells it; image-to-video has none (the frame sets it).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1"]
+        default: "16:9"
+        # kling-3-standard-image-to-video's form: cfg_scale, duration, end_image,
+        # generate_audio, image, negative_prompt, prompt, shot_type, webhook_url —
+        # no aspect_ratio, so a frame sets the shape (E5).
+        # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image } }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    # shot_type "customize" | "intelligent"; cfg_scale "from 0 to 1" (a string).
+    extra_allowlist: [shot_type, cfg_scale]
+    extra_params:
+      # From the comment above (cfg_scale is a string).
+      shot_type: { kind: string, enum_values: ["customize", "intelligent"] }
+      cfg_scale: { kind: string }
+    tags: [text-to-video, image-to-video]
+
+  - id: ideogram/minimax-h3
+    provider: ideogram
+    media_type: video
+    display_name: MiniMax H3 (Ideogram)
+    description: MiniMax's Hailuo 3 (H3) through Ideogram — text-to-video, first/last-frame image-to-video, or up to 9 reference images; 5–15 s, 480P to 4K, with audio.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/video/generate/minimax-h3-text-to-video
+    # "MiniMax Hailuo 3": "480P | 50000", "768P | 80000", "2K | 130000", "4K
+    # | 160000" US$ micros a second; reference to video: "The first five
+    # reference images are free; each one after that adds US $0.04". The
+    # default request (2K, 5 s) is 5 × $0.13 = $0.65.
+    pricing:
+      base_cost_usd: 0.65
+      variable_pricing:
+        - { per_second_usd: 0.13 }
+        - { when: { resolution: 480P }, per_second_usd: 0.05 }
+        - { when: { resolution: 768P }, per_second_usd: 0.08 }
+        - { when: { resolution: 4K }, per_second_usd: 0.16 }
+        - { when: { references: 6 }, add_usd: 0.04 }
+        - { when: { references: 7 }, add_usd: 0.08 }
+        - { when: { references: 8 }, add_usd: 0.12 }
+        - { when: { references: 9 }, add_usd: 0.16 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      # duration "minimum: 5, maximum: 15, default: 5".
+      duration_seconds: { kind: int, min: 5, max: 15, default: 5 }
+      # resolution "480P" | "768P" | "2K" | "4K", "default: 2K", every mode
+      # ("`480P` and `768P` are generated natively; `2K` and `4K` are upscaled").
+      resolution: { kind: string, enum_values: [480P, 768P, 2K, 4K], default: 2K }
+      # aspect_ratio on text and reference to video ("21x9" … "9x16", default
+      # 16x9); image-to-video has none (the frame sets it).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+        default: "16:9"
+        # minimax-h3-image-to-video's form: duration, end_image, image, prompt,
+        # resolution, webhook_url — no aspect_ratio, so a frame sets the shape
+        # (E5); frames and references go to different endpoints.
+        # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-11)
+        frames_set_shape: without_references
+    # reference_images: no stated maximum; 9, MiniMax's own cap (minimax/MiniMax-H3).
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image, reference: reference_images } }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    # prompt_expansion_mode "disabled" | "fast" | "balanced" | "quality": on
+    # reference to video only (refused on the other two).
+    extra_allowlist: [prompt_expansion_mode]
+    extra_params:
+      # From the comment above.
+      prompt_expansion_mode: { kind: string, enum_values: ["disabled", "fast", "balanced", "quality"] }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: ideogram/seedance-2
+    provider: ideogram
+    media_type: video
+    display_name: Seedance 2.0 (Ideogram)
+    description: ByteDance's Seedance 2.0 through Ideogram — text-to-video, first/last-frame image-to-video, or up to 9 reference images; 4–15 s, 480p or 720p, with optional audio.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/video/generate/seedance-2-text-to-video
+    # "Seedance 2.0 … Audio adds nothing unless listed": "480p | 70000", "720p
+    # | 160000" US$ micros a second, reference images at the same rates. The
+    # default request (720p, 5 s) is 5 × $0.16 = $0.80.
+    pricing:
+      base_cost_usd: 0.8
+      variable_pricing:
+        - { per_second_usd: 0.16 }
+        - { when: { resolution: 480p }, per_second_usd: 0.07 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      # duration "minimum: 4, maximum: 15"; "When omitted, the model picks the
+      # best duration" — litegen sends one (5 s unless asked), so the price is known.
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      audio: { kind: bool, default: false }
+      resolution: { kind: string, enum_values: [480p, 720p], default: 720p }
+      # aspect_ratio in every mode, default "auto" ("lets the model choose"):
+      # sent only when asked.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+    # reference_images: no stated maximum; 9, ByteDance's own cap for Seedance 2.0.
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image, reference: reference_images } }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: ideogram/seedance-2-5
+    provider: ideogram
+    media_type: video
+    display_name: Seedance 2.5 (Ideogram)
+    description: ByteDance's Seedance 2.5 through Ideogram — text-to-video, first/last-frame image-to-video, or up to 9 reference images; 4–30 s, 480p to 1080p, with optional audio.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/video/generate/seedance-2-5-text-to-video
+    # "Seedance 2.5": "480p | 103000", "720p | 231000", "1080p | 614000" US$
+    # micros a second, reference images at the same rates. The default request
+    # (720p, 5 s) is 5 × $0.231 = $1.155.
+    pricing:
+      base_cost_usd: 1.155
+      variable_pricing:
+        - { per_second_usd: 0.231 }
+        - { when: { resolution: 480p }, per_second_usd: 0.103 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.614 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 30000 }
+    params:
+      duration_seconds: { kind: int, min: 4, max: 30, default: 5 }
+      audio: { kind: bool, default: false }
+      resolution: { kind: string, enum_values: [480p, 720p, 1080p], default: 720p }
+      # aspect_ratio on text and reference to video (default "auto", sent only
+      # when asked); image-to-video has none (the frame sets it).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+        # seedance-2-5-image-to-video's form: duration, end_image,
+        # generate_audio, image, prompt, resolution, webhook_url — no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image, reference: reference_images } }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]

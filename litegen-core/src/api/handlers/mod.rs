@@ -19,6 +19,7 @@ pub use account::{
     get_account, list_sessions, patch_account, revoke_session,
 };
 
+use crate::access::present::FileOwner;
 use axum::{
     extract::{Extension, Json, Path, Query, State},
     http::StatusCode,
@@ -81,6 +82,9 @@ fn csv_response(body: String, filename: &str) -> axum::response::Response {
 }
 
 use crate::types::UpdateApiKeyRequest;
+// Pure reads of a generation row, now in types (engine boundary, D4); kept at
+// these paths for the handlers and their callers.
+pub(crate) use crate::types::generation::{generation_assets, model3d_response_from_row, row_requested_formats, usage_from_row_cost};
 
 use crate::providers::{ImageExtras, Model3dExtras, VideoExtras};
 use crate::types::*;
@@ -108,6 +112,35 @@ where
     }
 }
 
+/// What a generation request that names a stored generation as an input
+/// hands the operator's `file_access` hooks (SEC-FILEHOOK): the hooks the
+/// router installed, if any, and the request's method and URI. Its headers
+/// come from the handler's own `HeaderMap`.
+pub struct ChainRequest {
+    hooks: Option<Arc<crate::hooks::HookSet>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+}
+
+impl<S> axum::extract::FromRequestParts<S> for ChainRequest
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        let chain = ChainRequest {
+            hooks: parts.extensions.get::<Arc<crate::hooks::HookSet>>().cloned(),
+            method: parts.method.clone(),
+            uri: parts.uri.clone(),
+        };
+        async move { Ok(chain) }
+    }
+}
+
 // ─── Image Generation ───────────────────────────────────────────────────────
 
 /// POST /v1/images/generations — Generate images (OpenAI-compatible).
@@ -117,17 +150,32 @@ where
     request_body = ImageGenerationRequest,
     params(
         ("Idempotency-Key" = Option<String>, Header, description = "1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key."),
+        ("X-Litegen-Keep-Outputs" = Option<String>, Header, description = "`false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). A request can keep less than its app does, never more; any other value is a 400 `invalid_keep_outputs_header`."),
+        ("Prefer" = Option<String>, Header, description = "RFC 7240. `respond-async` answers 202 as soon as the vendor has the job; `wait=N` waits up to N seconds (at most the vendor timeout) and answers 202 if the job is still running then. Honoured only for a model whose vendor runs jobs, a request that keeps its output and isn't an edit litegen finishes itself; otherwise the call is synchronous (`Preference-Applied` absent). See docs/async-images.md."),
     ),
     responses(
         (status = 200, description = "Image generated successfully", body = ImageGenerationResponse,
             headers(
-                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."),
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
+                ("X-Litegen-Cache" = String, description = "What the cache did: `hit` (answered from it), `miss` (looked up, not found) or `bypass` (off for this model, or the request sent `Cache-Control: no-cache`). See docs/gateway-settings.md."),
                 ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
             )),
         (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 404, description = "`model_not_found`", body = ErrorResponse),
+        (status = 410, description = "`model_retired`: the model is past its retirement; `replaced_by` names its successor", body = ErrorResponse),
+        (status = 422, description = "`region_too_small`: an edit region smaller than the vendor takes. A reference that names a generation litegen can't use (`reference_images`: unreadable, too large, a format the model doesn't take).", body = ErrorResponse),
         (status = 502, description = "Provider error", body = ErrorResponse),
         (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
-        (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
+        (status = 202, description = "The vendor has the job and litegen delivers its image later (`Prefer: respond-async`, or a `wait` it outlasted): poll `GET /v1/generations/{id}` or wait for the key's webhook.", body = ImageGenerationAccepted,
+            headers(
+                ("Location" = String, description = "`/v1/generations/{id}`."),
+                ("Preference-Applied" = String, description = "The preference honoured: `respond-async`, `wait=N`, or both."),
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
+            )),
+        (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one. When that job can still be delivered, `generation_id` names the generation it goes to and `status` is `processing`.", body = ErrorResponse),
+        (status = 408, description = "`body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s).", body = ErrorResponse),
+        (status = 413, description = "`body_too_large`: the request body is over 25 MiB, as declared or as sent.", body = ErrorResponse),
+        (status = 503, description = "`server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). `circuit_open`: on a model route, every deployment's circuit breaker is open, so no vendor was called; retry once the first one closes (`Retry-After` says when).", body = ErrorResponse),
     ),
     tag = "Images"
 )]
@@ -135,16 +183,27 @@ pub async fn generate_image(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     attribution: crate::management::enforce::RequestAttribution,
+    chain: ChainRequest,
+    headers: axum::http::HeaderMap,
     validated: ValidatedImage,
 ) -> impl IntoResponse {
+    // A stored generation named as an input is read only if the operator's
+    // `file_access` hook allows it, as on the file route (SEC-FILEHOOK).
+    let gate = FileGate::of(&chain, &headers);
     // The in-flight slot was acquired in the Validated* extractor (before the
     // body was buffered) and is held for this request via `validated._permit`.
 
     let start = std::time::Instant::now();
+    // Refused before anything runs, references included.
+    let keep_header = match crate::access::keep_header(&headers) {
+        Ok(h) => h,
+        Err(e) => return keep_header_rejection(&e),
+    };
 
-    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images).await {
+    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images, &gate).await {
         Ok(r) => r,
-        Err(e) => return reference_error_response(&e, &validated.schema.id),
+        Err(ChainRefusal::Source(e)) => return reference_error_response(&e, &validated.schema.id),
+        Err(ChainRefusal::Hook(refused)) => return refused,
     };
     let mut materialized = match state.materializer.materialize(
         &validated.schema,
@@ -156,7 +215,7 @@ pub async fn generate_image(
     };
     // A partial edit is checked against its init image and turned into the
     // model's own form here, before anything is reserved or billed.
-    let edit = match apply_image_edit(&validated.schema, &validated.request, &mut materialized).await {
+    let edit = match apply_image_edit(&validated.schema, &validated.request, &mut materialized, state.materializer.publisher()).await {
         Ok(e) => e,
         Err(resp) => return resp,
     };
@@ -165,6 +224,7 @@ pub async fn generate_image(
         vendor_job: Default::default(),
         size: validated.request.size.clone(),
         aspect_ratio: validated.request.aspect_ratio.clone(),
+        resolution: validated.request.resolution.clone(),
         quality: validated.request.quality.clone(),
         style: validated.request.style.clone(),
         steps: validated.request.steps,
@@ -202,16 +262,35 @@ pub async fn generate_image(
     if app_creds.is_none() && !state.router.has_image_provider(&validated.schema.provider).await {
         return provider_not_configured_response(&validated.schema.provider);
     }
+    // A model route's deployments get the org's credential for their own
+    // providers, looked up the same way (BYO-ROUTE).
+    let org_creds = match org_credentials_for(&state, &key_ctx, &validated.schema, app_creds.clone()).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
 
+    // Keeping nothing (docs/storage-access.md): the image comes back inline,
+    // and no store, cache or history copy sees it.
+    let keep = crate::access::keeps_outputs(
+        &crate::access::policy_for(&state, key_ctx.as_ref().and_then(|c| c.app_id.as_deref())).await,
+        keep_header,
+    );
     // Resolve the calling app's BYO image store (None → global store fallback).
-    let app_store = resolve_app_image_store(&state, &key_ctx).await;
+    let app_store = if keep {
+        resolve_app_image_store(&state, &key_ctx).await
+    } else {
+        Some(Arc::new(crate::proxy::storage::LocalStore) as Arc<dyn crate::proxy::storage::ImageStore>)
+    };
 
     // Tenant scope for the (process-global) cache. Composed so distinct
     // principals can NEVER share a bucket: org+app keeps an app-scoped request
     // separate from a sibling app and from the org scope, and when no tenant is
     // resolved we fall back to the calling principal (key/user/master) instead
     // of a shared global bucket. See `cache_scope`.
-    let cache_scope = key_ctx.as_ref().map(cache_scope);
+    let cache_scope = match key_ctx.as_ref() {
+        Some(ctx) => Some(cache_scope_for(ctx, crate::access::policy_for(&state, ctx.app_id.as_deref()).await)),
+        None => None,
+    };
 
     // Reserve the estimated cost against the key's quota BEFORE dispatch (the
     // real spend cap; see reserve_quota). Settled to the actual cost on success
@@ -235,21 +314,47 @@ pub async fn generate_image(
     ).await {
         Ok(g) => g,
         Err(resp) => {
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             return resp;
         }
     };
     let attributed = limits.attribution();
 
     let log_metadata = validated.request.base.metadata.clone();
-    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds, app_store, cache_scope.as_deref()).await {
-        Ok(mut response) => {
+    // `Cache-Control: no-cache` / `no-store` opt this request out of the cache.
+    let cache_policy = if keep {
+        crate::proxy::cache::CachePolicy::from_headers(&headers)
+    } else {
+        crate::proxy::cache::CachePolicy::bypass()
+    };
+    // A job the vendor takes can be delivered late (docs/async-images.md)
+    // when its adapter can ask about it again, the result is kept, and no
+    // edit is left for litegen to finish. Only then does `Prefer:
+    // respond-async` / `wait=N` (RFC 7240) shorten the wait; otherwise the
+    // call is synchronous, as the RFC lets a server choose.
+    let preserve = extras.edit.as_ref().is_some_and(|x| x.preserve.is_some());
+    let late_ok = keep
+        && !preserve
+        && state
+            .router
+            .registry
+            .image_provider_for_request(&validated.schema.provider, app_creds.clone())
+            .await
+            .is_some_and(|p| p.resumable(&validated.schema));
+    let prefer = image_wait_preference(&headers).filter(|_| late_ok);
+    let call = state.router.generate_image_cached(&validated.schema, &validated.request.base, &extras, &materialized, org_creds, app_store, cache_scope.as_deref(), cache_policy);
+    let outcome = match prefer.as_ref() {
+        Some((wait, _)) => crate::providers::with_wait(*wait, call).await,
+        None => call.await,
+    };
+    match outcome {
+        Ok((mut response, cache_outcome)) => {
             response.metadata = validated.request.base.metadata_map();
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
             // Settle the reservation to the actual cost.
-            settle_quota(&state, charge_key, reserved, cost).await;
+            settle_quota(&state, reserved, cost).await;
             limits.settle(&state, cost).await;
 
             // Build artifact for drill-down storage
@@ -261,6 +366,8 @@ pub async fn generate_image(
                 let refs_meta = build_refs_meta(&validated.request.base.reference_images);
                 let first = response.data.first();
                 let (output_kind, output_value, output_mime, output_truncated) = match first {
+                    // Keeping nothing covers the request log too.
+                    Some(img) if !keep => ("not_kept".to_string(), None, Some(img.content_type.clone()), false),
                     Some(img) => {
                         if let Some(ref b64) = img.b64_json {
                             const CAP: usize = 2 * 1024 * 1024;
@@ -298,7 +405,30 @@ pub async fn generate_image(
             // for 7 days with a litegen key. Awaited, so the row exists when the
             // response does; but the caller already holds the image, so a
             // failed write is logged rather than failing the request.
-            keep_image_result(&state, key_ctx.as_ref(), &response, &validated, cost).await;
+            // A cached answer is the earlier generation's: its row and files
+            // are kept already, and its links come from them.
+            let earlier = match cache_outcome {
+                crate::proxy::cache::CacheOutcome::Hit => state.db.get_generation(&response.id).await.ok().flatten(),
+                _ => None,
+            };
+            let kept = match earlier.as_ref() {
+                Some(row) => generation_assets(row),
+                None => keep_image_result(&state, key_ctx.as_ref(), &response, &validated, cost, attributed.end_user.as_deref(), keep).await,
+            };
+            // An image returned by URL (an S3 image store) goes out as the
+            // app's access mode says; inline images are the caller's already.
+            if response.data.iter().any(|d| d.url.is_some()) {
+                let owner = earlier.as_ref().map_or_else(|| FileOwner::made_by(&response.id, key_ctx.as_ref()), FileOwner::of);
+                let presenter = presenter_for(&state, key_ctx.as_ref(), &owner).await;
+                for (i, image) in response.data.iter_mut().enumerate() {
+                    let Some(stored) = image.url.clone() else { continue };
+                    // The file route's index: its position among what was kept.
+                    let index = kept.iter().position(|a| a.index as usize == i);
+                    let (url, expires) = presenter.url(index, &stored).await;
+                    image.url = Some(url);
+                    image.expires_at = expires;
+                }
+            }
 
             // Log request + artifact async
             let db = state.db.clone();
@@ -318,51 +448,35 @@ pub async fn generate_image(
             });
             let mut resp = (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
             resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
+            resp.headers_mut().insert("x-litegen-cache", axum::http::HeaderValue::from_static(cache_outcome.as_str()));
             if let Some((k, v)) = dropped_header(&validated.dropped) {
                 resp.headers_mut().insert(k, v);
             }
             resp
         }
         Err(e) => {
+            // A job the vendor took and is still running is delivered later,
+            // never lost to litegen's deadline: it gets a row the poller finishes.
+            if let (crate::proxy::router::ProxyError::VendorTimeout { .. }, Some(job), true) = (&e, extras.vendor_job.get(), late_ok) {
+                let late = LateImage { job, resume: extras.vendor_job.resume(), response_format: extras.response_format.clone(), price, prefer };
+                return accept_late_image(&state, key_ctx.as_ref(), &validated, &extras, late, reserved, limits, attributed, start).await;
+            }
             // Nothing was delivered — release the reservation so a failed
             // request is never billed.
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             limits.settle(&state, 0.0).await;
-            let latency = start.elapsed().as_millis() as i64;
             error!(error = %e, "Image generation failed");
-            // Log failure + error artifact
-            let db = state.db.clone();
-            let model = validated.schema.id.clone();
-            let err_msg = e.to_string();
-            let prompt = validated.request.base.prompt.clone();
-            let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
-            let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
-            tokio::spawn(async move {
-                let id = format!("litegen-img-{}", Uuid::new_v4());
-                let _ = db
-                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
-                    .await;
-                crate::management::enforce::attribute(&db, &id, &attributed).await;
-                let artifact = RequestArtifact {
-                    request_id: id,
-                    media_type: "image".to_string(),
-                    prompt: Some(prompt),
-                    negative_prompt: None,
-                    params_json: None,
-                    refs_meta_json: None,
-                    output_kind: "error".to_string(),
-                    output_value: None,
-                    output_mime: None,
-                    output_truncated: false,
-                    error_message: Some(err_msg),
-                    created_at: chrono::Utc::now(),
-                    org_id: org_id.clone(),
-                    app_id: app_id.clone(),
-                };
-                if let Err(e) = db.insert_request_artifact(&artifact).await {
-                    tracing::warn!(error = %e, "Failed to store error artifact");
-                }
-            });
+            log_failed_generation(&state, key_ctx.as_ref(), FailedGeneration {
+                id_prefix: "litegen-img",
+                media_type: "image",
+                schema: &validated.schema,
+                latency_ms: start.elapsed().as_millis() as i64,
+                error: &e,
+                prompt: &validated.request.base.prompt,
+                metadata: log_metadata.as_ref(),
+                attributed: &attributed,
+            })
+            .await;
             generation_error_response(&e)
         }
     }
@@ -383,10 +497,17 @@ pub async fn generate_image(
         (status = 200, description = "What the prompts selected: one mask per object, best first, billed once per request at the row's price", body = ImageSegmentationResponse,
             headers(
                 ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
             )),
-        (status = 400, description = "Refused before anything is billed. `param_required`: no prompts, or an empty text prompt. `capability_unsupported`: a prompt type the model does not take (its `segmentation_prompts`). `param_out_of_range`: more prompts than the model takes, more than one text prompt, a point label other than 0 or 1, or a box with no area. `param_conflict`: a text prompt mixed with point or box prompts, or only label-0 points. `prompt_out_of_bounds`: a point or box outside the image. `image_unreadable`: not base64 of a PNG, JPEG, WebP or GIF. `model_task_mismatch`: not a segmentation model. `model_media_type_mismatch`: not an image model.", body = ErrorResponse),
+        (status = 400, description = "Refused before anything is billed. `param_unsupported`: a field the request has no such name for (`prompt` for `prompts`, say), when `strict` is true (the default). `param_required`: no prompts, or an empty text prompt. `capability_unsupported`: a prompt type the model does not take (its `segmentation_prompts`). `param_out_of_range`: more prompts than the model takes, more than one text prompt, a point label other than 0 or 1, or a box with no area. `param_conflict`: a text prompt mixed with point or box prompts, or only label-0 points. `prompt_out_of_bounds`: a point or box outside the image. `image_unreadable`: not base64 of a PNG, JPEG, WebP or GIF. `model_task_mismatch`: not a segmentation model. `model_media_type_mismatch`: not an image model.", body = ErrorResponse),
         (status = 404, description = "`model_not_found`", body = ErrorResponse),
+        (status = 410, description = "`model_retired`: the model is past its retirement; `replaced_by` names its successor", body = ErrorResponse),
         (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
+        (status = 402, description = "`quota_exceeded` / `budget_exceeded`: the key's quota or a budget it counts against is spent.", body = ErrorResponse),
+        (status = 429, description = "`rate_limit_exceeded`: the key's requests per minute (`Retry-After` is set); or the vendor's own rate limit, retryable.", body = ErrorResponse),
+        (status = 503, description = "litegen is at capacity (`server_at_capacity`: as many requests running as `backpressure.max_in_flight` allows, or as many request bodies held as it may; `Retry-After` is set), or the app's bucket can't be reached; retry shortly.", body = ErrorResponse),
+        (status = 408, description = "`body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s).", body = ErrorResponse),
+        (status = 413, description = "`body_too_large`: the request body is over 25 MiB, as declared or as sent.", body = ErrorResponse),
         (status = 502, description = "Provider error", body = ErrorResponse),
         (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent.", body = ErrorResponse),
     ),
@@ -418,7 +539,7 @@ pub async fn segment_image(
     let mut limits = match crate::management::enforce::begin(&state, key_ctx.as_ref(), &attribution, &schema.id, price).await {
         Ok(g) => g,
         Err(resp) => {
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             return resp;
         }
     };
@@ -432,7 +553,7 @@ pub async fn segment_image(
         Ok(mut response) => {
             response.metadata = log_metadata.clone().and_then(|m| serde_json::from_value(m).ok());
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
-            settle_quota(&state, charge_key, reserved, cost).await;
+            settle_quota(&state, reserved, cost).await;
             limits.settle(&state, cost).await;
             let (id, model, provider) = (response.id.clone(), response.model.clone(), response.provider.clone());
             tokio::spawn(async move {
@@ -443,17 +564,21 @@ pub async fn segment_image(
             });
             let mut resp = (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
             resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
+            if let Some((k, v)) = dropped_header(&validated.dropped) {
+                resp.headers_mut().insert(k, v);
+            }
             resp
         }
         Err(e) => {
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             limits.settle(&state, 0.0).await;
             error!(error = %e, "Image segmentation failed");
-            let (model, err_msg) = (schema.id.clone(), e.to_string());
+            // The row is tenant-readable: never a panic's text (review #7).
+            let (model, provider, err_msg) = (schema.id.clone(), schema.provider.clone(), e.logged_message());
             tokio::spawn(async move {
                 let id = format!("litegen-seg-{}", Uuid::new_v4());
                 let _ = db
-                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
+                    .log_request(&id, &model, &provider, "failed", "image", 0.0, latency, Some(&err_msg), log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
                     .await;
                 crate::management::enforce::attribute(&db, &id, &attributed).await;
             });
@@ -462,14 +587,32 @@ pub async fn segment_image(
     }
 }
 
+/// `resp` with `X-Litegen-Dropped-Params` naming `dropped`, when anything
+/// was (a quote drops what its generation would, N1).
+fn with_dropped(mut resp: axum::response::Response, dropped: &[String]) -> axum::response::Response {
+    if let Some((k, v)) = dropped_header(dropped) {
+        resp.headers_mut().insert(k, v);
+    }
+    resp
+}
+
 /// POST /v1/images/cost — Estimate cost for image generation.
+///
+/// Runs the same validation as the matching generation route and calls no
+/// vendor: a body this refuses, the generation refuses too.
 #[utoipa::path(
     post,
     path = "/v1/images/cost",
     request_body = ImageGenerationRequest,
     responses(
-        (status = 200, description = "Cost estimate", body = CostEstimate),
+        (status = 200, description = "Cost estimate", body = CostEstimate,
+            headers(
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
+            )),
         (status = 400, description = "Bad request (validation failed)", body = ErrorResponse),
+        (status = 408, description = "`body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s).", body = ErrorResponse),
+        (status = 413, description = "`body_too_large`: the request body is over 25 MiB, as declared or as sent.", body = ErrorResponse),
+        (status = 503, description = "`server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set).", body = ErrorResponse),
     ),
     tag = "Images"
 )]
@@ -486,10 +629,9 @@ pub async fn estimate_image_cost(
         return provider_not_configured_response(&validated.schema.provider);
     }
     match state.router.estimate_image_cost(&validated.schema, &validated.request, app_creds).await {
-        Ok(estimate) => (StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(),
+        Ok(estimate) => with_dropped((StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(), &validated.dropped),
         Err(e) => {
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+            generation_error_response(&e)
         }
     }
 }
@@ -503,17 +645,24 @@ pub async fn estimate_image_cost(
     request_body = VideoGenerationRequest,
     params(
         ("Idempotency-Key" = Option<String>, Header, description = "1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key."),
+        ("X-Litegen-Keep-Outputs" = Option<String>, Header, description = "`false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). A request can keep less than its app does, never more; any other value is a 400 `invalid_keep_outputs_header`."),
     ),
     responses(
         (status = 200, description = "Video generation started", body = VideoGenerationResponse,
             headers(
-                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."),
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
                 ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
             )),
         (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 404, description = "`model_not_found`", body = ErrorResponse),
+        (status = 410, description = "`model_retired`: the model is past its retirement; `replaced_by` names its successor", body = ErrorResponse),
+        (status = 422, description = "A `source_video` or reference generation litegen can't use: unreadable, too large, or a format the model doesn't take.", body = ErrorResponse),
         (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
         (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
         (status = 500, description = "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.", body = ErrorResponse),
+        (status = 408, description = "`body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s).", body = ErrorResponse),
+        (status = 413, description = "`body_too_large`: the request body is over 25 MiB, as declared or as sent.", body = ErrorResponse),
+        (status = 503, description = "`server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). `circuit_open`: on a model route, every deployment's circuit breaker is open, so no vendor was called; retry once the first one closes (`Retry-After` says when).", body = ErrorResponse),
     ),
     tag = "Videos"
 )]
@@ -521,16 +670,32 @@ pub async fn generate_video(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     attribution: crate::management::enforce::RequestAttribution,
+    chain: ChainRequest,
+    headers: axum::http::HeaderMap,
     validated: ValidatedVideo,
 ) -> impl IntoResponse {
+    // A stored generation named as an input is read only if the operator's
+    // `file_access` hook allows it, as on the file route (SEC-FILEHOOK).
+    let gate = FileGate::of(&chain, &headers);
     // The in-flight slot was acquired in the Validated* extractor (before the
     // body was buffered) and is held for this request via `validated._permit`.
 
     let start = std::time::Instant::now();
+    // Refused before anything runs. The decision is taken now and saved on
+    // the row, so whichever observer sees the video finish honours it.
+    let keep_header = match crate::access::keep_header(&headers) {
+        Ok(h) => h,
+        Err(e) => return keep_header_rejection(&e),
+    };
+    let keep = crate::access::keeps_outputs(
+        &crate::access::policy_for(&state, key_ctx.as_ref().and_then(|c| c.app_id.as_deref())).await,
+        keep_header,
+    );
 
-    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images).await {
+    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images, &gate).await {
         Ok(r) => r,
-        Err(e) => return reference_error_response(&e, &validated.schema.id),
+        Err(ChainRefusal::Source(e)) => return reference_error_response(&e, &validated.schema.id),
+        Err(ChainRefusal::Hook(refused)) => return refused,
     };
     let materialized = match state.materializer.materialize(
         &validated.schema,
@@ -550,6 +715,32 @@ pub async fn generate_video(
     if app_creds.is_none() && !state.router.has_video_provider(&validated.schema.provider).await {
         return provider_not_configured_response(&validated.schema.provider);
     }
+    // A model route's deployments get the org's credential for their own
+    // providers, looked up the same way (BYO-ROUTE).
+    let org_creds = match org_credentials_for(&state, &key_ctx, &validated.schema, app_creds.clone()).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    // Keeping nothing hands out the vendor's own link: a model whose vendor
+    // returns only bytes (or a link only it can read) has none, so the
+    // request is refused now, before the vendor runs and bills it.
+    if !keep
+        && state
+            .router
+            .registry
+            .video_provider_for_request(&validated.schema.provider, app_creds.clone())
+            .await
+            .is_some_and(|p| !p.hands_out_links(&validated.schema))
+    {
+        return validation_rejection_with_code(
+            "keep_outputs_unsupported",
+            &format!(
+                "'{}' returns its video as bytes, with no link litegen could hand out: keeping nothing needs a model that hands out the vendor's link",
+                validated.schema.id
+            ),
+            &validated.schema.id,
+        );
+    }
     // Which vendor account the job runs on: a vendor that extends only its
     // own generations takes only those made on this account (3D doc §5).
     let vendor_account = match (&app_creds, key_ctx.as_ref().and_then(|c| c.org_id.as_deref())) {
@@ -560,7 +751,7 @@ pub async fn generate_video(
     // 3D doc §5: a video operation's source, read and measured before
     // anything is reserved.
     let source = match validated.request.source_video.as_ref() {
-        Some(src) => match resolve_source_video(&state, key_ctx.as_ref(), &validated.schema, src, validated.request.time_range, &vendor_account).await {
+        Some(src) => match resolve_source_video(&state, key_ctx.as_ref(), &validated.schema, src, validated.request.time_range, &vendor_account, &gate).await {
             Ok(s) => Some(s),
             Err(resp) => return resp,
         },
@@ -606,15 +797,17 @@ pub async fn generate_video(
     ).await {
         Ok(g) => g,
         Err(resp) => {
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             return resp;
         }
     };
     let attributed = limits.attribution();
 
     let segments = plan_segments(&validated.schema, &extras);
-    let cancel_creds = app_creds.clone();
-    match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
+    // A job the router can't record is cancelled with the credential of the
+    // provider that took it (a route's deployment may be another vendor).
+    let cancel_creds_by_provider = org_creds.clone();
+    match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, org_creds).await {
         Ok(mut response) => {
             response.segments = segments.clone();
             response.metadata = validated.request.base.metadata_map();
@@ -673,6 +866,16 @@ pub async fn generate_video(
             // disconnects now cannot cancel the writes for a job the vendor took.
             let vendor_job = provider_job_id_for_insert.clone();
             let (cancel_provider, cancel_model) = (provider.clone(), model.clone());
+            let cancel_creds = cancel_creds_by_provider.get(&provider);
+            // The account the job ran on is that of the credential the
+            // deployment that took it used (BYO-ROUTE: the org's key for that
+            // deployment's own provider, else the gateway's), not the model
+            // provider's: a chained operation hands the vendor this job's id
+            // only when it runs on the same account.
+            let vendor_account = match (cancel_creds.is_some(), key_ctx.as_ref().and_then(|c| c.org_id.as_deref())) {
+                (true, Some(org)) => format!("org:{org}"),
+                _ => "platform".to_string(),
+            };
             let writes = {
                 let state = state.clone();
                 let db = db.clone();
@@ -700,7 +903,7 @@ pub async fn generate_video(
                     // caller of a job litegen could not record is told it
                     // failed, so it is charged nothing and its log says so.
                     let charge = if inserted.is_ok() { cost } else { 0.0 };
-                    settle_quota(&state, charge_key, reserved, charge).await;
+                    settle_quota(&state, reserved, charge).await;
                     limits.settle(&state, charge).await;
                     if let Err(e) = inserted {
                         if let Err(e) = db.update_request_log_status(&id, "failed", Some("generation_record_failed")).await {
@@ -708,7 +911,11 @@ pub async fn generate_video(
                         }
                         return Err(e);
                     }
-                    let mut recorded = serde_json::json!({ "request": request, "billing": { "limits": charged_to }, "vendor_account": vendor_account });
+                    // `end_user`: who it was made for, which `file_access` hooks compare.
+                    let mut recorded = serde_json::json!({ "request": request, "billing": { "limits": charged_to }, "vendor_account": vendor_account, "end_user": attributed.end_user });
+                    if !keep {
+                        recorded["keep_outputs"] = false.into();
+                    }
                     if let Some(segments) = &segments {
                         recorded["segments"] = serde_json::json!(segments);
                     }
@@ -738,7 +945,7 @@ pub async fn generate_video(
                         }
                     });
                 }
-                return generation_record_failed_response(&id, vendor_job.as_deref(), &err);
+                return generation_record_failed_response(&id, vendor_job.as_deref());
             }
             // The artifact is diagnostic only, so it alone stays off the response path.
             tokio::spawn(async move {
@@ -755,9 +962,20 @@ pub async fn generate_video(
         }
         Err(e) => {
             // Nothing was delivered — release the reservation.
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             limits.settle(&state, 0.0).await;
             error!(error = %e, "Video generation failed");
+            log_failed_generation(&state, key_ctx.as_ref(), FailedGeneration {
+                id_prefix: "litegen-vid",
+                media_type: "video",
+                schema: &validated.schema,
+                latency_ms: start.elapsed().as_millis() as i64,
+                error: &e,
+                prompt: &validated.request.base.prompt,
+                metadata: validated.request.base.metadata.as_ref(),
+                attributed: &attributed,
+            })
+            .await;
             generation_error_response(&e)
         }
     }
@@ -780,9 +998,8 @@ pub async fn get_video_status(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // Tenant scope: require an active org. If a persisted generation row exists
-    // for this id, it must belong to the caller's org (→ 404 otherwise). Rows
-    // that aren't yet persisted (router-tracked in-flight jobs) pass through.
+    // Tenant scope: require an active org, and the job's row must belong to
+    // it (→ 404 otherwise). A job with no row answers 404 too (SEC-INMEM).
     let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
         Some(o) => o,
         None => return forbidden_no_org(),
@@ -796,47 +1013,58 @@ pub async fn get_video_status(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("the generation could not be read; retry shortly", 500))).into_response();
         }
     };
-    if let Some(gen) = row.as_ref() {
-        if gen.org_id.as_deref() != Some(ctx_org) {
-            return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
-        }
-        // Read:own boundary (same as get_generation) when the row is persisted.
-        if let Err(resp) = authorize_generation_for_session(
-            &state, key_ctx.as_ref(), gen,
-            crate::auth::permissions::Permission::GenerationReadAny,
-            crate::auth::permissions::Permission::GenerationReadOwn,
-            "generation:read:own",
-        ).await {
-            return resp;
-        }
-        // A terminal row is the decided outcome: answer from it. A cancel drops
-        // the router's job, so without this every poll after a cancel answered
-        // 404 "video job not found" for a generation that exists and is
-        // `cancelled`. Release the router entry too, as the 3D path does.
-        if gen.media_type == "video" && gen.status.is_terminal() {
-            state.router.forget_video_job(&id).await;
-            return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(gen)).unwrap())).into_response();
-        }
+    // No row, no tenant to check: the job is no one's (SEC-INMEM). Both
+    // submits write the row before they answer (L2) and forget a job whose
+    // row they couldn't write, so a tracked job without one belongs to a
+    // deleted org or app. It answers as another org's does, and is let go.
+    let Some(gen) = row.as_ref() else {
+        state.router.forget_video_job(&id).await;
+        return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
+    };
+    if gen.org_id.as_deref() != Some(ctx_org) {
+        return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
     }
+    // Read:own boundary (same as get_generation).
+    if let Err(resp) = authorize_generation_for_session(
+        &state, key_ctx.as_ref(), gen,
+        crate::auth::permissions::Permission::GenerationReadAny,
+        crate::auth::permissions::Permission::GenerationReadOwn,
+        "generation:read:own",
+    ).await {
+        return resp;
+    }
+    // A terminal row is the decided outcome: answer from it. A cancel drops
+    // the router's job, so without this every poll after a cancel answered
+    // 404 "video job not found" for a generation that exists and is
+    // `cancelled`. Release the router entry too, as the 3D path does.
+    if gen.media_type == "video" && gen.status.is_terminal() {
+        state.router.forget_video_job(&id).await;
+        return answer_video(&state, key_ctx.as_ref(), gen).await;
+    }
+    // Kept or not as the request decided at submit (`metadata.keep_outputs`).
+    let keep = crate::access::row_keeps_outputs(gen.metadata.as_ref());
     // Keep a finished video in the tenant's own bucket, as the poller does.
-    let app_id = row.as_ref()
-        .and_then(|g| g.app_id.clone())
-        .or_else(|| key_ctx.as_ref().and_then(|c| c.app_id.clone()));
-    let (app_store, app_prefix) = match app_id.as_deref() {
-        Some(app_id) => resolve_app_model3d_store(&state.db, state.secrets_key, app_id)
-            .await
-            .map_or((None, None), |(s, p)| (Some(s), p)),
+    let (app_store, app_prefix) = match gen.app_id.as_deref().filter(|_| keep) {
+        Some(app_id) => match app_store_for_writing(&state.db, state.secrets_key, &state.router.config.aws, tenant_bucket_of(&state), app_id).await {
+            Ok(found) => found.map_or((None, None), |(s, p)| (Some(s), p)),
+            // Its bucket is down and litegen's store may not stand in: the
+            // video waits, as the row says.
+            Err(reason) => {
+                tracing::warn!(generation_id = %id, reason = %reason, "a finished video has nowhere to be kept yet");
+                return answer_video(&state, key_ctx.as_ref(), gen).await;
+            }
+        },
         None => (None, None),
     };
-    match state.router.get_video_status(&id, app_store, app_prefix.as_deref()).await {
-        Ok((mut resp, assets)) => {
+    // A finished video is kept by one observer: the claim, when this poll has
+    // it, is held until the outcome below is written.
+    match state.router.get_video_status_claimed(&id, app_store, app_prefix.as_deref(), keep, &state.db).await {
+        Ok((mut resp, assets, _claim)) => {
             // `created` is when the job was submitted, on every read: the row's;
             // an operation's segments are its plan, recorded at submit.
-            if let Some(row) = row.as_ref() {
-                resp.created = row.created_at.timestamp();
-                resp.segments = row.metadata.as_ref().and_then(|m| serde_json::from_value(m.get("segments")?.clone()).ok());
-                resp.metadata = row.request_metadata();
-            }
+            resp.created = gen.created_at.timestamp();
+            resp.segments = gen.metadata.as_ref().and_then(|m| serde_json::from_value(m.get("segments")?.clone()).ok());
+            resp.metadata = gen.request_metadata();
             // A terminal answer is persisted here as well as by the poller, so
             // it reads the same however often it is read: the router has let
             // go of the job, and the row is what answers from now on (L3).
@@ -847,45 +1075,88 @@ pub async fn get_video_status(
                     assets.as_ref(),
                 ).await;
                 match written {
-                    Ok(w) if w == crate::db::GenerationWrite::Written => {
+                    Ok(crate::db::GenerationWrite::Written) => {
                         let refunded = crate::proxy::poller::settle_terminal(&state.db, &id, &resp.status.to_string(), resp.error.as_deref()).await;
                         if refunded > 0.0 {
                             resp.usage = Some(usage_from_row_cost(0.0));
                         }
-                        if let Some(row) = row.as_ref() {
-                            let gen = crate::types::Generation {
-                                status: resp.status,
-                                progress: resp.progress as i32,
-                                result_url: resp.video_url.clone(),
-                                error_message: resp.error.clone(),
-                                completed_at: Some(chrono::Utc::now()),
-                                metadata: assets.clone().or_else(|| row.metadata.clone()),
-                                ..row.clone()
-                            };
-                            crate::proxy::poller::dispatch_terminal_webhook(
-                                &state.db, &crate::util::ssrf::no_redirect_client(), state.mode, gen,
-                            ).await;
-                        }
+                        let finished = crate::types::Generation {
+                            status: resp.status,
+                            progress: resp.progress as i32,
+                            result_url: resp.video_url.clone(),
+                            error_message: resp.error.clone(),
+                            completed_at: Some(chrono::Utc::now()),
+                            metadata: assets.clone().or_else(|| gen.metadata.clone()),
+                            ..gen.clone()
+                        };
+                        crate::proxy::poller::dispatch_terminal_webhook(
+                            &state.db, &crate::proxy::webhook::webhook_client(state.mode), state.mode, finished,
+                            Some(crate::access::present::Presenting::of(&state)),
+                        ).await;
                     }
                     Ok(crate::db::GenerationWrite::AlreadyTerminal) => {
                         // Another observer decided first: that is the answer.
                         if let Ok(Some(gen)) = state.db.get_generation(&id).await {
-                            return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(&gen)).unwrap())).into_response();
+                            return answer_video(&state, key_ctx.as_ref(), &gen).await;
                         }
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!(generation_id = %id, error = %e, "failed to persist the video outcome"),
                 }
             }
+            if resp.video_url.is_some() {
+                let owner = FileOwner::of(gen);
+                let kept: Vec<crate::types::GenerationAsset> = assets.as_ref()
+                    .and_then(|m| m.get("assets"))
+                    .and_then(|a| serde_json::from_value(a.clone()).ok())
+                    .unwrap_or_default();
+                presenter_for(&state, key_ctx.as_ref(), &owner).await.present_video(&mut resp, &kept).await;
+            }
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
         }
         Err(e) => {
-            if let Some(gen) = row.filter(|g| g.media_type == "video") {
-                return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(&gen)).unwrap())).into_response();
+            if gen.media_type == "video" {
+                return answer_video(&state, key_ctx.as_ref(), gen).await;
             }
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+            generation_error_response(&e)
         }
+    }
+}
+
+/// A presenter for `owner`'s files as the caller may use them
+/// (`docs/storage-access.md`).
+async fn presenter_for(state: &AppState, key_ctx: Option<&KeyContext>, owner: &FileOwner) -> crate::access::present::Presenter {
+    crate::access::present::Presenting::of(state).presenter(owner, crate::access::present::Viewer::Caller(key_ctx)).await
+}
+
+/// A video generation answered from its row, its URL as the caller may use it.
+async fn answer_video(state: &AppState, key_ctx: Option<&KeyContext>, gen: &crate::types::Generation) -> axum::response::Response {
+    let mut resp = video_response_from_row(gen);
+    if resp.video_url.is_some() {
+        presenter_for(state, key_ctx, &FileOwner::of(gen)).await.present_video(&mut resp, &generation_assets(gen)).await;
+    }
+    (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
+}
+
+/// A 3D answer, its files' URLs as the caller may use them.
+async fn answer_3d(state: &AppState, key_ctx: Option<&KeyContext>, owner: FileOwner, mut resp: Model3dGenerationResponse) -> axum::response::Response {
+    if !resp.assets.is_empty() {
+        presenter_for(state, key_ctx, &owner).await.present_3d(&mut resp).await;
+    }
+    (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
+}
+
+/// Generation rows, their files' URLs as the caller may use them.
+async fn present_rows(state: &AppState, key_ctx: Option<&KeyContext>, rows: &mut [crate::types::Generation]) {
+    let presenting = crate::access::present::Presenting::of(state);
+    // Each app's policy and stores are resolved once for the whole page.
+    let mut cache = crate::access::present::PresenterCache::default();
+    for gen in rows.iter_mut() {
+        presenting
+            .presenter_cached(&FileOwner::of(gen), crate::access::present::Viewer::Caller(key_ctx), &mut cache)
+            .await
+            .present_row(gen)
+            .await;
     }
 }
 
@@ -893,6 +1164,7 @@ pub async fn get_video_status(
 /// router has let go of the job.
 fn video_response_from_row(gen: &crate::types::Generation) -> VideoGenerationResponse {
     VideoGenerationResponse {
+        video_url_expires_at: None,
         id: gen.id.clone(),
         status: gen.status,
         model: gen.model.clone(),
@@ -952,6 +1224,7 @@ async fn resolve_source_video(
     src: &crate::types::SourceRef,
     time_range: Option<crate::types::TimeRange>,
     vendor_account: &str,
+    gate: &FileGate<'_>,
 ) -> Result<crate::providers::VideoSource, axum::response::Response> {
     use crate::proxy::model3d_source::SourceError;
     use crate::types::SourceKind;
@@ -973,9 +1246,9 @@ async fn resolve_source_video(
     }
     let (bytes, content_type, vendor_job_id) = match src.kind {
         SourceKind::Generation => {
-            let gen = readable_generation(state, key_ctx, &src.value)
+            let gen = chainable_generation(state, key_ctx, &src.value)
                 .await
-                .map_err(|_| refuse(SourceError::NotFound(format!("generation {} is not one you can read", src.value))))?;
+                .ok_or_else(|| refuse(SourceError::NotFound(format!("generation {} is not one you can read", src.value))))?;
             if gen.media_type != "video" {
                 return Err(refuse(SourceError::NotFound(format!("generation {} is not a video", gen.id))));
             }
@@ -996,9 +1269,10 @@ async fn resolve_source_video(
                 .into_iter()
                 .find(|a| a.kind == "video")
                 .ok_or_else(|| refuse(SourceError::NotFound(format!("generation {} has no stored video", gen.id))))?;
+            gate.allows(key_ctx, &gen, &asset).await?;
             let mut stores = vec![state.router.model3d_store.clone()];
             if let Some(app) = gen.app_id.as_deref() {
-                if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
+                if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, &state.router.config.aws, tenant_bucket_of(state), app).await {
                     stores.insert(0, store);
                 }
             }
@@ -1011,7 +1285,7 @@ async fn resolve_source_video(
             }
             let (bytes, ct) = found.ok_or_else(|| refuse(SourceError::NotFound(format!("generation {}'s video is no longer stored", gen.id))))?;
             let vendor_job = own.then(|| gen.provider_job_id.clone()).flatten();
-            (bytes::Bytes::from(bytes), ct, vendor_job)
+            (bytes, ct, vendor_job)
         }
         SourceKind::Base64 => {
             use base64::Engine;
@@ -1023,7 +1297,7 @@ async fn resolve_source_video(
         }
         SourceKind::Url => {
             crate::util::ssrf::validate_public_url(&src.value).await.map_err(|e| refuse(SourceError::Fetch(e)))?;
-            let client = crate::util::ssrf::no_redirect_download_client(std::time::Duration::from_secs(120), std::time::Duration::from_secs(30));
+            let client = crate::util::ssrf::public_only_download_client(std::time::Duration::from_secs(120), std::time::Duration::from_secs(30));
             let (bytes, _) = crate::util::ssrf::download_capped(&client, &src.value, crate::proxy::model3d_source::MAX_SOURCE_BYTES)
                 .await
                 .map_err(|e| refuse(crate::proxy::model3d_source::fetch_error(e)))?;
@@ -1091,12 +1365,13 @@ pub async fn get_generation(
             ).await {
                 return resp;
             }
+            let mut gen = gen;
+            present_rows(&state, key_ctx.as_ref(), std::slice::from_mut(&mut gen)).await;
             (StatusCode::OK, Json(serde_json::to_value(&gen).unwrap())).into_response()
         }
         Ok(_) => (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to get generation");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to get generation", &e)
         }
     }
 }
@@ -1123,62 +1398,28 @@ async fn readable_generation(
         }
         Ok(_) => Err((StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response()),
         Err(e) => {
-            error!(error = %e, "Failed to get generation");
-            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response())
+            Err(internal_error_response("Failed to get generation", &e))
         }
     }
 }
 
-/// Every stored file of a generation, in order. A 3D row goes through the
-/// same guards its `GET /v1/models3d/{id}` answer does, so a generation that
-/// failed (or never delivered a promised container) lists nothing; any other
-/// row lists what it recorded once `completed`.
-pub(crate) fn generation_assets(gen: &crate::types::Generation) -> Vec<crate::types::GenerationAsset> {
-    use crate::types::GenerationAsset;
-    if gen.media_type == "model3d" {
-        return model3d_response_from_row(gen)
-            .assets
-            .into_iter()
-            .enumerate()
-            .map(|(i, a)| GenerationAsset {
-                index: i as u32,
-                kind: serde_json::to_value(a.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
-                format: a.format,
-                url: a.url,
-                size_bytes: a.size_bytes,
-                sha256: a.sha256,
-                width: a.width,
-                height: a.height,
-                duration_s: None,
-                fps: None,
-                has_audio: None,
-            })
-            .collect();
+/// A generation whose stored file the caller may feed into a new job: one
+/// [`readable_generation`] gives and, where the app keeps files to their
+/// owners (`signed`, `private`), inside its owner scope, as the file route
+/// (`get_generation_asset`) holds it. Under `public` the stored URL is open
+/// to any reader of the generation anyway.
+async fn chainable_generation(
+    state: &Arc<AppState>,
+    key_ctx: Option<&crate::api::middleware::KeyContext>,
+    id: &str,
+) -> Option<crate::types::Generation> {
+    let gen = readable_generation(state, key_ctx, id).await.ok()?;
+    let policy = crate::access::policy_for(state, gen.app_id.as_deref()).await;
+    let kept_to_owners = policy.mode != crate::access::AccessMode::Public;
+    if kept_to_owners && !crate::access::present::in_owner_scope(policy.owner_scope, key_ctx, &FileOwner::of(&gen)) {
+        return None;
     }
-    if gen.status != GenerationStatus::Completed {
-        return Vec::new();
-    }
-    let recorded: Vec<GenerationAsset> = gen.metadata.as_ref()
-        .and_then(|m| m.get("assets"))
-        .and_then(|a| serde_json::from_value(a.clone()).ok())
-        .unwrap_or_default();
-    if recorded.is_empty() {
-        // A row written before litegen kept results: its one result URL.
-        return gen.result_url.iter().map(|url| GenerationAsset {
-            index: 0,
-            kind: gen.media_type.clone(),
-            format: url.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default(),
-            url: url.clone(),
-            size_bytes: None,
-            sha256: None,
-            width: None,
-            height: None,
-            duration_s: None,
-            fps: None,
-            has_audio: None,
-        }).collect();
-    }
-    recorded.into_iter().enumerate().map(|(i, a)| GenerationAsset { index: i as u32, ..a }).collect()
+    Some(gen)
 }
 
 /// GET /v1/generations/{id}/assets — Every file litegen kept for a generation.
@@ -1200,7 +1441,9 @@ pub async fn list_generation_assets(
 ) -> impl IntoResponse {
     match readable_generation(&state, key_ctx.as_ref(), &id).await {
         Ok(gen) => {
-            let list = crate::types::GenerationAssetList { generation_id: gen.id.clone(), data: generation_assets(&gen) };
+            let mut data = generation_assets(&gen);
+            presenter_for(&state, key_ctx.as_ref(), &FileOwner::of(&gen)).await.present_assets(&mut data).await;
+            let list = crate::types::GenerationAssetList { generation_id: gen.id.clone(), data };
             (StatusCode::OK, Json(serde_json::to_value(list).unwrap())).into_response()
         }
         Err(resp) => resp,
@@ -1216,10 +1459,12 @@ pub async fn list_generation_assets(
         ("index" = u32, Path, description = "The asset's `index` in `GET /v1/generations/{id}/assets`"),
     ),
     responses(
-        (status = 200, description = "The file, with its content type"),
+        (status = 200, description = "The file, with its content type. A file litegen keeps carries `Accept-Ranges: bytes`"),
+        (status = 206, description = "The bytes one `Range: bytes=…` header asked for, with `Content-Range`; several ranges, or an `If-Range`, get the whole file (200)"),
         (status = 307, description = "The file is held by storage litegen does not read back (an S3 image store); follow `Location`"),
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 404, description = "No such generation or asset", body = ErrorResponse),
+        (status = 416, description = "`range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes */<length>` when the length is known", body = ErrorResponse),
     ),
     tag = "Generations"
 )]
@@ -1227,44 +1472,488 @@ pub async fn get_generation_asset(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path((id, index)): Path<(String, usize)>,
+    hooks: Option<Extension<Arc<crate::hooks::HookSet>>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let gen = match readable_generation(&state, key_ctx.as_ref(), &id).await {
         Ok(g) => g,
         Err(resp) => return resp,
     };
+    // Reading a generation is org-wide; opening its files follows the app's
+    // owner scope (`docs/storage-access.md`), in every access mode.
+    let owner = FileOwner::of(&gen);
+    let policy = crate::access::policy_for(&state, gen.app_id.as_deref()).await;
+    if !crate::access::present::in_owner_scope(policy.owner_scope, key_ctx.as_ref(), &owner) {
+        let whose = match policy.owner_scope {
+            crate::access::OwnerScope::Key => "another key",
+            crate::access::OwnerScope::App => "another app",
+            crate::access::OwnerScope::Org => "another org",
+        };
+        let body = serde_json::json!({ "error": {
+            "type": "forbidden",
+            "code": "not_file_owner",
+            "message": format!("this file belongs to {whose}; the app's owner scope is {}", policy.owner_scope.as_str()),
+        }});
+        return (StatusCode::FORBIDDEN, Json(body)).into_response();
+    }
     let Some(asset) = generation_assets(&gen).into_iter().nth(index) else {
         return (StatusCode::NOT_FOUND, Json(error_response("Asset not found", 404))).into_response();
     };
-    // Read it back through whichever store minted its URL: the app's own
-    // bucket when it has one, else litegen's.
+    // Then the operator's own rule, which can only narrow what passed.
+    if let Some(Extension(hooks)) = hooks.as_ref() {
+        let file = file_view(&gen, index, &asset);
+        if let Err(response) = crate::hooks::file_access(hooks, &axum::http::Method::GET, &uri, &headers, key_ctx.as_ref(), file).await {
+            return response;
+        }
+    }
+    serve_generation_file(&state, &gen, asset, requested_range(&headers)).await
+}
+
+/// What a `file_access` hook sees of a stored file: `gen`'s asset at `index`.
+fn file_view(gen: &crate::types::Generation, index: usize, asset: &crate::types::GenerationAsset) -> serde_json::Value {
+    let end_user = gen.metadata.as_ref().and_then(|m| m.get("end_user")).and_then(|v| v.as_str());
+    serde_json::json!({
+        "generation_id": gen.id,
+        "index": index,
+        "kind": asset.kind,
+        "format": asset.format,
+        "size_bytes": asset.size_bytes,
+        "media_type": gen.media_type,
+        "model": gen.model,
+        "created_at": gen.created_at,
+        "created_by": {
+            "key_id": gen.key_id.map(|k| k.to_string()),
+            "app_id": gen.app_id,
+            "org_id": gen.org_id,
+            "end_user": end_user,
+        },
+    })
+}
+
+/// The operator's `file_access` hooks, for a request that names a stored
+/// generation as an input (SEC-FILEHOOK): the hooks, if any, and the request
+/// as `pre_call` left it.
+struct FileGate<'a> {
+    hooks: Option<&'a crate::hooks::HookSet>,
+    method: &'a axum::http::Method,
+    uri: &'a axum::http::Uri,
+    headers: &'a axum::http::HeaderMap,
+}
+
+impl<'a> FileGate<'a> {
+    fn of(chain: &'a ChainRequest, headers: &'a axum::http::HeaderMap) -> Self {
+        FileGate { hooks: chain.hooks.as_deref(), method: &chain.method, uri: &chain.uri, headers }
+    }
+
+    /// May the caller read `asset`, the file of `gen` this request has chosen
+    /// to read? Asked once litegen's own checks passed, as the file route
+    /// asks; `Err` is the hook's own answer (`refused_by_hook`, `hook_failed`).
+    async fn allows(&self, key_ctx: Option<&KeyContext>, gen: &crate::types::Generation, asset: &crate::types::GenerationAsset) -> Result<(), axum::response::Response> {
+        let Some(hooks) = self.hooks else { return Ok(()) };
+        let file = file_view(gen, asset.index as usize, asset);
+        crate::hooks::file_access(hooks, self.method, self.uri, self.headers, key_ctx, file).await
+    }
+}
+
+/// Why a request can't use a stored generation it names as an input.
+enum ChainRefusal {
+    /// litegen's own refusal, answered in the input's error shape.
+    Source(crate::proxy::model3d_source::SourceError),
+    /// The operator's `file_access` hook's answer, sent as it is.
+    Hook(axum::response::Response),
+}
+
+impl From<crate::proxy::model3d_source::SourceError> for ChainRefusal {
+    fn from(e: crate::proxy::model3d_source::SourceError) -> Self {
+        ChainRefusal::Source(e)
+    }
+}
+
+/// GET /v1/generations/{id}/assets/{index}/signed — One file, through a link litegen signed.
+#[utoipa::path(
+    get,
+    path = "/v1/generations/{id}/assets/{index}/signed",
+    params(
+        ("id" = String, Path, description = "Generation ID"),
+        ("index" = u32, Path, description = "The asset's `index` in `GET /v1/generations/{id}/assets`"),
+        ("expires" = i64, Query, description = "When the link stops working (unix seconds)"),
+        ("issued" = i64, Query, description = "When litegen issued the link (unix seconds)"),
+        ("signature" = String, Query, description = "litegen's signature over the file, `issued` and `expires`"),
+    ),
+    responses(
+        (status = 200, description = "The file, with its content type. No credentials: the signature is the permission. A file litegen keeps carries `Accept-Ranges: bytes`"),
+        (status = 206, description = "The bytes one `Range: bytes=…` header asked for, with `Content-Range`; several ranges, or an `If-Range`, get the whole file (200)"),
+        (status = 403, description = "`invalid_link`, `link_expired` or `link_revoked`", body = ErrorResponse),
+        (status = 404, description = "No such generation or asset", body = ErrorResponse),
+        (status = 410, description = "`vendor_file_gone`: the vendor no longer has a file litegen didn't keep", body = ErrorResponse),
+        (status = 416, description = "`range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes */<length>` when the length is known", body = ErrorResponse),
+    ),
+    tag = "Generations"
+)]
+pub async fn get_signed_generation_asset(
+    State(state): State<Arc<AppState>>,
+    Path((id, index)): Path<(String, usize)>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let refuse = |code: &str, message: &str| {
+        let body = serde_json::json!({ "error": { "type": "forbidden", "code": code, "message": message } });
+        (StatusCode::FORBIDDEN, Json(body)).into_response()
+    };
+    let number = |k: &str| query.get(k).and_then(|v| v.parse::<i64>().ok());
+    let (Some(expires), Some(issued), Some(signature)) = (number("expires"), number("issued"), query.get("signature")) else {
+        return refuse("invalid_link", "this link is not one litegen signed: it needs expires, issued and signature");
+    };
+    if !state.router.link_signer.verify_file_route(&id, index, issued, expires, signature) {
+        return refuse("invalid_link", "this link is not one litegen signed for this file");
+    }
+    if expires < chrono::Utc::now().timestamp() {
+        return refuse("link_expired", "this link has expired; read the generation again for a fresh one");
+    }
+    let gen = match state.db.get_generation(&id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response(),
+        Err(e) => {
+            error!(generation_id = %id, error = %e, "could not read the generation of a signed link");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("the generation could not be read; retry shortly", 500))).into_response();
+        }
+    };
+    if let Err(resp) = revocation_check(&state, gen.app_id.as_deref(), &gen.id, Some(issued)).await {
+        return resp;
+    }
+    // Private means the file route only: a link signed while the app was
+    // `signed` closes with it, as the local store's do.
+    if crate::access::policy_for(&state, gen.app_id.as_deref()).await.mode == crate::access::AccessMode::Private {
+        return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
+    }
+    let Some(asset) = generation_assets(&gen).into_iter().nth(index) else {
+        return (StatusCode::NOT_FOUND, Json(error_response("Asset not found", 404))).into_response();
+    };
+    serve_generation_file(&state, &gen, asset, requested_range(&headers)).await
+}
+
+/// 403 `link_revoked` when a revocation covering `generation_id` (its own, its
+/// app's or the gateway's) came after the link was issued.
+async fn revocation_check(state: &AppState, app_id: Option<&str>, generation_id: &str, issued: Option<i64>) -> Result<(), axum::response::Response> {
+    match state.db.links_revoked_at(app_id, generation_id).await {
+        Ok(at) if crate::access::link_is_revoked(issued, at) => {
+            let body = serde_json::json!({ "error": {
+                "type": "forbidden",
+                "code": "link_revoked",
+                "message": "this link was revoked; read the generation again for a fresh one",
+            }});
+            Err((StatusCode::FORBIDDEN, Json(body)).into_response())
+        }
+        Ok(_) => Ok(()),
+        Err(e) => {
+            error!(generation_id = %generation_id, error = %e, "could not check a link's revocation");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("could not check whether this link was revoked; retry shortly", 500))).into_response())
+        }
+    }
+}
+
+/// How a caller changes a generation.
+#[derive(Clone, Copy)]
+enum GenerationChange {
+    /// Revoking its links or deleting its files.
+    Files,
+    /// Cancelling it (SEC-CANCEL: a change, not a read).
+    Cancel,
+}
+
+/// May the caller change `gen` the way `change` says? A dashboard session
+/// needs the change's `:any` permission, or `:own` for its own; an API key
+/// must pass the app's owner scope, as opening its files does.
+async fn authorize_generation_change(
+    state: &AppState,
+    key_ctx: Option<&KeyContext>,
+    gen: &crate::types::Generation,
+    change: GenerationChange,
+) -> Result<(), axum::response::Response> {
+    use crate::auth::permissions::Permission;
+    let (any, own, any_label) = match change {
+        GenerationChange::Files => (Permission::GenerationDeleteAny, Permission::GenerationDeleteOwn, "generation:delete:own"),
+        GenerationChange::Cancel => (Permission::GenerationCancelAny, Permission::GenerationCancelOwn, "generation:cancel:own"),
+    };
+    authorize_generation_for_session(state, key_ctx, gen, any, own, any_label).await?;
+    let policy = crate::access::policy_for(state, gen.app_id.as_deref()).await;
+    if key_ctx.is_some_and(|c| c.user.is_none()) && !crate::access::present::in_owner_scope(policy.owner_scope, key_ctx, &FileOwner::of(gen)) {
+        let body = serde_json::json!({ "error": {
+            "type": "forbidden",
+            "code": "not_file_owner",
+            "message": format!("this generation belongs to another key than the app's owner scope ({}) allows", policy.owner_scope.as_str()),
+        }});
+        return Err((StatusCode::FORBIDDEN, Json(body)).into_response());
+    }
+    Ok(())
+}
+
+/// POST /v1/generations/{id}/revoke-links — end every litegen link to one generation's files.
+#[utoipa::path(
+    post,
+    path = "/v1/generations/{id}/revoke-links",
+    params(("id" = String, Path, description = "Generation ID")),
+    responses(
+        (status = 200, description = "litegen's links to this generation's files issued before `revoked_at` no longer work. A bucket's own presigned links work until they expire.", body = crate::access::LinksRevoked),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "Generations"
+)]
+pub async fn revoke_generation_links(
+    State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let gen = match readable_generation(&state, key_ctx.as_ref(), &id).await {
+        Ok(g) => g,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = authorize_generation_change(&state, key_ctx.as_ref(), &gen, GenerationChange::Files).await {
+        return resp;
+    }
+    let at = crate::access::revocation_time();
+    if let Err(e) = state.db.revoke_links("generation", &gen.id, at).await {
+        error!(generation_id = %id, error = %e, "could not revoke a generation's links");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("the links could not be revoked; retry shortly", 500))).into_response();
+    }
+    log_audit(state.db.clone(), key_ctx.as_ref(), "generation.revoke_links", "generation", &id, None, Some(serde_json::json!({ "revoked_at": at })));
+    (StatusCode::OK, Json(crate::access::LinksRevoked { revoked_at: at })).into_response()
+}
+
+/// DELETE /v1/generations/{id} — delete a finished generation's files and request.
+#[utoipa::path(
+    delete,
+    path = "/v1/generations/{id}",
+    params(("id" = String, Path, description = "Generation ID")),
+    responses(
+        (status = 200, description = "The generation as it now stands: its kept files deleted (`files_deleted_at`), its request (prompt and params) removed from it and from the request log. The billing record stays. Files in an app's own bucket are deleted too; a vendor's own files (`kept: false`) are the vendor's.", body = Generation),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 409, description = "`generation_running`: cancel it first", body = ErrorResponse),
+        (status = 502, description = "`files_delete_failed`: a file could not be deleted; nothing was marked, so try again", body = ErrorResponse),
+    ),
+    tag = "Generations"
+)]
+pub async fn delete_generation(
+    State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let gen = match readable_generation(&state, key_ctx.as_ref(), &id).await {
+        Ok(g) => g,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = authorize_generation_change(&state, key_ctx.as_ref(), &gen, GenerationChange::Files).await {
+        return resp;
+    }
+    if !gen.status.is_terminal() {
+        let body = serde_json::json!({ "error": {
+            "type": "invalid_request_error",
+            "code": "generation_running",
+            "message": format!("generation {id} is still running; cancel it first (PATCH /v1/generations/{id})"),
+        }});
+        return (StatusCode::CONFLICT, Json(body)).into_response();
+    }
+    if gen.files_deleted_at.is_none() {
+        let stores = crate::proxy::retention::stores_for(&crate::access::present::Presenting::of(&state), gen.app_id.as_deref()).await;
+        if let Err(e) = crate::proxy::retention::delete_generation_files(&stores, &gen).await {
+            let body = serde_json::json!({ "error": {
+                "type": "provider_error",
+                "code": "files_delete_failed",
+                "message": format!("the files could not all be deleted, so nothing was marked; try again ({e}). If the app's own bucket stays unusable, fix its settings or remove them (`DELETE /v1/apps/{{app_id}}/storage`) first."),
+            }});
+            return (StatusCode::BAD_GATEWAY, Json(body)).into_response();
+        }
+        if let Err(e) = state.db.mark_files_deleted(&id, chrono::Utc::now(), "deleted").await {
+            error!(generation_id = %id, error = %e, "files deleted, but the row could not be marked");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("the files are deleted, but the generation could not be updated; try again", 500))).into_response();
+        }
+    }
+    if let Err(e) = state.db.redact_generation_request(&id).await {
+        error!(generation_id = %id, error = %e, "could not remove a deleted generation's request");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("the files are deleted, but the request could not be removed; try again", 500))).into_response();
+    }
+    log_audit(state.db.clone(), key_ctx.as_ref(), "generation.delete", "generation", &id, None, None);
+    let mut gen = match state.db.get_generation(&id).await {
+        Ok(Some(g)) => g,
+        _ => gen,
+    };
+    presenter_for(&state, key_ctx.as_ref(), &FileOwner::of(&gen)).await.present_row(&mut gen).await;
+    (StatusCode::OK, Json(serde_json::to_value(&gen).unwrap())).into_response()
+}
+
+/// Delete `gens`' files from litegen's own store, in the background: what
+/// goes with a deleted app or org. Files in an app's own bucket are the
+/// customer's, so they stay.
+pub(crate) fn delete_files_in_litegens_store(state: &AppState, gens: Vec<crate::types::Generation>) {
+    if gens.is_empty() {
+        return;
+    }
+    let stores = crate::proxy::retention::FileStores { stores: vec![state.router.model3d_store.clone()], unavailable: None };
+    tokio::spawn(async move {
+        for gen in gens {
+            if let Err(e) = crate::proxy::retention::delete_generation_files(&stores, &gen).await {
+                tracing::warn!(generation_id = %gen.id, error = %e, "a deleted app's file could not be deleted");
+            }
+        }
+    });
+}
+
+/// The headers litegen serves every file from its own origin with: never
+/// sniffed into anything else, and sandboxed if a browser renders it (an SVG
+/// can carry script).
+fn own_origin_file_headers(content_type: String) -> [(axum::http::HeaderName, String); 4] {
+    [
+        (axum::http::header::CONTENT_TYPE, content_type),
+        (axum::http::header::CACHE_CONTROL, "private, max-age=86400".to_string()),
+        (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        (axum::http::header::CONTENT_SECURITY_POLICY, "sandbox".to_string()),
+    ]
+}
+
+/// The one byte range a request's `Range` header asks for, or `None` when
+/// the whole file is served: no header, several ranges, an `If-Range`, or a
+/// header litegen can't read (RFC 9110 §14.2 lets a server ignore any of
+/// these and answer 200).
+fn requested_range(headers: &axum::http::HeaderMap) -> Option<crate::store::ByteRange> {
+    use crate::store::ByteRange;
+    if headers.contains_key(axum::http::header::IF_RANGE) {
+        return None;
+    }
+    let value = headers.get(axum::http::header::RANGE)?.to_str().ok()?.trim();
+    // RFC 9110 §14.1: a range unit is matched without regard to case.
+    let spec = value.get(..6).filter(|unit| unit.eq_ignore_ascii_case("bytes=")).map(|_| &value[6..])?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (first, last) = spec.split_once('-')?;
+    match (first.trim(), last.trim()) {
+        ("", "") => None,
+        ("", n) => n.parse().ok().map(ByteRange::Last),
+        (a, "") => a.parse().ok().map(ByteRange::From),
+        (a, b) => {
+            let (a, b) = (a.parse().ok()?, b.parse().ok()?);
+            (a <= b).then_some(ByteRange::FromTo(a, b))
+        }
+    }
+}
+
+/// A stored file as a GET's answer, streamed as the store reads it, never
+/// held whole: `headers` (its type and the route's own), `Content-Length`
+/// when the store knows it, `Accept-Ranges` from a store that reads ranges,
+/// and one asked-for range answered 206 with `Content-Range`, or 416 when
+/// it lies outside the file.
+fn stored_file_response(
+    file: crate::store::StoredFile,
+    headers: impl IntoIterator<Item = (axum::http::HeaderName, String)>,
+) -> axum::response::Response {
+    use crate::store::Served;
+    use axum::http::{header, HeaderValue};
+    let (status, length, content_range) = match file.served {
+        Served::Whole => (StatusCode::OK, file.len, None),
+        Served::Part { start, end } => {
+            // The span a store's 206 named, and a hosted tenant runs the
+            // bucket on the other end: refused unless it lies within the file
+            // (payloads review #2), never a length worked out from it.
+            let length = end.checked_sub(start).and_then(|n| n.checked_add(1)).filter(|_| file.len.is_none_or(|len| end < len));
+            let Some(length) = length else {
+                error!(start, end, len = ?file.len, "a store answered a range with a span outside the file");
+                return (StatusCode::BAD_GATEWAY, Json(error_response("The asset could not be read from storage", 502))).into_response();
+            };
+            let of = file.len.map_or_else(|| "*".to_string(), |n| n.to_string());
+            (StatusCode::PARTIAL_CONTENT, Some(length), Some(format!("bytes {start}-{end}/{of}")))
+        }
+        Served::Unsatisfiable => {
+            let body = serde_json::json!({ "error": {
+                "type": "invalid_request_error",
+                "code": "range_not_satisfiable",
+                "message": "the requested range lies outside the file",
+            }});
+            let mut resp = (StatusCode::RANGE_NOT_SATISFIABLE, Json(body)).into_response();
+            // Only a length the store reported: never one made up.
+            if let Some(Ok(v)) = file.len.map(|n| HeaderValue::from_str(&format!("bytes */{n}"))) {
+                resp.headers_mut().insert(header::CONTENT_RANGE, v);
+            }
+            return resp;
+        }
+    };
+    let mut resp = axum::response::Response::new(axum::body::Body::from_stream(file.body));
+    *resp.status_mut() = status;
+    let out = resp.headers_mut();
+    for (name, value) in headers {
+        if let Ok(v) = HeaderValue::from_str(&value) {
+            out.insert(name, v);
+        }
+    }
+    if let Some(n) = length {
+        out.insert(header::CONTENT_LENGTH, HeaderValue::from(n));
+    }
+    if let Some(Ok(v)) = content_range.map(|r| HeaderValue::from_str(&r)) {
+        out.insert(header::CONTENT_RANGE, v);
+    }
+    if file.accepts_ranges {
+        out.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    }
+    resp
+}
+
+/// The bytes of one of `gen`'s files, from whichever store minted its URL (the
+/// app's own bucket when it has one, else litegen's), or streamed from the
+/// vendor when litegen kept no copy. A stored file streams, and answers
+/// `range` (see [`stored_file_response`]).
+async fn serve_generation_file(
+    state: &Arc<AppState>,
+    gen: &crate::types::Generation,
+    asset: GenerationAsset,
+    range: Option<crate::store::ByteRange>,
+) -> axum::response::Response {
+    if let Some(at) = gen.files_deleted_at {
+        let why = match gen.files_deleted_reason.as_deref() {
+            Some("retention") => "after its app's retention",
+            _ => "on request",
+        };
+        let body = serde_json::json!({ "error": {
+            "type": "not_found_error",
+            "code": "files_deleted",
+            "message": format!("this generation's files were deleted {why}, at {}", at.to_rfc3339()),
+        }});
+        return (StatusCode::GONE, Json(body)).into_response();
+    }
+    if !asset.kept {
+        return vendor_file_response(state, &asset.url).await;
+    }
     let mut stores = vec![state.router.model3d_store.clone()];
+    let mut bucket_down = None;
     if let Some(app) = gen.app_id.as_deref() {
-        if let Some((s, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
-            stores.insert(0, s);
+        match app_store_for_files(&state.db, state.secrets_key, &state.router.config.aws, tenant_bucket_of(state), app).await {
+            Ok(Some(s)) => stores.insert(0, s),
+            Ok(None) => {}
+            Err(why) => bucket_down = Some(why),
         }
     }
     for store in &stores {
         let Some(key) = store.key_of(&asset.url) else { continue };
-        match store.get(&key).await {
-            Ok(Some((bytes, content_type))) => {
-                return (
-                    StatusCode::OK,
-                    [
-                        (axum::http::header::CONTENT_TYPE, content_type),
-                        (axum::http::header::CACHE_CONTROL, "private, max-age=86400".to_string()),
-                    ],
-                    bytes,
-                )
-                    .into_response();
+        match store.open(&key, range).await {
+            Ok(Some(file)) => {
+                let headers = own_origin_file_headers(file.content_type.clone());
+                return stored_file_response(file, headers);
             }
             Ok(None) => {
                 return (StatusCode::NOT_FOUND, Json(error_response("The asset is no longer stored", 404))).into_response();
             }
             Err(e) => {
-                error!(generation_id = %id, error = %e, "failed to read a stored asset");
+                error!(generation_id = %gen.id, error = %e, "failed to read a stored asset");
                 return (StatusCode::BAD_GATEWAY, Json(error_response("The asset could not be read from storage", 502))).into_response();
             }
         }
+    }
+    // The file may be in the app's own bucket, which can't be used right now:
+    // try again later, rather than being sent to the bucket's own URL.
+    if let Some(why) = bucket_down {
+        error!(generation_id = %gen.id, reason = %why, "the app's bucket can't be used to read a stored asset");
+        return (StatusCode::BAD_GATEWAY, Json(error_response("The asset could not be read from storage", 502))).into_response();
     }
     if asset.url.starts_with("https://") || asset.url.starts_with("http://") {
         return (StatusCode::TEMPORARY_REDIRECT, [(axum::http::header::LOCATION, asset.url)]).into_response();
@@ -1272,14 +1961,78 @@ pub async fn get_generation_asset(
     (StatusCode::NOT_FOUND, Json(error_response("Asset not found", 404))).into_response()
 }
 
+/// The most of a vendor's file litegen streams through: a video's cap.
+const MAX_VENDOR_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Stream a vendor's own file (`kept: false`) to a caller litegen let in, so
+/// the vendor's link never leaves litegen. Only a public host is fetched, with
+/// no redirects; a vendor that no longer has the file answers 410.
+async fn vendor_file_response(state: &Arc<AppState>, url: &str) -> axum::response::Response {
+    use futures::StreamExt;
+    let failed = |status: StatusCode, code: &str, message: String| {
+        let kind = if status == StatusCode::GONE { "not_found_error" } else { "provider_error" };
+        (status, Json(serde_json::json!({ "error": { "type": kind, "code": code, "message": message } }))).into_response()
+    };
+    if !state.router.config.storage_access.unchecked_vendor_hosts {
+        if let Err(e) = crate::util::ssrf::check_public_url(url).await {
+            return failed(StatusCode::BAD_GATEWAY, "vendor_file_unreachable", format!("the vendor's link is not a public URL litegen fetches: {e}"));
+        }
+    }
+    let resp = match crate::proxy::router::vendor_download_client().get(url).send().await {
+        Ok(r) => r,
+        Err(e) => return failed(StatusCode::BAD_GATEWAY, "vendor_file_unreachable", format!("the vendor's file could not be fetched: {}", e.without_url())),
+    };
+    match resp.status().as_u16() {
+        200 => {}
+        403 | 404 | 410 => {
+            return failed(
+                StatusCode::GONE,
+                "vendor_file_gone",
+                "the vendor no longer has this file, and litegen kept no copy (keep_outputs: false)".into(),
+            )
+        }
+        other => return failed(StatusCode::BAD_GATEWAY, "vendor_file_unreachable", format!("the vendor answered HTTP {other} for this file")),
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_VENDOR_FILE_BYTES) {
+        return failed(StatusCode::BAD_GATEWAY, "vendor_file_unreachable", "the vendor's file is larger than litegen serves".into());
+    }
+    let content_type = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    // Counted as it streams, so a vendor that sends more than it announced
+    // is cut off at the cap.
+    let mut sent: u64 = 0;
+    let body = resp.bytes_stream().map(move |chunk| {
+        let chunk = chunk.map_err(std::io::Error::other)?;
+        sent += chunk.len() as u64;
+        if sent > MAX_VENDOR_FILE_BYTES {
+            return Err(std::io::Error::other("the vendor's file is larger than litegen serves"));
+        }
+        Ok(chunk)
+    });
+    (StatusCode::OK, own_origin_file_headers(content_type), axum::body::Body::from_stream(body)).into_response()
+}
+
 /// POST /v1/videos/cost — Estimate cost for video generation.
+///
+/// Runs the same validation as the matching generation route and calls no
+/// vendor: a body this refuses, the generation refuses too.
 #[utoipa::path(
     post,
     path = "/v1/videos/cost",
     request_body = VideoGenerationRequest,
     responses(
-        (status = 200, description = "Cost estimate", body = CostEstimate),
+        (status = 200, description = "Cost estimate", body = CostEstimate,
+            headers(
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
+            )),
         (status = 400, description = "Bad request (validation failed)", body = ErrorResponse),
+        (status = 408, description = "`body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s).", body = ErrorResponse),
+        (status = 413, description = "`body_too_large`: the request body is over 25 MiB, as declared or as sent.", body = ErrorResponse),
+        (status = 503, description = "`server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set).", body = ErrorResponse),
     ),
     tag = "Videos"
 )]
@@ -1296,10 +2049,9 @@ pub async fn estimate_video_cost(
         return provider_not_configured_response(&validated.schema.provider);
     }
     match state.router.estimate_video_cost(&validated.schema, &validated.request, app_creds).await {
-        Ok(estimate) => (StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(),
+        Ok(estimate) => with_dropped((StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(), &validated.dropped),
         Err(e) => {
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+            generation_error_response(&e)
         }
     }
 }
@@ -1313,17 +2065,24 @@ pub async fn estimate_video_cost(
     request_body = Model3dGenerationRequest,
     params(
         ("Idempotency-Key" = Option<String>, Header, description = "1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key."),
+        ("X-Litegen-Keep-Outputs" = Option<String>, Header, description = "`false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). A request can keep less than its app does, never more; any other value is a 400 `invalid_keep_outputs_header`."),
     ),
     responses(
         (status = 200, description = "3D generation started", body = Model3dGenerationResponse,
             headers(
-                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."),
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
                 ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
             )),
-        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 400, description = "Bad request: a request that fails validation (`param_*`, with `param`), or one that keeps nothing (`X-Litegen-Keep-Outputs: false`) yet asks litegen for something it makes from a file it keeps: a container it converts (`format_needs_keeping`) or an output option it applies (`option_needs_keeping`, naming the option in `param`, e.g. `output_packages`, `ktx2_textures`, `dae_morphs`, `usdz_root`, `usd_clips`)", body = ErrorResponse),
+        (status = 404, description = "`model_not_found`", body = ErrorResponse),
+        (status = 410, description = "`model_retired`: the model is past its retirement; `replaced_by` names its successor", body = ErrorResponse),
+        (status = 422, description = "A `source_model` litegen can't use (unreadable, too large, too many triangles, no skin to animate), or the vendor's free preflight refused it (its own code).", body = ErrorResponse),
         (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
         (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
         (status = 500, description = "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.", body = ErrorResponse),
+        (status = 408, description = "`body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s).", body = ErrorResponse),
+        (status = 413, description = "`body_too_large`: the request body is over 25 MiB, as declared or as sent.", body = ErrorResponse),
+        (status = 503, description = "`server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set).", body = ErrorResponse),
     ),
     tag = "Models3D"
 )]
@@ -1331,13 +2090,75 @@ pub async fn generate_3d(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     attribution: crate::management::enforce::RequestAttribution,
+    chain: ChainRequest,
+    headers: axum::http::HeaderMap,
     validated: ValidatedModel3d,
 ) -> impl IntoResponse {
+    // A stored generation named as an input is read only if the operator's
+    // `file_access` hook allows it, as on the file route (SEC-FILEHOOK).
+    let gate = FileGate::of(&chain, &headers);
     let start = std::time::Instant::now();
+    // Refused before anything runs. The decision is taken now and saved in
+    // the row's delivery plan, so whichever observer delivers honours it.
+    let keep_header = match crate::access::keep_header(&headers) {
+        Ok(h) => h,
+        Err(e) => return keep_header_rejection(&e),
+    };
+    let keep = crate::access::keeps_outputs(
+        &crate::access::policy_for(&state, key_ctx.as_ref().and_then(|c| c.app_id.as_deref())).await,
+        keep_header,
+    );
+    // `ktx2_textures` is an option litegen applies on delivery to any model's
+    // mesh; a word it does not take is refused before anything is reserved.
+    let ktx2_textures = match validated.request.ktx2_textures.as_deref() {
+        None => None,
+        Some(v) => match crate::types::Model3dKtx2Textures::parse(v) {
+            Some(option) => Some(option),
+            None => {
+                return param_rejection("param_invalid", "ktx2_textures", &format!("`ktx2_textures` is {v:?}; it takes png or keep"), &validated.schema.id)
+            }
+        },
+    };
+    // Converting writes a file, so keeping nothing can promise only the
+    // containers the vendor makes itself.
+    if !keep {
+        let native = validated.schema.output_formats_spec().map(|s| s.enum_values).unwrap_or_default();
+        let requested = validated.schema.resolve_output_formats(validated.request.output_formats.as_deref());
+        let converted: Vec<&String> = requested.iter().filter(|f| !native.iter().any(|n| n.eq_ignore_ascii_case(f))).collect();
+        if !converted.is_empty() {
+            let message = format!(
+                "litegen makes {} by converting a file it keeps, and this request keeps nothing (keep_outputs: false); {} makes {} itself",
+                converted.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", "),
+                validated.schema.id,
+                native.join(", "),
+            );
+            let body = serde_json::json!({ "error": { "message": message, "type": "invalid_request_error", "code": "format_needs_keeping" } });
+            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        }
+        // An output option is applied to the file litegen keeps; keeping
+        // nothing, the vendor's files go out as they came, so it couldn't
+        // apply. Refused, never silently dropped.
+        if validated.request.output_packages == Some(true) {
+            return option_needs_keeping("output_packages", "zips each container with its sidecars", &validated.schema.id);
+        }
+        if ktx2_textures == Some(crate::types::Model3dKtx2Textures::Keep) {
+            return option_needs_keeping("ktx2_textures", "writes the KTX2 textures into a glb or gltf", &validated.schema.id);
+        }
+        if validated.request.dae_morphs == Some(crate::types::Model3dDaeMorphs::Keep) {
+            return option_needs_keeping("dae_morphs", "writes a Collada file's morph targets as morph controllers", &validated.schema.id);
+        }
+        if validated.request.usdz_root == Some(crate::types::Model3dUsdzRoot::Usdc) {
+            return option_needs_keeping("usdz_root", "roots the USDZ it writes in a crate", &validated.schema.id);
+        }
+        if validated.request.usd_clips == Some(crate::types::Model3dUsdClips::All) {
+            return option_needs_keeping("usd_clips", "writes every animation clip into the USD files it makes", &validated.schema.id);
+        }
+    }
 
-    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images).await {
+    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images, &gate).await {
         Ok(r) => r,
-        Err(e) => return reference_error_response(&e, &validated.schema.id),
+        Err(ChainRefusal::Source(e)) => return reference_error_response(&e, &validated.schema.id),
+        Err(ChainRefusal::Hook(refused)) => return refused,
     };
     let materialized = match state.materializer.materialize(
         &validated.schema,
@@ -1372,6 +2193,15 @@ pub async fn generate_3d(
             _ => Vec::new(),
         },
         fps: validated.request.fps,
+        fbx_color_space: validated.request.fbx_color_space,
+        fbx_light_units: validated.request.fbx_light_units,
+        usd_light_units: validated.request.usd_light_units,
+        dae_morphs: validated.request.dae_morphs,
+        usdz_root: validated.request.usdz_root,
+        usd_clips: validated.request.usd_clips,
+        format_source: validated.request.format_source,
+        output_packages: validated.request.output_packages,
+        ktx2_textures,
         extra: validated.request.base.extra.clone(),
         source: None,
         preflight: None,
@@ -1397,12 +2227,13 @@ pub async fn generate_3d(
     if let (Some(src), Some(crate::capabilities::ParamSpec::SourceModel(spec))) =
         (&validated.request.source_model, validated.schema.params.get("source_model"))
     {
-        match resolve_source_model(&state, key_ctx.as_ref(), spec, src, &validated.schema.provider, &vendor_account).await {
+        match resolve_source_model(&state, key_ctx.as_ref(), spec, src, &validated.schema.provider, &vendor_account, &gate).await {
             Ok((input, record)) => {
                 extras.source = Some(input);
                 lineage = Some(record);
             }
-            Err(e) => {
+            Err(ChainRefusal::Hook(refused)) => return refused,
+            Err(ChainRefusal::Source(e)) => {
                 let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
                 return (status, Json(crate::api::middleware::validator::err_body(e.code(), &e.message(), Some("source_model"), &validated.schema.id))).into_response();
             }
@@ -1428,7 +2259,7 @@ pub async fn generate_3d(
     ).await {
         Ok(g) => g,
         Err(resp) => {
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             return resp;
         }
     };
@@ -1438,24 +2269,35 @@ pub async fn generate_3d(
     // model at all: a mesh the vendor says it cannot rig is refused here,
     // and nothing reserved above is charged.
     let preflight = state.router.preflight_model3d(&validated.schema, &extras, app_creds.clone()).await;
-    if !matches!(preflight, Ok(crate::providers::Preflight::Proceed { .. })) {
-        settle_quota(&state, charge_key, reserved, 0.0).await;
-        limits.settle(&state, 0.0).await;
-    }
     match preflight {
         Ok(crate::providers::Preflight::Proceed { context }) => extras.preflight = context,
         Ok(crate::providers::Preflight::Refuse { code, message }) => {
+            settle_quota(&state, reserved, 0.0).await;
+            limits.settle(&state, 0.0).await;
             let param = validated.request.source_model.is_some().then_some("source_model");
             return (StatusCode::UNPROCESSABLE_ENTITY, Json(crate::api::middleware::validator::err_body(code, &message, param, &validated.schema.id))).into_response();
         }
         Err(e) => {
+            settle_quota(&state, reserved, 0.0).await;
+            limits.settle(&state, 0.0).await;
             error!(error = %e, "3D preflight failed");
+            log_failed_generation(&state, key_ctx.as_ref(), FailedGeneration {
+                id_prefix: "litegen-3d",
+                media_type: "model3d",
+                schema: &validated.schema,
+                latency_ms: start.elapsed().as_millis() as i64,
+                error: &e,
+                prompt: &validated.request.base.prompt,
+                metadata: validated.request.base.metadata.as_ref(),
+                attributed: &attributed,
+            })
+            .await;
             return generation_error_response(&e);
         }
     }
 
-    match state.router.generate_model3d(
-        &validated.schema, &validated.request.base, &extras, &materialized, app_creds,
+    match state.router.generate_model3d_keeping(
+        &validated.schema, &validated.request.base, &extras, &materialized, app_creds, keep,
     ).await {
         Ok(mut response) => {
             response.metadata = validated.request.base.metadata_map();
@@ -1489,7 +2331,10 @@ pub async fn generate_3d(
             let requested_formats = extras.output_formats.clone();
             // The plan the router's job holds too, so the poller delivers
             // exactly what the client's poll would.
-            let delivery = crate::proxy::model3d_deliver::DeliveryPlan::for_request(&validated.schema, &extras);
+            let delivery = crate::proxy::model3d_deliver::DeliveryPlan {
+                keep_nothing: !keep,
+                ..crate::proxy::model3d_deliver::DeliveryPlan::for_request(&validated.schema, &extras)
+            };
             let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
             let log_metadata = validated.request.base.metadata.clone();
             // Who the job is charged against, for a refund if it fails (L18).
@@ -1535,7 +2380,7 @@ pub async fn generate_3d(
                         provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
                     ).await;
                     let charge = if inserted.is_ok() { cost } else { 0.0 };
-                    settle_quota(&state, charge_key, reserved, charge).await;
+                    settle_quota(&state, reserved, charge).await;
                     limits.settle(&state, charge).await;
                     if inserted.is_err() {
                         if let Err(e) = db.update_request_log_status(&id, "failed", Some("generation_record_failed")).await {
@@ -1558,7 +2403,12 @@ pub async fn generate_3d(
                         "request": request,
                         "vendor_account": vendor_account,
                         "billing": { "limits": charged_to },
+                        // Who it was made for, which `file_access` hooks compare.
+                        "end_user": attributed.end_user,
                     });
+                    if !keep {
+                        meta["keep_outputs"] = false.into();
+                    }
                     // Lineage (3D doc §3D): the source's generation and hash,
                     // and how it reached the vendor.
                     if let Some(mut record) = source_record {
@@ -1595,7 +2445,7 @@ pub async fn generate_3d(
                         }
                     });
                 }
-                return generation_record_failed_response(&id, vendor_job.as_deref(), &err);
+                return generation_record_failed_response(&id, vendor_job.as_deref());
             }
             // The artifact is diagnostic only — no observer of completion reads
             // it — so it alone stays off the response path.
@@ -1613,9 +2463,20 @@ pub async fn generate_3d(
             resp
         }
         Err(e) => {
-            settle_quota(&state, charge_key, reserved, 0.0).await;
+            settle_quota(&state, reserved, 0.0).await;
             limits.settle(&state, 0.0).await;
             error!(error = %e, "3D generation failed");
+            log_failed_generation(&state, key_ctx.as_ref(), FailedGeneration {
+                id_prefix: "litegen-3d",
+                media_type: "model3d",
+                schema: &validated.schema,
+                latency_ms: start.elapsed().as_millis() as i64,
+                error: &e,
+                prompt: &validated.request.base.prompt,
+                metadata: validated.request.base.metadata.as_ref(),
+                attributed: &attributed,
+            })
+            .await;
             generation_error_response(&e)
         }
     }
@@ -1638,8 +2499,8 @@ pub async fn get_3d_status(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // Same tenant scoping as get_video_status: a persisted row must belong to
-    // the caller's org; router-tracked in-flight jobs pass through.
+    // Same tenant scoping as get_video_status: the job's row must belong to
+    // the caller's org, and a job with no row answers 404 (SEC-INMEM).
     let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
         Some(o) => o,
         None => return forbidden_no_org(),
@@ -1658,58 +2519,64 @@ pub async fn get_3d_status(
             ).into_response();
         }
     };
-    if let Some(gen) = row.as_ref() {
-        // A video id is not a 3D generation: answered from its row it would
-        // read as a 3D job that "completed without a mesh", i.e. `failed`.
-        if gen.org_id.as_deref() != Some(ctx_org) || gen.media_type != "model3d" {
-            return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
-        }
-        if let Err(resp) = authorize_generation_for_session(
-            &state, key_ctx.as_ref(), gen,
-            crate::auth::permissions::Permission::GenerationReadAny,
-            crate::auth::permissions::Permission::GenerationReadOwn,
-            "generation:read:own",
-        ).await {
-            return resp;
-        }
-        // Read-through once the row is terminal: answer FROM the row and never
-        // poll the provider again. A terminal row is the decided outcome — for
-        // `cancelled` especially, polling on would see the provider job run to
-        // `Completed`, re-host the assets and persist `completed` over the
-        // cancel, i.e. cancellation would only ever delay a job by one poll.
-        // (`forget_model3d_job` drops the in-memory job on cancel; this is the
-        // other half, covering a row terminalised by the poller, by a restart,
-        // or by a cancel that raced an in-flight poll.)
-        if gen.status.is_terminal() {
-            // Whoever terminalised the row (usually the poller) never touched
-            // the router's in-memory job, so release it here.
-            state.router.forget_model3d_job(&id).await;
-            return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(gen)).unwrap())).into_response();
-        }
+    // No row: the job is no one's, as in get_video_status (SEC-INMEM).
+    let Some(gen) = row.as_ref() else {
+        state.router.forget_model3d_job(&id).await;
+        return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
+    };
+    // A video id is not a 3D generation: answered from its row it would
+    // read as a 3D job that "completed without a mesh", i.e. `failed`.
+    if gen.org_id.as_deref() != Some(ctx_org) || gen.media_type != "model3d" {
+        return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
+    }
+    if let Err(resp) = authorize_generation_for_session(
+        &state, key_ctx.as_ref(), gen,
+        crate::auth::permissions::Permission::GenerationReadAny,
+        crate::auth::permissions::Permission::GenerationReadOwn,
+        "generation:read:own",
+    ).await {
+        return resp;
+    }
+    // Read-through once the row is terminal: answer FROM the row and never
+    // poll the provider again. A terminal row is the decided outcome — for
+    // `cancelled` especially, polling on would see the provider job run to
+    // `Completed`, re-host the assets and persist `completed` over the
+    // cancel, i.e. cancellation would only ever delay a job by one poll.
+    // (`forget_model3d_job` drops the in-memory job on cancel; this is the
+    // other half, covering a row terminalised by the poller, by a restart,
+    // or by a cancel that raced an in-flight poll.)
+    if gen.status.is_terminal() {
+        // Whoever terminalised the row (usually the poller) never touched
+        // the router's in-memory job, so release it here.
+        state.router.forget_model3d_job(&id).await;
+        return answer_3d(&state, key_ctx.as_ref(), FileOwner::of(gen), model3d_response_from_row(gen)).await;
     }
 
-    // Re-host into the tenant's OWN bucket, exactly as the poller does. Which of
-    // the two observers wins the race must not decide whose bucket a mesh lands
-    // in. `app_id` comes from the row when we have it (the poller's source of
-    // truth) and from the caller's key context otherwise — the row insert is
-    // spawned at submit, so an early poll can legitimately outrun it.
-    let app_id = row.as_ref()
-        .and_then(|g| g.app_id.clone())
-        .or_else(|| key_ctx.as_ref().and_then(|c| c.app_id.clone()));
-    let (app_store, app_prefix) = match app_id.as_deref() {
-        Some(app_id) => resolve_app_model3d_store(&state.db, state.secrets_key, app_id)
-            .await
-            .map_or((None, None), |(s, p)| (Some(s), p)),
+    // Re-host into the tenant's OWN bucket (the row's app), exactly as the
+    // poller does. Which of the two observers wins the race must not decide
+    // whose bucket a mesh lands in.
+    let keep = crate::access::row_keeps_outputs(gen.metadata.as_ref());
+    let (app_store, app_prefix) = match gen.app_id.as_deref().filter(|_| keep) {
+        Some(app_id) => match app_store_for_writing(&state.db, state.secrets_key, &state.router.config.aws, tenant_bucket_of(&state), app_id).await {
+            Ok(found) => found.map_or((None, None), |(s, p)| (Some(s), p)),
+            // Its bucket is down and litegen's store may not stand in: the
+            // mesh waits, as the row says.
+            Err(reason) => {
+                tracing::warn!(generation_id = %id, reason = %reason, "a finished 3d job has nowhere to be kept yet");
+                return answer_3d(&state, key_ctx.as_ref(), FileOwner::of(gen), model3d_response_from_row(gen)).await;
+            }
+        },
         None => (None, None),
     };
 
-    match state.router.get_model3d_status(&id, app_store, app_prefix.as_deref(), &state.db).await {
-        Ok(mut resp) => {
+    match state.router.get_model3d_status_claimed(&id, app_store, app_prefix.as_deref(), &state.db).await {
+        // The delivery claim, when this poll delivered the job, is held until
+        // the outcome below is written: no other observer delivers it again
+        // in between. It drops (and releases) at the end of this arm.
+        Ok((mut resp, _delivery_claim)) => {
             // `created` is when the job was submitted, on every read: the row's.
-            if let Some(gen) = row.as_ref() {
-                resp.created = gen.created_at.timestamp();
-                resp.metadata = gen.request_metadata();
-            }
+            resp.created = gen.created_at.timestamp();
+            resp.metadata = gen.request_metadata();
             // Persist the terminal result so `GET /v1/generations/{id}`, the
             // gallery, and any webhook see the same assets the poller would have
             // written — whichever path observed completion first.
@@ -1718,11 +2585,9 @@ pub async fn get_3d_status(
                     // Same source the poller reads, so both observers persist the
                     // same promise. `get_model3d_status` has already enforced it
                     // against the router's copy; this carries it onto the row.
-                    let requested = row.as_ref().map(row_requested_formats).unwrap_or_else(
-                        || vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()],
-                    );
+                    let requested = row_requested_formats(gen);
                     if persist_model3d_result(&state, &resp, &requested).await {
-                        dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                        dispatch_3d_webhook(&state, gen, &resp).await;
                     } else {
                         resp = decided_or(&state, &id, resp).await;
                     }
@@ -1744,7 +2609,7 @@ pub async fn get_3d_status(
                         if refunded > 0.0 {
                             resp.usage = Some(usage_from_row_cost(0.0));
                         }
-                        dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                        dispatch_3d_webhook(&state, gen, &resp).await;
                     } else {
                         resp = decided_or(&state, &id, resp).await;
                     }
@@ -1755,23 +2620,17 @@ pub async fn get_3d_status(
                     if refunded > 0.0 {
                         resp.usage = Some(usage_from_row_cost(0.0));
                     }
-                    dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                    dispatch_3d_webhook(&state, gen, &resp).await;
                 } else {
                     resp = decided_or(&state, &id, resp).await;
                 }
             }
-            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
+            answer_3d(&state, key_ctx.as_ref(), FileOwner::of(gen), resp).await
         }
-        Err(e) => {
-            // Fall through to the row we ALREADY tenant-checked above — never a
-            // second, unchecked read. Once the poller has terminalised a job the
-            // router no longer tracks it, which is the common way to get here.
-            if let Some(gen) = row {
-                return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(&gen)).unwrap())).into_response();
-            }
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
-        }
+        // Fall through to the row we ALREADY tenant-checked above — never a
+        // second, unchecked read. Once the poller has terminalised a job the
+        // router no longer tracks it, which is the common way to get here.
+        Err(_) => answer_3d(&state, key_ctx.as_ref(), FileOwner::of(gen), model3d_response_from_row(gen)).await,
     }
 }
 
@@ -1814,13 +2673,10 @@ async fn fail_model3d_row(state: &AppState, id: &str, progress: i32, error: &str
 /// webhook still fires at most once per generation.
 async fn dispatch_3d_webhook(
     state: &AppState,
-    row: Option<&crate::types::Generation>,
+    row: &crate::types::Generation,
     resp: &Model3dGenerationResponse,
 ) {
-    // No row means the submit handler's spawned insert has not landed; there is
-    // no key_id to look a webhook_url up on, and the poller will drive the row
-    // once it exists.
-    let Some(row) = row else { return };
+    // A job made with no key has no webhook_url to look up.
     if row.key_id.is_none() {
         return;
     }
@@ -1839,20 +2695,30 @@ async fn dispatch_3d_webhook(
     };
     crate::proxy::poller::dispatch_terminal_webhook(
         &state.db,
-        &crate::util::ssrf::no_redirect_client(),
+        &crate::proxy::webhook::webhook_client(state.mode),
         state.mode,
         gen,
+        Some(crate::access::present::Presenting::of(state)),
     ).await;
 }
 
 /// POST /v1/models3d/cost — Estimate cost for a 3D generation.
+///
+/// Runs the same validation as the matching generation route and calls no
+/// vendor: a body this refuses, the generation refuses too.
 #[utoipa::path(
     post,
     path = "/v1/models3d/cost",
     request_body = Model3dGenerationRequest,
     responses(
-        (status = 200, description = "Cost estimate", body = CostEstimate),
+        (status = 200, description = "Cost estimate", body = CostEstimate,
+            headers(
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped."),
+            )),
         (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 408, description = "`body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s).", body = ErrorResponse),
+        (status = 413, description = "`body_too_large`: the request body is over 25 MiB, as declared or as sent.", body = ErrorResponse),
+        (status = 503, description = "`server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set).", body = ErrorResponse),
     ),
     tag = "Models3D"
 )]
@@ -1874,10 +2740,9 @@ pub async fn estimate_3d_cost(
         return provider_not_configured_response(&validated.schema.provider);
     }
     match state.router.estimate_model3d_cost(&validated.schema, &validated.request, app_creds).await {
-        Ok(est) => (StatusCode::OK, Json(serde_json::to_value(est).unwrap())).into_response(),
+        Ok(est) => with_dropped((StatusCode::OK, Json(serde_json::to_value(est).unwrap())).into_response(), &validated.dropped),
         Err(e) => {
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+            generation_error_response(&e)
         }
     }
 }
@@ -1928,105 +2793,29 @@ pub(crate) async fn persist_model3d_result(
     true
 }
 
-/// USD per internal token, matching `ProxyRouter::USD_PER_TOKEN`. A generation
-/// answered from its row must quote the same token count the submit response
-/// did, so both paths convert at this one rate.
-pub(crate) const USD_PER_TOKEN: f64 = 0.001;
-
-/// The `usage` triple for a generation answered out of the database.
-///
-/// `generations.cost_usd` is written at submit time from the very `UsageInfo`
-/// the submit response carried, so re-deriving the triple from it reproduces
-/// that response exactly. `Estimated` because that is what the router quoted:
-/// nothing in the async path ever replaces it with a provider-reported cost.
-pub(crate) fn usage_from_row_cost(cost_usd: f64) -> UsageInfo {
-    UsageInfo {
-        cost_usd,
-        tokens: crate::providers::usd_to_tokens(cost_usd, USD_PER_TOKEN),
-        cost_source: CostSource::Estimated,
-    }
-}
-
-/// The containers a persisted generation promised its caller.
-///
-/// Falls back to GLB when the row predates the field or its metadata write was
-/// lost. That floor is deliberate: GLB is required of every 3D model, so the
-/// guard still means something on an old row instead of silently becoming a
-/// no-op — it just cannot know about any additional container that was asked
-/// for.
-pub(crate) fn row_requested_formats(gen: &crate::types::Generation) -> Vec<String> {
-    gen.metadata.as_ref()
-        .and_then(|m| m.get("requested_formats"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()])
-}
-
-/// Rebuild a `Model3dGenerationResponse` from a persisted row — the answer once
-/// the poller has terminalised a job and the router no longer tracks it, and
-/// the third observer of completion, so it applies the same mesh and
-/// requested-formats guards the other two do.
-pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model3dGenerationResponse {
-    let assets = gen.metadata.as_ref()
-        .and_then(|m| m.get("assets"))
-        .and_then(|a| serde_json::from_value::<Vec<Model3dAsset>>(a.clone()).ok())
-        .unwrap_or_default();
-    // A `completed` row with no mesh is not a usable generation — it is the
-    // failure `get_3d_status` and the poller both refuse to report as success,
-    // and a row can only reach this state if a terminal write was lost. Report
-    // it the same way here, or the one path that answers a generation AFTER it
-    // has left the poller's window would be the one path that reports a paid
-    // generation the caller cannot use as `completed` (Ruling R21).
-    let has_mesh = assets.iter().any(|a| a.kind == Model3dAssetKind::Mesh);
-    let (status, error, assets) = if gen.status == GenerationStatus::Completed && !has_mesh {
-        (
-            GenerationStatus::Failed,
-            Some(gen.error_message.clone().unwrap_or_else(
-                || "provider reported success without a mesh asset".to_string(),
-            )),
-            Vec::new(),
-        )
-    } else {
-        (gen.status, gen.error_message.clone(), assets)
-    };
-    let mut resp = Model3dGenerationResponse {
-        id: gen.id.clone(),
-        status,
-        model: gen.model.clone(),
-        provider: gen.provider.clone(),
-        assets,
-        progress: gen.progress.clamp(0, 100) as u8,
-        error,
-        // The consumer contract reads cost off this response, so a row-answered
-        // poll carries the same triple a router-answered one does.
-        usage: Some(usage_from_row_cost(gen.cost_usd)),
-        created: gen.created_at.timestamp(),
-        metadata: gen.request_metadata(),
-    };
-    // Third and last observer of completion. The mesh guard above answers "is
-    // there a mesh at all"; this answers "is every mesh the caller was promised
-    // there" — the row-answered path must reach the same verdict the poller and
-    // `get_3d_status` did, or which observer won the race would decide whether
-    // the generation succeeded.
-    crate::proxy::router::enforce_requested_formats(&mut resp, &row_requested_formats(gen));
-    resp
-}
-
 // ─── Models ─────────────────────────────────────────────────────────────────
 
-/// Optional filter for `GET /v1/models`.
+/// Optional filters for `GET /v1/models`.
 #[derive(serde::Deserialize)]
 pub struct ListModelsQuery {
     /// Optional `image` | `video` | `model3d` filter.
     #[serde(default)]
     pub media_type: Option<String>,
+    /// List every model the gateway serves, not only the ones the caller's
+    /// org pool and app access allow (generations still enforce both). The
+    /// dashboard's Providers page edits the org's pool from this list.
+    #[serde(default)]
+    pub all: bool,
 }
 
-/// GET /v1/models — List all available models.
+/// GET /v1/models — The models the caller may use (`?all=true`: every model the gateway serves).
 #[utoipa::path(
     get,
     path = "/v1/models",
-    params(("media_type" = Option<String>, Query, description = "Filter by media type")),
+    params(
+        ("media_type" = Option<String>, Query, description = "Filter by media type"),
+        ("all" = Option<bool>, Query, description = "true: every model the gateway serves, including those outside the caller's org pool and app access, which generations still enforce. Default: only the models the caller may use."),
+    ),
     responses(
         (status = 200, description = "List of available models", body = ModelListResponse),
     ),
@@ -2079,7 +2868,7 @@ pub async fn list_models(
         platform.insert(key, has);
     }
     let models: Vec<ModelInfo> = served.iter()
-        .filter(|m| allowed.as_ref().map_or(true, |set| set.contains(&m.id)))
+        .filter(|m| q.all || allowed.as_ref().is_none_or(|set| set.contains(&m.id)))
         .map(|m| ModelInfo {
             is_available: own.contains(&m.provider) || platform[&(m.provider.clone(), m.media_type.as_str())],
             ..project_model_info(m)
@@ -2110,6 +2899,7 @@ pub async fn list_models(
     responses(
         (status = 200, description = "Model schema", body = crate::capabilities::ModelSchema),
         (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 410, description = "Retired: `model_retired`, with `replaced_by` naming its successor", body = ErrorResponse),
     ),
     tag = "Models"
 )]
@@ -2122,28 +2912,42 @@ pub async fn get_model_schema(
             StatusCode::OK,
             Json(serde_json::to_value(served_model_schema(&schema)).unwrap()),
         ).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(error_response(&format!("model '{}' not found", id), 404)),
-        ).into_response(),
+        None => match state.registry.retired(&id) {
+            Some(m) => (StatusCode::GONE, Json(crate::api::middleware::validator::retired_body(&m))).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(error_response(&format!("model '{}' not found", id), 404)),
+            ).into_response(),
+        },
     }
 }
 
 /// A catalog entry as the API presents it: `output_formats` widened from what
-/// the vendor emits to what a caller may request. Everything else verbatim.
+/// the vendor emits to what a caller may request, with the default a request
+/// that leaves it out resolves to (never empty); the fields litegen applies
+/// itself in `litegen_params`; and a declared `height_m` with the ceiling the
+/// validator holds it to. Everything else verbatim.
 pub(crate) fn served_model_schema(
     schema: &crate::capabilities::ModelSchema,
 ) -> crate::capabilities::ModelSchema {
+    use crate::api::middleware::validator;
     let mut served = schema.clone();
     served.status = schema.status();
+    served.litegen_params = validator::litegen_params(schema);
+    if schema.media_type == crate::capabilities::MediaType::Model3d {
+        // E11a: a model's own range with no ceiling still gets litegen's
+        // placement ceiling (the validator's `unwrap_or`), so serve it.
+        if let Some(crate::capabilities::ParamSpec::Float(h)) = served.params.get_mut("height_m") {
+            h.max.get_or_insert(validator::MAX_PLACEMENT_HEIGHT_M);
+        }
+    }
     if let Some(native) = schema.output_formats_spec() {
         served.params.remove("output_format");
-        served.params.insert(
-            "output_formats".to_string(),
-            crate::capabilities::ParamSpec::StringArray(
-                crate::proxy::model3d_convert::served_output_formats_spec(&native),
-            ),
-        );
+        let mut spec = crate::proxy::model3d_convert::served_output_formats_spec(&native);
+        // E11d: the router's own resolver, so the served default and what an
+        // omitted param gets cannot drift (a row with no default gets glb).
+        spec.default = schema.resolve_output_formats(None);
+        served.params.insert("output_formats".to_string(), crate::capabilities::ParamSpec::StringArray(spec));
     }
     served
 }
@@ -2188,6 +2992,8 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supported_sizes: extract_sizes(s),
             max_reference_images: s.ref_inputs.as_ref().map(|ri| ri.max_total).unwrap_or(1),
             max_images: s.ref_inputs.as_ref().map(|ri| ri.max_total).unwrap_or(1),
+            // N2: the limit the validated extractors read a body to.
+            max_request_bytes: crate::api::middleware::body::MAX_GENERATION_BODY as u64,
             max_duration_seconds: match s.params.get("duration_seconds") {
                 Some(crate::capabilities::ParamSpec::Float(f)) => f.max,
                 Some(crate::capabilities::ParamSpec::Int(i)) => i.max.map(|m| m as f64),
@@ -2244,8 +3050,8 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
                 _ => Vec::new(),
             },
             supports_mask_prompt: matches!(s.params.get("mask_prompt"), Some(crate::capabilities::ParamSpec::String(_))),
-            supports_preserve_unmasked: takes_mask || region.is_some(),
-            supports_mask_grow: takes_mask || region.is_some(),
+            supports_preserve_unmasked: s.edits_part_of_an_image(),
+            supports_mask_grow: s.edits_part_of_an_image(),
             supports_source_video: matches!(s.params.get("source_video"), Some(crate::capabilities::ParamSpec::SourceVideo(_))),
             native_pixel_art: s.capabilities.native_pixel_art,
             pixel_size: match s.params.get("size") {
@@ -2344,11 +3150,17 @@ pub async fn list_providers() -> impl IntoResponse {
 // ─── Health ─────────────────────────────────────────────────────────────────
 
 /// GET /health — Health check for all providers.
+///
+/// Checks each provider configured with the gateway's own keys, side by
+/// side, and reports what each vendor answered. It reads the deployment's
+/// own state, so it takes the master key, or, in single-tenant mode, the
+/// `read` scope in the deployment's org.
 #[utoipa::path(
     get,
     path = "/health",
     responses(
-        (status = 200, description = "Health check results", body = HealthResponse),
+        (status = 200, description = "Health check results: one entry per provider and modality, each checked with the gateway's own keys", body = HealthResponse),
+        (status = 403, description = "Provider health covers the gateway's own vendor keys, so it is the deployment's: the master key, or, in single-tenant mode, the `read` scope in the deployment's org", body = ErrorResponse),
     ),
     tag = "System"
 )]
@@ -2366,8 +3178,8 @@ pub async fn health_check(
         status: if all_healthy { "healthy".to_string() } else { "degraded".to_string() },
         providers: health,
         cache: CacheStatus {
-            enabled: state.router.cache.is_enabled(),
-            entries: state.router.cache.entry_count(),
+            enabled: state.router.settings().cache.enabled,
+            entries: state.router.cache.entry_count().await,
         },
     };
     (status_code, Json(body))
@@ -2389,15 +3201,16 @@ pub async fn liveness() -> impl IntoResponse {
 /// GET /health/ready — Readiness probe.
 /// Returns 200 when the DB is reachable (the instance can accept requests).
 /// Provider availability is resolved per-request — globally configured creds OR
-/// org-scoped BYO credentials — so it does NOT gate readiness; the healthy
-/// provider list is reported in the body purely as an informational signal.
+/// org-scoped BYO credentials — so it does NOT gate readiness. No vendor is
+/// called: the body lists the providers configured with the gateway's own
+/// keys, by name, and `GET /health` checks them.
 /// Returns 503 only when the DB is unreachable. No auth required.
 /// Live: `curl https://app.litegen.ai/api/health/ready`
 #[utoipa::path(
     get,
     path = "/health/ready",
     responses(
-        (status = 200, description = "Service is ready", body = ReadinessResponse),
+        (status = 200, description = "Service is ready: the database answered. No vendor is asked, so a slow vendor never fails readiness", body = ReadinessResponse),
         (status = 503, description = "Service is not ready", body = ReadinessResponse),
     ),
     tag = "System"
@@ -2407,22 +3220,17 @@ pub async fn readiness(
 ) -> impl IntoResponse {
     let db_ok = state.db.ping().await.is_ok();
 
-    let health_results = state.router.registry.health_check_all().await;
-    let healthy_providers: Vec<String> = health_results
-        .into_iter()
-        .filter(|h| h.healthy)
-        .map(|h| h.provider.clone())
-        .collect();
-
     // Readiness gates on the DB only: provider availability is resolved
     // per-request (global config OR org-scoped BYO credentials), so an empty
     // global-provider list must not mark a BYO deployment "not_ready" — it serves
-    // fine. `healthy_providers` stays in the body as an informational signal.
+    // fine. Nor does it ask a vendor (P1, code review 2026-11-11): an
+    // anonymous probe would spend the operator's keys, and a slow vendor
+    // would fail a probe with a short timeout.
     let body = ReadinessResponse {
         status: if db_ok { "ready".to_string() } else { "not_ready".to_string() },
         checks: ReadinessChecks {
             db: db_ok,
-            providers: healthy_providers,
+            providers: state.router.registry.configured_provider_names().await,
         },
     };
 
@@ -2468,8 +3276,7 @@ pub async fn get_stats(
     match state.db.get_stats_for_tenant(org_id, app_id, &metadata).await {
         Ok(stats) => (StatusCode::OK, Json(serde_json::to_value(stats).unwrap())).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to get stats");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to get stats", &e)
         }
     }
 }
@@ -2514,30 +3321,50 @@ pub struct CreateApiKeyRequest {
 
 fn default_key_scopes() -> String { "generate,read".to_string() }
 
-/// SSRF guard for tenant-supplied webhook URLs. In hosted (multi-tenant) mode
-/// the URL is attacker-controlled and the server POSTs to it (poller +
-/// test-webhook), so it must not target a private/loopback/link-local address
-/// (e.g. the cloud metadata endpoint). In single-tenant mode the operator is
-/// trusted and may legitimately target internal hosts, so any URL is allowed.
-/// Returns an error `Response` to send to the client when the URL is rejected.
-async fn validate_tenant_webhook_url(state: &AppState, url: &str) -> Result<(), axum::response::Response> {
-    if state.mode != crate::config::Mode::Hosted || url.is_empty() {
-        return Ok(());
+/// SSRF guard for a key's webhook URL, which the server POSTs to (poller +
+/// test-webhook). A URL on a private, loopback or link-local address (e.g.
+/// the cloud metadata endpoint) is allowed only for a key that may reach the
+/// deployment's network (`may_reach_inside`, SEC-STWEBHOOK): in hosted mode
+/// none; in single-tenant mode a key with no owner, or one whose owner is an
+/// active Owner or Admin of the deployment's org, or every key when
+/// `webhooks.internal_targets` is `everyone`. `owner` is the key's owner, or
+/// the person a new key will belong to. `Ok(true)`: the key may reach inside,
+/// so any URL passes; `Ok(false)`: it may not, and the URL is public (or
+/// empty). `Err` is the response to send instead: a 400 for a URL the key may
+/// not use, a 500 when the owner can't be looked up.
+async fn validate_tenant_webhook_url(state: &AppState, url: &str, owner: Option<&str>) -> Result<bool, axum::response::Response> {
+    // Whether this key's webhook may reach the deployment's own network
+    // (SEC-STWEBHOOK); every other key's is held to public addresses.
+    let inside = match crate::proxy::webhook::may_reach_inside(&*state.db, state.mode, state.router.config.webhooks.internal_targets, owner).await {
+        Ok(inside) => inside,
+        Err(e) => {
+            error!(error = %e, "could not look up a webhook key's owner");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("could not check where this webhook may point; retry shortly", 500))).into_response());
+        }
+    };
+    if inside || url.is_empty() {
+        return Ok(inside);
     }
     if let Err(reason) = crate::util::ssrf::validate_public_url(url).await {
+        let whose = match state.mode {
+            crate::config::Mode::Hosted => "",
+            crate::config::Mode::SingleTenant => {
+                "; only the deployment's own keys and keys of its Owners and Admins may reach its network (webhooks.internal_targets)"
+            }
+        };
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": {
                     "code": "invalid_webhook_url",
-                    "message": format!("webhook_url is not allowed: {reason}"),
+                    "message": format!("webhook_url is not allowed: {reason}{whose}"),
                     "type": "invalid_request_error"
                 }
             })),
         )
             .into_response());
     }
-    Ok(())
+    Ok(false)
 }
 
 /// POST /v1/keys — Create a new API key.
@@ -2547,6 +3374,7 @@ async fn validate_tenant_webhook_url(state: &AppState, url: &str) -> Result<(), 
     request_body = CreateApiKeyRequest,
     responses(
         (status = 201, description = "API key created", body = ApiKeyCreatedResponse),
+        (status = 400, description = "An unknown scope, or `invalid_webhook_url`: a `webhook_url` this key may not use. It must be a public address unless, in single-tenant mode, the key is the deployment's own (made with the master key, or by an Owner or Admin of its org; `webhooks.internal_targets`)", body = ErrorResponse),
     ),
     tag = "Admin"
 )]
@@ -2581,10 +3409,19 @@ pub async fn create_api_key(
         None => return forbidden_no_org(),
     };
 
-    // SSRF guard: reject a tenant-supplied webhook URL that targets an internal
-    // address (hosted mode only).
+    // The key belongs to the person who makes it, and a key made by a key to
+    // that key's maker, so it ends with them (the middleware's
+    // `resolve_db_key`). Keys made with the master key, or by a key that has
+    // no owner, belong to the org.
+    let owner_user_id = match acting_person(&state, key_ctx.as_ref()).await {
+        Ok(owner) => owner,
+        Err(resp) => return resp,
+    };
+
+    // SSRF guard: a webhook may reach the deployment's own network only for
+    // a key of the deployment's (SEC-STWEBHOOK), and never in hosted mode.
     if let Some(wh) = request.webhook_url.as_deref() {
-        if let Err(resp) = validate_tenant_webhook_url(&state, wh).await {
+        if let Err(resp) = validate_tenant_webhook_url(&state, wh, owner_user_id.as_deref()).await {
             return resp;
         }
     }
@@ -2603,11 +3440,6 @@ pub async fn create_api_key(
     // Mint a pk_live_/sk_live_ id+secret pair. The secret_hash is what auth looks up.
     let kp = crate::auth::secrets::generate_key_pair();
 
-    // Determine owner: session user → set owner_user_id; master key → None
-    let owner_user_id = key_ctx.as_ref()
-        .and_then(|c| c.user.as_ref())
-        .map(|u| u.user_id.clone());
-
     match state.db.create_api_key_scoped(
         org_id, app_id, &kp.public_id, &request.name,
         &kp.secret_hash, &kp.prefix,
@@ -2616,9 +3448,15 @@ pub async fn create_api_key(
         request.expires_at,
     ).await {
         Ok(key) => {
-            // Set owner if session-authenticated
             if let Some(ref uid) = owner_user_id {
-                let _ = state.db.set_api_key_owner(&key.id, uid).await;
+                if let Err(e) = state.db.set_api_key_owner(&key.id, uid).await {
+                    // Without its owner the key would belong to the org and
+                    // outlive its maker. Its secret never leaves this call, so
+                    // revoking it is only tidying up.
+                    error!(error = %e, "Failed to record an API key's owner");
+                    let _ = state.db.revoke_api_key(&key.id).await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("could not record the key's owner", 500))).into_response();
+                }
             }
             log_audit(
                 state.db.clone(),
@@ -2651,8 +3489,29 @@ pub async fn create_api_key(
                 .into_response()
         }
         Err(e) => {
-            error!(error = %e, "Failed to create API key");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to create API key", &e)
+        }
+    }
+}
+
+/// The person a key made or rotated by `ctx` acts for, so that it ends with
+/// them: the signed-in person (a dashboard session or an OAuth grant), or the
+/// owner of the calling key. `None` for the master key, the dev bypass and a
+/// calling key that belongs to the org. A calling key whose row is gone (its
+/// org or app was deleted mid-request) is refused, since what it made would
+/// belong to nobody and outlive everyone.
+async fn acting_person(state: &AppState, ctx: Option<&KeyContext>) -> Result<Option<String>, axum::response::Response> {
+    let Some(ctx) = ctx else { return Ok(None) };
+    if let Some(user) = &ctx.user {
+        return Ok(Some(user.user_id.clone()));
+    }
+    let Some(key_id) = ctx.key_id else { return Ok(None) };
+    match state.db.get_api_key(&key_id).await {
+        Ok(Some(key)) => Ok(key.owner_user_id),
+        Ok(None) => Err((StatusCode::UNAUTHORIZED, Json(error_response("the calling API key no longer exists", 401))).into_response()),
+        Err(e) => {
+            error!(error = %e, "Failed to look up the calling key");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("could not look up the calling key", 500))).into_response())
         }
     }
 }
@@ -2726,7 +3585,7 @@ pub async fn list_api_keys(
             Json(ApiKeyListResponse { data }).into_response()
         }
         Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to list API keys", &e)
         }
     }
 }
@@ -2757,7 +3616,7 @@ pub async fn revoke_api_key(
     match state.db.get_api_key(&id).await {
         Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => {}
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+        Err(e) => return internal_error_response("Failed to revoke API key", &e),
     }
     // Check ownership for session-authed users
     if let Some(ref ctx) = key_ctx {
@@ -2770,7 +3629,7 @@ pub async fn revoke_api_key(
                             return (StatusCode::FORBIDDEN, Json(error_response("Forbidden", 403))).into_response();
                         }
                         Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
-                        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+                        Err(e) => return internal_error_response("Failed to revoke API key", &e),
                         _ => {}
                     }
                 } else {
@@ -2786,7 +3645,7 @@ pub async fn revoke_api_key(
         }
         Ok(false) => (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to revoke API key", &e)
         }
     }
 }
@@ -2847,7 +3706,7 @@ pub async fn get_api_key_handler(
         }
         // None, or a key belonging to another org → 404 (don't reveal other orgs).
         Ok(_) => (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+        Err(e) => internal_error_response("Failed to get API key", &e),
     }
 }
 
@@ -2860,6 +3719,8 @@ pub async fn get_api_key_handler(
     request_body = UpdateApiKeyRequest,
     responses(
         (status = 200, description = "Updated API key", body = ApiKeyDetail),
+        (status = 400, description = "An unknown scope, or `invalid_webhook_url`: a `webhook_url` the key may not use (a public address unless, in single-tenant mode, the key's owner is an Owner or Admin of the deployment's org, or it has none)", body = ErrorResponse),
+        (status = 403, description = "`forbidden`: the caller may not edit this key, or grant a scope it lists; or the key's owner can't hold one (`admin` unless their role can grant it, `generate` for a Viewer), since a key acts for its owner. The key is unchanged.", body = ErrorResponse),
         (status = 404, description = "Key not found", body = ErrorResponse),
     ),
     tag = "Admin"
@@ -2876,11 +3737,11 @@ pub async fn patch_api_key_handler(
         Some(o) => o,
         None => return forbidden_no_org(),
     };
-    match state.db.get_api_key(&id).await {
-        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => {}
+    let existing = match state.db.get_api_key(&id).await {
+        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
-    }
+        Err(e) => return internal_error_response("Failed to update API key", &e),
+    };
     // Ownership check for session-authed users
     if let Some(ref ctx) = key_ctx {
         if let Some(ref user) = ctx.user {
@@ -2891,7 +3752,7 @@ pub async fn patch_api_key_handler(
                             return (StatusCode::FORBIDDEN, Json(error_response("Forbidden", 403))).into_response();
                         }
                         Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
-                        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+                        Err(e) => return internal_error_response("Failed to update API key", &e),
                         _ => {}
                     }
                 } else {
@@ -2907,10 +3768,19 @@ pub async fn patch_api_key_handler(
             return resp;
         }
     }
-    // SSRF guard: reject a tenant-supplied webhook URL that targets an internal
-    // address (hosted mode only).
+    // And the key's own owner must be able to hold what it's given: a key acts
+    // for its owner, so `admin` on a Member's key, or `generate` on a
+    // Viewer's, would be dropped at every request, an edit that answers 200
+    // and does nothing.
+    if let Some(scopes) = req.scopes.as_deref() {
+        if let Err(resp) = crate::api::middleware::validate_owner_can_hold(&state, &existing, scopes).await {
+            return resp;
+        }
+    }
+    // SSRF guard: the rule follows the key's owner, whoever edits it
+    // (SEC-STWEBHOOK), and holds every key to public addresses when hosted.
     if let Some(wh) = req.webhook_url.as_deref() {
-        if let Err(resp) = validate_tenant_webhook_url(&state, wh).await {
+        if let Err(resp) = validate_tenant_webhook_url(&state, wh, existing.owner_user_id.as_deref()).await {
             return resp;
         }
     }
@@ -2941,7 +3811,7 @@ pub async fn patch_api_key_handler(
             (StatusCode::OK, Json(serde_json::to_value(detail).unwrap())).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+        Err(e) => internal_error_response("Failed to update API key", &e),
     }
 }
 
@@ -3007,11 +3877,12 @@ pub async fn list_generations(
         {
             Ok(pair) => pair,
             Err(e) => {
-                error!(error = %e, "Failed to list generations");
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+                return internal_error_response("Failed to list generations", &e);
             }
         };
         let total_pages = crate::api::pagination::total_pages(total, per_page);
+        let mut paged = paged;
+        present_rows(&state, Some(&ctx), &mut paged).await;
         let response = PaginatedResponse {
             data: paged,
             total,
@@ -3028,12 +3899,13 @@ pub async fn list_generations(
     ) {
         Ok(pair) => pair,
         Err(e) => {
-            error!(error = %e, "Failed to list generations");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            return internal_error_response("Failed to list generations", &e);
         }
     };
 
     let total_pages = crate::api::pagination::total_pages(total as u64, per_page);
+    let mut gens = gens;
+    present_rows(&state, Some(&ctx), &mut gens).await;
     let response = PaginatedResponse {
         data: gens,
         total: total as u64,
@@ -3081,19 +3953,15 @@ pub async fn cancel_generation(
         Ok(Some(g)) if g.org_id.as_deref() == Some(ctx_org) => g,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to get generation for cancel");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            return internal_error_response("Failed to get generation for cancel", &e);
         }
     };
 
-    // Cancelling is a state change on another principal's job: gate session users
-    // on generation:cancel:any, or cancel:own for a generation they own.
-    if let Err(resp) = authorize_generation_for_session(
-        &state, Some(&ctx), &gen,
-        crate::auth::permissions::Permission::GenerationCancelAny,
-        crate::auth::permissions::Permission::GenerationCancelOwn,
-        "generation:cancel:own",
-    ).await {
+    // Cancelling changes the job (row, refund, vendor cancel, webhook), so it
+    // is checked as a change (SEC-CANCEL): the route wants `generate`, a
+    // session generation:cancel:any (or :own for its own), and an API key the
+    // app's owner scope, as deleting it does.
+    if let Err(resp) = authorize_generation_change(&state, Some(&ctx), &gen, GenerationChange::Cancel).await {
         return resp;
     }
 
@@ -3133,7 +4001,8 @@ pub async fn cancel_generation(
             crate::proxy::poller::settle_terminal(&state.db, &id, "cancelled", None).await;
             // Every other way a job ends sends the terminal webhook; so does this.
             crate::proxy::poller::dispatch_terminal_webhook(
-                &state.db, &crate::util::ssrf::no_redirect_client(), state.mode, updated.clone(),
+                &state.db, &crate::proxy::webhook::webhook_client(state.mode), state.mode, updated.clone(),
+                Some(crate::access::present::Presenting::of(&state)),
             ).await;
             // The row as settled: a refunded job reads `cost_usd: 0`.
             let updated = match state.db.get_generation(&id).await {
@@ -3156,8 +4025,7 @@ pub async fn cancel_generation(
             "Generation cannot be cancelled: not in pending or processing state", 409,
         ))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to cancel generation");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to cancel generation", &e)
         }
     }
 }
@@ -3173,13 +4041,30 @@ async fn cancel_video_at_vendor(
     state: Arc<AppState>,
     gen: crate::types::Generation,
 ) -> Option<crate::providers::CancelOutcome> {
-    let provider_job_id = gen.provider_job_id.clone()?;
     let creds = crate::proxy::poller::resolve_gen_credential(&state.db, state.secrets_key, &gen).await;
-    let Some(provider) = state.router.registry.video_provider_for_request(&gen.provider, creds).await else {
-        tracing::warn!(generation_id = %gen.id, provider = %gen.provider, "video cancel: provider not configured, the vendor job is left running");
-        return None;
+    cancel_video_on(state, gen, None, creds).await
+}
+
+/// [`cancel_video_at_vendor`] through `tracked`, the instance that submitted
+/// the job, when this replica holds it; else through one built on `creds`,
+/// the credential the job ran on, read beforehand.
+async fn cancel_video_on(
+    state: Arc<AppState>,
+    gen: crate::types::Generation,
+    tracked: Option<(crate::providers::VideoGenerationHandle, Arc<dyn crate::providers::VideoProvider>)>,
+    creds: Option<crate::providers::ProviderCredentials>,
+) -> Option<crate::providers::CancelOutcome> {
+    let (handle, provider) = match tracked {
+        Some(job) => job,
+        None => {
+            let provider_job_id = gen.provider_job_id.clone()?;
+            let Some(provider) = state.router.registry.video_provider_for_request(&gen.provider, creds).await else {
+                tracing::warn!(generation_id = %gen.id, provider = %gen.provider, "video cancel: provider not configured, the vendor job is left running");
+                return None;
+            };
+            (crate::providers::VideoGenerationHandle { provider_job_id, provider: gen.provider.clone(), model: gen.model.clone() }, provider)
+        }
     };
-    let handle = crate::providers::VideoGenerationHandle { provider_job_id, provider: gen.provider.clone(), model: gen.model.clone() };
     match provider.cancel(&handle).await {
         Ok(outcome) => {
             tracing::info!(generation_id = %gen.id, ?outcome, "video cancel: vendor answered");
@@ -3205,11 +4090,25 @@ async fn cancel_model3d_at_vendor(
     gen: crate::types::Generation,
     tracked: Option<(crate::providers::Model3dGenerationHandle, Arc<dyn crate::providers::Model3dProvider>)>,
 ) -> Option<crate::providers::CancelOutcome> {
+    let creds = match tracked {
+        Some(_) => None,
+        None => crate::proxy::poller::resolve_gen_credential(&state.db, state.secrets_key, &gen).await,
+    };
+    cancel_model3d_on(state, gen, tracked, creds).await
+}
+
+/// [`cancel_model3d_at_vendor`], with the credential for an untracked job
+/// read beforehand.
+async fn cancel_model3d_on(
+    state: Arc<AppState>,
+    gen: crate::types::Generation,
+    tracked: Option<(crate::providers::Model3dGenerationHandle, Arc<dyn crate::providers::Model3dProvider>)>,
+    creds: Option<crate::providers::ProviderCredentials>,
+) -> Option<crate::providers::CancelOutcome> {
     let (handle, provider) = match tracked {
         Some(job) => job,
         None => {
             let provider_job_id = gen.provider_job_id.clone()?;
-            let creds = crate::proxy::poller::resolve_gen_credential(&state.db, state.secrets_key, &gen).await;
             let Some(provider) = state.router.registry.model3d_provider_for_request(&gen.provider, creds).await else {
                 tracing::warn!(generation_id = %gen.id, provider = %gen.provider, "3d cancel: provider not configured, the vendor job is left running");
                 return None;
@@ -3233,6 +4132,56 @@ async fn cancel_model3d_at_vendor(
             None
         }
     }
+}
+
+/// The jobs a deleted org or app leaves running (SEC-INMEM): its generations
+/// still `pending` or `processing`, each with the org's credential for the
+/// provider that took it. Read before the delete, which takes the rows and
+/// the org's credentials with it.
+pub(crate) struct JobsLeftRunning(Vec<(crate::types::Generation, Option<crate::providers::ProviderCredentials>)>);
+
+/// [`JobsLeftRunning`] of `org_id` (with `app_id`, of one app). A read that
+/// fails is logged, and the delete goes ahead with their vendors left to
+/// finish them.
+pub(crate) async fn jobs_left_running(state: &AppState, org_id: &str, app_id: Option<&str>) -> JobsLeftRunning {
+    let gens = state.db.list_active_generations_for_tenant(org_id, app_id).await.unwrap_or_else(|e| {
+        tracing::warn!(org_id = %org_id, app_id = ?app_id, error = %e, "could not list the running jobs of a deleted org or app; their vendors finish them");
+        Vec::new()
+    });
+    let mut jobs = Vec::with_capacity(gens.len());
+    for gen in gens {
+        let creds = crate::proxy::poller::resolve_gen_credential(&state.db, state.secrets_key, &gen).await;
+        jobs.push((gen, creds));
+    }
+    JobsLeftRunning(jobs)
+}
+
+/// Once the delete has committed: this replica lets go of the jobs (another
+/// replica's next read finds no row and lets go too), and each vendor is asked
+/// to stop its job in the background, best effort, on the credential the job
+/// ran on, so it stops working and billing for a tenant that is gone.
+pub(crate) async fn stop_jobs_left_running(state: &Arc<AppState>, jobs: JobsLeftRunning) {
+    let mut videos = Vec::new();
+    let mut meshes = Vec::new();
+    for (gen, creds) in jobs.0 {
+        match gen.media_type.as_str() {
+            "video" => videos.push((state.router.take_video_job(&gen.id).await, gen, creds)),
+            "model3d" => meshes.push((state.router.forget_model3d_job(&gen.id).await, gen, creds)),
+            _ => {}
+        }
+    }
+    if videos.is_empty() && meshes.is_empty() {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        for (tracked, gen, creds) in videos {
+            cancel_video_on(state.clone(), gen, tracked, creds).await;
+        }
+        for (tracked, gen, creds) in meshes {
+            cancel_model3d_on(state.clone(), gen, tracked, creds).await;
+        }
+    });
 }
 
 // ─── Key Rotate ──────────────────────────────────────────────────────────────
@@ -3266,8 +4215,7 @@ pub async fn rotate_api_key(
         Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to fetch key for rotate");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            return internal_error_response("Failed to fetch key for rotate", &e);
         }
     };
 
@@ -3283,14 +4231,22 @@ pub async fn rotate_api_key(
         return resp;
     }
 
+    // Whoever receives the new secret holds the only one that works, so the
+    // key acts for them from now on and ends when they leave, as a key they
+    // made would (`resolve_db_key`). The master key, the dev bypass and a key
+    // that belongs to the org act for the deployment: the key keeps its owner.
+    let new_owner = match acting_person(&state, key_ctx.as_ref()).await {
+        Ok(owner) => owner,
+        Err(resp) => return resp,
+    };
+
     // 2. Mint a fresh id/secret pair and update the same row in place.
     let kp = crate::auth::secrets::generate_key_pair();
-    let rotated = match state.db.rotate_api_key(&id, &kp.public_id, &kp.secret_hash, &kp.prefix).await {
+    let rotated = match state.db.rotate_api_key(&id, &kp.public_id, &kp.secret_hash, &kp.prefix, new_owner.as_deref()).await {
         Ok(Some(k)) => k,
         Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to rotate key");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            return internal_error_response("Failed to rotate key", &e);
         }
     };
 
@@ -3337,7 +4293,7 @@ pub struct WebhookTestResult {
     params(("id" = Uuid, Path, description = "API key ID")),
     responses(
         (status = 200, description = "Delivery result (delivered=false if the endpoint rejected it)", body = WebhookTestResult),
-        (status = 400, description = "No webhook_url configured on the key", body = ErrorResponse),
+        (status = 400, description = "`no_webhook_configured`: the key has no webhook_url; or `invalid_webhook_url`: one the key may not use any more (its owner was demoted or left)", body = ErrorResponse),
         (status = 404, description = "Key not found", body = ErrorResponse),
     ),
     tag = "Admin"
@@ -3358,8 +4314,7 @@ pub async fn test_webhook(
         Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to fetch key for test-webhook");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            return internal_error_response("Failed to fetch key for test-webhook", &e);
         }
     };
 
@@ -3386,12 +4341,14 @@ pub async fn test_webhook(
         }
     };
 
-    // SSRF guard: re-validate at dispatch time (hosted mode) so a key whose
-    // webhook_url predates this check — or a host that now resolves to an
-    // internal address — can't turn this endpoint into an SSRF oracle.
-    if let Err(resp) = validate_tenant_webhook_url(&state, &webhook_url).await {
-        return resp;
-    }
+    // SSRF guard: re-validate at dispatch time, for the key's owner now, so a
+    // key whose webhook_url predates this check, a demoted or departed
+    // owner's key, or a host that now resolves to an internal address can't
+    // turn this endpoint into an SSRF oracle (SEC-STWEBHOOK).
+    let inside = match validate_tenant_webhook_url(&state, &webhook_url, key.owner_user_id.as_deref()).await {
+        Ok(inside) => inside,
+        Err(resp) => return resp,
+    };
 
     let now = chrono::Utc::now();
     let synthetic = crate::types::Generation {
@@ -3411,11 +4368,15 @@ pub async fn test_webhook(
         metadata: None,
         org_id: key.org_id.clone(),
         app_id: key.app_id.clone(),
+        files_deleted_at: None,
+        files_deleted_reason: None,
     };
 
     // Don't follow redirects: a public webhook host must not be able to 3xx the
-    // request into an internal target.
-    let client = crate::util::ssrf::no_redirect_client();
+    // request into an internal target. In hosted mode, connect only to public
+    // addresses too, like every webhook dispatch, and so does any key whose
+    // webhook may not reach the deployment's network.
+    let client = if inside { crate::proxy::webhook::webhook_client(state.mode) } else { crate::util::ssrf::public_only_client() };
     let result = crate::proxy::webhook::dispatch_webhook_once(&client, &webhook_url, None, &synthetic).await;
     log_audit(state.db.clone(), key_ctx.as_ref(), "key.test_webhook", "api_key", &id.to_string(), None, None);
     match result {
@@ -3532,8 +4493,7 @@ pub async fn get_logs_filtered(
     {
         Ok(pair) => pair,
         Err(e) => {
-            error!(error = %e, "Failed to get tenant logs");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            return internal_error_response("Failed to get tenant logs", &e);
         }
     };
 
@@ -3583,6 +4543,57 @@ fn parse_rfc3339_utc(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 
 // ─── Webhook Delivery Log ────────────────────────────────────────────────────
 
+/// Each delivery's payload as `reader` may see it (SEC-WHDELIV). A payload is
+/// the generation as presented to the key the webhook went to, working links
+/// included. Read from inside the app's owner scope for that generation, or
+/// for an app whose files are `public`, it is the webhook exactly as sent
+/// (the bytes its signature covered). Anyone else gets the generation as it
+/// is stored now, presented for them as `GET /v1/generations/{id}` presents
+/// it (no working link to its files), or `{}` once it is gone. A presented
+/// payload is never presented again: its links would match no stored file.
+async fn deliveries_for_reader(
+    state: &AppState,
+    reader: Option<&KeyContext>,
+    mut deliveries: Vec<crate::types::WebhookDelivery>,
+) -> Vec<crate::types::WebhookDelivery> {
+    // Per generation: `None` keeps the payload as sent, `Some` replaces it.
+    let mut shown: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    for d in deliveries.iter_mut() {
+        if !shown.contains_key(&d.generation_id) {
+            let row = state.db.get_generation(&d.generation_id).await.unwrap_or_else(|e| {
+                tracing::warn!(generation_id = %d.generation_id, error = %e, "could not read a delivery's generation; its payload is withheld");
+                None
+            });
+            // Whose files they are: the stored row's, else the payload's own.
+            let sent: Option<crate::types::Generation> = serde_json::from_str(&d.payload_json).ok();
+            let verdict = match row.as_ref().or(sent.as_ref()) {
+                None => Some("{}".to_string()),
+                Some(owner_of) => {
+                    let policy = crate::access::policy_for(state, owner_of.app_id.as_deref()).await;
+                    let as_sent = policy.mode == crate::access::AccessMode::Public
+                        || crate::access::present::in_owner_scope(policy.owner_scope, reader, &FileOwner::of(owner_of));
+                    if as_sent {
+                        None
+                    } else {
+                        Some(match row {
+                            Some(mut gen) => {
+                                present_rows(state, reader, std::slice::from_mut(&mut gen)).await;
+                                serde_json::to_string(&gen).unwrap_or_else(|_| "{}".to_string())
+                            }
+                            None => "{}".to_string(),
+                        })
+                    }
+                }
+            };
+            shown.insert(d.generation_id.clone(), verdict);
+        }
+        if let Some(Some(replacement)) = shown.get(&d.generation_id) {
+            d.payload_json = replacement.clone();
+        }
+    }
+    deliveries
+}
+
 /// GET /v1/keys/{id}/webhook-deliveries — List webhook deliveries for a key (admin scope).
 /// Live: `curl https://app.litegen.ai/api/v1/keys/{id}/webhook-deliveries -H "Authorization: Bearer sk_live_..."`
 #[utoipa::path(
@@ -3594,7 +4605,7 @@ fn parse_rfc3339_utc(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         ("per_page" = Option<u32>, Query, description = "Items per page (default 50)"),
     ),
     responses(
-        (status = 200, description = "Paginated webhook deliveries", body = PaginatedResponse<crate::types::WebhookDelivery>),
+        (status = 200, description = "Paginated webhook deliveries. A delivery's `payload_json` is the webhook as sent when the reader is inside the app's owner scope for its generation (or the app's files are `public`); for any other reader it is the generation as stored now, presented for that reader, or `{}` once it is gone.", body = PaginatedResponse<crate::types::WebhookDelivery>),
         (status = 404, description = "Key not found", body = ErrorResponse),
     ),
     tag = "Admin"
@@ -3613,7 +4624,7 @@ pub async fn list_webhook_deliveries(
     let key = match state.db.get_api_key(&id).await {
         Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+        Err(e) => return internal_error_response("Failed to list webhook deliveries", &e),
     };
     // Delivery history includes payloads/responses — gate reads like get_api_key.
     if let Err(resp) = authorize_key_for_session(
@@ -3629,6 +4640,7 @@ pub async fn list_webhook_deliveries(
     let per_page = crate::api::pagination::clamp_per_page(params.per_page);
     match state.db.list_webhook_deliveries(&key_id_str, page, per_page).await {
         Ok((deliveries, total)) => {
+            let deliveries = deliveries_for_reader(&state, key_ctx.as_ref(), deliveries).await;
             let total_pages = crate::api::pagination::total_pages(total as u64, per_page);
             let response = PaginatedResponse {
                 data: deliveries,
@@ -3640,8 +4652,7 @@ pub async fn list_webhook_deliveries(
             (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
         }
         Err(e) => {
-            error!(error = %e, "Failed to list webhook deliveries");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to list webhook deliveries", &e)
         }
     }
 }
@@ -3718,8 +4729,7 @@ pub async fn list_audit(
     {
         Ok(pair) => pair,
         Err(e) => {
-            error!(error = %e, "Failed to list audit log");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            return internal_error_response("Failed to list audit log", &e);
         }
     };
 
@@ -3748,6 +4758,7 @@ pub async fn list_audit(
     responses(
         (status = 200, description = "Cache cleared", body = CacheClearedResponse),
         (status = 403, description = "Forbidden (tenant principals cannot flush the global cache)", body = ErrorResponse),
+        (status = 503, description = "`cache_clear_incomplete`: this replica's cache was emptied, but the shared cache in Redis could not be cleared, so the other replicas keep their answers; retry once Redis answers (`Retry-After` is set).", body = ErrorResponse),
     ),
     tag = "Admin"
 )]
@@ -3769,17 +4780,56 @@ pub async fn clear_cache(
                     return forbidden_perm_resp("cache:clear");
                 }
             }
+            // The cache is the deployment's: cleared from the default org,
+            // by a role holding cache:clear or one of its admin-scope keys.
             crate::config::Mode::SingleTenant => {
-                if ctx.user.is_some()
-                    && !ctx.permissions.contains(&crate::auth::permissions::Permission::CacheClear)
+                let from_deployment = crate::api::middleware::acts_in_default_org(ctx)
+                    || crate::api::middleware::is_platform_admin(ctx);
+                if !from_deployment
+                    || (ctx.user.is_some()
+                        && !ctx.permissions.contains(&crate::auth::permissions::Permission::CacheClear))
                 {
                     return forbidden_perm_resp("cache:clear");
                 }
             }
         }
     }
-    state.router.cache.clear().await;
-    Json(CacheClearedResponse { cleared: true }).into_response()
+    // Clear, then tell the other replicas to empty their local tiers (without
+    // Redis the announcement does nothing, and there are no other replicas).
+    // A task of its own: a client that goes away must not leave the shared tier
+    // part way cleared, with no epoch raised and no one told. A clear that did
+    // not reach the shared tier raised no epoch, so telling the others would
+    // change nothing: it says so instead.
+    let clearing = state.clone();
+    let cleared = crate::management::runtime::finish_even_if_dropped_with(async move {
+        let cleared = clearing.router.cache.clear().await;
+        if cleared.is_ok() {
+            crate::management::runtime::announce(&clearing, crate::shared::events::SharedEvent::CacheClear).await;
+        }
+        cleared
+    })
+    .await;
+    match cleared {
+        Some(Ok(())) => Json(CacheClearedResponse { cleared: true }).into_response(),
+        // The Redis error is in the log; the answer is fixed.
+        Some(Err(_)) | None => cache_clear_incomplete(),
+    }
+}
+
+/// The 503 for a `DELETE /v1/cache` that emptied this replica's cache but not
+/// the shared one.
+fn cache_clear_incomplete() -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [("retry-after", "1")],
+        Json(serde_json::json!({ "error": {
+            "message": "Only this replica's cache was emptied. The shared cache in Redis could not be cleared, so the \
+                        other replicas keep their answers. Retry once Redis answers.",
+            "type": "cache_clear_incomplete",
+            "code": "cache_clear_incomplete"
+        } })),
+    )
+        .into_response()
 }
 
 // ─── OpenAPI Specification ──────────────────────────────────────────────────
@@ -3793,10 +4843,25 @@ pub async fn openapi_spec() -> impl IntoResponse {
 // ─── Router Setup ───────────────────────────────────────────────────────────
 
 pub fn create_router(state: Arc<AppState>) -> axum::Router {
+    create_router_with_hooks(state, None)
+}
+
+/// The router with generation call hooks (`docs/hooks.md`) around the
+/// `Generate` routes: `pre_call` before authentication, on the raw request,
+/// and `post_call` on the finished response.
+/// With `None` the routes are exactly as [`create_router`] makes them.
+pub fn create_router_with_hooks(state: Arc<AppState>, hooks: Option<Arc<crate::hooks::HookSet>>) -> axum::Router {
     use axum::routing::{delete, get, patch, post};
     use axum::middleware;
     use super::metrics::metrics_handler;
-    use super::middleware::{auth_middleware, check_any_scope, check_scope, csrf_middleware, Scope};
+    use super::middleware::{auth_middleware, check_any_scope, check_generation_principal, check_scope, csrf_middleware, Scope};
+
+    // The request fields the validator knows (E2) come from the OpenAPI
+    // document: build them now, so no request waits for the document and a
+    // router that builds has read every request schema.
+    for name in crate::api::openapi::REQUEST_SCHEMAS {
+        crate::api::openapi::request_fields(name);
+    }
 
     let auth_state = state.clone();
     let csrf_state = state.clone();
@@ -3825,6 +4890,8 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         // Behind Generate rather than Read because it is CPU work on
         // caller-supplied bytes, not a lookup.
         .route("/v1/utils/models3d/convert", post(convert::convert_model3d))
+        // A person needs an org and `generation:create` (runs after the scope check).
+        .layer(middleware::from_fn(check_generation_principal))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Generate, req, next).await
         }))
@@ -3846,14 +4913,27 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/utils/models3d/formats", get(convert::list_model3d_convert_formats))
         .route("/v1/generations", get(list_generations))
         .route("/v1/generations/{id}", get(get_generation))
-        .route("/v1/generations/{id}", patch(cancel_generation))
         .route("/v1/generations/{id}/assets", get(list_generation_assets))
-        .route("/v1/generations/{id}/assets/{index}", get(get_generation_asset))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_any_scope(&[Scope::Generate, Scope::Read], req, next).await
         }))
         // CSRF: no-ops for safe methods and Bearer/API-key auth; only enforces
-        // on mutating cookie-session requests (e.g. PATCH cancel_generation).
+        // on mutating cookie-session requests.
+        .layer(middleware::from_fn_with_state(
+            csrf_state.clone(),
+            csrf_middleware,
+        ));
+
+    // Changing a generation: cancelling it, or its files or links
+    // (docs/storage-access.md). What a key that can make generations may do
+    // to the ones its app's owner scope lets it change.
+    let generation_change_routes = axum::Router::new()
+        .route("/v1/generations/{id}/revoke-links", post(revoke_generation_links))
+        .route("/v1/generations/{id}", delete(delete_generation).patch(cancel_generation))
+        .layer(middleware::from_fn(check_generation_principal))
+        .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
+            check_scope(Scope::Generate, req, next).await
+        }))
         .layer(middleware::from_fn_with_state(
             csrf_state.clone(),
             csrf_middleware,
@@ -3861,7 +4941,13 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
 
     // Read routes — require Scope::Read
     let read_routes = axum::Router::new()
-        .route("/health", get(health_check))
+        // The gateway's own vendor keys, checked: the deployment's to read
+        // (P1, code review 2026-11-11). `route_layer`, so it wraps this route only.
+        .merge(
+            axum::Router::new()
+                .route("/health", get(health_check))
+                .route_layer(middleware::from_fn_with_state(state.mode, super::middleware::require_deployment_reader)),
+        )
         .route("/v1/stats", get(get_stats))
         .route("/v1/logs", get(get_logs_filtered))
         .route("/v1/logs/{id}/artifact", get(get_log_artifact))
@@ -3939,6 +5025,8 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
                 .put(orgs::put_app_storage)
                 .delete(orgs::delete_app_storage),
         )
+        .route("/v1/apps/{app_id}/access", get(orgs::get_app_access).put(orgs::put_app_access))
+        .route("/v1/apps/{app_id}/access/revoke-links", post(orgs::revoke_app_links))
         .route(
             "/v1/orgs/{id}/allowed-models",
             get(orgs::get_org_allowed_models).put(orgs::put_org_allowed_models),
@@ -3989,27 +5077,84 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         }
     });
 
+    // litegen's file route (`docs/storage-access.md`): open to `generate` and
+    // `read` like the other AI reads (a generate-only key fetches its own
+    // outputs), and hooked like the generation routes, so custom auth
+    // reaches a file and `file_access` can narrow who opens it.
+    let file_routes = axum::Router::new()
+        .route("/v1/generations/{id}/assets/{index}", get(get_generation_asset))
+        .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
+            check_any_scope(&[Scope::Generate, Scope::Read], req, next).await
+        }))
+        .layer(middleware::from_fn_with_state(
+            csrf_state.clone(),
+            csrf_middleware,
+        ));
+    let file_routes = match hooks.clone() {
+        Some(hooks) => file_routes
+            .layer(Extension(hooks.clone()))
+            .layer(middleware::from_fn_with_state(hooks.clone(), crate::hooks::post_call_layer))
+            .layer(auth_layer.clone())
+            .layer(middleware::from_fn_with_state(hooks, crate::hooks::pre_call_layer)),
+        None => file_routes.layer(auth_layer.clone()),
+    };
+
+    // The generation routes carry their own auth layer so hooks can sit
+    // around it: `pre_call` outside, on the request before authentication;
+    // `post_call` inside, where the authenticated caller is known.
+    let generate_routes = match hooks {
+        // The hooks themselves too: a request that names a stored generation
+        // as an input asks `file_access` about it (SEC-FILEHOOK).
+        Some(hooks) => generate_routes
+            .layer(Extension(hooks.clone()))
+            .layer(middleware::from_fn_with_state(hooks.clone(), crate::hooks::post_call_layer))
+            .layer(auth_layer.clone())
+            .layer(middleware::from_fn_with_state(hooks, crate::hooks::pre_call_layer)),
+        None => generate_routes.layer(auth_layer.clone()),
+    };
+
     // The groups that authorize people by role carry no scope layer of their
     // own (a browser session holds every scope); an OAuth principal still
     // needs its grant's scope for each call there.
     let grant_scope = || middleware::from_fn(super::middleware::check_grant_scope);
+
+    // The process's metrics (docs/mcp/self-hosting.md): where the config puts
+    // them, or nowhere; behind a credential that may read the deployment
+    // when `metrics_require_auth` asks for one. `route_layer`, not `layer`:
+    // a layer would also wrap this router's fallback, which `api` takes over
+    // from the last router merged into it, putting every path litegen
+    // doesn't serve behind the same credential.
+    let observability = &state.router.config.observability;
+    let metrics_routes = if !observability.metrics_enabled {
+        axum::Router::new()
+    } else if observability.metrics_require_auth {
+        axum::Router::new()
+            .route(&observability.metrics_path, get(metrics_handler))
+            .route_layer(middleware::from_fn_with_state(state.mode, super::middleware::require_deployment_reader))
+            .route_layer(auth_layer.clone())
+    } else {
+        axum::Router::new().route(&observability.metrics_path, get(metrics_handler))
+    };
+
     let authenticated_routes = axum::Router::new()
-        .merge(generate_routes)
         .merge(ai_read_routes)
         .merge(read_routes)
+        .merge(generation_change_routes)
         .merge(admin_routes)
         .merge(auth_required_routes.layer(grant_scope()))
         .merge(management::routes(csrf_state.clone()).layer(grant_scope()))
         .layer(auth_layer);
 
     let api = axum::Router::new()
+        .merge(generate_routes)
+        .merge(file_routes)
         .merge(authenticated_routes)
         // Unauth routes — no auth middleware needed, no CSRF
         .merge(unauth_routes)
-        // Health probes, metrics, openapi, and mock video bytes don't require auth
+        .merge(metrics_routes)
+        // Health probes, openapi, and mock video bytes don't require auth
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
-        .route("/metrics", get(metrics_handler))
         .route("/openapi.json", get(openapi_spec))
         .route("/mock/video/{id}", get(get_mock_video_bytes))
         // Wildcard capture: 3D asset keys contain slashes (litegen/3d/{gen}/{name}.ext).
@@ -4020,6 +5165,8 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         // theoretical collision — a generation id literally equal to "assets" —
         // is unreachable, since ids are minted `litegen-3d-{uuid}`).
         .route("/v1/models3d/assets/{*key}", get(get_model3d_asset_bytes))
+        // A link litegen signed is its own permission, so no auth layer.
+        .route("/v1/generations/{id}/assets/{index}/signed", get(get_signed_generation_asset))
         .route("/v1/refs/{token}", get(get_published_ref))
         .with_state(state.clone());
 
@@ -4066,12 +5213,90 @@ pub async fn get_log_artifact(
             if artifact.org_id.as_deref() != Some(ctx_org) {
                 return (StatusCode::NOT_FOUND, Json(error_response("Artifact not found", 404))).into_response();
             }
+            let mut artifact = artifact;
+            // The read rule of `GET /v1/generations/{id}`: a session holding
+            // only `generation:read:own` reads the artifacts of its own keys'
+            // generations. A request that made no row (one that failed) is
+            // attributed to no generation, so it takes `generation:read:any`.
+            let row = state.db.get_generation(&artifact.request_id).await.ok().flatten();
+            match row.as_ref() {
+                Some(gen) => {
+                    if let Err(resp) = authorize_generation_for_session(
+                        &state, key_ctx.as_ref(), gen,
+                        crate::auth::permissions::Permission::GenerationReadAny,
+                        crate::auth::permissions::Permission::GenerationReadOwn,
+                        "generation:read:own",
+                    ).await {
+                        return resp;
+                    }
+                }
+                None => {
+                    let read_own_session = key_ctx.as_ref().is_some_and(|c| {
+                        c.user.is_some() && !c.permissions.contains(&crate::auth::permissions::Permission::GenerationReadAny)
+                    });
+                    if read_own_session {
+                        return forbidden_perm_resp("generation:read:any");
+                    }
+                }
+            }
+            // An output kept by URL goes out as the app's access mode says,
+            // like the generation it belongs to (`docs/storage-access.md`).
+            if let (true, Some(stored)) = (artifact.output_kind == "url", artifact.output_value.clone()) {
+                let (owner, index) = match row.as_ref() {
+                    Some(gen) => (FileOwner::of(gen), generation_assets(gen).iter().position(|a| a.url == stored)),
+                    None => (
+                        FileOwner {
+                            generation_id: artifact.request_id.clone(),
+                            key_id: None,
+                            app_id: artifact.app_id.clone(),
+                            org_id: artifact.org_id.clone(),
+                        },
+                        None,
+                    ),
+                };
+                let presenter = presenter_for(&state, key_ctx.as_ref(), &owner).await;
+                artifact.output_value = Some(presenter.url(index, &stored).await.0);
+            }
+            // An image the log keeps inline (base64) goes out as the file route
+            // hands that file out. Where the app keeps files to their owners
+            // (`signed`, `private`), a caller outside the owner scope gets the
+            // route, which refuses it, never the bytes.
+            // With no row (its write failed), the key that made it is unknown, so
+            // only a caller that passes the scope without one gets the bytes.
+            if artifact.output_kind == "b64" && artifact.output_value.is_some() {
+                let owner = match row.as_ref() {
+                    Some(gen) => FileOwner::of(gen),
+                    None => FileOwner {
+                        generation_id: artifact.request_id.clone(),
+                        key_id: None,
+                        app_id: artifact.app_id.clone(),
+                        org_id: artifact.org_id.clone(),
+                    },
+                };
+                let policy = crate::access::policy_for(&state, owner.app_id.as_deref()).await;
+                if policy.mode != crate::access::AccessMode::Public
+                    && !crate::access::present::in_owner_scope(policy.owner_scope, key_ctx.as_ref(), &owner)
+                {
+                    // Withheld: always `url`, the file route (which refuses
+                    // this caller) or none when nothing was kept, and no
+                    // bytes, so nothing is truncated either.
+                    let kept = row.as_ref().map(generation_assets).unwrap_or_default();
+                    artifact.output_kind = "url".to_string();
+                    artifact.output_truncated = false;
+                    artifact.output_value = match kept.iter().position(|a| a.index == 0) {
+                        Some(i) => {
+                            let presenter = presenter_for(&state, key_ctx.as_ref(), &owner).await;
+                            Some(presenter.url(Some(i), &kept[i].url).await.0)
+                        }
+                        None => None,
+                    };
+                }
+            }
             (StatusCode::OK, Json(serde_json::to_value(artifact).unwrap())).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Json(error_response("Artifact not found", 404))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to get request artifact");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            internal_error_response("Failed to get request artifact", &e)
         }
     }
 }
@@ -4097,40 +5322,110 @@ pub async fn get_mock_video_bytes(
 
 // ─── 3D asset bytes route ───────────────────────────────────────────────────
 
-/// GET /v1/models3d/assets/{key} — Serve an asset held by the local (no-S3)
-/// store, from disk. No auth: these are the same unguessable, UUID-keyed URLs
-/// handed to clients in the response, and S3 deployments never reach here.
+/// The query a signed link to a stored file carries (`docs/storage-access.md`).
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct AssetLinkQuery {
+    /// Unix seconds after which the link no longer works.
+    pub expires: Option<String>,
+    /// Unix milliseconds the link was issued at, which a revocation compares
+    /// against. Absent on a link minted before links carried it.
+    pub issued: Option<String>,
+    /// Hex HMAC over the file's key, `issued` and `expires`.
+    pub signature: Option<String>,
+}
+
+/// GET /v1/models3d/assets/{key} — Serve a result file litegen keeps, from
+/// its store (disk, or the bucket of an S3 deployment), as a stream; one
+/// `Range` is answered. Who may open it follows the app's access mode
+/// (`docs/storage-access.md`).
 pub async fn get_model3d_asset_bytes(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
+    Query(link): Query<AssetLinkQuery>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
+    use crate::access::AccessMode;
+    let not_found = || (StatusCode::NOT_FOUND, "not found").into_response();
     // Only litegen's own result files: never anything else under the asset
     // directory or in the bucket, and never a published reference, whose own
     // route checks its expiry.
-    let own = [
+    let prefix = [
         crate::proxy::storage::MODEL3D_PATH_PREFIX,
         crate::proxy::storage::VIDEO_PATH_PREFIX,
         crate::proxy::storage::IMAGE_RESULT_PATH_PREFIX,
     ]
-    .iter()
-    .any(|p| key.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')))
-        && !key.split('/').any(|part| part == ".." || part.is_empty());
-    if !own {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
+    .into_iter()
+    .find(|p| key.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')));
+    let Some(prefix) = prefix else { return not_found() };
+    if key.split('/').any(|part| part == ".." || part.is_empty()) {
+        return not_found();
     }
-    match state.router.model3d_store.get(&key).await.ok().flatten() {
-        Some((bytes, content_type)) => (
-            StatusCode::OK,
-            [
-                (axum::http::header::CONTENT_TYPE, content_type),
-                // Meshes are immutable once written and keyed by generation id.
-                (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+    // Every file lives under its generation's id, and the generation names
+    // the app whose access mode decides who may open it.
+    let Some(generation_id) = key[prefix.len() + 1..].split('/').next().filter(|id| !id.is_empty()) else {
+        return not_found();
+    };
+    // The generation's app and that app's access settings, in one read
+    // (review 2026-11-11, P14): an unsigned request needs them whatever the
+    // order, since the mode that decides whether a signature is needed is
+    // the app's.
+    let (app_id, access) = match state.db.generation_file_access(generation_id).await {
+        Ok(Some(found)) => found,
+        // A generation that is gone (its app or org deleted) takes its files
+        // with it, whatever the defaults say; the sweep removes them later.
+        Ok(None) => return not_found(),
+        Err(e) => {
+            error!(generation_id = %generation_id, error = %e, "could not look up a stored file's generation");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("could not check who may open this file", 500))).into_response();
+        }
+    };
+    let policy = crate::access::effective(&state.router.config.storage_access, &state.router.overrides().gateway, access.as_ref());
+    let cache_control = match policy.mode {
+        // Meshes are immutable once written and keyed by generation id.
+        AccessMode::Public => "public, max-age=31536000, immutable".to_string(),
+        // Only the file route, which checks who is asking; not even a link
+        // signed while the app was `signed`.
+        AccessMode::Private => return not_found(),
+        AccessMode::Signed => {
+            let (Some(expires), Some(signature)) = (link.expires.as_deref().and_then(|e| e.parse::<i64>().ok()), link.signature.as_deref()) else {
+                return not_found();
+            };
+            let issued = match link.issued.as_deref().map(str::parse::<i64>) {
+                Some(Ok(i)) => Some(i),
+                Some(Err(_)) => return not_found(),
+                None => None,
+            };
+            if !state.router.link_signer.verify_local(&key, issued, expires, signature) {
+                return not_found();
+            }
+            match revocation_check(&state, app_id.as_deref(), generation_id, issued).await {
+                Ok(()) => {}
+                Err(resp) => return resp,
+            }
+            let remaining = expires - chrono::Utc::now().timestamp();
+            if remaining < 0 {
+                let body = serde_json::json!({ "error": {
+                    "type": "forbidden",
+                    "code": "link_expired",
+                    "message": "this link has expired; read the generation again for a fresh one",
+                }});
+                return (StatusCode::FORBIDDEN, Json(body)).into_response();
+            }
+            // Never cached past the link's own life.
+            format!("private, max-age={}", remaining.min(3600))
+        }
+    };
+    // Streamed, never read whole (see `stored_file_response`).
+    match state.router.model3d_store.open(&key, requested_range(&headers)).await.ok().flatten() {
+        Some(file) => {
+            let headers = [
+                (axum::http::header::CONTENT_TYPE, file.content_type.clone()),
+                (axum::http::header::CACHE_CONTROL, cache_control),
                 (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
                 (axum::http::header::CONTENT_SECURITY_POLICY, "sandbox".to_string()),
-            ],
-            bytes,
-        )
-            .into_response(),
+            ];
+            stored_file_response(file, headers)
+        }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
@@ -4198,7 +5493,17 @@ pub(crate) fn request_record(
 ) -> serde_json::Value {
     use base64::Engine;
     use sha2::Digest;
-    let refs: Vec<serde_json::Value> = base.reference_images.iter().map(|r| {
+    // Every inline reference decoded and hashed: off the async workers (P15).
+    let ref_bytes: usize = base
+        .reference_images
+        .iter()
+        .map(|r| match r.kind {
+            crate::types::RefImageKind::Base64 => r.value.len(),
+            crate::types::RefImageKind::Blob => ctx.blob_parts.get(&r.value).map_or(0, |(bytes, _)| bytes.len()),
+            _ => 0,
+        })
+        .sum();
+    let refs: Vec<serde_json::Value> = crate::util::blocking::cpu_heavy(ref_bytes, || base.reference_images.iter().map(|r| {
         let digest = |bytes: &[u8]| serde_json::json!({
             "sha256": hex::encode(sha2::Sha256::digest(bytes)),
             "bytes": bytes.len(),
@@ -4221,7 +5526,7 @@ pub(crate) fn request_record(
         entry["role"] = serde_json::json!(r.role);
         entry["type"] = serde_json::to_value(r.kind).unwrap_or(serde_json::Value::Null);
         entry
-    }).collect();
+    }).collect());
     serde_json::json!({
         "model": base.model,
         "prompt": base.prompt,
@@ -4236,17 +5541,78 @@ pub(crate) fn request_record(
     })
 }
 
+/// A generation that failed before anything was made (E7): what its
+/// request-log row says.
+struct FailedGeneration<'a> {
+    /// `litegen-img`, `litegen-vid` or `litegen-3d`: the row's id prefix.
+    id_prefix: &'static str,
+    media_type: &'static str,
+    schema: &'a crate::capabilities::ModelSchema,
+    latency_ms: i64,
+    error: &'a crate::proxy::router::ProxyError,
+    prompt: &'a str,
+    metadata: Option<&'a serde_json::Value>,
+    attributed: &'a crate::management::types::Attribution,
+}
+
+/// Log a failed generation (E7): a `failed` row at no cost naming the
+/// provider that failed (on a model route, the deployment the error names;
+/// otherwise the model's own), its attribution, and an error artifact for the
+/// logs' drill-down, both with the error's [`logged_message`]. Awaited, so the
+/// row exists when the answer does (it counts in `/v1/stats` at once); a
+/// write that fails is logged, never the request's error. Not for a job
+/// litegen couldn't record: its own row says that.
+///
+/// [`logged_message`]: crate::proxy::router::ProxyError::logged_message
+async fn log_failed_generation(state: &AppState, key_ctx: Option<&KeyContext>, f: FailedGeneration<'_>) {
+    let id = format!("{}-{}", f.id_prefix, Uuid::new_v4());
+    let org_id = key_ctx.and_then(|c| c.org_id.clone());
+    let app_id = key_ctx.and_then(|c| c.app_id.clone());
+    // Never a panic's text: the row and its artifact are tenant-readable.
+    let error = f.error.logged_message();
+    // On a model route, the deployment that failed, as the error names it.
+    let provider = f.error.provider().unwrap_or(&f.schema.provider);
+    let logged = state
+        .db
+        .log_request(&id, &f.schema.id, provider, "failed", f.media_type, 0.0, f.latency_ms, Some(&error), f.metadata, org_id.as_deref(), app_id.as_deref())
+        .await;
+    if let Err(e) = logged {
+        tracing::warn!(error = %e, request_id = %id, "failed to log a failed generation");
+    }
+    crate::management::enforce::attribute(&state.db, &id, f.attributed).await;
+    let artifact = RequestArtifact {
+        request_id: id,
+        media_type: f.media_type.to_string(),
+        prompt: Some(f.prompt.to_string()),
+        negative_prompt: None,
+        params_json: None,
+        refs_meta_json: None,
+        output_kind: "error".to_string(),
+        output_value: None,
+        output_mime: None,
+        output_truncated: false,
+        error_message: Some(error),
+        created_at: chrono::Utc::now(),
+        org_id,
+        app_id,
+    };
+    if let Err(e) = state.db.insert_request_artifact(&artifact).await {
+        tracing::warn!(error = %e, "Failed to store error artifact");
+    }
+}
+
 /// 500 for a submit the vendor accepted but whose row litegen could not write
 /// (L2): answering with an id nothing can poll would hand the caller a job it
 /// can neither follow nor resume. Marked as having reached the vendor, so a
 /// retry with the same `Idempotency-Key` gets this answer back instead of a
 /// second billed job.
-fn generation_record_failed_response(id: &str, vendor_job_id: Option<&str>, err: &str) -> axum::response::Response {
+fn generation_record_failed_response(id: &str, vendor_job_id: Option<&str>) -> axum::response::Response {
+    // The cause (a database error) is in the server log, never the body.
     let mut resp = (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({
             "error": {
-                "message": format!("the vendor accepted the job, but litegen could not record generation {id}: {err}"),
+                "message": format!("the vendor accepted the job, but litegen could not record generation {id}"),
                 "type": "internal_error",
                 "code": "generation_record_failed",
                 "vendor_job_id": vendor_job_id,
@@ -4256,6 +5622,20 @@ fn generation_record_failed_response(id: &str, vendor_job_id: Option<&str>, err:
         .into_response();
     resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
     resp
+}
+
+/// A 400 `validation_error` whose `code` says which rule refused it.
+fn validation_rejection_with_code(code: &str, message: &str, model: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let body = serde_json::json!({
+        "error": {
+            "type": "validation_error",
+            "message": message,
+            "code": code,
+            "model": model,
+        }
+    });
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
 fn validation_rejection_response(message: &str, code: u16, model: &str) -> axum::response::Response {
@@ -4285,9 +5665,10 @@ fn log_audit(
     after_json: Option<serde_json::Value>,
 ) {
     let actor_key_id = key_ctx.and_then(|c| c.key_id).map(|id| id.to_string());
+    // A signed-in person (session or OAuth grant) by email, as the org and
+    // user audit entries name them; a key by its id; else the master key.
     let actor_label = key_ctx
-        .and_then(|c| c.key_id)
-        .map(|id| id.to_string())
+        .and_then(|c| c.user.as_ref().map(|u| u.email.clone()).or_else(|| c.key_id.map(|id| id.to_string())))
         .unwrap_or_else(|| "master-key".to_string());
     let action = action.to_string();
     let target_type = target_type.to_string();
@@ -4338,23 +5719,25 @@ fn quota_exceeded_response() -> axum::response::Response {
 /// billable generation. This — not the stale pre-flight read in the auth
 /// middleware — is what actually caps spend: a single oversized request or a
 /// burst of concurrent requests cannot slip past because the check-and-increment
-/// is one atomic UPDATE. Returns the reserved amount (0.0 when there is no DB key
-/// or nothing to charge), or an `Err(response)` (402 over-quota, 503 on DB error)
-/// the caller must return without dispatching.
+/// is one atomic UPDATE. Returns the [`QuotaHold`] to settle once with
+/// [`settle_quota`] (holding nothing when there is no DB key or nothing to
+/// charge), or an `Err(response)` (402 over-quota, 503 on DB error) the caller
+/// must return without dispatching.
 async fn reserve_quota(
     state: &AppState,
     key_id: Option<uuid::Uuid>,
     estimate: f64,
-) -> Result<f64, axum::response::Response> {
-    let Some(key_id) = key_id else { return Ok(0.0) };
+) -> Result<QuotaHold, axum::response::Response> {
+    let nothing = QuotaHold { key_id, reserved: 0.0, release_to: None };
+    let Some(id) = key_id else { return Ok(nothing) };
     if estimate <= 0.0 {
-        return Ok(0.0);
+        return Ok(nothing);
     }
-    match state.db.reserve_tokens(&key_id, estimate).await {
-        Ok(true) => Ok(estimate),
+    match state.db.reserve_tokens(&id, estimate).await {
+        Ok(true) => Ok(QuotaHold { key_id, reserved: estimate, release_to: Some(state.db.clone()) }),
         Ok(false) => Err(quota_exceeded_response()),
         Err(e) => {
-            tracing::error!(error = %e, key_id = %key_id, "quota reservation failed");
+            tracing::error!(error = %e, key_id = %id, "quota reservation failed");
             Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 [("retry-after", "1")],
@@ -4364,17 +5747,94 @@ async fn reserve_quota(
     }
 }
 
+/// A key's quota reservation from [`reserve_quota`]: the key it was taken
+/// from, and how much. Settle it once, with [`settle_quota`]; a hold dropped
+/// unsettled (its handler panicked) gives the reservation back by itself.
+pub(crate) struct QuotaHold {
+    key_id: Option<uuid::Uuid>,
+    reserved: f64,
+    release_to: Option<Arc<dyn crate::db::DatabaseStore>>,
+}
+
+impl Drop for QuotaHold {
+    /// Gives back what was reserved and never settled, as
+    /// `settle_quota(.., 0.0)` would, in a task of its own (a drop cannot
+    /// await): nothing else ever lowers a key's `tokens_used`.
+    fn drop(&mut self) {
+        let (Some(key_id), Some(db)) = (self.key_id, self.release_to.take()) else { return };
+        let reserved = std::mem::take(&mut self.reserved);
+        if reserved <= 0.0 {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(key_id = %key_id, reserved, "a dropped quota reservation could not be given back outside a runtime");
+            return;
+        };
+        runtime.spawn(async move {
+            if let Err(e) = db.atomic_charge_tokens(&key_id, -reserved).await {
+                tracing::warn!(error = %e, key_id = %key_id, "releasing a dropped quota reservation failed");
+            }
+        });
+    }
+}
+
 /// Settle a prior [`reserve_quota`] hold once the generation resolves: adjust the
-/// held `reserved` amount to the `actual` cost. A negative delta refunds the
+/// held amount to the `actual` cost. A negative delta refunds the
 /// difference; `actual == 0.0` releases the whole hold (used when generation
 /// fails so a failed request is never billed).
-async fn settle_quota(state: &AppState, key_id: Option<uuid::Uuid>, reserved: f64, actual: f64) {
-    let Some(key_id) = key_id else { return };
+async fn settle_quota(state: &AppState, mut hold: QuotaHold, actual: f64) {
+    let reserved = std::mem::take(&mut hold.reserved);
+    hold.release_to = None;
+    let Some(key_id) = hold.key_id else { return };
     let delta = actual - reserved;
     if delta.abs() > f64::EPSILON {
         if let Err(e) = state.db.atomic_charge_tokens(&key_id, delta).await {
             tracing::warn!(error = %e, key_id = %key_id, "quota settlement failed");
         }
+    }
+}
+
+#[cfg(test)]
+mod quota_hold_tests {
+    use super::*;
+    use crate::db::sqlite::SqliteDatabase;
+    use crate::db::DatabaseStore;
+
+    async fn tokens_used(db: &SqliteDatabase, key: &uuid::Uuid) -> f64 {
+        db.get_api_key(key).await.unwrap().unwrap().tokens_used
+    }
+
+    /// E12: a key's quota reservation dropped unsettled (a billed handler
+    /// that panicked) is given back, as `settle_quota(.., 0.0)` would. It
+    /// used to stay held for good: nothing ever lowers `tokens_used` again.
+    #[tokio::test]
+    async fn an_unsettled_quota_hold_is_given_back_when_dropped() {
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let key = db.create_api_key("e12", "e12-hash", "lg-e12", Some(10.0), None, "generate", None).await.unwrap();
+        let state = super::tenant_scoping_tests::build_state(db.clone(), crate::config::Mode::SingleTenant, None).await;
+        let hold = reserve_quota(&state, Some(key.id), 0.5).await.ok().unwrap();
+        assert_eq!(tokens_used(&db, &key.id).await, 0.5, "the estimate is reserved");
+        drop(hold);
+        // The release is a task the drop spawns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut left = tokens_used(&db, &key.id).await;
+        while left != 0.0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            left = tokens_used(&db, &key.id).await;
+        }
+        assert_eq!(left, 0.0, "a quota hold dropped unsettled left {left} USD reserved on the key");
+    }
+
+    /// A settled hold's charge stands when it is dropped.
+    #[tokio::test]
+    async fn a_settled_quota_hold_keeps_its_charge() {
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let key = db.create_api_key("e12", "e12-hash", "lg-e12", Some(10.0), None, "generate", None).await.unwrap();
+        let state = super::tenant_scoping_tests::build_state(db.clone(), crate::config::Mode::SingleTenant, None).await;
+        let hold = reserve_quota(&state, Some(key.id), 0.5).await.ok().unwrap();
+        settle_quota(&state, hold, 0.3).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!((tokens_used(&db, &key.id).await - 0.3).abs() < 1e-9, "the settled charge stands");
     }
 }
 
@@ -4442,12 +5902,7 @@ async fn authorize_generation_for_session(
                 // permission denial either — surface a 500 so it's retryable and
                 // diagnosable rather than a misleading 403 on an owned resource.
                 Err(e) => {
-                    error!(error = %e, "ownership check failed: list_api_keys_for_owner");
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(error_response(&e.to_string(), 500)),
-                    )
-                        .into_response());
+                    return Err(internal_error_response("ownership check failed: list_api_keys_for_owner", &e));
                 }
             },
         };
@@ -4456,6 +5911,28 @@ async fn authorize_generation_for_session(
         }
     }
     Err(forbidden_perm_resp(any_label))
+}
+
+/// [`cache_scope`], narrowed to whoever may read a hit. A cache hit hands back
+/// the earlier generation's image, bytes included, and its id, with no read
+/// check of its own. So:
+/// - a key gets its own scope where the app keeps files to the key that made
+///   them (`signed` or `private`, `owner_scope: key`): two keys sharing an
+///   entry would let one have the other's image, which the file route
+///   refuses it;
+/// - a person (a session or OAuth grant) without `generation:read:any`
+///   (Member, Viewer) gets their own scope: they may read only their own
+///   generations.
+fn cache_scope_for(ctx: &KeyContext, policy: crate::access::AccessPolicy) -> String {
+    let scope = cache_scope(ctx);
+    let kept_to_the_key = policy.mode != crate::access::AccessMode::Public && policy.owner_scope == crate::access::OwnerScope::Key;
+    match (ctx.key_id, ctx.user.as_ref()) {
+        (Some(kid), None) if kept_to_the_key => format!("{scope}/k:{kid}"),
+        (_, Some(user)) if !ctx.permissions.contains(&crate::auth::permissions::Permission::GenerationReadAny) => {
+            format!("{scope}/u:{}", user.user_id)
+        }
+        _ => scope,
+    }
 }
 
 /// Cache scope for the process-global generation cache. Distinct principals must
@@ -4501,6 +5978,42 @@ mod cache_scope_tests {
         }
     }
 
+    /// Security fix 5 (2026-11-05, and its review). A cache hit hands back an
+    /// earlier generation's image with no read check, so a caller who couldn't
+    /// read that generation must not share its bucket:
+    /// - a key, where the app keeps files to the key that made them;
+    /// - a session or OAuth grant holding only `generation:read:own`.
+    #[test]
+    fn cache_scope_for_follows_who_may_read_the_hit() {
+        use crate::access::{AccessMode, AccessPolicy, OwnerScope, SignedLinks};
+        use crate::auth::permissions::Permission;
+        let policy = |mode, owner_scope| AccessPolicy {
+            mode,
+            owner_scope,
+            ttl: std::time::Duration::from_secs(3600),
+            keep_outputs: true,
+            retention_days: 0,
+            signed_links: SignedLinks::default(),
+        };
+        let kid = uuid::Uuid::new_v4();
+        let key = ctx(Some(kid), None, Some("orgA"), Some("app1"));
+        let app_scope = cache_scope(&key);
+        let with_perms = |perms: Vec<Permission>| KeyContext { permissions: perms, ..ctx(None, Some("u1"), Some("orgA"), Some("app1")) };
+        let member = with_perms(vec![Permission::GenerationCreate, Permission::GenerationReadOwn]);
+        let admin = with_perms(vec![Permission::GenerationCreate, Permission::GenerationReadAny]);
+
+        for mode in [AccessMode::Signed, AccessMode::Private] {
+            assert_eq!(cache_scope_for(&key, policy(mode, OwnerScope::Key)), format!("{app_scope}/k:{kid}"), "{mode:?}");
+            assert_eq!(cache_scope_for(&key, policy(mode, OwnerScope::App)), app_scope, "{mode:?}: app scope shares");
+        }
+        assert_eq!(cache_scope_for(&key, policy(AccessMode::Public, OwnerScope::Key)), app_scope, "public shares");
+        for mode in [AccessMode::Public, AccessMode::Signed, AccessMode::Private] {
+            let p = policy(mode, OwnerScope::Key);
+            assert_eq!(cache_scope_for(&member, p), format!("{}/u:u1", cache_scope(&member)), "{mode:?}: read:own reads only its own");
+            assert_eq!(cache_scope_for(&admin, p), cache_scope(&admin), "{mode:?}: read:any may read any hit");
+        }
+    }
+
     #[test]
     fn distinct_principals_never_share_a_bucket() {
         let kid = uuid::Uuid::new_v4();
@@ -4531,6 +6044,45 @@ mod cache_scope_tests {
     }
 }
 
+/// 400 `option_needs_keeping`: a request that keeps nothing (`keep_outputs:
+/// false`) set an output option litegen applies to the file it keeps, so it
+/// could not apply. `param` names the option; every opt-in output option
+/// refuses this way (the mesh-gaps overview, "Options users choose").
+pub(crate) fn option_needs_keeping(param: &str, what: &str, model: &str) -> axum::response::Response {
+    let message = format!(
+        "{param} needs a kept output: litegen {what} from the file it keeps, and this request keeps nothing (keep_outputs: false)"
+    );
+    param_rejection("option_needs_keeping", param, &message, model)
+}
+
+/// A 400 whose `code` names `param`: the body every request-option refusal
+/// of a 3D generation has (`option_needs_keeping`, and `param_invalid` for a
+/// value litegen does not take).
+fn param_rejection(code: &str, param: &str, message: &str, model: &str) -> axum::response::Response {
+    let body = crate::api::middleware::validator::err_body(code, message, Some(param), model);
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
+}
+
+/// 400 `invalid_keep_outputs_header`: an `X-Litegen-Keep-Outputs` other than `false`.
+pub(crate) fn keep_header_rejection(message: &str) -> axum::response::Response {
+    let body = serde_json::json!({ "error": {
+        "message": message,
+        "type": "invalid_request_error",
+        "code": "invalid_keep_outputs_header",
+    }});
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
+}
+
+/// A 500 that tells the caller nothing about its cause (SEC-DBERR): the
+/// error goes to the server log at error level, with `context`, and the body
+/// says "internal server error" (`internal_error`). A database error's own
+/// text names tables, columns and constraints, and can echo the caller's
+/// input.
+fn internal_error_response(context: &str, e: &dyn std::fmt::Display) -> axum::response::Response {
+    error!(error = %e, "{context}");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("internal server error", 500))).into_response()
+}
+
 /// An error body; its `code` is the error's type, a string like every `code`
 /// litegen sends (PixelGenie L15).
 fn error_response(message: &str, code: u16) -> serde_json::Value {
@@ -4549,35 +6101,198 @@ fn error_response(message: &str, code: u16) -> serde_json::Value {
     serde_json::json!({ "error": { "message": message, "type": kind, "code": kind } })
 }
 
+/// What a caller's `Prefer` header (RFC 7240) asks of an image call: how
+/// long to wait for a vendor's job before answering 202 that it runs on,
+/// and the `Preference-Applied` value that says so. `respond-async` waits
+/// for nothing (or for its `wait`); `wait=N` alone waits N seconds. Other
+/// preferences, and a malformed `wait`, are ignored, as the RFC allows.
+fn image_wait_preference(headers: &axum::http::HeaderMap) -> Option<(std::time::Duration, String)> {
+    let mut async_asked = false;
+    let mut wait: Option<u64> = None;
+    for value in headers.get_all("prefer").iter().filter_map(|v| v.to_str().ok()) {
+        for pref in value.split(',') {
+            let token = pref.split(';').next().unwrap_or("").trim();
+            let (name, arg) = match token.split_once('=') {
+                Some((n, a)) => (n.trim(), Some(a.trim().trim_matches('"'))),
+                None => (token, None),
+            };
+            if name.eq_ignore_ascii_case("respond-async") {
+                async_asked = true;
+            } else if name.eq_ignore_ascii_case("wait") {
+                if let Some(n) = arg.and_then(|a| a.parse::<u64>().ok()) {
+                    wait = Some(n);
+                }
+            }
+        }
+    }
+    match (async_asked, wait) {
+        (true, Some(n)) => Some((std::time::Duration::from_secs(n), format!("respond-async, wait={n}"))),
+        (true, None) => Some((std::time::Duration::ZERO, "respond-async".to_string())),
+        (false, Some(n)) => Some((std::time::Duration::from_secs(n), format!("wait={n}"))),
+        (false, None) => None,
+    }
+}
+
+/// An image job the vendor took that litegen delivers later.
+struct LateImage {
+    job: String,
+    resume: Option<serde_json::Value>,
+    response_format: String,
+    price: f64,
+    prefer: Option<(std::time::Duration, String)>,
+}
+
+/// Give a still-running image job its row, billed like a video submit (the
+/// charge taken now, refunded if the vendor fails it later), for the poller
+/// to finish (docs/async-images.md). A caller that asked for async hears
+/// 202 with the generation; a sync caller hears the 504 it always did, now
+/// naming the generation that will hold the image.
+#[allow(clippy::too_many_arguments)]
+async fn accept_late_image(
+    state: &Arc<AppState>,
+    key_ctx: Option<&crate::api::middleware::KeyContext>,
+    validated: &ValidatedImage,
+    extras: &ImageExtras,
+    late: LateImage,
+    reserved: QuotaHold,
+    mut limits: crate::management::enforce::LimitGuard,
+    attributed: crate::management::types::Attribution,
+    start: std::time::Instant,
+) -> axum::response::Response {
+    let id = format!("litegen-img-{}", Uuid::new_v4());
+    let model = validated.schema.id.clone();
+    let provider = validated.schema.provider.clone();
+    let org_id = key_ctx.and_then(|c| c.org_id.clone());
+    let app_id = key_ctx.and_then(|c| c.app_id.clone());
+    let latency = start.elapsed().as_millis() as i64;
+    let db = state.db.clone();
+    if let Err(e) = db
+        .log_request(&id, &model, &provider, "pending", "image", late.price, latency, None, validated.request.base.metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
+        .await
+    {
+        tracing::warn!(generation_id = %id, error = %e, "failed to log the late image request");
+    }
+    // The request, for the Logs trace, as a video's submit keeps it: the
+    // output is the generation's once the poller delivers it.
+    let artifact = RequestArtifact {
+        request_id: id.clone(),
+        media_type: "image".to_string(),
+        prompt: Some(validated.request.base.prompt.clone()),
+        negative_prompt: validated.request.base.negative_prompt.clone(),
+        params_json: serde_json::to_value(extras).ok(),
+        refs_meta_json: build_refs_meta(&validated.request.base.reference_images),
+        output_kind: "url".to_string(),
+        output_value: None,
+        output_mime: None,
+        output_truncated: false,
+        error_message: None,
+        created_at: chrono::Utc::now(),
+        org_id: org_id.clone(),
+        app_id: app_id.clone(),
+    };
+    if let Err(e) = db.insert_request_artifact(&artifact).await {
+        tracing::warn!(generation_id = %id, error = %e, "failed to store the late image's request artifact");
+    }
+    crate::management::enforce::attribute(&db, &id, &attributed).await;
+    let inserted = db
+        .insert_generation(&id, key_ctx.and_then(|c| c.key_id).as_ref(), &model, &provider, "image", Some(&late.job), late.price, org_id.as_deref(), app_id.as_deref())
+        .await;
+    // Charged now, as a video submit is; a job litegen could not record is
+    // charged nothing, and its caller hears the timeout it would have.
+    let charge = if inserted.is_ok() { late.price } else { 0.0 };
+    settle_quota(state, reserved, charge).await;
+    let charged_to = limits.charged_to();
+    limits.settle(state, charge).await;
+    if let Err(e) = inserted {
+        tracing::error!(generation_id = %id, error = %e, "a late image's row could not be written");
+        let _ = db.update_request_log_status(&id, "failed", Some("generation_record_failed")).await;
+        return generation_error_response(&crate::proxy::router::ProxyError::VendorTimeout { model, provider, vendor_job_id: Some(late.job) });
+    }
+    let request = request_record(&validated.request.base, serde_json::to_value(extras).ok(), &validated.ctx);
+    let recorded = serde_json::json!({
+        "request": request,
+        "billing": { "limits": charged_to },
+        "end_user": attributed.end_user,
+        "image_job": { "resume": late.resume, "response_format": late.response_format },
+    });
+    if let Err(e) = db.merge_generation_metadata_if_active(&id, &recorded).await {
+        tracing::warn!(generation_id = %id, error = %e, "failed to record the late image request on its row");
+    }
+    let mut resp = match late.prefer {
+        Some((_, applied)) => {
+            let body = crate::types::ImageGenerationAccepted {
+                id: id.clone(),
+                object: "image.generation".to_string(),
+                status: "processing".to_string(),
+                model: model.clone(),
+                created: chrono::Utc::now().timestamp(),
+            };
+            let mut resp = (StatusCode::ACCEPTED, Json(body)).into_response();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&format!("/v1/generations/{id}")) {
+                resp.headers_mut().insert(axum::http::header::LOCATION, v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str(&applied) {
+                resp.headers_mut().insert("preference-applied", v);
+            }
+            // What the request dropped, as its 200 would say (N1).
+            with_dropped(resp, &validated.dropped)
+        }
+        None => {
+            let e = crate::proxy::router::ProxyError::VendorTimeout { model: model.clone(), provider: provider.clone(), vendor_job_id: Some(late.job.clone()) };
+            let body = serde_json::json!({
+                "error": {
+                    "message": format!("{e}; litegen delivers it to GET /v1/generations/{id} when it finishes"),
+                    "type": "vendor_timeout",
+                    "code": "vendor_timeout",
+                    "retryable": false,
+                    "vendor_job_id": late.job,
+                    "generation_id": id,
+                    "status": "processing",
+                }
+            });
+            (StatusCode::GATEWAY_TIMEOUT, Json(body)).into_response()
+        }
+    };
+    resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
+    resp
+}
+
 /// Store an image response's images and record it as a `completed` generation
 /// (PixelGenie L3). Inline (`b64_json`) images are written to litegen's asset
 /// store, the app's own bucket when it has one; an image already returned by
 /// URL (an S3 image store) is recorded by that URL. Best-effort: the caller
-/// already has the images.
+/// already has the images. Returns what it recorded, in order (each entry's
+/// `index` is its image's in the response); nothing when no row was written.
+/// With `keep` false the row is written with no assets and nothing is stored.
 async fn keep_image_result(
     state: &Arc<AppState>,
     key_ctx: Option<&crate::api::middleware::KeyContext>,
     response: &ImageGenerationResponse,
     validated: &ValidatedImage,
     cost: f64,
-) {
+    end_user: Option<&str>,
+    keep: bool,
+) -> Vec<crate::types::GenerationAsset> {
     use base64::Engine;
     let app_id = key_ctx.and_then(|c| c.app_id.clone());
     let org_id = key_ctx.and_then(|c| c.org_id.clone());
-    let (store, prefix) = match app_id.as_deref() {
-        Some(app) => resolve_app_model3d_store(&state.db, state.secrets_key, app)
-            .await
-            .unwrap_or_else(|| (state.router.model3d_store.clone(), None)),
-        None => (state.router.model3d_store.clone(), None),
+    let target = match app_id.as_deref().filter(|_| keep) {
+        Some(app) => match app_store_for_writing(&state.db, state.secrets_key, &state.router.config.aws, tenant_bucket_of(state), app).await {
+            Ok(found) => Some(found.unwrap_or_else(|| (state.router.model3d_store.clone(), None))),
+            // Its bucket is down and litegen's store may not stand in: the
+            // caller has the images, and the row records none.
+            Err(reason) => {
+                tracing::warn!(generation_id = %response.id, reason = %reason, "an image result was not kept: the app's bucket can't be reached");
+                None
+            }
+        },
+        None => Some((state.router.model3d_store.clone(), None)),
     };
+    let write = keep && target.is_some();
+    let (store, prefix) = target.unwrap_or_else(|| (state.router.model3d_store.clone(), None));
     let mut assets: Vec<crate::types::GenerationAsset> = Vec::new();
-    for (i, img) in response.data.iter().enumerate() {
-        let format = match img.content_type.split(';').next().unwrap_or("").trim() {
-            "image/jpeg" | "image/jpg" => "jpg",
-            "image/webp" => "webp",
-            "image/gif" => "gif",
-            _ => "png",
-        };
+    for (i, img) in response.data.iter().enumerate().filter(|_| write) {
+        let format = crate::proxy::storage::image_format(&img.content_type);
         let asset = if let Some(b64) = img.b64_json.as_deref() {
             let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else { continue };
             let key = format!(
@@ -4587,6 +6302,7 @@ async fn keep_image_result(
             );
             match store.put(&key, &bytes::Bytes::from(bytes.clone()), &img.content_type).await {
                 Ok(url) => crate::types::GenerationAsset {
+                    expires_at: None,
                     index: i as u32,
                     kind: "image".into(),
                     format: format.into(),
@@ -4598,6 +6314,7 @@ async fn keep_image_result(
                     duration_s: None,
                     fps: None,
                     has_audio: None,
+                    kept: true,
                 },
                 Err(e) => {
                     tracing::warn!(generation_id = %response.id, error = %e, "could not keep an image result");
@@ -4606,6 +6323,7 @@ async fn keep_image_result(
             }
         } else if let Some(url) = img.url.as_deref() {
             crate::types::GenerationAsset {
+                expires_at: None,
                 index: i as u32,
                 kind: "image".into(),
                 format: format.into(),
@@ -4617,6 +6335,7 @@ async fn keep_image_result(
                 duration_s: None,
                 fps: None,
                 has_audio: None,
+                kept: true,
             }
         } else {
             continue;
@@ -4629,15 +6348,20 @@ async fn keep_image_result(
         org_id.as_deref(), app_id.as_deref(),
     ).await {
         tracing::warn!(generation_id = %response.id, error = %e, "could not record the image result");
-        return;
+        return Vec::new();
     }
     let request = request_record(&validated.request.base, None, &validated.ctx);
+    let mut metadata = serde_json::json!({ "assets": assets, "request": request, "end_user": end_user });
+    if !keep {
+        metadata["keep_outputs"] = false.into();
+    }
     if let Err(e) = state.db.update_generation_if_active(
         &response.id, "completed", 100, assets.first().map(|a| a.url.as_str()), None, Some(chrono::Utc::now()),
-        Some(&serde_json::json!({ "assets": assets, "request": request })),
+        Some(&metadata),
     ).await {
         tracing::warn!(generation_id = %response.id, error = %e, "could not complete the image result's row");
     }
+    assets
 }
 
 /// Read every `reference_images` entry that names a stored image generation
@@ -4648,7 +6372,8 @@ async fn resolve_generation_refs(
     state: &Arc<AppState>,
     key_ctx: Option<&crate::api::middleware::KeyContext>,
     refs: &[crate::types::ReferenceImage],
-) -> Result<Vec<crate::types::ReferenceImage>, crate::proxy::model3d_source::SourceError> {
+    gate: &FileGate<'_>,
+) -> Result<Vec<crate::types::ReferenceImage>, ChainRefusal> {
     use crate::proxy::model3d_source::SourceError;
     use base64::Engine;
     let mut out = Vec::with_capacity(refs.len());
@@ -4657,22 +6382,23 @@ async fn resolve_generation_refs(
             out.push(r.clone());
             continue;
         }
-        let gen = readable_generation(state, key_ctx, &r.value)
+        let gen = chainable_generation(state, key_ctx, &r.value)
             .await
-            .map_err(|_| SourceError::NotFound(format!("generation {} is not one you can read", r.value)))?;
+            .ok_or_else(|| SourceError::NotFound(format!("generation {} is not one you can read", r.value)))?;
         if gen.media_type != "image" {
-            return Err(SourceError::NotFound(format!("generation {} is not an image", gen.id)));
+            return Err(SourceError::NotFound(format!("generation {} is not an image", gen.id)).into());
         }
         if !gen.status.is_terminal() {
-            return Err(SourceError::NotReady(format!("generation {} has not finished yet", gen.id)));
+            return Err(SourceError::NotReady(format!("generation {} has not finished yet", gen.id)).into());
         }
         let asset = generation_assets(&gen)
             .into_iter()
             .find(|a| a.kind == "image")
             .ok_or_else(|| SourceError::NotFound(format!("generation {} has no stored image", gen.id)))?;
+        gate.allows(key_ctx, &gen, &asset).await.map_err(ChainRefusal::Hook)?;
         let mut stores = vec![state.router.model3d_store.clone()];
         if let Some(app) = gen.app_id.as_deref() {
-            if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
+            if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, &state.router.config.aws, tenant_bucket_of(state), app).await {
                 stores.insert(0, store);
             }
         }
@@ -4714,20 +6440,25 @@ async fn resolve_source_model(
     src: &crate::types::SourceRef,
     provider: &str,
     vendor_account: &str,
-) -> Result<(crate::providers::SourceInput, serde_json::Value), crate::proxy::model3d_source::SourceError> {
-    use crate::proxy::model3d_source::{decode_base64_source, fetch_url_source, prepare, read_generation_source, SourceError};
+    gate: &FileGate<'_>,
+) -> Result<(crate::providers::SourceInput, serde_json::Value), ChainRefusal> {
+    use crate::proxy::model3d_source::{decode_base64_source, fetch_url_source, pick_source_mesh, prepare, read_source_mesh, SourceError};
     let (bytes, format, origin) = match src.kind {
         crate::types::SourceKind::Generation => {
-            let gen = readable_generation(state, key_ctx, &src.value)
+            let gen = chainable_generation(state, key_ctx, &src.value)
                 .await
-                .map_err(|_| SourceError::NotFound(format!("generation {} is not one you can read", src.value)))?;
+                .ok_or_else(|| SourceError::NotFound(format!("generation {} is not one you can read", src.value)))?;
+            // The engine picks the mesh; the operator's hook is asked about
+            // that one before it is read.
+            let pick = pick_source_mesh(&gen, spec)?;
+            gate.allows(key_ctx, &gen, &pick).await.map_err(ChainRefusal::Hook)?;
             let mut stores = vec![state.router.model3d_store.clone()];
             if let Some(app) = gen.app_id.as_deref() {
-                if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
+                if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, &state.router.config.aws, tenant_bucket_of(state), app).await {
                     stores.insert(0, store);
                 }
             }
-            let (bytes, format) = read_generation_source(&stores, &gen, spec).await?;
+            let (bytes, format) = read_source_mesh(&stores, &gen, &pick).await?;
             (bytes, format, Some(gen))
         }
         crate::types::SourceKind::Url => {
@@ -4743,11 +6474,39 @@ async fn resolve_source_model(
         .await
         .map_err(|e| SourceError::FormatUnsupported(format!("reading the source failed: {e}")))??;
     // The vendor's own task id, when it made the source on this same account.
-    let vendor_task_id = origin
+    // An animation's own task is no rig: one chained from an animation (or a
+    // chain of them) gets the rig it came from, its recorded source, which is
+    // what Tripo and Meshy animate.
+    let mut chain_from = origin.clone();
+    for _ in 0..8 {
+        let Some(g) = chain_from.as_ref() else { break };
+        let animation = state
+            .registry
+            .resolve(&g.model)
+            .or_else(|| state.registry.retired(&g.model))
+            .is_some_and(|m| m.task == crate::capabilities::ModelTask::Animate);
+        if !animation {
+            break;
+        }
+        let up = g.metadata.as_ref().and_then(|m| m["source"]["generation_id"].as_str()).map(str::to_string);
+        chain_from = match up {
+            Some(id) => state.db.get_generation(&id).await.ok().flatten(),
+            None => None,
+        };
+    }
+    let vendor_task_id = chain_from
         .as_ref()
         .filter(|g| g.provider == provider)
         .filter(|g| g.metadata.as_ref().and_then(|m| m.get("vendor_account")).and_then(|v| v.as_str()) == Some(vendor_account))
         .and_then(|g| g.provider_job_id.clone());
+    // And the joint naming that rig was delivered in (3D doc §3B), from the
+    // plan its row recorded, whichever provider made it: the vendor
+    // animates the rig as it stored it, in its own names, so an animation
+    // of it is delivered in this naming (`DeliveryPlan::for_request`). A
+    // row whose plan is missing or does not read names none.
+    let joint_naming = chain_from
+        .as_ref()
+        .and_then(|g| g.metadata.as_ref()?["delivery"]["joint_naming"].as_str().map(str::to_string));
     // Where the source's delivered mesh faces, by its own manifest: an
     // operation that keeps its source's axes faces there too.
     let front = origin.as_ref().and_then(|g| {
@@ -4758,7 +6517,7 @@ async fn resolve_source_model(
             .as_str()
             .map(str::to_string)
     });
-    let record = serde_json::json!({
+    let mut record = serde_json::json!({
         "generation_id": origin.as_ref().map(|g| g.id.clone()),
         "sha256": prepared.sha256,
         "format": prepared.format,
@@ -4766,6 +6525,9 @@ async fn resolve_source_model(
         "facts": prepared.facts,
         "front": front,
     });
+    if let Some(naming) = &joint_naming {
+        record["joint_naming"] = serde_json::json!(naming);
+    }
     let input = crate::providers::SourceInput {
         bytes: prepared.bytes,
         format: prepared.format,
@@ -4773,6 +6535,7 @@ async fn resolve_source_model(
         facts: prepared.facts,
         vendor_task_id,
         front,
+        joint_naming,
         delivered: Default::default(),
     };
     Ok((input, record))
@@ -4793,9 +6556,9 @@ async fn materialized_bytes(form: &crate::proxy::materializer::MaterializedRefFo
         MaterializedRefForm::Url(u) => {
             use crate::util::ssrf::CappedDownloadError;
             crate::util::ssrf::check_public_url(u).await.map_err(|e| format!("the image URL was refused: {e}"))?;
-            // The no-redirect client: a public host must not 3xx this fetch
-            // into a private one after the check above.
-            let client = crate::util::ssrf::no_redirect_download_client(std::time::Duration::from_secs(60), std::time::Duration::from_secs(30));
+            // A public host must not 3xx this fetch into a private one after
+            // the check above, nor may its name resolve to one at connect.
+            let client = crate::util::ssrf::public_only_download_client(std::time::Duration::from_secs(60), std::time::Duration::from_secs(30));
             match crate::util::ssrf::download_capped(&client, u, MAX_EDIT_IMAGE_BYTES as u64).await {
                 Ok((bytes, _)) => Ok(bytes),
                 Err(CappedDownloadError::Transport(why)) => Err(format!("the image could not be fetched: {why}")),
@@ -4815,6 +6578,7 @@ async fn apply_image_edit(
     schema: &crate::capabilities::ModelSchema,
     req: &ImageGenerationRequest,
     materialized: &mut crate::proxy::materializer::MaterializedRequest,
+    publisher: Option<&Arc<crate::proxy::ref_publish::RefPublisher>>,
 ) -> Result<Option<crate::providers::ImageEdit>, axum::response::Response> {
     use crate::capabilities::{MaskConvention, ParamSpec, RefProviderFormat, RegionInput};
     use crate::proxy::image_edit::{prepare, EditError, EditRequest, EditTarget, RegionTarget};
@@ -4866,8 +6630,17 @@ async fn apply_image_edit(
                 bytes: bytes::Bytes::from(png),
                 content_type: "image/png".into(),
             },
-            Some(RefProviderFormat::Url) => {
+            // Inline where the vendor takes a `data:` URI, else published at
+            // litegen's own URL, as an uploaded reference is (L4).
+            Some(RefProviderFormat::Url) if refs.is_none_or(|r| r.data_uri) => {
                 MaterializedRefForm::Url(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png)))
+            }
+            Some(RefProviderFormat::Url) => {
+                let unpublishable = |m: String| validation_rejection_response(&m, 400, &schema.id);
+                let publisher = publisher.ok_or_else(|| {
+                    unpublishable("this model fetches its mask by URL and litegen cannot publish one here; send a public mask URL".into())
+                })?;
+                MaterializedRefForm::Url(publisher.publish(&png, "image/png").await.map_err(unpublishable)?)
             }
             _ => MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(&png)),
         };
@@ -4907,9 +6680,9 @@ fn charged_price(state: &AppState, price: f64) -> f64 {
     crate::providers::apply_markup(price, state.router.cost_markup_percent()).1
 }
 
-/// The error answer for a generation the router could not run, marked as
-/// having reached a vendor when it did — which is what an `Idempotency-Key`
-/// records and replays. A vendor timeout names the vendor's job, when it had
+/// The error answer for a router call that failed (a generation, a quote, a
+/// status poll), marked as having reached a vendor when it did — which is
+/// what an `Idempotency-Key` records and replays. A vendor timeout names the vendor's job, when it had
 /// accepted one, and is never re-sent.
 fn generation_error_response(e: &crate::proxy::router::ProxyError) -> axum::response::Response {
     let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -4940,9 +6713,41 @@ fn generation_error_response(e: &crate::proxy::router::ProxyError) -> axum::resp
         }),
         ProxyError::VendorRejected { vendor, vendor_job_id, .. } => vendor_body("vendor_rejected", vendor, vendor_job_id),
         ProxyError::VendorFailed { vendor, vendor_job_id, .. } => vendor_body("vendor_error", vendor, vendor_job_id),
-        _ => error_response(&e.to_string(), status.as_u16()),
+        // One condition, one answer, wherever it is noticed (E8), with the
+        // adapter's advice when it gave one (E9).
+        ProxyError::ProviderNotConfigured { provider, detail } => return provider_not_configured_with(provider, detail.as_deref()),
+        // The adapter refused the request before calling its vendor (E9): a
+        // validation error the caller can fix, and no vendor attempt.
+        ProxyError::Refused { model, message, .. } => {
+            let mut body = crate::api::middleware::validator::err_body("request_unsupported", message, None, model);
+            body["error"]["retryable"] = false.into();
+            body
+        }
+        // A panic's text stays in the log (SEC-DBERR).
+        ProxyError::Internal(_) => return internal_error_response("the router failed", e),
+        // Every deployment of a route is cooling down (handlers review #5):
+        // retry when the first one is back, which `Retry-After` says.
+        ProxyError::CoolingDown { .. } => serde_json::json!({
+            "error": {
+                "message": e.to_string(),
+                "type": "service_unavailable",
+                "code": "circuit_open",
+                "retryable": e.retryable(),
+            }
+        }),
+        // Any other router error says whether the same request may work
+        // later, the generic 502 of a passed-over route included (handlers
+        // review #12).
+        _ => {
+            let mut body = error_response(&e.to_string(), status.as_u16());
+            body["error"]["retryable"] = e.retryable().into();
+            body
+        }
     };
     let mut resp = (status, Json(body)).into_response();
+    if let Some(secs) = e.retry_after_secs() {
+        resp.headers_mut().insert(axum::http::header::RETRY_AFTER, axum::http::HeaderValue::from(secs));
+    }
     if e.reached_vendor() {
         resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
     }
@@ -4954,14 +6759,27 @@ fn generation_error_response(e: &crate::proxy::router::ProxyError) -> axum::resp
 /// `type` is `provider_not_configured` (not `invalid_request_error`), matching the
 /// documented BYO contract the dashboard/SDK keys off of.
 fn provider_not_configured_response(provider: &str) -> axum::response::Response {
+    provider_not_configured_with(provider, None)
+}
+
+/// [`provider_not_configured_response`], with the adapter's own advice
+/// (`detail`) when the provider's adapter judged the credential it has
+/// unusable, e.g. Kling's "store a Kling API key instead" (E9). A detail that
+/// is only the provider's name (most adapters' `NotConfigured("vidu")`) is no
+/// advice: the default text, with its dashboard hint, stands.
+fn provider_not_configured_with(provider: &str, detail: Option<&str>) -> axum::response::Response {
+    let message = match detail.filter(|d| *d != provider) {
+        Some(detail) => format!("Provider '{provider}' is not configured for this application: {detail}"),
+        None => format!(
+            "Provider '{provider}' is not configured for this application. \
+             Add a provider credential in the dashboard."
+        ),
+    };
     let body = serde_json::json!({
         "error": {
             "type": "provider_not_configured",
             "code": "provider_not_configured",
-            "message": format!(
-                "Provider '{provider}' is not configured for this application. \
-                 Add a provider credential in the dashboard."
-            ),
+            "message": message,
         }
     });
     (StatusCode::BAD_REQUEST, Json(body)).into_response()
@@ -5015,6 +6833,30 @@ async fn resolve_org_provider_credential(
     }
 }
 
+/// The calling org's own credentials for every provider a request may reach:
+/// the model's provider's (`app_creds`, which the caller resolved with
+/// [`resolve_org_provider_credential`]) and, when a model route serves the
+/// model, each deployment's provider's, with the same lookup. The router
+/// hands each deployment only its own provider's, so an org's key never
+/// reaches another vendor (BYO-ROUTE, code review 2026-11-11).
+async fn org_credentials_for(
+    state: &AppState,
+    key_ctx: &Option<KeyContext>,
+    schema: &crate::capabilities::ModelSchema,
+    app_creds: Option<crate::providers::ProviderCredentials>,
+) -> Result<crate::proxy::router::OrgCredentials, axum::response::Response> {
+    let mut creds = crate::proxy::router::OrgCredentials::of(&schema.provider, app_creds);
+    for provider in state.router.route_providers(&schema.id) {
+        if provider == schema.provider {
+            continue;
+        }
+        if let Some(c) = resolve_org_provider_credential(state, key_ctx, &provider).await? {
+            creds.insert(&provider, c);
+        }
+    }
+    Ok(creds)
+}
+
 /// Resolve the calling app's BYO image store, if configured & usable. Returns
 /// `None` (→ caller uses the global store) on any miss or, for a configured-but-
 /// broken row, after logging a warning (fail-open — never breaks a generation).
@@ -5023,114 +6865,466 @@ async fn resolve_app_image_store(
     key_ctx: &Option<KeyContext>,
 ) -> Option<std::sync::Arc<dyn crate::proxy::storage::ImageStore>> {
     let app_id = key_ctx.as_ref().and_then(|c| c.app_id.as_deref())?;
-    let secrets_key = state.secrets_key?;
-    let row = match state.db.get_app_storage(app_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return None,
-        Err(e) => {
-            tracing::warn!(app_id, error = %e, "byo storage: lookup failed, using global store");
-            return None;
+    let inline = || Some(std::sync::Arc::new(crate::proxy::storage::LocalStore) as std::sync::Arc<dyn crate::proxy::storage::ImageStore>);
+    let tenant = tenant_bucket_of(state);
+    match app_bucket(&state.db, state.secrets_key, &state.router.config.aws, tenant, app_id).await {
+        AppBucket::None => None,
+        AppBucket::Ready { config, fallback, .. } => match bucket_image_store(&config, tenant) {
+            Ok(store) => Some(std::sync::Arc::new(store) as std::sync::Arc<dyn crate::proxy::storage::ImageStore>),
+            Err(e) => {
+                tracing::warn!(app_id, error = %e, "byo storage: build failed");
+                if fallback { None } else { inline() }
+            }
+        },
+        // litegen's own S3 image store may stand in...
+        AppBucket::Unavailable { reason, fallback: true } => {
+            tracing::warn!(app_id, reason = %reason, "byo storage unavailable, using the global store");
+            None
         }
-    };
+        // ...or not: the image goes back inline and nothing is uploaded.
+        AppBucket::Unavailable { reason, fallback: false } => {
+            tracing::warn!(app_id, reason = %reason, "byo storage unavailable, and the app keeps nothing in litegen's store");
+            inline()
+        }
+    }
+}
 
-    #[derive(serde::Deserialize)]
-    struct StorageSecret {
-        access_key_id: String,
-        secret_access_key: String,
+/// What an app's own bucket is right now.
+// Built once per request and matched at once, so the large `Ready` variant
+// costs a move, not memory; boxing it would add an allocation.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum AppBucket {
+    /// It has none: litegen's store holds its files.
+    None,
+    /// Built from its storage settings (an assumed role's session included).
+    Ready { config: crate::config::ImageStorageConfig, prefix: Option<String>, fallback: bool },
+    /// Configured but unusable now: a decrypt, build or role failure.
+    /// `fallback`: may litegen's own store stand in (`fallback_to_litegen_store`)?
+    Unavailable { reason: String, fallback: bool },
+}
+
+/// Whose an app's own bucket is, and so how litegen reaches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TenantBucket {
+    /// Single-tenant: the operator's own settings, used as written; an
+    /// internal store is fine, as with webhooks.
+    Operator,
+    /// Hosted: a tenant names it (`PUT /v1/apps/{app_id}/storage`) and litegen
+    /// sends it signed requests from inside the deployment (SSRF). Its host
+    /// must be public (checked at every use), and its requests go out
+    /// presigned through the guarded client (`S3Storage::guarded`), so a name
+    /// that rebinds after the check still reaches nothing inside.
+    Hosted,
+    /// Tests only (`storage_access.unchecked_app_storage_hosts`): `Hosted`
+    /// without the address check, so wiremock on 127.0.0.1 can stand in. The
+    /// guarded client still refuses a *name* that resolves inside.
+    HostedUncheckedHosts,
+}
+
+impl TenantBucket {
+    /// Whether the bucket's host is checked before each use.
+    pub(crate) fn checks_hosts(self) -> bool {
+        self == Self::Hosted
     }
 
-    let plaintext = match crate::auth::secrets::decrypt(&secrets_key, &row.secret_ciphertext, &row.secret_nonce) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(app_id, error = %e, "byo storage: decrypt failed, using global store");
-            return None;
-        }
-    };
-    let secret: StorageSecret = match serde_json::from_slice(&plaintext) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(app_id, error = %e, "byo storage: corrupt secret, using global store");
-            return None;
-        }
-    };
+    /// Whether its requests go through the guarded client.
+    pub(crate) fn guarded(self) -> bool {
+        self != Self::Operator
+    }
+}
 
-    let cfg = crate::config::ImageStorageConfig {
-        backend: row.backend.clone(),
-        path_prefix: row.path_prefix.clone(),
-        s3: Some(crate::config::S3StorageConfig {
-            bucket_name: row.bucket_name.clone(),
-            region: row.region.clone(),
-            access_key_id: Some(secret.access_key_id),
-            secret_access_key: Some(secret.secret_access_key),
-            endpoint_url: row.endpoint_url.clone(),
-            custom_public_url: row.custom_public_url.clone(),
-        }),
-        ..Default::default()
-    };
-    match crate::proxy::storage::S3Store::from_config(&cfg) {
-        Ok(store) => Some(std::sync::Arc::new(store) as std::sync::Arc<dyn crate::proxy::storage::ImageStore>),
+/// The deployment's [`TenantBucket`]: by its mode, with the tests' switch
+/// from `config` when there is one.
+pub(crate) fn tenant_bucket(mode: crate::config::Mode, config: Option<&crate::config::AppConfig>) -> TenantBucket {
+    match mode {
+        crate::config::Mode::SingleTenant => TenantBucket::Operator,
+        crate::config::Mode::Hosted if config.is_some_and(|c| c.storage_access.unchecked_app_storage_hosts) => {
+            TenantBucket::HostedUncheckedHosts
+        }
+        crate::config::Mode::Hosted => TenantBucket::Hosted,
+    }
+}
+
+/// [`tenant_bucket`] for a request's state.
+fn tenant_bucket_of(state: &AppState) -> TenantBucket {
+    tenant_bucket(state.mode, Some(state.router.config.as_ref()))
+}
+
+/// The app's bucket as a file store: guarded when it's a tenant's.
+fn bucket_storage(config: &crate::config::ImageStorageConfig, tenant: TenantBucket) -> Result<crate::proxy::storage::S3Storage, crate::proxy::storage::ImageStoreError> {
+    crate::proxy::storage::S3Storage::from_config(config).map(|s| if tenant.guarded() { s.guarded() } else { s })
+}
+
+/// The app's bucket as an image store: guarded when it's a tenant's.
+fn bucket_image_store(config: &crate::config::ImageStorageConfig, tenant: TenantBucket) -> Result<crate::proxy::storage::S3Store, crate::proxy::storage::ImageStoreError> {
+    crate::proxy::storage::S3Store::from_config(config).map(|s| if tenant.guarded() { s.guarded() } else { s })
+}
+
+/// The app's own bucket, as its storage row says: its key pair decrypted, or
+/// its role assumed (`credential_mode: assume_role`, docs/storage-access.md).
+/// For a tenant's bucket ([`TenantBucket::checks_hosts`]), one whose requests
+/// would go inside the deployment is unavailable, whenever its row was saved.
+pub(crate) async fn app_bucket(
+    db: &std::sync::Arc<dyn crate::db::DatabaseStore>,
+    secrets_key: Option<[u8; 32]>,
+    aws: &crate::config::AwsConfig,
+    tenant: TenantBucket,
+    app_id: &str,
+) -> AppBucket {
+    let row = match db.get_app_storage(app_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return AppBucket::None,
+        // The row says whether litegen's store may stand in, and it can't be
+        // read: nothing goes anywhere until it can. The reason can end up on
+        // a reaped generation, so the database's text stays in the log.
         Err(e) => {
-            tracing::warn!(app_id, error = %e, "byo storage: build failed, using global store");
+            tracing::error!(app_id, error = %e, "the app's storage settings could not be read");
+            return AppBucket::Unavailable { reason: "the app's storage settings could not be read".into(), fallback: false };
+        }
+    };
+    let fallback = row.fallback_to_litegen_store.unwrap_or(true);
+    let unavailable = |reason: String| AppBucket::Unavailable { reason, fallback };
+    // Checked at every use, before a secret is decrypted or a role assumed,
+    // so a row saved before the save-time check existed, or a host whose
+    // answer has since moved inside the deployment, gets no request.
+    if tenant.checks_hosts() {
+        match crate::proxy::storage::check_tenant_bucket(&row.bucket_name, &row.region, row.endpoint_url.as_deref()).await {
+            // A name that didn't resolve just now isn't a verdict: the guarded
+            // client judges every address it connects to anyway, and the
+            // request fails on its own if the name stays bad.
+            Ok(()) | Err(crate::proxy::storage::TenantBucketError::Lookup(_)) => {}
+            Err(why) => return unavailable(format!("the app's bucket may not be used: {why}")),
+        }
+    }
+    let Some(secrets_key) = secrets_key else {
+        return unavailable("litegen has no secrets key to read the app's storage settings with".into());
+    };
+    let (access_key_id, secret_access_key, session_token, credentials_expire_at) = if row.credential_mode.as_deref() == Some("assume_role") {
+        let Some(role) = row.role_arn.as_deref() else { return unavailable("the app's storage names no role".into()) };
+        let external = crate::proxy::aws_sts::external_id(&secrets_key, app_id);
+        match crate::proxy::aws_sts::assumed_credentials(aws, role, &external, &crate::proxy::aws_sts::session_name(app_id)).await {
+            Ok(c) => (c.access_key_id, c.secret_access_key, Some(c.session_token), Some(c.expiration)),
+            Err(e) => return unavailable(format!("could not assume {role}: {e}")),
+        }
+    } else {
+        #[derive(serde::Deserialize)]
+        struct StorageSecret {
+            access_key_id: String,
+            secret_access_key: String,
+        }
+        let plaintext = match crate::auth::secrets::decrypt(&secrets_key, &row.secret_ciphertext, &row.secret_nonce) {
+            Ok(p) => p,
+            Err(e) => return unavailable(format!("the app's storage secret could not be decrypted: {e}")),
+        };
+        match serde_json::from_slice::<StorageSecret>(&plaintext) {
+            Ok(s) => (s.access_key_id, s.secret_access_key, None, None),
+            Err(e) => return unavailable(format!("the app's storage secret is corrupt: {e}")),
+        }
+    };
+    AppBucket::Ready {
+        config: crate::config::ImageStorageConfig {
+            backend: row.backend.clone(),
+            path_prefix: row.path_prefix.clone(),
+            s3: Some(crate::config::S3StorageConfig {
+                bucket_name: row.bucket_name.clone(),
+                region: row.region.clone(),
+                access_key_id: Some(access_key_id),
+                secret_access_key: Some(secret_access_key),
+                endpoint_url: row.endpoint_url.clone(),
+                custom_public_url: row.custom_public_url.clone(),
+                session_token,
+                credentials_expire_at,
+            }),
+            ..Default::default()
+        },
+        prefix: row.path_prefix.clone(),
+        fallback,
+    }
+}
+
+/// The app's own bucket for reading its files and presenting their links,
+/// with its path prefix: `None` when it has none or it can't be reached now
+/// (litegen's store is then read). Never fails a request.
+pub(crate) async fn resolve_app_model3d_store(
+    db: &std::sync::Arc<dyn crate::db::DatabaseStore>,
+    secrets_key: Option<[u8; 32]>,
+    aws: &crate::config::AwsConfig,
+    tenant: TenantBucket,
+    app_id: &str,
+) -> Option<(std::sync::Arc<dyn crate::proxy::storage::ImageStorage>, Option<String>)> {
+    match app_bucket(db, secrets_key, aws, tenant, app_id).await {
+        AppBucket::None => None,
+        AppBucket::Ready { config, prefix, .. } => match bucket_storage(&config, tenant) {
+            Ok(store) => Some((std::sync::Arc::new(store), prefix)),
+            Err(e) => {
+                tracing::warn!(app_id, error = %e, "byo 3d storage: build failed, using global store");
+                None
+            }
+        },
+        AppBucket::Unavailable { reason, .. } => {
+            tracing::warn!(app_id, reason = %reason, "byo 3d storage unavailable, reading the global store");
             None
         }
     }
 }
 
-/// Resolve the calling app's BYO 3D asset store, if configured & usable.
-///
-/// Reads the SAME `app_storage_credentials` row as `resolve_app_image_store`,
-/// but builds an `S3Storage` (key-explicit `put`) rather than an `S3Store`
-/// (content-type→extension inference, which would save a `.glb` as `.png`).
-/// Returns the store and the app's configured path prefix. Fails open to the
-/// global store on any error — a bad BYO row must never break a generation.
-///
-/// Takes `db`/`secrets_key` directly rather than `&AppState`: the poller
-/// (Task 11) is the only real caller and it has no `AppState` — it holds these
-/// two fields on their own. A handler-side caller passes `&state.db,
-/// state.secrets_key`.
-pub(crate) async fn resolve_app_model3d_store(
+/// The app's own bucket for reading or deleting its files: `Ok(None)` when it
+/// has none, `Err` when it has one that can't be used now, whatever
+/// `fallback_to_litegen_store` says. A delete that passed over the bucket
+/// would mark files deleted that are still in it, and a read would send the
+/// caller to the bucket's own URL.
+pub(crate) async fn app_store_for_files(
     db: &std::sync::Arc<dyn crate::db::DatabaseStore>,
     secrets_key: Option<[u8; 32]>,
+    aws: &crate::config::AwsConfig,
+    tenant: TenantBucket,
     app_id: &str,
-) -> Option<(std::sync::Arc<dyn crate::proxy::storage::ImageStorage>, Option<String>)> {
-    let secrets_key = secrets_key?;
-    let row = match db.get_app_storage(app_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return None,
-        Err(e) => {
-            tracing::warn!(app_id, error = %e, "byo 3d storage: lookup failed, using global store");
-            return None;
+) -> Result<Option<std::sync::Arc<dyn crate::proxy::storage::ImageStorage>>, String> {
+    match app_bucket(db, secrets_key, aws, tenant, app_id).await {
+        AppBucket::None => Ok(None),
+        AppBucket::Ready { config, .. } => bucket_storage(&config, tenant)
+            .map(|store| Some(std::sync::Arc::new(store) as std::sync::Arc<dyn crate::proxy::storage::ImageStorage>))
+            .map_err(|e| format!("the app's bucket could not be used: {e}")),
+        AppBucket::Unavailable { reason, .. } => Err(reason),
+    }
+}
+
+/// Where to keep a file of the app: its own bucket; `Ok(None)` for litegen's
+/// store (it has none, or its bucket is down and it falls back); `Err` when
+/// its bucket is down and it keeps nothing in litegen's store, so the caller
+/// waits for the bucket (`fallback_to_litegen_store: false`).
+pub(crate) async fn app_store_for_writing(
+    db: &std::sync::Arc<dyn crate::db::DatabaseStore>,
+    secrets_key: Option<[u8; 32]>,
+    aws: &crate::config::AwsConfig,
+    tenant: TenantBucket,
+    app_id: &str,
+) -> Result<Option<(std::sync::Arc<dyn crate::proxy::storage::ImageStorage>, Option<String>)>, String> {
+    match app_bucket(db, secrets_key, aws, tenant, app_id).await {
+        AppBucket::None => Ok(None),
+        AppBucket::Ready { config, prefix, fallback } => match bucket_storage(&config, tenant) {
+            Ok(store) => Ok(Some((std::sync::Arc::new(store), prefix))),
+            Err(e) if fallback => {
+                tracing::warn!(app_id, error = %e, "byo storage: build failed, keeping in the global store");
+                Ok(None)
+            }
+            Err(e) => Err(format!("the app's bucket could not be used: {e}")),
+        },
+        AppBucket::Unavailable { reason, fallback: true } => {
+            tracing::warn!(app_id, reason = %reason, "byo storage unavailable, keeping in the global store");
+            Ok(None)
         }
-    };
+        AppBucket::Unavailable { reason, fallback: false } => Err(reason),
+    }
+}
 
-    #[derive(serde::Deserialize)]
-    struct StorageSecret { access_key_id: String, secret_access_key: String }
+#[cfg(test)]
+mod request_record_tests {
+    use super::*;
 
-    let plaintext = crate::auth::secrets::decrypt(&secrets_key, &row.secret_ciphertext, &row.secret_nonce)
-        .map_err(|e| tracing::warn!(app_id, error = %e, "byo 3d storage: decrypt failed"))
-        .ok()?;
-    let secret: StorageSecret = serde_json::from_slice(&plaintext)
-        .map_err(|e| tracing::warn!(app_id, error = %e, "byo 3d storage: corrupt secret"))
-        .ok()?;
+    /// P15 (timing; run alone): decoding and hashing a request's inline
+    /// references holds no async worker. Today a task queued behind it
+    /// waited as long as the digest took.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn digesting_a_large_reference_leaves_the_runtime_free() {
+        use base64::Engine;
+        use sha2::Digest;
+        let raw = vec![7u8; 15 * 1024 * 1024];
+        let reference = crate::types::ReferenceImage {
+            kind: crate::types::RefImageKind::Base64,
+            value: base64::engine::general_purpose::STANDARD.encode(&raw),
+            role: Some("reference".into()),
+            time_s: None,
+        };
+        let base = crate::types::BaseGenerationRequest {
+            prompt: "p".into(),
+            model: "m".into(),
+            n: 1,
+            negative_prompt: None,
+            seed: None,
+            reference_images: vec![reference; 4],
+            strict: true,
+            extra: None,
+            metadata: None,
+        };
+        let ctx = crate::proxy::materializer::MaterializeContext::default();
+        let started = std::time::Instant::now();
+        let inline = request_record(&base, None, &ctx);
+        let alone = started.elapsed();
+        assert!(alone >= std::time::Duration::from_millis(200), "too light to show a stall: {alone:?}");
+        let (record, stall) = crate::util::blocking::longest_stall_while(async move { request_record(&base, None, &ctx) }).await;
+        assert_eq!(record, inline, "the same record, wherever it was made");
+        let first = &record["reference_images"][0];
+        assert_eq!(first["sha256"], hex::encode(sha2::Sha256::digest(&raw)), "{first}");
+        assert_eq!(first["bytes"], raw.len(), "{first}");
+        assert!(stall < alone / 4, "the runtime stalled {stall:?} while digesting (the digest alone takes {alone:?})");
+    }
+}
 
-    let cfg = crate::config::ImageStorageConfig {
-        backend: row.backend.clone(),
-        path_prefix: row.path_prefix.clone(),
-        s3: Some(crate::config::S3StorageConfig {
-            bucket_name: row.bucket_name.clone(),
-            region: row.region.clone(),
-            access_key_id: Some(secret.access_key_id),
-            secret_access_key: Some(secret.secret_access_key),
-            endpoint_url: row.endpoint_url.clone(),
-            custom_public_url: row.custom_public_url.clone(),
-        }),
-        ..Default::default()
-    };
-    match crate::proxy::storage::S3Storage::from_config(&cfg) {
-        Ok(store) => Some((std::sync::Arc::new(store), row.path_prefix.clone())),
-        Err(e) => {
-            tracing::warn!(app_id, error = %e, "byo 3d storage: build failed, using global store");
-            None
+#[cfg(test)]
+mod error_response_tests {
+    use super::*;
+    use crate::proxy::router::ProxyError;
+
+    async fn status_and_body(resp: axum::response::Response) -> (StatusCode, serde_json::Value) {
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// E8: one condition, one answer. A provider the router finds unusable
+    /// (removed mid-request, or a BYO credential no adapter can be built
+    /// from) answers as the handler's own check does: the documented 400
+    /// `provider_not_configured`, not a 424 with another message.
+    #[tokio::test]
+    async fn a_provider_the_router_cannot_find_answers_as_the_handler_does() {
+        let (status, routed) = status_and_body(generation_error_response(&ProxyError::not_configured("vidu"))).await;
+        let (_, handled) = status_and_body(provider_not_configured_response("vidu")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{routed}");
+        assert_eq!(routed, handled);
+    }
+
+    /// E9: an adapter's advice on a credential it can't use reaches the
+    /// caller, under the provider's name.
+    #[tokio::test]
+    async fn an_adapters_credential_advice_reaches_the_caller() {
+        let advice = "kling: this credential is an access/secret key pair, which works only on Kling's legacy API; store a Kling API key instead";
+        let e = ProxyError::ProviderNotConfigured { provider: "kling".into(), detail: Some(advice.into()) };
+        let (status, body) = status_and_body(generation_error_response(&e)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "provider_not_configured", "{body}");
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("'kling'") && message.contains("store a Kling API key instead"), "{message}");
+    }
+
+    /// Handlers review #5: a route whose every breaker is open answers 503
+    /// `circuit_open`, retryable, with `Retry-After` saying when the first
+    /// deployment is back; nothing reached a vendor, so no key is spent.
+    #[tokio::test]
+    async fn a_route_cooling_down_answers_503_with_retry_after() {
+        let e = ProxyError::CoolingDown { model: "m".into(), retry_after_secs: 7, skipped: "fal: circuit open".into() };
+        let resp = generation_error_response(&e);
+        let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let attempted = resp.extensions().get::<crate::api::middleware::idempotency::VendorAttempted>().is_some();
+        let (status, body) = status_and_body(resp).await;
+        assert_eq!((status, retry_after.as_deref(), attempted), (StatusCode::SERVICE_UNAVAILABLE, Some("7"), false), "{body}");
+        assert_eq!((body["error"]["code"].as_str(), body["error"]["retryable"].as_bool()), (Some("circuit_open"), Some(true)), "{body}");
+    }
+
+    /// Handlers review #12: the generic 502 (a route whose deployments were
+    /// skipped, or refused after a skip) says it is retryable, as
+    /// `docs/gateway-settings.md` does.
+    #[tokio::test]
+    async fn the_generic_502_says_it_is_retryable() {
+        let e = ProxyError::AllDeploymentsFailed { model: "m".into(), last_error: Some("fal: circuit open; replicate: not configured".into()) };
+        let (status, body) = status_and_body(generation_error_response(&e)).await;
+        assert_eq!((status, body["error"]["retryable"].as_bool()), (StatusCode::BAD_GATEWAY, Some(true)), "{body}");
+    }
+
+    /// Handlers review #6: most adapters' "advice" is only their provider's
+    /// name (`NotConfigured("vidu")`). That is no advice: the answer is the
+    /// default one, with the dashboard hint. It read "Provider 'vidu' is not
+    /// configured for this application: vidu".
+    #[tokio::test]
+    async fn advice_that_only_names_the_provider_gives_the_default_answer() {
+        let e = ProxyError::ProviderNotConfigured { provider: "vidu".into(), detail: Some("vidu".into()) };
+        let (status, routed) = status_and_body(generation_error_response(&e)).await;
+        let (_, default) = status_and_body(provider_not_configured_response("vidu")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{routed}");
+        assert_eq!(routed, default);
+    }
+
+    /// SEC-DBERR: the router's internal errors carry a panic's text; it
+    /// stays in the log.
+    #[tokio::test]
+    async fn an_internal_router_error_names_no_detail() {
+        let e = ProxyError::Internal("mask normalisation stopped: task 7 panicked at src/proxy/x.rs:12".into());
+        let (status, body) = status_and_body(generation_error_response(&e)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body["error"]["message"], "internal server error", "{body}");
+    }
+}
+
+#[cfg(test)]
+mod failed_row_tests {
+    use super::*;
+    use crate::db::sqlite::SqliteDatabase;
+    use crate::db::DatabaseStore;
+    use crate::proxy::router::{ProxyError, VendorError};
+
+    /// The one request-log row `e` leaves when an image of `mock/image-gen`
+    /// fails, and its error artifact's text.
+    async fn row_for(e: &ProxyError) -> (crate::types::RequestLog, Option<String>) {
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let state = super::tenant_scoping_tests::build_state(db.clone(), crate::config::Mode::SingleTenant, None).await;
+        let schema = state.registry.get("mock/image-gen").expect("the mock image model").clone();
+        let attributed = crate::management::types::Attribution::default();
+        log_failed_generation(&state, None, FailedGeneration {
+            id_prefix: "litegen-img",
+            media_type: "image",
+            schema: &schema,
+            latency_ms: 5,
+            error: e,
+            prompt: "a fox",
+            metadata: None,
+            attributed: &attributed,
+        })
+        .await;
+        let (rows, _) = db.get_request_logs(1, 10).await.unwrap();
+        assert_eq!(rows.len(), 1, "one failed row");
+        let artifact = db.get_request_artifact(&rows[0].id).await.unwrap().and_then(|a| a.error_message);
+        (rows[0].clone(), artifact)
+    }
+
+    /// Handlers review #7 (the SEC-DBERR class): a router's internal error
+    /// carries a panic's text (file, line, the panic's message). The request
+    /// log and its error artifact are tenant-readable (`/v1/logs`), so they
+    /// keep a fixed text, as the response does; the detail is in the log.
+    #[tokio::test]
+    async fn a_failed_rows_text_names_no_internal_detail() {
+        let e = ProxyError::Internal("mask normalisation stopped: task 7 panicked at src/proxy/x.rs:12".into());
+        let (row, artifact) = row_for(&e).await;
+        assert_eq!(
+            (row.error.as_deref(), artifact.as_deref()),
+            (Some("internal server error"), Some("internal server error")),
+            "the request log keeps the panic's text"
+        );
+    }
+
+    /// Handlers review #8: a routed request that failed on another
+    /// deployment's vendor names that deployment's provider on its row, as
+    /// its error does, not the model's own provider.
+    #[tokio::test]
+    async fn a_failed_row_names_the_deployment_that_failed() {
+        let vendor = VendorError { status: Some(502), code: None, message: "upstream".into() };
+        let e = ProxyError::VendorFailed { model: "mock/image-gen".into(), provider: "fal".into(), vendor, vendor_job_id: None, retryable: true };
+        let (row, _) = row_for(&e).await;
+        assert_eq!(row.provider, "fal", "the row names the model's provider, not the deployment that failed");
+        let (row, _) = row_for(&ProxyError::Internal("x".into())).await;
+        assert_eq!(row.provider, "mock", "an error that names no deployment keeps the model's provider");
+    }
+}
+
+#[cfg(test)]
+mod app_bucket_error_tests {
+    use super::*;
+    use crate::db::sqlite::SqliteDatabase;
+
+    /// SEC-DBERR: an app's storage row that can't be read makes the bucket
+    /// unavailable with a reason that names no database text. The poller
+    /// stores that reason as the generation's `error_message` when it reaps
+    /// an over-age job, and clients read it back.
+    #[tokio::test]
+    async fn an_unreadable_storage_row_gives_a_reason_without_the_database_text() {
+        let raw = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        sqlx::query("ALTER TABLE app_storage_credentials RENAME TO app_storage_away").execute(raw.pool()).await.unwrap();
+        let db: Arc<dyn crate::db::DatabaseStore> = raw;
+        match app_bucket(&db, None, &crate::config::AwsConfig::default(), TenantBucket::Operator, "app-1").await {
+            AppBucket::Unavailable { reason, fallback } => {
+                assert!(!fallback, "an unreadable row lets nothing stand in");
+                assert!(!reason.contains("no such table") && !reason.contains("database"), "{reason}");
+            }
+            _ => panic!("an unreadable storage row must make the bucket unavailable"),
         }
     }
 }
@@ -5818,6 +8012,9 @@ mod permission_scoping_tests {
             is_active: true,
         };
         db.create_user(&user).await.expect("create user");
+        // Every account joins the default org at signup or invitation; the role
+        // it holds there is the one its permissions come from.
+        db.add_org_member(crate::api::middleware::DEFAULT_ORG_ID, &user.id, role).await.expect("join the default org");
         let session_token = generate_session_token();
         let csrf_token = generate_csrf_token();
         let sess = Session {
@@ -5918,6 +8115,39 @@ mod permission_scoping_tests {
             .body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A key made by a key takes that key's owner. When the calling key's row
+    /// is gone by the time it's read (deleted with its org or app mid-request),
+    /// the new key would have no owner and outlive everyone: refuse it instead.
+    #[tokio::test]
+    async fn a_key_whose_making_key_is_gone_is_refused() {
+        let db = build_db().await;
+        let state = build_state_with_key(db.clone()).await;
+        let gone = KeyContext {
+            key_id: Some(uuid::Uuid::new_v4()),
+            scopes: vec![crate::api::middleware::Scope::Generate, crate::api::middleware::Scope::Read],
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: None,
+            permissions: vec![],
+            session_id: None,
+            org_id: Some(crate::api::middleware::DEFAULT_ORG_ID.to_string()),
+            app_id: Some(crate::api::middleware::DEFAULT_APP_ID.to_string()),
+            oauth_grant_id: None,
+        };
+        let request = CreateApiKeyRequest {
+            name: "child".into(),
+            token_quota: None,
+            rpm_limit: None,
+            scopes: "generate,read".into(),
+            webhook_url: None,
+            expires_at: None,
+        };
+        let resp = create_api_key(State(state), OptionalKeyContext(Some(gone)), Json(request)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(db.list_api_keys().await.unwrap().is_empty(), "no ownerless key was left behind");
     }
 }
 
@@ -6022,6 +8252,41 @@ mod health_tests {
         assert_eq!(body["status"], "ready");
         assert_eq!(body["checks"]["db"], true, "db should be true when sqlite is up");
         assert_eq!(body["checks"]["providers"], serde_json::json!([]), "no global providers configured");
+    }
+
+    /// P1 (code review 2026-11-11): readiness answers from the database alone.
+    /// An anonymous probe asked every networked vendor, one after another,
+    /// with the operator's keys: it spent quota, took the sum of their
+    /// latencies, and a short probe timeout failed a replica whose database
+    /// was fine whenever a vendor was slow.
+    #[tokio::test]
+    async fn readiness_asks_no_vendor() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let vendor = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "object": "list", "data": [] })))
+            .mount(&vendor)
+            .await;
+        let state = build_state_with_real_db().await;
+        let cfg = crate::providers::ProviderInstanceConfig {
+            api_key: "operator-key".into(),
+            credentials: crate::providers::ProviderCredentials { api_key: Some("operator-key".into()), ..Default::default() },
+            api_base: Some(format!("{}/v1", vendor.uri())),
+            ..Default::default()
+        };
+        assert!(state.router.registry.configure_provider("openai", cfg).await);
+        let req = Request::builder().method("GET").uri("/health/ready").body(Body::empty()).unwrap();
+        let resp = build_health_router(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["checks"]["db"], true);
+        let seen = vendor.received_requests().await.unwrap_or_default();
+        let paths: Vec<String> = seen.iter().map(|r| r.url.path().to_string()).collect();
+        assert!(seen.is_empty(), "an anonymous readiness probe asked a vendor {} time(s) with the operator's key: {paths:?}", seen.len());
+        assert_eq!(body["checks"]["providers"], serde_json::json!(["openai"]), "each provider configured with the gateway's keys, once");
     }
 
     #[tokio::test]
@@ -6179,7 +8444,7 @@ mod tenant_scoping_tests {
         }
     }
 
-    async fn build_state(db: Arc<SqliteDatabase>, mode: Mode, master_key: Option<String>) -> Arc<AppState> {
+    pub(super) async fn build_state(db: Arc<SqliteDatabase>, mode: Mode, master_key: Option<String>) -> Arc<AppState> {
         let registry = Arc::new(ProviderRegistry::new());
         let config = Arc::new(AppConfig::default());
         let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
@@ -6355,7 +8620,9 @@ mod tenant_scoping_tests {
         assert_eq!(resp.status(), StatusCode::CREATED, "public webhook_url should be accepted");
     }
 
-    // In single-tenant mode the operator is trusted; internal webhook URLs are allowed.
+    // In single-tenant mode the deployment's own keys may point a webhook
+    // inside: here the dev bypass makes the key, so it has no owner. A
+    // Member's key may not (SEC-STWEBHOOK, tests/key_scopes_api.rs).
     #[tokio::test]
     async fn single_tenant_allows_private_webhook_url() {
         let db = build_db().await;
@@ -6369,7 +8636,7 @@ mod tenant_scoping_tests {
             .header("content-type", "application/json")
             .body(Body::from(body)).unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED, "single-tenant operator may use internal webhook URLs");
+        assert_eq!(resp.status(), StatusCode::CREATED, "the deployment's own key may use an internal webhook URL");
     }
 }
 
@@ -6615,6 +8882,8 @@ mod model3d_usage_derivation_tests {
             metadata: None,
             org_id: None,
             app_id: None,
+            files_deleted_at: None,
+            files_deleted_reason: None,
         }
     }
 
@@ -6708,6 +8977,28 @@ mod served_schema_tests {
                 assert_eq!(s.max_items, Some(1), "a scalar vendor field is one job");
                 assert_eq!(s.default, ["glb"]);
             }
+            other => panic!("expected a string_array output_formats, got {other:?}"),
+        }
+    }
+
+    /// E11d: a row whose yaml sets no `output_formats` default gets what the
+    /// router resolves for a request that leaves the param out, so a client
+    /// renders the served default and invents none.
+    #[test]
+    fn an_unset_format_default_is_served_as_what_omitting_it_gets() {
+        let r = one("      output_formats:\n        kind: string_array\n        enum_values: [glb, obj]\n");
+        let m = r.get("x/m").unwrap();
+        match served_model_schema(m).params.get("output_formats") {
+            Some(ParamSpec::StringArray(s)) => {
+                assert_eq!(s.default, m.resolve_output_formats(None), "served as the resolver's own answer");
+                assert_eq!(s.default, ["glb"]);
+            }
+            other => panic!("expected a string_array output_formats, got {other:?}"),
+        }
+        // A declared default is served as declared.
+        let r = one("      output_formats:\n        kind: string_array\n        enum_values: [glb, obj]\n        default: [obj]\n");
+        match served_model_schema(r.get("x/m").unwrap()).params.get("output_formats") {
+            Some(ParamSpec::StringArray(s)) => assert_eq!(s.default, ["obj"]),
             other => panic!("expected a string_array output_formats, got {other:?}"),
         }
     }
@@ -6990,5 +9281,139 @@ mod model3d_webhook_observer_tests {
             payload["metadata"]["assets"].as_array().is_some_and(|a| a.iter().any(|x| x["kind"] == "mesh")),
             "the webhook carries the assets the row has: {payload}"
         );
+    }
+}
+
+#[cfg(test)]
+mod edit_mask_tests {
+    use super::*;
+    use crate::proxy::materializer::{Cleanup, MaterializedRef, MaterializedRefForm, MaterializedRequest};
+
+    fn schema(data_uri: bool) -> crate::capabilities::ModelSchema {
+        let yaml = format!(
+            r#"
+models:
+  - id: t/url-mask
+    provider: t
+    media_type: image
+    display_name: T
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ image_to_image: true }}
+    prompt: {{ required: true }}
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: {{ form: url }}
+      data_uri: {data_uri}
+      roles:
+        init: {{ required: true, min_count: 1, max_count: 1 }}
+        mask: {{ required: false, min_count: 0, max_count: 1, convention: white_edits }}
+"#
+        );
+        crate::capabilities::CapabilityRegistry::from_yaml_strs(&[("t.yaml", &yaml)]).unwrap().get("t/url-mask").unwrap().clone()
+    }
+
+    fn png_uri(rgba: [u8; 4]) -> String {
+        use base64::Engine;
+        let img = image::RgbaImage::from_pixel(64, 64, image::Rgba(rgba));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(out.into_inner()))
+    }
+
+    fn refs() -> MaterializedRequest {
+        let r = |role: &str, uri: String| MaterializedRef { role: role.into(), form: MaterializedRefForm::Url(uri), time_s: None };
+        MaterializedRequest { refs: vec![r("init", png_uri([10, 20, 30, 255])), r("mask", png_uri([255, 255, 255, 255]))], cleanup: Cleanup::empty() }
+    }
+
+    fn mask_url(m: &MaterializedRequest) -> String {
+        match &m.refs.iter().find(|r| r.role == "mask").unwrap().form {
+            MaterializedRefForm::Url(u) => u.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A vendor that takes no `data:` URI gets the prepared mask at
+    /// litegen's own URL, as an uploaded reference is (L4).
+    #[tokio::test]
+    async fn a_prepared_mask_for_a_vendor_without_data_uris_is_published() {
+        let base = "https://litegen.example.com";
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn crate::proxy::storage::ImageStorage> =
+            Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir.path().to_path_buf(), base.into()));
+        let publisher = Arc::new(crate::proxy::ref_publish::RefPublisher::new(store, base.into()));
+        let req: ImageGenerationRequest = serde_json::from_value(serde_json::json!({ "model": "t/url-mask", "prompt": "p" })).unwrap();
+
+        let mut published = refs();
+        apply_image_edit(&schema(false), &req, &mut published, Some(&publisher)).await.unwrap();
+        assert!(mask_url(&published).starts_with(base), "{}", mask_url(&published));
+
+        let mut inline = refs();
+        apply_image_edit(&schema(true), &req, &mut inline, Some(&publisher)).await.unwrap();
+        assert!(mask_url(&inline).starts_with("data:image/png;base64,"));
+    }
+}
+
+#[cfg(test)]
+mod stored_file_tests {
+    use super::*;
+    use crate::store::{ByteRange, Served, StoredFile};
+    use futures::StreamExt as _;
+
+    fn no_headers() -> std::iter::Empty<(axum::http::HeaderName, String)> {
+        std::iter::empty()
+    }
+
+    /// A store's 206 naming bytes `start`..=`end` of a file `len` long.
+    fn part(start: u64, end: u64, len: Option<u64>) -> StoredFile {
+        StoredFile { content_type: "video/mp4".into(), len, served: Served::Part { start, end }, accepts_ranges: true, body: futures::stream::empty().boxed() }
+    }
+
+    /// Payloads review #2: a 206 from a bucket (a hosted tenant's runs the
+    /// server on the other end) whose `Content-Range` names no span of the
+    /// file, its last byte before its first (`bytes 5-3/10`) or past the
+    /// end (`bytes 0-12/10`), is refused as a bad answer from storage (502).
+    /// The length was worked out as `end - start + 1`: a panic in a debug
+    /// build, a wrapped `Content-Length` in release.
+    #[test]
+    fn a_partial_answer_whose_span_is_malformed_is_refused() {
+        for (start, end, len) in [(0, 12, Some(10)), (5, 3, Some(10)), (5, 3, None)] {
+            let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stored_file_response(part(start, end, len), no_headers())));
+            let status = answered.map(|r| r.status()).map_err(|_| "it panicked");
+            assert_eq!(status, Ok(StatusCode::BAD_GATEWAY), "bytes {start}-{end}/{len:?}");
+        }
+        let fine = stored_file_response(part(0, 3, Some(10)), no_headers());
+        assert_eq!((fine.status(), fine.headers()["content-length"].to_str().unwrap()), (StatusCode::PARTIAL_CONTENT, "4"), "a span within the file is served");
+    }
+
+    /// A store that reads whole files only: the trait's default `open`.
+    struct WholeFilesOnly;
+
+    #[async_trait::async_trait]
+    impl crate::proxy::storage::ImageStorage for WholeFilesOnly {
+        async fn put(&self, _key: &str, _bytes: &bytes::Bytes, _content_type: &str) -> Result<String, crate::proxy::storage::ImageStoreError> {
+            Ok(String::new())
+        }
+        async fn delete(&self, _key: &str) -> Result<(), crate::proxy::storage::ImageStoreError> {
+            Ok(())
+        }
+        async fn get(&self, _key: &str) -> Result<Option<(bytes::Bytes, String)>, crate::proxy::storage::ImageStoreError> {
+            Ok(Some((bytes::Bytes::from_static(b"0123456789"), "video/mp4".into())))
+        }
+    }
+
+    /// Payloads review #7 (the check's item 3): a store that can't read part
+    /// of a file answers a range request with the whole file, a 200, and no
+    /// `Accept-Ranges`: it promises nothing it can't do.
+    #[tokio::test]
+    async fn a_store_that_reads_whole_files_only_promises_no_ranges() {
+        use crate::proxy::storage::ImageStorage as _;
+        let file = WholeFilesOnly.open("k", Some(ByteRange::FromTo(0, 3))).await.unwrap().expect("found");
+        let resp = stored_file_response(file, no_headers());
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get(axum::http::header::ACCEPT_RANGES).is_none(), "{:?}", resp.headers());
+        assert!(resp.headers().get(axum::http::header::CONTENT_RANGE).is_none(), "{:?}", resp.headers());
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"0123456789", "the whole file");
     }
 }

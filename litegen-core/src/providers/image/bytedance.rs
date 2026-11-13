@@ -32,7 +32,7 @@ use crate::types::*;
 /// Volcengine the BytePlus brand is swapped for `doubao-`, never stacked
 /// (`doubao-dreamina-…` is not a Volcengine id).
 ///
-/// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310> — BytePlus model list (no `doubao-` ids)
+/// @see <https://docs.byteplus.com/en/docs/modelark/model-list> — BytePlus model list (no `doubao-` ids)
 /// @see <https://www.volcengine.com/docs/82379/1330310> — Volcengine model list (`doubao-` ids)
 pub(crate) fn ark_model_id(model_id: &str, api_base: &str) -> String {
     let bare = model_id.strip_prefix("bytedance/").unwrap_or(model_id);
@@ -59,27 +59,43 @@ pub(crate) fn ark_model_id(model_id: &str, api_base: &str) -> String {
 /// api_base (BytePlus `ark.ap-southeast.bytepluses.com/api/v3` international or
 /// Volcengine `ark.cn-beijing.volces.com/api/v3` China).
 ///
-/// @see <https://docs.byteplus.com/en/docs/ModelArk/1298459> — base + Bearer auth
-///   Verbatim: "The data plane API base URL is https://ark.ap-southeast.bytepluses.com/api/v3 ; for API key authentication use \"Authorization: Bearer $ARK_API_KEY\"."
-/// @see <https://docs.byteplus.com/en/docs/ModelArk/1824718>
-///   Verbatim: "seedream-4.0 Model ID: seedream-4-0-250828 ... Pricing: $0.03 USD per generated image; No charge for failed generations."
+/// @see <https://docs.byteplus.com/en/docs/modelark/base-url-and-authentication> (2026-11-09) — base + Bearer auth
+///   Verbatim: "Data plane API: https://ark.ap-southeast.bytepluses.com/api/v3"
+///   Verbatim: "Authorization: Bearer $ARK_API_KEY"
+/// @see <https://docs.byteplus.com/en/docs/modelark/recommended-models-seedream-4-0> (2026-11-09)
+///   Verbatim: "Model Version" — "seedream-4-0-250828"; "Charged based on the actual number of generated images; no charge for failed generation."
+///   Verbatim: "Unit price is 0.03USD / image." (the model-pricing table lists it the same way: $0.03 per image, input images free)
 pub struct ByteDanceImageProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 impl ByteDanceImageProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            asset_client: crate::util::ssrf::public_only_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -119,6 +135,7 @@ impl ImageProvider for ByteDanceImageProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -140,15 +157,21 @@ impl ImageProvider for ByteDanceImageProvider {
         let url = format!("{}/images/generations", self.api_base());
 
         let mut body = json!({
-            "model": native,
+            "model": crate::providers::wire_model(self.config.as_ref(), &model.id, &native),
             "prompt": base.prompt,
             "response_format": "b64_json",
         });
         if let Some(size) = extras.size.as_deref() {
             body["size"] = Value::String(size.to_string());
         }
-        if let Some(seed) = base.seed {
-            body["seed"] = Value::Number(seed.into());
+        // `output_format` (png | jpeg, default jpeg) is a Seedream 5.0 pro /
+        // flash / lite field ("Supported models: Seedream 5.0 pro Seedream 5.0
+        // flash Seedream 5.0 lite"); those three rows declare it. No `seed` goes
+        // out: the Image generation API documents none for any Seedream model
+        // we carry.
+        // @see https://docs.byteplus.com/en/docs/modelark/image-generation-api (2026-11-09)
+        if let Some(format) = extras.output_format.as_deref() {
+            body["output_format"] = Value::String(format.to_string());
         }
         // image-to-image / multi-reference: `image` accepts url or base64 data URI.
         let mut images: Vec<String> = Vec::new();
@@ -168,8 +191,9 @@ impl ImageProvider for ByteDanceImageProvider {
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11) — `response_format: url` would have the image fetched
         // server-side instead of answered inline.
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "prompt" | "response_format" | "image" | "size" | "seed")) {
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| matches!(k, "model" | "prompt" | "response_format" | "image" | "size" | "seed" | "output_format");
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
                 obj.insert(k.clone(), v.clone());
             }
         }
@@ -207,18 +231,7 @@ impl ImageProvider for ByteDanceImageProvider {
                 retryable: false,
             })?
         } else if let Some(u) = first["url"].as_str() {
-            let r = self.client.get(u).send().await.map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to fetch ByteDance image: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: true,
-            })?;
-            r.bytes().await.map(|b| b.to_vec()).map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to read ByteDance image: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?
+            super::fetch_result(&self.asset_client, u, self.public_assets_only, "bytedance image").await?
         } else {
             return Err(ProviderError::RequestFailed {
                 message: "ByteDance data[0] has neither b64_json nor url".to_string(),
@@ -230,8 +243,15 @@ impl ImageProvider for ByteDanceImageProvider {
 
         let mut metadata = HashMap::new();
         metadata.insert("model".to_string(), Value::String(native));
+        // The bytes say what they are; else the answer's own `output_format`
+        // ("The output image format (`png` or `jpeg`)"); else the vendor's
+        // default, jpeg.
+        let content_type = crate::util::content::image_content_type(&bytes).map_or_else(
+            || if first["output_format"] == "png" { "image/png".to_string() } else { "image/jpeg".to_string() },
+            str::to_string,
+        );
 
-        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
+        Ok(GenerationOutput { data: bytes, content_type, metadata, more: Vec::new() })
     }
 
     async fn estimate_cost(
@@ -280,6 +300,8 @@ mod tests {
         let mut cfg = ProviderInstanceConfig { api_key: "ark-key".to_string(), api_base: Some(api_base.to_string()), ..Default::default() };
         cfg.credentials.api_key = Some("ark-key".to_string());
         p.configure(cfg);
+        // The mock vendor serves results from loopback.
+        p.public_assets_only = false;
         p
     }
 
@@ -293,7 +315,7 @@ mod tests {
     fn make_extras() -> ImageExtras {
         ImageExtras {
             vendor_job: Default::default(),
-            size: Some("2048x2048".to_string()), aspect_ratio: None, quality: None, style: None,
+            size: Some("2048x2048".to_string()), resolution: None, aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
             edit: None, views: Vec::new(),
             output_format: None, background: None,
@@ -339,7 +361,7 @@ mod tests {
     /// BytePlus lists `seedream-4-0-250828` / `seedance-1-0-pro-250528`;
     /// Volcengine lists the same models with a `doubao-` prefix. Each host
     /// must get its own documented id, whatever form the catalog id has.
-    /// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310>
+    /// @see <https://docs.byteplus.com/en/docs/modelark/model-list>
     /// @see <https://www.volcengine.com/docs/82379/1330310>
     #[test]
     fn ark_model_id_sends_each_hosts_documented_id() {
@@ -361,7 +383,7 @@ mod tests {
     /// Volcengine documents the same model as `doubao-seedance-2-0-mini-260615`.
     /// Prefixing `doubao-` onto the BytePlus id sent the non-existent
     /// `doubao-dreamina-seedance-2-0-mini-260615` to a China host.
-    /// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310>
+    /// @see <https://docs.byteplus.com/en/docs/modelark/model-list>
     /// @see <https://www.volcengine.com/docs/82379/1330310>
     #[test]
     fn ark_model_id_swaps_the_byteplus_brand_prefix_for_volcengine() {
@@ -385,6 +407,10 @@ mod tests {
             "seedance-1-0-pro-fast-251015"
         );
         assert_eq!(ark_model_id("bytedance/seedream-4-5-251128", byteplus), "seedream-4-5-251128");
+        // Seedream 5.0 pro / flash: "dola-seedream-5-0-pro-260628",
+        // "dola-seedream-5-0-flash-260915" on BytePlus (2026-11-03).
+        assert_eq!(ark_model_id("bytedance/dola-seedream-5-0-flash-260915", byteplus), "dola-seedream-5-0-flash-260915");
+        assert_eq!(ark_model_id("bytedance/dola-seedream-5-0-flash-260915", volcengine), "doubao-seedream-5-0-flash-260915");
     }
 
     // ─── ByteDance/MiniMax/Vidu audit, 2026-10-30: W8, W13 ──────────────────
@@ -412,6 +438,60 @@ mod tests {
         assert_eq!((body["response_format"].as_str(), body["model"].as_str(), body["watermark"].as_bool()), (Some("b64_json"), Some("seedream-4-0-250828"), Some(false)), "{body}");
         let image = body["image"].as_str().or_else(|| body["image"][0].as_str()).unwrap_or("");
         assert!(image.starts_with("data:image/jpeg;base64,"), "{body}");
+    }
+
+    // ─── Vendor audit, 2026-11-03 ───────────────────────────────────────────
+
+    /// "output_format `string` `Default: jpeg` … Valid values: `png`, `jpeg`"
+    /// (supported models: Seedream 5.0 pro, 5.0 flash and 5.0 lite): the caller's choice
+    /// goes as the vendor's own field, `extra` cannot replace it, and the image
+    /// is labelled by what came back — a JPEG answer is not a PNG.
+    /// @see <https://docs.byteplus.com/en/docs/modelark/image-generation-api> (2026-11-03)
+    #[tokio::test]
+    async fn the_output_format_goes_as_its_own_field_and_labels_the_image() {
+        let server = MockServer::start().await;
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F', 0, 1];
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "b64_json": B64.encode(jpeg) }] })))
+            .mount(&server)
+            .await;
+        let id = "bytedance/seedream-5-0-lite-260128";
+        let provider = make_provider(&server.uri());
+        let none = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        let out = provider.generate(&ref_schema(id), &make_base("x", id), &make_extras(), &none).await.unwrap();
+        assert_eq!(out.content_type, "image/jpeg", "the vendor's default answer is a JPEG");
+        let mut extras = make_extras();
+        extras.output_format = Some("png".to_string());
+        extras.extra = Some(json!({ "output_format": "jpeg", "watermark": false }));
+        provider.generate(&ref_schema(id), &make_base("x", id), &extras, &none).await.unwrap();
+        let received = server.received_requests().await.unwrap();
+        let unnamed: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let named: Value = serde_json::from_slice(&received[1].body).unwrap();
+        assert!(unnamed.get("output_format").is_none(), "none named, none sent: {unnamed}");
+        assert_eq!(named["output_format"], "png", "the declared param wins over extra: {named}");
+        assert_eq!(named["watermark"], false, "{named}");
+    }
+
+    /// The Image generation API documents no `seed` for any Seedream model we
+    /// carry (it was a Seedream 3.0 / SeedEdit 3.0 field): one never goes out.
+    /// @see <https://docs.byteplus.com/en/docs/modelark/image-generation-api> (2026-11-03)
+    #[tokio::test]
+    async fn a_seed_never_reaches_seedream() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "b64_json": B64.encode(b"IMG") }] })))
+            .mount(&server)
+            .await;
+        let id = "bytedance/seedream-4-5-251128";
+        let mut base = make_base("x", id);
+        base.seed = Some(7);
+        let none = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        make_provider(&server.uri()).generate(&ref_schema(id), &base, &make_extras(), &none).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("seed").is_none(), "{body}");
+        assert_eq!(body["model"], "seedream-4-5-251128", "{body}");
     }
 
     /// W14: a submit that timed out may still run, and bill, at the vendor:

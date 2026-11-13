@@ -20,15 +20,14 @@ users supply only credentials.
 
 | `AuthSpec` | On the wire | `required_fields` | Dashboard `pool_field` | Used today by |
 |---|---|---|---|---|
-| `AuthSpec::bearer()` | `Authorization: Bearer <key>` | `api_key` | `api_keys` | luma image, runway image, recraft, minimax, bytedance, leonardo |
+| `AuthSpec::bearer()` | `Authorization: Bearer <key>` | `api_key` | `api_keys` | luma image, runway image, recraft, minimax, bytedance, leonardo, kling (image and video, since 2026-11-03: "API Key authentication must be used to call Kling AI API"), tokenhub (image and video, since 2026-11-04: "鉴权方式为请求头 Authorization: Bearer YOUR_API_KEY") |
 | `AuthSpec::raw_header("<name>")` | `<name>: <key>` | `api_key` | `api_keys` | bfl `x-key`, ideogram `Api-Key`, pixverse `API-KEY`, google video `x-goog-api-key` |
 | `AuthSpec::Header { name, value_prefix }` | `<name>: <prefix><key>` | `api_key` | `api_keys` | vidu `Authorization: Token <key>`. fal needs `Authorization: Key <key>`, which its adapters hand-write today |
 | `AuthSpec::QueryParam { name }` | `?<name>=<key>` | `api_key` | `api_keys` | google image `?key=` (hand-written today) |
 | `AuthSpec::AwsSigV4 { service, default_region }` | SigV4 over the body bytes | `key_id`, `key_secret`, `region` | `credential_sets` | bedrock |
-| `AuthSpec::KlingJwt` | an HS256 JWT minted per request | `key_id`, `key_secret` | `credential_sets` | kling |
 | `AuthSpec::TencentTc3 { service, default_region }` | TC3-HMAC-SHA256 over the body | `key_id`, `key_secret`, `region` | `credential_sets` | hunyuan |
 
-`apply()` handles the `Header`, `QueryParam` and `KlingJwt` schemes. The
+`apply()` handles the `Header` and `QueryParam` schemes. The
 signing schemes need the finalized body bytes, so they go through
 `sigv4::sign` or `tc3::sign` instead, and `apply()` returns an error if you
 pass it one. A region is interpolated into hosts such as
@@ -58,15 +57,18 @@ pub struct AcmeProvider {
 }
 
 impl AcmeProvider {
+    /// The client for the vendor's API, with the operator's `extra_headers`:
+    /// the shared client for this timeout and header set.
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(60), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),     // the vendor's documented scheme
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -104,6 +106,7 @@ fn configure(&mut self, config: ProviderInstanceConfig) {
     // signing: if !config.credentials.credential_sets.is_empty() {
     //     self.key_pool = Some(CredentialPool::shared(config.credentials.credential_sets.clone()));
     // }
+    self.client = Self::api_client(&config.extra_headers);
     self.config = Some(config);
 }
 
@@ -140,8 +143,26 @@ Notes:
   helper `api_key_cfg` fills `credentials` only. An adapter that reads
   `config.api_key` reports itself unconfigured in live tests and silently
   ignores a pool-only BYO key.
-- `ProviderInstanceConfig.extra_headers` is not applied by any adapter today.
-  Don't depend on it.
+- **The operator's provider config reaches every adapter** (checked for all
+  of them by `proxy/config_conformance.rs`):
+  - `extra_headers`: build `client` with `Self::api_client(&config.extra_headers)`
+    in `configure` (each adapter has the helper; it wraps
+    `providers::api_client(timeout, extra_headers)`). Every request to the
+    vendor's API carries them; a header the request sets itself wins.
+    `providers::api_client` returns a shared, memoized client, one per
+    timeout and header set (`util/http_clients.rs`), so the instance the
+    registry builds for one BYO call, or the poller for one row, reuses the
+    vendor connections. Never download a result, or upload
+    to a vendor's presigned storage URL, with that client: use an asset
+    client (`image::fetch_result`, `model3d::download::fetch_asset`).
+  - `model_mapping`: send the vendor's model id through
+    `providers::wire_model(self.config.as_ref(), &model.id, native)`. Only the
+    string on the wire changes; params, price and endpoint choice stay the
+    row's. A vendor with no model id on the wire goes in
+    `providers::NO_MODEL_ID`, and startup warns about mappings it can't use.
+  - Submit errors: call `providers::rate_limited(...)` first in every non-2xx
+    branch (or read the answer with `read_vendor_json`), so a 429's
+    `Retry-After` reaches the retry policy.
 - Never attach credentials to a vendor's signed download URL. Those URLs
   often point at a CDN or object store that isn't the vendor's API host.
   Send auth there only when the vendor documents that it's required, as
@@ -167,13 +188,14 @@ Notes:
    but swaps the credentials, so BYO works even when the platform has no key
    for the vendor.
 4. The background poller resolves the same credential for each in-flight row
-   and builds the same fresh instance to poll. Client polls work differently
-   by family. 3D client polls reuse the instance that submitted the job
-   (`Model3dJob.provider`), so they carry the BYO key. Video client polls use
-   the platform instance (`get_video_status` calls `video_provider_for`);
-   see known-gaps.md.
+   and builds the same fresh instance to poll. Video and 3D client polls
+   reuse the instance that submitted the job (`VideoJob.provider`,
+   `Model3dJob.provider`), so they carry the BYO key.
 5. Platform keys come from `litegen.yaml` (`providers.<p>`) or env vars mapped
-   in `load_provider_env_overrides`. `init_from_config` skips a provider
+   in `load_provider_env_overrides`. A vendor's own variable beats the file,
+   and a blank one counts as unset; a `LITEGEN__PROVIDERS__<P>__…` variable
+   beats both (`docs/configuration.md`, "Which source wins").
+   `init_from_config` skips a provider
    unless `credentials.any_present()` (the mock provider is exempt).
 
 So for "it just works":

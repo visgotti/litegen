@@ -391,7 +391,7 @@ mod tests {
         let config = litegen::config::AppConfig::default();
         assert_eq!(config.server.port, 4000);
         assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.database_url, "sqlite://litegen.db");
+        assert_eq!(config.database_url, "sqlite://data/litegen.db?mode=rwc");
         assert!(!config.cache.enabled);
     }
 
@@ -531,6 +531,7 @@ mod tests {
             assets: vec![Model3dAsset {
                 kind: Model3dAssetKind::Mesh,
                 url: "https://cdn.example.com/litegen/3d/litegen-3d-1/model.glb".into(),
+                expires_at: None,
                 format: "glb".into(),
                 size_bytes: Some(780),
                 polycount: Some(12),
@@ -538,6 +539,7 @@ mod tests {
                 height: None,
                 sha256: None,
                 scene: None,
+                kept: true,
             }],
             status: GenerationStatus::Completed,
             progress: 100,

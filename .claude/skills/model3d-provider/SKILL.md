@@ -9,7 +9,8 @@ description: Implement or update 3D mesh generation (the model3d family) for a l
 every provider shares: auth and credentials, `api_base`, vendor-doc
 citations, pricing, retries, tests and drift hooks. 3D is the newest family
 and the strictest one. Every completed generation is a promise that three
-separate observers check, every output is re-hosted, and vendor bytes are
+separate observers check, every output is re-hosted (unless the request keeps
+nothing, when the vendor's own files are handed out), and vendor bytes are
 parsed as untrusted input. Read this whole skill before writing code.
 `references/vendor-notes.md` holds what's known about each 3D vendor.
 
@@ -57,21 +58,43 @@ parsed as untrusted input. Read this whole skill before writing code.
 - **Two observers.** Client polls (`GET /v1/models3d/{id}`) go through the
   router, reusing the instance that submitted the job, and fall back to the
   row on error. The background poller builds a fresh instance with the org's
-  BYO credential, possibly in another process or after a restart.
+  BYO credential, possibly in another process or after a restart. Both can
+  see the same job finish, but only one downloads and delivers it: a delivery
+  slot and a lease on the row, claimed when your adapter asks the poll's
+  `FetchGate` (`delivery_lease::DeliveryGate`), before any download (see
+  [Poll](#writing-the-adapter)). The other reports `processing` until the
+  holder's terminal write. So `poll_status` may be called again on a job
+  that already completed, and must answer the same way.
 - **The completion pipeline is core code; don't duplicate it in the adapter.**
   When you return `Completed` with files, core runs three steps:
   1. `model3d_deliver::deliver` reads the vendor's mesh, normalises it
      (orientation, unique names, no required extension), derives every
      promised container and measures each into its `scene` manifest. It
      runs on a blocking thread, and keeps the vendor's files as `original`
-     assets whenever it changed anything.
+     assets whenever it changed anything. WebP and KTX2 (Basis Universal)
+     textures become PNG (`normalize::transcode_textures`). With
+     `ktx2_textures: keep` (`DeliveryPlan.ktx2_textures`), the glb and gltf
+     it derives keep a KTX2 as the vendor made it, which makes
+     `KHR_texture_basisu` required there; every other container still gets
+     PNG. With `output_packages`
+     (`DeliveryPlan.packages`) it also writes each promised container as a
+     package and, where that is more than one file, adds its zip
+     (`mesh::zip::write_package`) as an asset of kind `package`, after every
+     other file, with a manifest measured from the package.
   2. `rehost_model3d_files` uploads every file to the app's BYO bucket or
      the global store, under
-     `{prefix}/{generation_id}/{model|texture|preview}[_n].{ext}`, all in
-     the same tick.
+     `{prefix}/{generation_id}/{model|texture|preview|original}[_n].{ext}`
+     (a package as `package_{format}.zip`), all in the same tick.
   3. The guard checks that every promised container was delivered. If any is
      missing, the generation becomes `failed` and the webhook fires. The
      poller, `get_3d_status` and the row read-back all enforce this.
+
+  A generation that keeps nothing (`keep_outputs: false`,
+  `DeliveryPlan.keep_nothing`) skips steps 1 and 2. Its assets are the
+  vendor's files, from each `Model3dFile.source_url`, so **set `source_url`
+  to the URL every file was downloaded from**. Such a request may promise
+  only the formats the vendor makes itself (400 `format_needs_keeping`
+  otherwise), and may not ask for packages (400 `option_needs_keeping`).
 - **Billing** is a flat `base_cost_usd` per generation.
 - **The consumer contract.** aipix, the first 3D consumer, coded against
   wire shapes that are now fixed:
@@ -79,8 +102,8 @@ parsed as untrusted input. Read this whole skill before writing code.
   - a completed generation carries one mesh asset per promised container,
     all with absolute URLs. `mesh()` and `result_url` prefer glb when it's
     present, but a request for `[fbx]` alone completes with no glb;
-  - `strict: false` drops unsupported params and reports them in
-    `X-Litegen-Dropped-Params`;
+  - `strict: false` drops unsupported params, and fields the request type
+    doesn't have, and reports them in `X-Litegen-Dropped-Params`;
   - params are first-class and carry a `label` and `description`.
 
   Its contract lives in the aipix repo and is summarized in
@@ -105,15 +128,26 @@ been paid.
   - `default` is `[glb]`.
 - **The API advertises** what can be delivered: the native formats, plus
   every container litegen can derive, as long as at least one native format
-  is readable. It also exposes `derivable_values`.
+  is readable. It also exposes `derivable_values`, and serves as `default`
+  the list a request that omits `output_formats` resolves to (never empty:
+  `[glb]` when the row declares none).
   - The derivable set is `model3d_convert::derivable_formats()`. Since the
     mesh conversion work landed (2026-10-12), it is all ten `Model3dFormat`
     containers. `docs/superpowers/3d-format-conversion.md` describes what
     each conversion preserves. Read the function rather than assuming the
     set.
   - So a promised container now goes missing only when the vendor's own file
-    can't be read: a Draco-compressed GLB, for example (see below).
-    `mock/partial-3d` models exactly that case.
+    can't be read: a GLB that requires an extension the reader doesn't
+    implement, or a corrupt one, for example (see below; Draco and meshopt
+    are read). `mock/partial-3d` models exactly that case, with
+    `EXT_litegen_mock_undecodable`.
+
+  Beside `params`, `GET /v1/models/{id}` serves `litegen_params`: the
+  placement fields litegen applies to every mesh (`ground`, `center`,
+  `height_m`). A row never sets it, and the loader refuses one that does.
+  A row that declares its own `height_m` (today the rigs) keeps it in
+  `params` instead, and one without a `max` is served with litegen's
+  10,000 m ceiling, which the validator holds it to.
 - **Validation** checks that every requested format is deliverable, and that
   `vendor_jobs_needed(requested) ≤ max_items`. A non-derivable format costs
   one job, and all the derivable ones together share a single source job.
@@ -122,10 +156,13 @@ been paid.
   `[glb, fbx]` from ONE vendor job: its own fbx, chosen through
   `prefers_vendor_native`, with the glb derived from that fbx.
 - **The adapter asks the vendor for exactly one container.** Choose it with
-  `model3d_convert::prefers_vendor_native(format)`, never by testing
-  derivability yourself. That function returns true for anything litegen
-  can't derive, and *always* for fbx and usdz, because a vendor's own export
-  carries rigs and materials that a conversion from glb doesn't.
+  `model3d_convert::asks_vendor_for(format, extras.format_source)`, never by
+  testing derivability yourself. By default (`format_source` unset or
+  `native`) that is `prefers_vendor_native(format)`: true for anything
+  litegen can't derive, and *always* for fbx and usdz, because a vendor's own
+  export may carry rigs and materials that a conversion from glb doesn't. A
+  client that sends `format_source: "glb"` gets the vendor's GLB and litegen
+  makes fbx and usdz from it: only an underivable format is then asked for.
   - First choice: a requested format it returns true for, when the endpoint
     offers it.
   - Otherwise `glb`, when offered: it's the default conversion source.
@@ -146,12 +183,22 @@ been paid.
   the vendor's mesh, normalises it (orientation, unique node names, WebP
   textures to PNG, no required glTF extension), derives the promised
   containers and measures each into the asset's `scene` manifest. The glb
-  reader refuses any `extensionsRequired` entry outside its allowlist, and
-  Draco, meshopt and `KHR_mesh_quantization` are all refused. A vendor file
-  litegen can't read fails the WHOLE generation *after* the vendor has
-  billed, even when that container alone was asked for. Ask the vendor for
-  an uncompressed file, and prove in the live run that the real vendor file
-  parses and converts. If it doesn't, stop and raise it.
+  reader refuses any `extensionsRequired` entry outside its allowlist.
+  `KHR_mesh_quantization` has been read since 2026-10-12, and Draco
+  (`KHR_draco_mesh_compression`) and meshopt (`EXT_meshopt_compression`,
+  `KHR_meshopt_compression`) since mesh-gaps item 2 (2026-11-06), so a
+  compressed vendor file converts like a plain one, under the reader's
+  limits (`mesh/draco.rs`: a Draco primitive past 24 MB of decoded
+  attributes, the ceiling set to bound the decoder's memory on the shapes
+  measured, strips and grids, with a faces-per-point pre-check still open; a
+  primitive in any mode but TRIANGLES or TRIANGLE_STRIP, a point cloud or a
+  pre-2.2 bitstream is refused by name). What litegen delivers is never
+  compressed; the vendor's compressed file is kept as `original`. A
+  keep-nothing request hands out the vendor's file as it came, compressed or
+  not. A vendor file litegen can't read
+  fails the WHOLE generation *after* the vendor has billed, even when that
+  container alone was asked for. Prove in the live run that the real vendor
+  file parses and converts. If it doesn't, stop and raise it.
 
 ## A. Model on an existing 3D adapter
 
@@ -213,8 +260,8 @@ SF3D and SPAR3D use the `stability` key, for example), and you're adding
    (`registry.model3d_provider_for_request("<p>", Some(…)).await`).
 6. Do everything in path A for each model, then wire the rest from
    `provider-standards/references/touchpoints.md` section D: the drift
-   sources, the landing (there is no 3D flag in `site.ts`;
-   `FALLBACK_CAPABILITIES` has `model3d`), the README and a live run.
+   sources, the landing (its 3D tags follow the catalog once you run the
+   sync scripts), the README and a live run.
 
 ## C. A new 3D vendor
 
@@ -272,18 +319,37 @@ SF3D and SPAR3D use the `stability` key, for example), and you're adding
 - **Refuse an out-of-range seed; don't clamp it.** Rodin's seed is a u16, so
   a larger value is a 422 at the vendor, and clamping would stop `seed`
   meaning "reproducible".
-- **Merge `extra` before the fields you own** (rule 11). Vendor-specific
-  knobs (Rodin `tier`, TRELLIS `mesh_simplify`, Hunyuan `octree_resolution`)
-  are `extra_allowlist` passthroughs.
+- **Merge `extra` through `providers::extra_fields`, before the fields you
+  own** (rule 11). Vendor-specific knobs (Rodin `tier`, TRELLIS
+  `mesh_simplify`, Hunyuan `octree_resolution`) are `extra_allowlist`
+  passthroughs, each typed in `extra_params` (catalog-yaml.md).
 - **Return the handle** with `stage_context` set to `{endpoint,
   status_url, response_url, …}`.
 
 **Poll**
 
 - **Map statuses, including the vendor's quirks.** fal reports a failure as
-  `COMPLETED` plus `error` (with `error_type`); its queue enum is closed, so
-  an unknown status is an error. Rodin's state is `Done`. Tripo has its own
-  vocabulary. Read the docs for each vendor.
+  `COMPLETED` plus `error` (with `error_type`). Rodin's state is `Done`.
+  Tripo has its own vocabulary, including an `unknown` it asks to be polled
+  again. Read the docs for each vendor, list its in-progress states, and
+  fail any other state at once, naming it
+  (`providers::video::unknown_state_message`), as the video adapters do.
+- **Ask the delivery gate before you download.** Put the poll's body in
+  `poll_status_gated(handle, gate: &dyn FetchGate)`, and have `poll_status`
+  call it with `&crate::providers::AlwaysFetch`. Call `gate.ask()` once,
+  after the vendor reports success and before any download (fal asks before
+  it even reads the result):
+  - `Fetch::StandAside`: another observer delivers. Download nothing, and
+    return the poll passed through `model3d_deliver::stand_aside` (still
+    `processing`, no files, no error).
+  - `Fetch::Go { waited }` with `waited >= REFRESH_LINKS_AFTER` (10 s): read
+    the job again before you download, since signed URLs can expire while the
+    poller waits for a delivery slot (Tripo and Meshy do this).
+
+  An adapter that downloads nothing in its poll (a synchronous vendor's
+  stashed bytes) keeps the trait's default, which never asks: the caller
+  then claims after the poll. `a_gate_that_says_stand_aside_downloads_nothing`
+  in `tripo.rs`, `meshy.rs` and `fal.rs` is the test.
 - **On terminal success, find every mesh URL**: fal's `model_mesh` or
   `model_glb`, Meshy's per-format `model_urls`, or Rodin's separate download
   call. **Download in the same call** (Tripo URLs expire about 5 minutes
@@ -316,8 +382,8 @@ SF3D and SPAR3D use the `stability` key, for example), and you're adding
   - A transient poll or download error (5xx, 408, 429, timeout) is a
     retryable `Err`, and the poller retries the whole poll next tick.
   - A non-retryable `Err` is only for a state you can never learn, such as
-    a 401 or 404 on the status call. The poller reaps those rows *without* a
-    webhook.
+    a 401 or 404 on the status call. The poller reaps those rows: failed,
+    refunded and webhooked, with the poll error as their only reason.
 
   `fetch_asset` in `model3d/fal.rs` returns `AssetError::{Transient, Gone}`
   so that its caller can map each case correctly.
@@ -423,6 +489,9 @@ Write these in the adapter's `#[cfg(test)] mod tests`, using the idioms in
 - [ ] **Poll**:
   - success downloads the mesh (wiremock serves a small GLB) and tags
     `kind`, `format` and `content_type`;
+  - a gate that says `StandAside` downloads nothing and answers
+    `processing`; after a long wait for the gate, the job's links are read
+    again;
   - success with an error → `Failed` carrying the vendor message;
   - success with no mesh → `Failed`;
   - a texture that fails to download is skipped, not fatal;

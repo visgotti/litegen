@@ -315,6 +315,10 @@
   color: #8fe3ff;
   background: color-mix(in srgb, #8fe3ff 16%, transparent);
 }
+.pkind[data-kind='model3d'] {
+  color: #ffd38a;
+  background: color-mix(in srgb, #ffd38a 16%, transparent);
+}
 
 /* Provider node hint + pinned/expanded state */
 .provider {
@@ -388,6 +392,10 @@
   color: #8fe3ff;
   background: color-mix(in srgb, #8fe3ff 16%, transparent);
 }
+.panelHead[data-kind='model3d'] {
+  color: #ffd38a;
+  background: color-mix(in srgb, #ffd38a 16%, transparent);
+}
 .panelList {
   list-style: none;
   margin: 0;
@@ -441,7 +449,6 @@
 .stage[data-focus='kling'] .wire[data-link='kling'],
 .stage[data-focus='minimax'] .wire[data-link='minimax'],
 .stage[data-focus='bytedance'] .wire[data-link='bytedance'],
-.stage[data-focus='bedrock'] .wire[data-link='bedrock'],
 .stage[data-focus='hunyuan'] .wire[data-link='hunyuan'],
 .stage[data-focus='vidu'] .wire[data-link='vidu'],
 .stage[data-focus='pixverse'] .wire[data-link='pixverse'] {
@@ -458,7 +465,7 @@
 
 /* ---- Stacked / mobile layout ----
    The radial web doesn't fit narrow screens, so below 920px we fall back to a
-   stack: app on top, gateway below it, then all 18 providers in a 3-column grid
+   stack: app on top, gateway below it, then every provider in a 3-column grid
    — three image rows, then three video rows — so the hemisphere split still
    reads top-to-bottom. */
 @media (max-width: 920px) {

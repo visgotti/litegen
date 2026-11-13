@@ -19,6 +19,8 @@ pub enum Permission {
     GenerationReadAny,
     GenerationCancelOwn,
     GenerationCancelAny,
+    GenerationDeleteOwn,
+    GenerationDeleteAny,
     AuditRead,
     CacheClear,
     SystemConfig,
@@ -67,6 +69,8 @@ impl Permission {
             Self::GenerationReadAny => "generation:read:any",
             Self::GenerationCancelOwn => "generation:cancel:own",
             Self::GenerationCancelAny => "generation:cancel:any",
+            Self::GenerationDeleteOwn => "generation:delete:own",
+            Self::GenerationDeleteAny => "generation:delete:any",
             Self::AuditRead => "audit:read",
             Self::CacheClear => "cache:clear",
             Self::SystemConfig => "system:config",
@@ -117,6 +121,8 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             GenerationReadAny,
             GenerationCancelOwn,
             GenerationCancelAny,
+            GenerationDeleteOwn,
+            GenerationDeleteAny,
             AuditRead,
             CacheClear,
             SystemConfig,
@@ -161,6 +167,8 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             GenerationReadAny,
             GenerationCancelOwn,
             GenerationCancelAny,
+            GenerationDeleteOwn,
+            GenerationDeleteAny,
             AuditRead,
             CacheClear,
             SystemConfig,
@@ -185,6 +193,11 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             StorageCredWrite,
             StorageCredDelete,
         ],
+        // README's roles table is the contract (review 2026-11-11): a Member
+        // manages their own keys, creates generations and views their own
+        // logs. An app's budgets, limits, model access and settings, its
+        // storage and access settings, and the org's vendor credentials are an
+        // Owner's or Admin's (this reverses the 2026-06-04 BYO design's grants).
         Role::Member => &[
             UserReadSelf,
             KeyReadOwn,
@@ -194,20 +207,18 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             GenerationCreate,
             GenerationReadOwn,
             GenerationCancelOwn,
+            GenerationDeleteOwn,
             SessionRevokeOwn,
             OrgRead,
             AppRead,
-            AppWrite,
             MemberRead,
             ProviderCredRead,
-            ProviderCredWrite,
             StorageCredRead,
-            StorageCredWrite,
         ],
+        // Read-only: "cannot create or mutate" (README).
         Role::Viewer => &[
             UserReadSelf,
             KeyReadOwn,
-            GenerationCreate,
             GenerationReadOwn,
             SessionRevokeOwn,
             OrgRead,
@@ -269,22 +280,50 @@ mod tests {
         assert!(!role_has(Role::Admin, Permission::OrgDelete));
     }
 
+    /// Review 2026-11-11 SEC-STORAGECRED: an app's storage and access settings
+    /// are an Owner's or Admin's (`docs/storage-access.md`, README roles).
     #[test]
-    fn storage_cred_role_mapping_mirrors_provider_cred() {
+    fn storage_settings_are_owner_and_admin_only() {
         use Permission::*;
         for r in [Role::Owner, Role::Admin] {
             assert!(role_has(r, StorageCredRead));
             assert!(role_has(r, StorageCredWrite));
             assert!(role_has(r, StorageCredDelete));
         }
-        assert!(role_has(Role::Member, StorageCredRead));
-        assert!(role_has(Role::Member, StorageCredWrite));
-        assert!(!role_has(Role::Member, StorageCredDelete));
-        assert!(role_has(Role::Viewer, StorageCredRead));
-        assert!(!role_has(Role::Viewer, StorageCredWrite));
+        for r in [Role::Member, Role::Viewer] {
+            assert!(role_has(r, StorageCredRead), "{r:?} reads them");
+            assert!(!role_has(r, StorageCredWrite), "{r:?} may not change them");
+            assert!(!role_has(r, StorageCredDelete), "{r:?} may not delete them");
+        }
         assert_eq!(StorageCredRead.as_str(), "storage_cred:read");
         assert_eq!(StorageCredWrite.as_str(), "storage_cred:write");
         assert_eq!(StorageCredDelete.as_str(), "storage_cred:delete");
+    }
+
+    /// Review 2026-11-11 NEW 1–2, the user's decision to match the README: a
+    /// Member manages their own keys, creates generations and views their own
+    /// logs. An app's budgets, limits, model access and settings, and the
+    /// org's vendor credentials, are an Owner's or Admin's.
+    #[test]
+    fn members_hold_no_app_or_vendor_credential_writes() {
+        use Permission::*;
+        for p in [AppWrite, ProviderCredWrite, ProviderCredDelete, StorageCredWrite] {
+            assert!(!role_has(Role::Member, p), "a member holds {p:?}");
+            assert!(role_has(Role::Admin, p) && role_has(Role::Owner, p), "{p:?} stays an Owner's and Admin's");
+        }
+        for p in [KeyReadOwn, KeyWriteOwn, KeyDeleteOwn, GenerationCreate, GenerationReadOwn, AppRead, ProviderCredRead] {
+            assert!(role_has(Role::Member, p), "a member keeps {p:?}");
+        }
+    }
+
+    /// Review 2026-11-11 NEW 3: a Viewer "cannot create or mutate" (README).
+    #[test]
+    fn viewers_cannot_create_generations() {
+        assert!(!role_has(Role::Viewer, Permission::GenerationCreate));
+        assert!(role_has(Role::Viewer, Permission::GenerationReadOwn), "a viewer still reads their own");
+        for r in [Role::Owner, Role::Admin, Role::Member] {
+            assert!(role_has(r, Permission::GenerationCreate), "{r:?} creates generations");
+        }
     }
 
     #[test]

@@ -27,10 +27,12 @@ fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
         docs_url: None,
         pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
         capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
-        prompt: PromptSpec { required: true, min_length: None, max_length: None },
+        prompt: PromptSpec { required: true, min_length: None, max_length: None, required_for_text_to_video: false },
         params,
         ref_inputs: None,
         extra_allowlist: vec![],
+        extra_params: Default::default(),
+        litegen_params: Default::default(),
         tags: vec![],
         deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
     }
@@ -54,7 +56,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
         symmetry: None, topology: None, rig: None,
         skeleton: None, joint_naming: None, height_m: None,
         source_model: None,
-        animations: None, fps: None,
+        animations: None, fps: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
         texture_resolution: None, keep_uvs: None,
         ground: None, center: None,
     }
@@ -94,6 +96,29 @@ fn formats_param(values: &[&str], max_items: Option<usize>) -> ParamSpec {
 // survives here is re-checked at all three observers of completion, and a
 // generation that delivers less than this fails. So an unsatisfiable request
 // has to be rejected here, before the vendor is billed.
+
+/// One submitted job makes one mesh, and one is billed (E3): `n` above 1 was
+/// accepted and silently ignored. Refused in both modes, as an image's `n` is;
+/// 0 is the same as 1.
+#[test]
+fn more_than_one_mesh_per_request_is_refused() {
+    let schema = schema_with(HashMap::new());
+    for strict in [true, false] {
+        let mut r = req(strict);
+        r.base.n = 3;
+        let out = validate_model3d(&schema, r);
+        assert!(
+            matches!(&out, Err(e) if e.code == "param_out_of_range" && e.param.as_deref() == Some("n")),
+            "n: 3, strict={strict}: {out:?}"
+        );
+    }
+    for n in [0, 1] {
+        let mut r = req(true);
+        r.base.n = n;
+        let out = validate_model3d(&schema, r);
+        assert!(out.is_ok(), "n: {n}: {:?}", out.err());
+    }
+}
 
 #[test]
 fn a_format_the_model_cannot_emit_is_rejected_in_both_modes() {
@@ -526,7 +551,7 @@ const RIG_PARAMS: [&str; 5] = ["skeleton", "joint_naming", "height_m", "animatio
 
 fn clip(name: &str, preset: Option<&str>, prompt: Option<&str>) -> AnimationRequest {
     AnimationRequest {
-        name: name.into(),
+        name: Some(name.into()),
         preset: preset.map(str::to_string),
         prompt: prompt.map(str::to_string),
         duration_s: None,
@@ -662,6 +687,70 @@ fn clip_names_are_unique_and_well_formed() {
         assert_eq!((err.code.as_str(), err.param.as_deref()), ("animation_name_invalid", Some("animations")), "{clips:?}");
     }
     assert!(validate_model3d(&real("mock/animate-3d"), animate_request(vec![clip("Walk_01.v-2", Some("walk"), None)])).is_ok());
+}
+
+/// An animate request on `mock/animate-3d` with these clips, as a caller's
+/// JSON: it reaches the validator only if it deserializes.
+fn animate_json(clips: serde_json::Value) -> Model3dGenerationRequest {
+    serde_json::from_value(serde_json::json!({
+        "model": "mock/animate-3d",
+        "source_model": { "type": "generation", "value": "litegen-3d-x" },
+        "animations": clips,
+    }))
+    .expect("a clip may leave its name out, or send null")
+}
+
+/// The clip names a validated request carries, read through JSON.
+fn clip_names(r: &Model3dGenerationRequest) -> Vec<serde_json::Value> {
+    serde_json::to_value(r).unwrap()["animations"].as_array().unwrap().iter().map(|c| c["name"].clone()).collect()
+}
+
+/// E11c: litegen names a clip that leaves `name` out (or sends null): after
+/// its canonical preset, else its preset id with every other character as
+/// `_`; a prompt clip `clip-<n>`, its place in the list; `-2`, `-3`, … on a
+/// name already taken.
+#[test]
+fn an_unnamed_clip_is_named_after_its_preset_or_its_place() {
+    let r = animate_json(serde_json::json!([
+        { "preset": "mock:walk" },
+        { "name": null, "preset": "mock:walk" },
+        { "preset": "mock:wave" },
+        { "prompt": "a cheer", "duration_s": 3.0 },
+        { "name": "walk-3", "preset": "mock:run" },
+    ]));
+    let out = validate_model3d(&real("mock/animate-3d"), r).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(clip_names(&out.request), ["walk", "walk-2", "mock_wave", "clip-4", "walk-3"]);
+}
+
+/// E11c: typed names are taken first and never changed.
+#[test]
+fn a_typed_name_is_kept_and_an_unnamed_clip_steps_around_it() {
+    let r = animate_json(serde_json::json!([{ "preset": "mock:walk" }, { "name": "walk", "preset": "mock:run" }]));
+    let out = validate_model3d(&real("mock/animate-3d"), r).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(clip_names(&out.request), ["walk-2", "walk"]);
+}
+
+/// E11c: a preset that leaves no legal name (empty) names the clip by its
+/// place, so the caller gets the clip's own refusal, not a name it never sent.
+#[test]
+fn an_unnamed_clip_whose_preset_gives_no_name_is_named_by_its_place() {
+    let r = animate_json(serde_json::json!([{ "name": "a", "preset": "mock:walk" }, { "preset": "" }]));
+    let err = validate_model3d(&real("mock/animate-3d"), r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("animations")), "{}", err.message);
+    assert!(err.message.contains("'clip-2'"), "{}", err.message);
+}
+
+/// E11c: a clip's refusal says which clip, by its place in the list.
+#[test]
+fn a_clips_refusal_names_its_place_in_the_list() {
+    let mut timed = clip("b", Some("walk"), None);
+    timed.duration_s = Some(3.0);
+    let err = animate_err(vec![clip("a", Some("walk"), None), timed]);
+    assert_eq!(err.code, "animation_clip_invalid", "{}", err.message);
+    assert!(err.message.contains("clip 2"), "{}", err.message);
+    let err = animate_err(vec![clip("a", Some("walk"), None), clip("a", Some("run"), None)]);
+    assert_eq!(err.code, "animation_name_invalid", "{}", err.message);
+    assert!(err.message.contains("clip 2"), "{}", err.message);
 }
 
 #[test]
@@ -886,7 +975,7 @@ fn rig_schema() -> ModelSchema {
     s.id = "mock/rig-3d".into();
     s.task = ModelTask::Rig;
     s.capabilities = ModelCapabilityFlags::default();
-    s.prompt = PromptSpec { required: false, min_length: None, max_length: Some(0) };
+    s.prompt = PromptSpec { required: false, min_length: None, max_length: Some(0), required_for_text_to_video: false };
     s
 }
 
@@ -963,4 +1052,33 @@ fn a_humanoid_naming_scheme_on_another_skeleton_is_refused() {
     r.skeleton = None;
     r.joint_naming = Some("unity".into());
     assert!(validate_model3d(&schema, r).is_ok(), "the row's default skeleton is humanoid");
+}
+
+/// The 2026-10-31 audit: a model declaring `height_m` with no ceiling of its
+/// own (`meshy/rig`, `fal/meshy-rig`) let any height through — 1e9 m passed —
+/// though litegen's own placement stops at 10,000 m.
+#[test]
+fn a_model_declared_height_with_no_ceiling_still_meets_litegens() {
+    let mut params = HashMap::new();
+    params.insert(
+        "height_m".to_string(),
+        ParamSpec::Float(ParamSpecFloat { min: Some(0.1), max: None, default: None, values: vec![], label: None, description: None }),
+    );
+    let schema = schema_with(params);
+    let mut r = req(true);
+    r.height_m = Some(1e9);
+    let e = validate_model3d(&schema, r.clone()).unwrap_err();
+    assert_eq!(e.code, "param_out_of_range");
+    r.height_m = Some(1.8);
+    assert!(validate_model3d(&schema, r).is_ok());
+}
+
+/// The 2026-10-31 audit: an animate model accepted a request naming no clip
+/// and completed with none (Meshy's adapter refuses at submit).
+#[test]
+fn an_animate_model_needs_a_clip() {
+    let mut schema = schema_with(HashMap::new());
+    schema.task = ModelTask::Animate;
+    let e = validate_model3d(&schema, req(true)).unwrap_err();
+    assert_eq!((e.code.as_str(), e.param.as_deref()), ("param_required", Some("animations")));
 }

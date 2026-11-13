@@ -62,6 +62,8 @@ export interface MergedRole {
 export interface MergedExtra {
   key: string;
   models: string[];
+  /** The vendor's type for it (`extra_params`), from the first model that types it. */
+  spec?: ParamSpec;
 }
 
 /** `polling` is distinct from `running`: the request has been ACCEPTED and we

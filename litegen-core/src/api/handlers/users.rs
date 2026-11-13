@@ -9,7 +9,7 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api::middleware::{is_platform_admin, AppState, KeyContext};
+use crate::api::middleware::{acts_in_default_org, is_platform_admin, AppState, KeyContext, DEFAULT_ORG_ID};
 use crate::auth::permissions::Permission;
 use crate::auth::tokens::generate_session_token;
 use crate::config::Mode;
@@ -29,6 +29,15 @@ fn err(code: StatusCode, error_code: &str, message: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+/// A 500 that keeps its class (`error_code`: `db_error`, `hash_error`, ...)
+/// but not its text (SEC-DBERR): the detail goes to the server log, the
+/// caller gets "internal server error". A database error names tables and
+/// constraints.
+fn internal(error_code: &str, detail: &dyn std::fmt::Display) -> Response {
+    tracing::error!(error = %detail, code = error_code, "internal error");
+    err(StatusCode::INTERNAL_SERVER_ERROR, error_code, "internal server error")
 }
 
 fn forbidden_perm(perm: &str) -> Response {
@@ -52,28 +61,29 @@ fn forbidden_perm(perm: &str) -> Response {
 /// to the platform admin (master key); tenants manage their own members via
 /// `/v1/orgs/{id}/members`.
 ///
-/// In single-tenant mode the behavior is unchanged: the owner session manages
-/// users directly, gated by the role-derived permission.
+/// In single-tenant mode the deployment's owner and admins manage users
+/// directly, gated by the permission of their role in the default org; a
+/// role in any other org carries none of it.
 fn authorize_global_user_admin(
     state: &AppState,
     ctx: &KeyContext,
     perm: Permission,
 ) -> Result<(), Response> {
+    if may_manage_users(state, ctx, perm) {
+        return Ok(());
+    }
     match state.mode {
-        Mode::Hosted => {
-            if is_platform_admin(ctx) {
-                Ok(())
-            } else {
-                Err(forbidden_perm("platform_admin"))
-            }
-        }
-        Mode::SingleTenant => {
-            if ctx.permissions.contains(&perm) {
-                Ok(())
-            } else {
-                Err(forbidden_perm(perm.as_str()))
-            }
-        }
+        Mode::Hosted => Err(forbidden_perm("platform_admin")),
+        Mode::SingleTenant => Err(forbidden_perm(perm.as_str())),
+    }
+}
+
+/// Whether [`authorize_global_user_admin`] lets `ctx` through with `perm`;
+/// the MCP tools for these endpoints are shown by the same rule.
+pub(crate) fn may_manage_users(state: &AppState, ctx: &KeyContext, perm: Permission) -> bool {
+    match state.mode {
+        Mode::Hosted => is_platform_admin(ctx),
+        Mode::SingleTenant => acts_in_default_org(ctx) && ctx.permissions.contains(&perm),
     }
 }
 
@@ -162,7 +172,7 @@ pub async fn list_users(
             let public: Vec<PublicUser> = users.into_iter().map(PublicUser::from).collect();
             (StatusCode::OK, Json(public)).into_response()
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -231,7 +241,7 @@ pub async fn invite_user(
     };
 
     if let Err(e) = state.db.create_invitation(&inv).await {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+        return internal("db_error", &e);
     }
 
     log_audit_user(
@@ -314,7 +324,7 @@ pub async fn get_invitation(
                 .into_response()
         }
         Ok(None) => err(StatusCode::NOT_FOUND, "invitation_not_found", "Invitation not found"),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -359,7 +369,7 @@ pub async fn accept_invitation(
     let inv = match state.db.get_invitation(&token).await {
         Ok(Some(i)) => i,
         Ok(None) => return err(StatusCode::NOT_FOUND, "invitation_not_found", "Invitation not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
     };
 
     if inv.used_at.is_some() {
@@ -424,7 +434,7 @@ pub async fn accept_invitation(
                         "Password must be at least 12 characters",
                     );
                 }
-                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "hash_error", &e.to_string()),
+                Err(e) => return internal("hash_error", &e),
             };
             let user = User {
                 id: Uuid::new_v4().to_string(),
@@ -439,11 +449,11 @@ pub async fn accept_invitation(
                 is_active: true,
             };
             if let Err(e) = state.db.create_user(&user).await {
-                return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+                return internal("db_error", &e);
             }
             user
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
     };
 
     // Membership is added before the atomic invite-consume below. If we then lose
@@ -456,7 +466,7 @@ pub async fn accept_invitation(
     // error so re-accepting is idempotent.
     if state.db.get_membership(&inv.org_id, &user.id).await.ok().flatten().is_none() {
         if let Err(e) = state.db.add_org_member(&inv.org_id, &user.id, inv.role).await {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            return internal("db_error", &e);
         }
     }
 
@@ -471,14 +481,14 @@ pub async fn accept_invitation(
                 "This invitation has already been used",
             )
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
     }
 
     // Create session
     let (_, _, session_cookie, csrf_cookie) =
         match crate::api::middleware::create_session_cookies(&state.db, &user.id, None, None).await {
             Ok(v) => v,
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
+            Err(e) => return internal("session_error", &e),
         };
 
     let public = PublicUser::from(user);
@@ -494,6 +504,50 @@ pub async fn accept_invitation(
 pub struct PatchUserRequest {
     pub role: Option<Role>,
     pub is_active: Option<bool>,
+}
+
+/// Whether `target` is the deployment's Owner, for this page's PATCH and
+/// DELETE. In single-tenant mode the Owner is recorded twice: in
+/// `users.role`, and in the default org's membership, where permissions come
+/// from. Transfers keep the two together (`transfer_deployment_owner`). A pair
+/// left apart by a transfer before that counts as Owner wherever either
+/// place says so, so this page never demotes, deactivates or deletes the
+/// account that holds the Owner's permissions (`split_owner_records` reports
+/// such a pair at startup).
+async fn is_owner(state: &AppState, target: &User) -> Result<bool, Response> {
+    if target.role == Role::Owner {
+        return Ok(true);
+    }
+    if state.mode != Mode::SingleTenant {
+        return Ok(false);
+    }
+    match state.db.get_membership(DEFAULT_ORG_ID, &target.id).await {
+        Ok(role) => Ok(role == Some(Role::Owner)),
+        Err(e) => Err(internal("db_error", &e)),
+    }
+}
+
+/// Single-tenant: the accounts each Owner record names, `(by membership, by
+/// account role)`, when the two don't agree on one Owner. Before
+/// `transfer_deployment_owner`, each transfer moved only one of them, so a
+/// deployment that used one may hold its Owner apart. The membership is the
+/// one with the permissions. A single transfer by the membership Owner, or the
+/// master key, to the intended account (`POST /v1/orgs/{default}/transfer-owner`)
+/// repairs both. Two empty lists mean accounts exist but neither record names
+/// an Owner. `None` while there's no account at all (before the first
+/// signup).
+pub async fn split_owner_records(db: &dyn crate::db::DatabaseStore) -> Result<Option<(Vec<String>, Vec<String>)>, sqlx::Error> {
+    let users = db.list_users().await?;
+    if users.is_empty() {
+        return Ok(None);
+    }
+    let mut by_membership: Vec<String> =
+        db.list_org_members(DEFAULT_ORG_ID).await?.into_iter().filter(|m| m.role == Role::Owner).map(|m| m.user_id).collect();
+    let mut by_account: Vec<String> = users.into_iter().filter(|u| u.role == Role::Owner).map(|u| u.id).collect();
+    by_membership.sort();
+    by_account.sort();
+    let agree = by_membership.len() == 1 && by_membership == by_account;
+    Ok((!agree).then_some((by_membership, by_account)))
 }
 
 /// PATCH /v1/users/{id} — Update user role or active status (requires user:write:any).
@@ -524,12 +578,28 @@ pub async fn patch_user(
     let target = match state.db.get_user_by_id(&id).await {
         Ok(Some(u)) => u,
         Ok(None) => return err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
     };
 
+    // Ownership moves only through transfer-owner, as invitations and org
+    // members have it: never by PATCH, whoever the target is. (A former
+    // Owner whose account role a Members-page transfer left behind could
+    // otherwise write Owner back into their membership: two Owners.)
+    if body.role == Some(Role::Owner) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "cannot_assign_owner",
+            "Cannot assign the Owner role via PATCH. Use transfer-owner.",
+        );
+    }
+
     // Block changing Owner's role via this endpoint
-    if target.role == Role::Owner {
-        if body.role.is_some() && body.role != Some(Role::Owner) {
+    let target_is_owner = match is_owner(&state, &target).await {
+        Ok(owner) => owner,
+        Err(resp) => return resp,
+    };
+    if target_is_owner {
+        if body.role.is_some() {
             return err(
                 StatusCode::BAD_REQUEST,
                 "cannot_change_owner_role",
@@ -542,6 +612,44 @@ pub async fn patch_user(
                 "cannot_deactivate_owner",
                 "Cannot deactivate the Owner account. Transfer ownership first.",
             );
+        }
+    }
+
+    // A deactivated account's invitations go, in every org (SEC-INVITES).
+    // First, before the role below is set: a revoke that fails (a 500) then
+    // leaves the account as it was, and the PATCH can be sent again whole.
+    if body.is_active == Some(false) {
+        if let Err(resp) = crate::api::handlers::orgs::revoke_invitations(&state, None, None, Some(&id)).await {
+            return resp;
+        }
+    }
+
+    // Single-tenant: the user's role in the default org is the one their
+    // permissions come from, so a role set here is set there too. The org's
+    // Owner keeps theirs, as on the members page.
+    if let (Some(role), Mode::SingleTenant) = (body.role, state.mode) {
+        match state.db.get_membership(DEFAULT_ORG_ID, &id).await {
+            Ok(Some(Role::Owner)) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "cannot_change_owner_role",
+                    "Cannot change the Owner's role via PATCH. Use transfer-owner.",
+                );
+            }
+            Ok(Some(current)) => {
+                // Moved to a role that can't invite: the invitations they
+                // sent in the org go first (SEC-INVITES).
+                if crate::api::handlers::orgs::role_may_invite(current) && !crate::api::handlers::orgs::role_may_invite(role) {
+                    if let Err(resp) = crate::api::handlers::orgs::revoke_invitations(&state, Some(DEFAULT_ORG_ID), None, Some(&id)).await {
+                        return resp;
+                    }
+                }
+                if let Err(e) = state.db.update_member_role(DEFAULT_ORG_ID, &id, role).await {
+                    return internal("db_error", &e);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => return internal("db_error", &e),
         }
     }
 
@@ -558,7 +666,7 @@ pub async fn patch_user(
             (StatusCode::OK, Json(PublicUser::from(updated))).into_response()
         }
         Ok(None) => err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -590,15 +698,24 @@ pub async fn delete_user(
     let target = match state.db.get_user_by_id(&id).await {
         Ok(Some(u)) => u,
         Ok(None) => return err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
     };
 
-    if target.role == Role::Owner {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "cannot_delete_owner",
-            "Cannot delete the Owner account. Transfer ownership first.",
-        );
+    match is_owner(&state, &target).await {
+        Ok(true) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "cannot_delete_owner",
+                "Cannot delete the Owner account. Transfer ownership first.",
+            );
+        }
+        Ok(false) => {}
+        Err(resp) => return resp,
+    }
+    // The invitations they sent, in every org, go with the account
+    // (SEC-INVITES): a deactivated Admin's invitation would let them back in.
+    if let Err(resp) = crate::api::handlers::orgs::revoke_invitations(&state, None, None, Some(&id)).await {
+        return resp;
     }
 
     match state.db.update_user(&id, None, Some(false), None).await {
@@ -613,7 +730,7 @@ pub async fn delete_user(
             );
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -657,11 +774,18 @@ pub async fn transfer_owner(
         Ok(None) => {
             return err(StatusCode::NOT_FOUND, "user_not_found", "Target user not found");
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
         Ok(Some(_)) => {}
     }
 
-    match state.db.transfer_owner(&body.new_owner_id).await {
+    // Single-tenant: the Owner is the account role and the default org's
+    // membership (where permissions come from); both move together, and only
+    // to a member of that org.
+    let moved = match state.mode {
+        Mode::SingleTenant => state.db.transfer_deployment_owner(DEFAULT_ORG_ID, &body.new_owner_id).await,
+        Mode::Hosted => state.db.transfer_owner(&body.new_owner_id).await,
+    };
+    match moved {
         Ok(()) => {
             log_audit_user(
                 state.db.clone(),
@@ -673,7 +797,12 @@ pub async fn transfer_owner(
             );
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(sqlx::Error::RowNotFound) => err(
+            StatusCode::NOT_FOUND,
+            "not_a_member",
+            "The new Owner must be a member of the default organization",
+        ),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -761,6 +890,9 @@ mod tests {
             is_active: true,
         };
         db.create_user(&user).await.expect("create user");
+        // Every account joins the default org at signup or invitation; the role
+        // it holds there is the one its permissions come from.
+        db.add_org_member(crate::api::middleware::DEFAULT_ORG_ID, &user.id, role).await.expect("join the default org");
 
         let session_token = generate_session_token();
         let csrf_token = generate_csrf_token();
@@ -800,6 +932,25 @@ mod tests {
             .with_state(state);
 
         Router::new().merge(authed).merge(unauthed)
+    }
+
+    /// SEC-DBERR: the invitation routes need no sign-in, so a database error
+    /// there must not reach the caller: no sqlx text, no table names.
+    #[tokio::test]
+    async fn a_database_error_reading_an_invitation_is_not_shown() {
+        let db = build_db().await;
+        sqlx::query("ALTER TABLE invitations RENAME TO invitations_away").execute(db.pool()).await.unwrap();
+        let app = build_users_router(build_state(db).await);
+        let resp = app
+            .oneshot(Request::builder().uri("/v1/auth/invitations/any-token").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body).to_string();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "db_error", "{text}");
+        assert!(!text.contains("no such table") && !text.contains("invitations"), "{text}");
     }
 
     // ── GET /v1/users ─────────────────────────────────────────────────────────
@@ -1407,6 +1558,31 @@ mod tests {
     }
 
     // ── POST /v1/users/transfer-owner ─────────────────────────────────────────
+
+    /// Review of security fix 3: Owner records that the old transfers left
+    /// apart are found, so startup can name them, and one transfer repairs
+    /// them.
+    #[tokio::test]
+    async fn split_owner_records_are_found() {
+        let db = build_db().await;
+        assert_eq!(split_owner_records(&*db).await.unwrap(), None, "no accounts yet");
+        let (owner, _, _) = seed_user_with_session(&db, Role::Owner).await;
+        let (admin, _, _) = seed_user_with_session(&db, Role::Admin).await;
+        assert_eq!(split_owner_records(&*db).await.unwrap(), None, "one Owner, in both places");
+        // What a Members-page transfer did before the fix.
+        db.transfer_org_owner(DEFAULT_ORG_ID, &admin.id).await.unwrap();
+        assert_eq!(
+            split_owner_records(&*db).await.unwrap(),
+            Some((vec![admin.id.clone()], vec![owner.id.clone()])),
+            "(by membership, by account role)"
+        );
+        db.transfer_deployment_owner(DEFAULT_ORG_ID, &admin.id).await.unwrap();
+        assert_eq!(split_owner_records(&*db).await.unwrap(), None, "one transfer repairs it");
+        // Accounts, but no Owner in either record, needs the same transfer.
+        db.update_member_role(DEFAULT_ORG_ID, &admin.id, Role::Admin).await.unwrap();
+        db.update_user(&admin.id, Some(Role::Admin), None, None).await.unwrap();
+        assert_eq!(split_owner_records(&*db).await.unwrap(), Some((vec![], vec![])), "no Owner at all");
+    }
 
     #[tokio::test]
     async fn transfer_owner_changes_roles() {

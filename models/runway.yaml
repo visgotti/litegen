@@ -62,6 +62,1330 @@ models:
     extra_allowlist: [contentModeration]
     tags: [image-to-image, fast]
 
+  # ─── Resold image models ────────────────────────────────────────────────
+  # Third-party image models Runway sells on the same POST /v1/text_to_image
+  # endpoint and task API as gen4_image, carried as runway routes beside each
+  # vendor's own (the hub-route policy, 2026-11-04). Each row is its model's
+  # branch of the request union: litegen's aspect_ratio (and resolution tier,
+  # where the branch has several) picks one of the branch's `ratio` sizes
+  # (image/runway.rs RESOLD); outputCount is never sent (one image a call).
+  # Not carried: recraft_v4_1_flash and recraft_v4_1_vector (no price on the
+  # pricing guide).
+  # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+  # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+  - id: runway/gpt_image_2
+    provider: runway
+    media_type: image
+    display_name: GPT Image 2 (Runway)
+    description: OpenAI's GPT Image 2 through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gpt_image_2:
+    #   `gpt_image_2` is billed as credits per image × `outputCount`. The `auto` resolution is billed at the 4K tier. Default quality is `high`.
+    #   | `high`   | 20        | 41                |
+    # The default request is 20 credits = $0.20.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.2
+      variable_pricing:
+        - { when: { quality: low }, usd: 0.01 }
+        - { when: { quality: low, resolution: "4K" }, usd: 0.02 }
+        - { when: { quality: medium }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "4K" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K" }, usd: 0.41 }
+        - { when: { quality: auto }, usd: 0.2 }
+        - { when: { quality: auto, resolution: "4K" }, usd: 0.41 }
+    # The gpt_image_2 branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 32000.
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GPT_IMAGE_2_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      quality: { kind: string, enum_values: [low, medium, high, auto], default: high }
+      background: { kind: string, enum_values: [transparent, opaque] }
+    ref_inputs:
+      max_total: 16
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 16 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gpt_image_2_5_flare
+    provider: runway
+    media_type: image
+    display_name: GPT Image 2.5 Flare (Runway)
+    description: OpenAI's GPT Image 2.5 Flare through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gpt_image_2_5_flare:
+    #   `gpt_image_2_5_flare` and `gpt_image_2_5_sunburst` are billed on the same tables, as (credits per image + 1 credit per reference image) × `outputCount`
+    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9)
+    # The default request is 11 credits = $0.11.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.11
+      variable_pricing:
+        # Then 1 credit per reference image (the count rules below).
+        - { when: { quality: low, resolution: "1K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "4K" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "1K" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "2K" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "4K" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: high, resolution: "2K" }, usd: 0.16 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "4K" }, usd: 0.19 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.07 }
+        - { when: { quality: xhigh, resolution: "1K" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.1 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.1 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.12 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.12 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.13 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.13 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.08 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.08 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.06 }
+        - { when: { quality: xhigh, resolution: "2K" }, usd: 0.28 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.14 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.14 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.17 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.17 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.11 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.11 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.08 }
+        - { when: { quality: xhigh, resolution: "4K" }, usd: 0.34 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.23 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.23 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.25 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.25 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.27 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.27 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.12 }
+        - { when: { quality: max, resolution: "1K" }, usd: 0.42 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.22 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.22 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.26 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.26 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.29 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.29 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.17 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.17 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.12 }
+        - { when: { quality: max, resolution: "2K" }, usd: 0.63 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.31 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.31 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.38 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.38 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.24 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.24 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.18 }
+        - { when: { quality: max, resolution: "4K" }, usd: 0.75 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.5 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.5 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.55 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.55 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.6 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.6 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.26 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+        - { when: { references: 5 }, add_usd: 0.05 }
+        - { when: { references: 6 }, add_usd: 0.06 }
+        - { when: { references: 7 }, add_usd: 0.07 }
+        - { when: { references: 8 }, add_usd: 0.08 }
+        - { when: { references: 9 }, add_usd: 0.09 }
+        - { when: { references: 10 }, add_usd: 0.1 }
+        - { when: { references: 11 }, add_usd: 0.11 }
+        - { when: { references: 12 }, add_usd: 0.12 }
+        - { when: { references: 13 }, add_usd: 0.13 }
+        - { when: { references: 14 }, add_usd: 0.14 }
+        - { when: { references: 15 }, add_usd: 0.15 }
+        - { when: { references: 16 }, add_usd: 0.16 }
+    # The gpt_image_2_5_flare branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 32000.
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GPT_IMAGE_2_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      quality: { kind: string, enum_values: [low, medium, high, xhigh, max], default: high }
+      background: { kind: string, enum_values: [opaque] }
+    ref_inputs:
+      max_total: 16
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 16 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gpt_image_2_5_sunburst
+    provider: runway
+    media_type: image
+    display_name: GPT Image 2.5 Sunburst (Runway)
+    description: OpenAI's GPT Image 2.5 Sunburst through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gpt_image_2_5_sunburst:
+    #   `gpt_image_2_5_flare` and `gpt_image_2_5_sunburst` are billed on the same tables, as (credits per image + 1 credit per reference image) × `outputCount`
+    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9)
+    # The default request is 11 credits = $0.11.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.11
+      variable_pricing:
+        # Then 1 credit per reference image (the count rules below).
+        - { when: { quality: low, resolution: "1K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "4K" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "1K" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "2K" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "4K" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: high, resolution: "2K" }, usd: 0.16 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "4K" }, usd: 0.19 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.07 }
+        - { when: { quality: xhigh, resolution: "1K" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.1 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.1 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.12 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.12 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.13 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.13 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.08 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.08 }
+        - { when: { quality: xhigh, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.06 }
+        - { when: { quality: xhigh, resolution: "2K" }, usd: 0.28 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.14 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.14 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.17 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.17 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.11 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.11 }
+        - { when: { quality: xhigh, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.08 }
+        - { when: { quality: xhigh, resolution: "4K" }, usd: 0.34 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.23 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.23 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.25 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.25 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.27 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.27 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.19 }
+        - { when: { quality: xhigh, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.12 }
+        - { when: { quality: max, resolution: "1K" }, usd: 0.42 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.22 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.22 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.26 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.26 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.29 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.29 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.17 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.17 }
+        - { when: { quality: max, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.12 }
+        - { when: { quality: max, resolution: "2K" }, usd: 0.63 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.31 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.31 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.38 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.38 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.24 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.24 }
+        - { when: { quality: max, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.18 }
+        - { when: { quality: max, resolution: "4K" }, usd: 0.75 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.5 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.5 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.55 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.55 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.6 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.6 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.43 }
+        - { when: { quality: max, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.26 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+        - { when: { references: 5 }, add_usd: 0.05 }
+        - { when: { references: 6 }, add_usd: 0.06 }
+        - { when: { references: 7 }, add_usd: 0.07 }
+        - { when: { references: 8 }, add_usd: 0.08 }
+        - { when: { references: 9 }, add_usd: 0.09 }
+        - { when: { references: 10 }, add_usd: 0.1 }
+        - { when: { references: 11 }, add_usd: 0.11 }
+        - { when: { references: 12 }, add_usd: 0.12 }
+        - { when: { references: 13 }, add_usd: 0.13 }
+        - { when: { references: 14 }, add_usd: 0.14 }
+        - { when: { references: 15 }, add_usd: 0.15 }
+        - { when: { references: 16 }, add_usd: 0.16 }
+    # The gpt_image_2_5_sunburst branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 32000.
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GPT_IMAGE_2_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      quality: { kind: string, enum_values: [low, medium, high, xhigh, max], default: high }
+      background: { kind: string, enum_values: [transparent, opaque] }
+    ref_inputs:
+      max_total: 16
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 16 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gpt_image_2_6_flare
+    provider: runway
+    media_type: image
+    display_name: GPT Image 2.6 Flare (Runway)
+    description: OpenAI's GPT Image 2.6 Flare through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gpt_image_2_6_flare:
+    #   `gpt_image_2_6_flare` and `gpt_image_2_6_sunburst` use the same `low`, `medium`, and `high` rows below; `xhigh` and `max` are not supported. Both default to `quality: "high"` and `reasoningEffort: "high"`. Reasoning effort does not change the price.
+    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9)
+    # The default request is 11 credits = $0.11.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.11
+      variable_pricing:
+        # Then 1 credit per reference image (the count rules below).
+        - { when: { quality: low, resolution: "1K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "4K" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "1K" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "2K" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "4K" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: high, resolution: "2K" }, usd: 0.16 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "4K" }, usd: 0.19 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.07 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+        - { when: { references: 5 }, add_usd: 0.05 }
+        - { when: { references: 6 }, add_usd: 0.06 }
+        - { when: { references: 7 }, add_usd: 0.07 }
+        - { when: { references: 8 }, add_usd: 0.08 }
+        - { when: { references: 9 }, add_usd: 0.09 }
+        - { when: { references: 10 }, add_usd: 0.1 }
+        - { when: { references: 11 }, add_usd: 0.11 }
+        - { when: { references: 12 }, add_usd: 0.12 }
+        - { when: { references: 13 }, add_usd: 0.13 }
+        - { when: { references: 14 }, add_usd: 0.14 }
+        - { when: { references: 15 }, add_usd: 0.15 }
+        - { when: { references: 16 }, add_usd: 0.16 }
+    # The gpt_image_2_6_flare branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 32000.
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GPT_IMAGE_2_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      quality: { kind: string, enum_values: [low, medium, high], default: high }
+      background: { kind: string, enum_values: [transparent, opaque] }
+    ref_inputs:
+      max_total: 16
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 16 }
+    extra_allowlist: [reasoningEffort]
+    extra_params:
+      # From the pricing comment above (values unstated).
+      reasoningEffort: { kind: string }
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gpt_image_2_6_sunburst
+    provider: runway
+    media_type: image
+    display_name: GPT Image 2.6 Sunburst (Runway)
+    description: OpenAI's GPT Image 2.6 Sunburst through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gpt_image_2_6_sunburst:
+    #   `gpt_image_2_6_flare` and `gpt_image_2_6_sunburst` use the same `low`, `medium`, and `high` rows below; `xhigh` and `max` are not supported. Both default to `quality: "high"` and `reasoningEffort: "high"`. Reasoning effort does not change the price.
+    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9)
+    # The default request is 11 credits = $0.11.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.11
+      variable_pricing:
+        # Then 1 credit per reference image (the count rules below).
+        - { when: { quality: low, resolution: "1K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: low, resolution: "4K" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "1K" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
+        - { when: { quality: medium, resolution: "2K" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: medium, resolution: "4K" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.07 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: high, resolution: "2K" }, usd: 0.16 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.08 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.1 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.06 }
+        - { when: { quality: high, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.05 }
+        - { when: { quality: high, resolution: "4K" }, usd: 0.19 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.13 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.14 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.15 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.11 }
+        - { when: { quality: high, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.07 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+        - { when: { references: 5 }, add_usd: 0.05 }
+        - { when: { references: 6 }, add_usd: 0.06 }
+        - { when: { references: 7 }, add_usd: 0.07 }
+        - { when: { references: 8 }, add_usd: 0.08 }
+        - { when: { references: 9 }, add_usd: 0.09 }
+        - { when: { references: 10 }, add_usd: 0.1 }
+        - { when: { references: 11 }, add_usd: 0.11 }
+        - { when: { references: 12 }, add_usd: 0.12 }
+        - { when: { references: 13 }, add_usd: 0.13 }
+        - { when: { references: 14 }, add_usd: 0.14 }
+        - { when: { references: 15 }, add_usd: 0.15 }
+        - { when: { references: 16 }, add_usd: 0.16 }
+    # The gpt_image_2_6_sunburst branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 32000.
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GPT_IMAGE_2_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      quality: { kind: string, enum_values: [low, medium, high], default: high }
+      background: { kind: string, enum_values: [transparent, opaque] }
+    ref_inputs:
+      max_total: 16
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 16 }
+    extra_allowlist: [reasoningEffort]
+    extra_params:
+      # From the pricing comment above (values unstated).
+      reasoningEffort: { kind: string }
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gemini_2.5_flash
+    provider: runway
+    media_type: image
+    display_name: Gemini 2.5 Flash Image (Runway)
+    description: Google's Gemini 2.5 Flash Image through Runway's API — text-to-image and edits from up to 3 images.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gemini_2.5_flash:
+    #   | `gemini_2.5_flash`        | 5 credits per image, any resolution                    |
+    # The default request is 5 credits = $0.05.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing: { base_cost_usd: 0.05 }
+    # The gemini_2.5_flash branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 45000.
+    prompt: { required: true, max_length: 45000 }
+    params:
+      # aspect_ratio → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GEMINI_2_5_FLASH_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+    ref_inputs:
+      max_total: 3
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 3 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gemini_image3_pro
+    provider: runway
+    media_type: image
+    display_name: Gemini 3 Pro Image (Runway)
+    description: Google's Gemini 3 Pro Image through Runway's API — text-to-image and edits from up to 14 images, 1K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gemini_image3_pro:
+    #   | `gemini_image3_pro`       | 20 credits per 1K or 2K image, 40 credits per 4K image |
+    # The default request is 20 credits = $0.20.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.2
+      variable_pricing:
+        - { when: { resolution: "4K" }, usd: 0.4 }
+    # The gemini_image3_pro branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: minLength 3, maxLength 45000.
+    prompt: { required: true, min_length: 3, max_length: 45000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GEMINI_IMAGE3_PRO_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+    ref_inputs:
+      max_total: 14
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gemini_image3.1_flash
+    provider: runway
+    media_type: image
+    display_name: Gemini 3.1 Flash Image (Runway)
+    description: Google's Gemini 3.1 Flash Image through Runway's API — text-to-image and edits from up to 14 images, 0.5K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gemini_image3.1_flash:
+    #   | `gemini_image3.1_flash`   | 5 credits per 512px image, 7 credits per 1K image, 11 credits per 2K image, 16 credits per 4K image |
+    # The default request is 7 credits = $0.07.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.07
+      variable_pricing:
+        - { when: { resolution: "0.5K" }, usd: 0.05 }
+        - { when: { resolution: "2K" }, usd: 0.11 }
+        - { when: { resolution: "4K" }, usd: 0.16 }
+    # The gemini_image3.1_flash branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 45000.
+    prompt: { required: true, max_length: 45000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GEMINI_IMAGE3_1_FLASH_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:4", "4:1", "1:8", "8:1"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["0.5K", "1K", "2K", "4K"], default: "1K" }
+    ref_inputs:
+      max_total: 14
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gemini_image3.1_flash_lite
+    provider: runway
+    media_type: image
+    display_name: Gemini 3.1 Flash Lite Image (Runway)
+    description: Google's Gemini 3.1 Flash Lite Image through Runway's API — text-to-image and edits from up to 14 images.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; gemini_image3.1_flash_lite:
+    #   | `gemini_image3.1_flash_lite` | 4 credits per 1K image |
+    # The default request is 4 credits = $0.04.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing: { base_cost_usd: 0.04 }
+    # The gemini_image3.1_flash_lite branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 45000.
+    prompt: { required: true, max_length: 45000 }
+    params:
+      # aspect_ratio → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GEMINI_IMAGE3_1_FLASH_LITE_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+        default: "1:1"
+    ref_inputs:
+      max_total: 14
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/nano_banana_2.1
+    provider: runway
+    media_type: image
+    display_name: Nano Banana 2.1 (Runway)
+    description: Google's Nano Banana 2.1 through Runway's API — text-to-image and edits from up to 14 images, 1K to 4K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; nano_banana_2.1:
+    #   | `nano_banana_2.1`         | 4 credits per 1K image, 6 credits per 2K image, 12 credits per 4K image |
+    # The default request is 4 credits = $0.04.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.04
+      variable_pricing:
+        - { when: { resolution: "2K" }, usd: 0.06 }
+        - { when: { resolution: "4K" }, usd: 0.12 }
+    # The nano_banana_2.1 branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 45000.
+    prompt: { required: true, max_length: 45000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs NANO_BANANA_2_1_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:4", "4:1", "1:8", "8:1"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+    ref_inputs:
+      max_total: 14
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: [thinkingLevel]
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/muse_image
+    provider: runway
+    media_type: image
+    display_name: Muse Image (Runway)
+    description: Muse Image through Runway's API — text-to-image and edits from up to 10 images.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; muse_image:
+    #   | `muse_image`              | 1 credit per image, any resolution                     |
+    # The default request is 1 credits = $0.01.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing: { base_cost_usd: 0.01 }
+    # The muse_image branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 4000.
+    prompt: { required: true, max_length: 4000 }
+    params:
+      # aspect_ratio → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs MUSE_IMAGE_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/seedream5_pro
+    provider: runway
+    media_type: image
+    display_name: Seedream 5.0 Pro (Runway)
+    description: ByteDance's Seedream 5.0 Pro through Runway's API — text-to-image and edits from up to 10 images, 1K to 2K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; seedream5_pro:
+    #   | `seedream5_pro`           | 5 credits per 1K image, 9 credits per 2K image |
+    # The default request is 5 credits = $0.05.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.05
+      variable_pricing:
+        - { when: { resolution: "2K" }, usd: 0.09 }
+    # The seedream5_pro branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 4000.
+    prompt: { required: true, max_length: 4000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs SEEDREAM5_PRO_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [grounding]
+    extra_params:
+      # From a switch (image/runway.rs tests send it as a boolean).
+      grounding: { kind: bool }
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/seedream5_lite
+    provider: runway
+    media_type: image
+    display_name: Seedream 5.0 Lite (Runway)
+    description: ByteDance's Seedream 5.0 Lite through Runway's API — text-to-image and edits from up to 14 images, 2K to 3K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; seedream5_lite:
+    #   | `seedream5_lite`          | 4 credits per image, any resolution            |
+    # The default request is 4 credits = $0.04.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing: { base_cost_usd: 0.04 }
+    # The seedream5_lite branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 4000.
+    prompt: { required: true, max_length: 4000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs SEEDREAM5_LITE_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["2K", "3K"], default: "2K" }
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+    ref_inputs:
+      max_total: 14
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: [grounding]
+    extra_params:
+      # From a switch (image/runway.rs tests send it as a boolean).
+      grounding: { kind: bool }
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/seedream5_flash
+    provider: runway
+    media_type: image
+    display_name: Seedream 5.0 Flash (Runway)
+    description: ByteDance's Seedream 5.0 Flash through Runway's API — text-to-image and edits from up to 10 images, 1K to 2K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; seedream5_flash:
+    #   | `seedream5_flash`         | 2 credits per image, any resolution            |
+    # The default request is 2 credits = $0.02.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing: { base_cost_usd: 0.02 }
+    # The seedream5_flash branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 4000.
+    prompt: { required: true, max_length: 4000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs SEEDREAM5_FLASH_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/grok_imagine_image_2
+    provider: runway
+    media_type: image
+    display_name: Grok Imagine Image 2 (Runway)
+    description: xAI's Grok Imagine Image 2 through Runway's API — text-to-image and edits from up to 3 images, 1K to 2K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; grok_imagine_image_2:
+    #   `grok_imagine_image_2` is billed as `outputCount × perImage + referenceCount × 1`.
+    #   | `low`    | 4                    | 6                    |
+    #   | `medium` | 6                    | 8                    |
+    # The default request is 6 credits = $0.06.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.06
+      variable_pricing:
+        # Then 1 credit per reference image (the count rules below).
+        - { when: { quality: low }, usd: 0.04 }
+        - { when: { quality: low, resolution: "2K" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "2K" }, usd: 0.08 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+    # The grok_imagine_image_2 branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 2500.
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs GROK_IMAGINE_IMAGE_2_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+      quality: { kind: string, enum_values: [low, medium], default: medium }
+    ref_inputs:
+      max_total: 3
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 3 }
+    extra_allowlist: [edit]
+    extra_params:
+      # From a switch (image/runway.rs `switched_on`).
+      edit: { kind: bool }
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/bria_fibo_1_5
+    provider: runway
+    media_type: image
+    display_name: Bria FIBO 1.5 (Runway)
+    description: Bria FIBO 1.5 through Runway's API — text-to-image and edits from up to 1 image, 1K to 2K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; bria_fibo_1_5:
+    #   | `bria_fibo_1_5`           | 5 credits per 1MP image, 10 credits per 4MP image      |
+    # The default request is 5 credits = $0.05.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.05
+      variable_pricing:
+        - { when: { resolution: "2K" }, usd: 0.1 }
+    # The bria_fibo_1_5 branch of POST /v1/text_to_image (required ["promptText","ratio","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 10000.
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs BRIA_FIBO_1_5_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"]
+        default: "1:1"
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/bria_fibo_edit_1_5
+    provider: runway
+    media_type: image
+    display_name: Bria FIBO Edit 1.5 (Runway)
+    description: Bria FIBO Edit 1.5 through Runway's API — edits and combines 1–4 images.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; bria_fibo_edit_1_5:
+    #   | `bria_fibo_edit_1_5`      | 5 credits per image                                    |
+    # The default request is 5 credits = $0.05.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing: { base_cost_usd: 0.05 }
+    # The bria_fibo_edit_1_5 branch of POST /v1/text_to_image (required ["promptText","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { image_to_image: true }
+    # promptText: maxLength 10000.
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # aspect_ratio → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs BRIA_FIBO_EDIT_1_5_SIZES). "Choosing a size requires at least 2 reference images; a single image always keeps its own framing": with one image, an aspect_ratio is refused.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"]
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 4 }
+    extra_allowlist: []
+    tags: [image-to-image]
+
+  - id: runway/ideogram_4_0
+    provider: runway
+    media_type: image
+    display_name: Ideogram 4.0 (Runway)
+    description: Ideogram 4.0 through Runway's API — text-to-image and edits from up to 1 image.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; ideogram_4_0:
+    #   `ideogram_4_0` defaults to `medium`.
+    #   | `low`      | 4              | 4              |
+    #   | `medium`   | 8              | 7              |
+    #   | `high`     | 25             | 11             |
+    # The default request is 7 credits = $0.07.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.07
+      variable_pricing:
+        - { when: { quality: low }, usd: 0.04 }
+        - { when: { quality: high }, usd: 0.11 }
+    # The ideogram_4_0 branch of POST /v1/text_to_image (required ["promptText","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 4000.
+    prompt: { required: true, max_length: 4000 }
+    params:
+      # aspect_ratio → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs IDEOGRAM_4_0_SIZES).
+      # `ratio` is optional on this branch: with no aspect_ratio asked, none is sent.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "12:5", "5:12"]
+      quality: { kind: string, enum_values: [low, medium, high], default: medium }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/ideogram_4_5
+    provider: runway
+    media_type: image
+    display_name: Ideogram 4.5 (Runway)
+    description: Ideogram 4.5 through Runway's API — text-to-image and edits from up to 5 images, 1K to 2K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; ideogram_4_5:
+    #   `ideogram_4_5` defaults to `medium` when generating from reference images and `high` otherwise, including `preciseEdit`
+    #   | `very_low` | 1              | —              |
+    #   | `low`      | 4              | 4              |
+    #   | `medium`   | 8              | 7              |
+    #   | `high`     | 25             | 11             |
+    # The default request is 25 credits = $0.25.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.25
+      variable_pricing:
+        - { when: { references: "*" }, usd: 0.08 }
+        - { when: { extra.preciseEdit: true }, usd: 0.25 }
+        - { when: { quality: very_low }, usd: 0.01 }
+        - { when: { quality: low }, usd: 0.04 }
+        - { when: { quality: medium }, usd: 0.08 }
+        - { when: { quality: high }, usd: 0.25 }
+    # The ideogram_4_5 branch of POST /v1/text_to_image (required ["promptText","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
+    # promptText: maxLength 10000.
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # aspect_ratio × resolution → `ratio`: one size per cell of the branch's `ratio` enum
+      # (image/runway.rs IDEOGRAM_4_5_SIZES).
+      # `ratio` is optional on this branch: with no aspect_ratio or resolution asked, none is sent (an edit keeps its image's size); a resolution alone is 1:1 at that tier.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "2:1", "1:2"]
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+      quality: { kind: string, enum_values: [very_low, low, medium, high] }
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
+    ref_inputs:
+      max_total: 6
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 5 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }
+    extra_allowlist: [preciseEdit, contextWindow]
+    extra_params:
+      # A switch: `true` turns it on (the price above, and image/runway.rs `switched_on`).
+      preciseEdit: { kind: bool }
+    tags: [text-to-image, image-to-image, inpainting]
+
+  - id: runway/ideogram_vector
+    provider: runway
+    media_type: image
+    display_name: Ideogram Vector (Runway)
+    description: Ideogram Vector through Runway's API — text-to-SVG illustration, guided by up to 5 images.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
+    # "Credits can be purchased for $0.01 per credit"; ideogram_vector:
+    #   On text to image, it is billed by `quality`, which defaults to `medium`. `high` costs more when the request includes reference images.
+    #   | Text to image, `low`                       | 14                |
+    #   | Text to image, `medium`                    | 17                |
+    #   | Text to image, `high`                      | 22                |
+    #   | Text to image, `high` with reference images | 35               |
+    # The default request is 17 credits = $0.17.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.17
+      variable_pricing:
+        - { when: { quality: low }, usd: 0.14 }
+        - { when: { quality: high }, usd: 0.22 }
+        - { when: { quality: high, references: "*" }, usd: 0.35 }
+    # The ideogram_vector branch of POST /v1/text_to_image (required ["promptText","model"]).
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_image: true, image_to_image: true }
+    # promptText: maxLength 9500.
+    prompt: { required: true, max_length: 9500 }
+    params:
+      quality: { kind: string, enum_values: [low, medium, high], default: medium }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    ref_inputs:
+      max_total: 5
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 5 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image, vector]
+
   # gen3a_turbo was removed from the Runway API on 2026-07-30 ("Requests that
   # use these model identifiers will fail"). gen4_turbo is the fast tier and
   # gen4.5 the quality tier.
@@ -96,11 +1420,14 @@ models:
         default: "1280:720"
     ref_inputs:
       max_total: 1
-      default_role: init
+      default_role: first_frame
       provider_format: { form: url }
+      # promptImage is required by gen4_turbo's /v1/image_to_video branch: a
+      # row with no text mode is refused without an image, sent as first_frame
+      # or as init (the role this row took before first_frame).
       roles:
-        # promptImage is required by gen4_turbo's /v1/image_to_video branch.
-        init: { required: true, min_count: 1, max_count: 1 }
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [contentModeration]
     tags: [image-to-video, fast]
 
@@ -132,16 +1459,1161 @@ models:
         default: "1280:720"
     ref_inputs:
       max_total: 1
-      default_role: init
+      default_role: first_frame
       provider_format: { form: url }
+      # The start frame, as first_frame or as init (the role this row took
+      # before first_frame).
       roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
         init: { required: false, min_count: 0, max_count: 1 }
     # No outputFormat / proresProfile: every format but mp4 is another
     # container ("a ProRes .mov", "a .zip of PNG frames", 10-bit .mp4s) at a
-    # surcharge ("5 credits per second for prores and png_sequence, and 20
-    # credits per second for every 10-bit and deeper profile"), and this row
-    # prices and delivers an H.264 .mp4.
+    # surcharge (the pricing table: "`prores`, `png_sequence` | 5 credits per
+    # second" and "10-bit and HDR profiles (`hdr10`, `hlg`, … ) | 20 credits
+    # per second; 40 credits per second when the output is larger than 4
+    # megapixels (roughly 4K)"), and this row prices and delivers an H.264
+    # .mp4.
     # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_video, 2026-10-30)
-    # @see https://docs.dev.runwayml.com/guides/pricing.md#professional-and-hdr-output-formats (2026-10-30)
+    # @see https://docs.dev.runwayml.com/guides/pricing.md#professional-and-hdr-output-formats (2026-11-09)
     extra_allowlist: [contentModeration]
     tags: [text-to-video, image-to-video, premium]
+
+  # ─── Resold video models ────────────────────────────────────────────────
+  # Third-party video models Runway sells on the same POST /v1/text_to_video
+  # and /v1/image_to_video endpoints and task API as gen4.5, carried as runway
+  # routes beside each vendor's own (the hub-route policy, 2026-11-04). Each
+  # row covers its model's two branches: a start frame (and a last frame where
+  # promptImage takes position "last") sends image-to-video, otherwise
+  # text-to-video; reference images go in `references` on the mode that takes
+  # them. aspect_ratio and resolution reach Runway as each mode takes them:
+  # one size of the branch's `ratio` enum, the aspect itself, `auto_<tier>`,
+  # or a `resolution` field (video/runway.rs RESOLD). Reference video and
+  # audio (`referenceVideos`, `referenceAudio`) are not taken.
+  # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+  # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+  - id: runway/veo3.1
+    provider: runway
+    media_type: video
+    display_name: Veo 3.1 (Runway)
+    description: Google's Veo 3.1 through Runway's API — text-to-video, image-to-video (first and last frame); 4–8 s, 720p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; veo3.1:
+    #   | `veo3.1 (audio)` | 40 credits per second
+    #   | `veo3.1 (no audio)` | 20 credits per second
+    # The default request (720p, audio, 8 s) is 40 × 8 = 320 credits = $3.2.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 3.2
+      variable_pricing:
+        - { per_second_usd: 0.4 }
+        - { when: { audio: false }, per_second_usd: 0.2 }
+    # The veo3.1 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","ratio","model"], image-to-video ["promptImage","ratio","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: int, min: 4, max: 8, default: 8, values: [4, 6, 8] }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      negative_prompt: { kind: string, max_length: 1000 }
+      # `ratio`: text-to-video always sent; image-to-video always sent. Each aspect × tier is one size of the branch's enum (video/runway.rs VEO3_1_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["9:16", "16:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/veo3.1_fast
+    provider: runway
+    media_type: video
+    display_name: Veo 3.1 Fast (Runway)
+    description: Google's Veo 3.1 Fast through Runway's API — text-to-video, image-to-video (first and last frame); 4–8 s, 720p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; veo3.1_fast:
+    #   | `veo3.1_fast (audio)` | 15 credits per second
+    #   | `veo3.1_fast (no audio)` | 10 credits per second
+    # The default request (720p, audio, 8 s) is 15 × 8 = 120 credits = $1.2.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 1.2
+      variable_pricing:
+        - { per_second_usd: 0.15 }
+        - { when: { audio: false }, per_second_usd: 0.1 }
+    # The veo3.1_fast branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","ratio","model"], image-to-video ["promptImage","ratio","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: int, min: 4, max: 8, default: 8, values: [4, 6, 8] }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      negative_prompt: { kind: string, max_length: 1000 }
+      # `ratio`: text-to-video always sent; image-to-video always sent. Each aspect × tier is one size of the branch's enum (video/runway.rs VEO3_1_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["9:16", "16:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/gemini_omni_flash
+    provider: runway
+    media_type: video
+    display_name: Gemini Omni Flash (Runway)
+    description: Google's Gemini Omni Flash through Runway's API — text-to-video, image-to-video (first frame); 3–10 s.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; gemini_omni_flash:
+    #   | `gemini_omni_flash` (text to video) | 10 credits per second
+    #   | `gemini_omni_flash` (image to video) | 10 credits per second, plus 1 credit for the first-frame image
+    # The default request (720p, 5 s) is 10 × 5 = 50 credits = $0.5.
+    # Then 1 credit for an image-to-video start frame (the count rules below).
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+        - { per_second_usd: 0.1 }
+        - { when: { references.first_frame: 1 }, add_usd: 0.01 }
+    # The gemini_omni_flash branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 10, default: 5 }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs GEMINI_OMNI_FLASH_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["9:16", "16:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/gemini_omni_flash_1.1
+    provider: runway
+    media_type: video
+    display_name: Gemini Omni Flash 1.1 (Runway)
+    description: Google's Gemini Omni Flash 1.1 through Runway's API — text-to-video, image-to-video (first and last frame), up to 5 reference images; 3–10 s, 360p to 4k.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; gemini_omni_flash_1.1:
+    #   | `gemini_omni_flash_1.1` (360p) | 3.4 credits per second, plus 1 credit per reference image …
+    #   (720p) 10, (1080p) 15, (4K) 30 credits per second
+    # The default request (720p, 5 s) is 10 × 5 = 50 credits = $0.5.
+    # Then 1 credit per reference image or frame (the count rules below).
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+        - { per_second_usd: 0.1 }
+        - { when: { resolution: "360p" }, per_second_usd: 0.034 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.15 }
+        - { when: { resolution: "4k" }, per_second_usd: 0.3 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+        - { when: { references: 5 }, add_usd: 0.05 }
+    # The gemini_omni_flash_1.1 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","promptText","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 10, default: 5 }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs GEMINI_OMNI_FLASH_1_1_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["9:16", "16:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [360p, 720p, 1080p, 4k], default: 720p }
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 5 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/gemini_omni_flash_1.2
+    provider: runway
+    media_type: video
+    display_name: Gemini Omni Flash 1.2 (Runway)
+    description: Google's Gemini Omni Flash 1.2 through Runway's API — text-to-video, image-to-video (first and last frame), up to 5 reference images; 3–15 s, 360p to 4k.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; gemini_omni_flash_1.2:
+    #   | `gemini_omni_flash_1.2` (360p) | 2 credits per second, plus 1 credit per reference image …
+    #   (720p) 7, (1080p) 10, (4K) 21 credits per second
+    # The default request (720p, 5 s) is 7 × 5 = 35 credits = $0.35.
+    # Then 1 credit per reference image or frame (the count rules below).
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.35
+      variable_pricing:
+        - { per_second_usd: 0.07 }
+        - { when: { resolution: "360p" }, per_second_usd: 0.02 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.1 }
+        - { when: { resolution: "4k" }, per_second_usd: 0.21 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+        - { when: { references: 5 }, add_usd: 0.05 }
+    # The gemini_omni_flash_1.2 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","promptText","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs GEMINI_OMNI_FLASH_1_1_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["9:16", "16:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [360p, 720p, 1080p, 4k], default: 720p }
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 5 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/kling2.5_turbo_pro
+    provider: runway
+    media_type: video
+    display_name: Kling 2.5 Turbo Pro (Runway)
+    description: Kling 2.5 Turbo Pro through Runway's API — text-to-video, image-to-video (first and last frame); 5–10 s, 720p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; kling2.5_turbo_pro:
+    #   | `kling2.5_turbo_pro` | 12 credits per second
+    # The default request (720p, 5 s) is 12 × 5 = 60 credits = $0.6.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.6
+      variable_pricing:
+        - { per_second_usd: 0.12 }
+    # The kling2.5_turbo_pro branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptText","promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 5, max: 10, default: 5, values: [5, 10] }
+      # `ratio`: text-to-video always sent; image-to-video not sent: the image sets the shape. Each aspect × tier is one size of the branch's enum (video/runway.rs KLING2_5_TURBO_PRO_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9"]
+        default: "16:9"
+        # image_to_video's kling2.5_turbo_pro branch: cfgScale, duration, model,
+        # promptImage, promptText — no ratio, so a frame sets the shape (E5).
+        # @see https://docs.dev.runwayml.com/openapi.json (2026-11-11)
+        frames_set_shape: without_references
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [cfgScale]
+    extra_params:
+      # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
+      cfgScale: { kind: float }
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/kling3.0_standard
+    provider: runway
+    media_type: video
+    display_name: Kling 3.0 Standard (Runway)
+    description: Kling 3.0 Standard through Runway's API — text-to-video, image-to-video (first and last frame); 3–15 s, 720p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; kling3.0_standard:
+    #   | `kling3.0_standard` (no audio) | 9 credits per second
+    #   | `kling3.0_standard` (audio) | 13 credits per second
+    #   use the no-audio rate when `audio` is `false`
+    # The default request (audio, 5 s) is 13 × 5 = 65 credits = $0.65.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.65
+      variable_pricing:
+        - { per_second_usd: 0.13 }
+        - { when: { audio: false }, per_second_usd: 0.09 }
+    # The kling3.0_standard branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["ratio","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect is one size of the branch's enum (video/runway.rs KLING3_0_STANDARD_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [cfgScale, providerSettings]
+    extra_params:
+      # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
+      cfgScale: { kind: float }
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/kling3.0_pro
+    provider: runway
+    media_type: video
+    display_name: Kling 3.0 Pro (Runway)
+    description: Kling 3.0 Pro through Runway's API — text-to-video, image-to-video (first and last frame); 3–15 s, 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; kling3.0_pro:
+    #   | `kling3.0_pro` (no audio) | 12 credits per second
+    #   | `kling3.0_pro` (audio) | 17 credits per second
+    #   use the no-audio rate when `audio` is `false`
+    # The default request (audio, 5 s) is 17 × 5 = 85 credits = $0.85.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.85
+      variable_pricing:
+        - { per_second_usd: 0.17 }
+        - { when: { audio: false }, per_second_usd: 0.12 }
+    # The kling3.0_pro branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["ratio","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect is one size of the branch's enum (video/runway.rs KLING3_0_PRO_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [cfgScale, providerSettings]
+    extra_params:
+      # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
+      cfgScale: { kind: float }
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/kling3.0_4k
+    provider: runway
+    media_type: video
+    display_name: Kling 3.0 4K (Runway)
+    description: Kling 3.0 4K through Runway's API — text-to-video, image-to-video (first and last frame); 3–15 s, 4k.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; kling3.0_4k:
+    #   | `kling3.0_4k` | 43 credits per second
+    #   Kling 3.0 4K uses the same rate either way.
+    # The default request (audio, 5 s) is 43 × 5 = 215 credits = $2.15.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 2.15
+      variable_pricing:
+        - { per_second_usd: 0.43 }
+    # The kling3.0_4k branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["ratio","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect is one size of the branch's enum (video/runway.rs KLING3_0_4K_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [cfgScale, providerSettings]
+    extra_params:
+      # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
+      cfgScale: { kind: float }
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/klingO3_standard
+    provider: runway
+    media_type: video
+    display_name: Kling O3 Standard (Runway)
+    description: Kling O3 Standard through Runway's API — text-to-video, image-to-video (first and last frame), up to 7 reference images; 3–15 s, 720p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; klingO3_standard:
+    #   | `klingO3_standard` | 13 credits per second
+    #   Kling O3 is billed at the rates above whether or not `audio` is `false`.
+    # The default request (audio, 5 s) is 13 × 5 = 65 credits = $0.65.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.65
+      variable_pricing:
+        - { per_second_usd: 0.13 }
+    # The klingO3_standard branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["ratio","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect is one size of the branch's enum (video/runway.rs KLING3_0_STANDARD_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [providerSettings]
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/klingO3_pro
+    provider: runway
+    media_type: video
+    display_name: Kling O3 Pro (Runway)
+    description: Kling O3 Pro through Runway's API — text-to-video, image-to-video (first and last frame), up to 7 reference images; 3–15 s, 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; klingO3_pro:
+    #   | `klingO3_pro` | 17 credits per second
+    #   Kling O3 is billed at the rates above whether or not `audio` is `false`.
+    # The default request (audio, 5 s) is 17 × 5 = 85 credits = $0.85.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.85
+      variable_pricing:
+        - { per_second_usd: 0.17 }
+    # The klingO3_pro branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["ratio","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect is one size of the branch's enum (video/runway.rs KLING3_0_PRO_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [providerSettings]
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/klingO3_4k
+    provider: runway
+    media_type: video
+    display_name: Kling O3 4K (Runway)
+    description: Kling O3 4K through Runway's API — text-to-video, image-to-video (first and last frame), up to 7 reference images; 3–15 s, 4k.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; klingO3_4k:
+    #   | `klingO3_4k` | 43 credits per second
+    #   Kling O3 is billed at the rates above whether or not `audio` is `false`.
+    # The default request (audio, 5 s) is 43 × 5 = 215 credits = $2.15.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 2.15
+      variable_pricing:
+        - { per_second_usd: 0.43 }
+    # The klingO3_4k branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["ratio","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect is one size of the branch's enum (video/runway.rs KLING3_0_4K_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [providerSettings]
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/kling_4
+    provider: runway
+    media_type: video
+    display_name: Kling 4.0 (Runway)
+    description: Kling 4.0 through Runway's API — text-to-video, image-to-video (first and last frame), up to 10 reference images; 3–30 s, 720p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; kling_4:
+    #   | `kling_4` (720p) | … List price: 15.7 and 9.4 credits per second
+    #   | `kling_4` (1080p) | … List price: 23.5 and 14.1 credits per second
+    #   Kling 4.0 includes audio and has no audio toggle. Charges are rounded up to the next credit.
+    # The default request (1080p, 10 s) is 23.5 × 10 = 235 credits = $2.35.
+    # Runway rounds the charge up to the next credit; this bills the exact product (at most $0.01 under).
+    # The list price, not the 20% promotion that ends 2026-11-30 UTC.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 2.35
+      variable_pricing:
+        - { per_second_usd: 0.235 }
+        - { when: { resolution: "720p" }, per_second_usd: 0.157 }
+    # The kling_4 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 26000 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 30, default: 10 }
+      # `ratio`: text-to-video always sent; image-to-video always `auto_<tier>`: the image sets the aspect. Each aspect × tier is one size of the branch's enum (video/runway.rs KLING_4_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9", "21:9"]
+        default: "16:9"
+        # image_to_video's kling_4 branch: ratio "auto_720p" | "auto_1080p" only,
+        # beside its `references`: a frame sets the shape, references or not (E5).
+        # @see https://docs.dev.runwayml.com/openapi.json (2026-11-11)
+        frames_set_shape: always
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 1080p }
+    # references: "Up to 10 images in total, frames included".
+    ref_inputs:
+      max_total: 10
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/kling_4_flash
+    provider: runway
+    media_type: video
+    display_name: Kling 4.0 Flash (Runway)
+    description: Kling 4.0 Flash through Runway's API — text-to-video, image-to-video (first frame), up to 10 reference images; 3–20 s, 720p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; kling_4_flash:
+    #   | `kling_4_flash` (720p) | 9.4 credits per second without input video; … Rounded up to the next credit; 29-credit minimum
+    #   `kling_4_flash` includes audio at the same price on every endpoint.
+    # The default request (5 s) is 9.4 × 5 = 47 credits = $0.47.
+    # Runway rounds the charge up to the next credit; this bills the exact product (at most $0.01 under).
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.47
+      variable_pricing:
+        - { per_second_usd: 0.094 }
+    # The kling_4_flash branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 26000 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 20, default: 5 }
+      # `ratio`: text-to-video always sent; image-to-video not sent: the image sets the shape. Each aspect is one size of the branch's enum (video/runway.rs KLING_4_FLASH_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "9:16", "16:9", "21:9"]
+        default: "16:9"
+        # image_to_video's kling_4_flash branch: ratio const "auto_720p", beside
+        # its `references`: a frame sets the shape, references or not (E5).
+        # @see https://docs.dev.runwayml.com/openapi.json (2026-11-11)
+        frames_set_shape: always
+    # references: "Up to 10 images in total, frames included".
+    ref_inputs:
+      max_total: 10
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/hailuo3
+    provider: runway
+    media_type: video
+    display_name: MiniMax H3 (Runway)
+    description: MiniMax H3 through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 5–15 s, 768P to 2K.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; hailuo3:
+    #   | `hailuo3` (768P) | 10 credits per second, plus 2 credits per reference image or keyframe (including an image-to-video start frame)
+    #   | `hailuo3` (2K) | 15 credits per second, plus 2 credits per reference image or keyframe
+    # The default request (768P, 5 s) is 10 × 5 = 50 credits = $0.5.
+    # Then 2 credits per reference image or frame (the count rules below).
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+        - { per_second_usd: 0.1 }
+        - { when: { resolution: "2K" }, per_second_usd: 0.15 }
+        - { when: { references: 1 }, add_usd: 0.02 }
+        - { when: { references: 2 }, add_usd: 0.04 }
+        - { when: { references: 3 }, add_usd: 0.06 }
+        - { when: { references: 4 }, add_usd: 0.08 }
+        - { when: { references: 5 }, add_usd: 0.1 }
+        - { when: { references: 6 }, add_usd: 0.12 }
+        - { when: { references: 7 }, add_usd: 0.14 }
+        - { when: { references: 8 }, add_usd: 0.16 }
+        - { when: { references: 9 }, add_usd: 0.18 }
+    # The hailuo3 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","promptText","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 6000 }
+    params:
+      duration_seconds: { kind: int, min: 5, max: 15, default: 5 }
+      # `ratio`: text-to-video sent as the aspect itself, always; image-to-video sent as the aspect itself, only when asked.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+        default: "16:9"
+      # `resolution` in both modes.
+      resolution: { kind: string, enum_values: [768P, 2K], default: 768P }
+    ref_inputs:
+      max_total: 11
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/h3_max
+    provider: runway
+    media_type: video
+    display_name: MiniMax H3 Max (Runway)
+    description: MiniMax H3 Max through Runway's API — text-to-video, image-to-video (first and last frame); 5–15 s, 480P to 768P.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; h3_max:
+    #   | `h3_max` (480p) | 5 credits per second
+    #   | `h3_max` (768p) | 8 credits per second
+    # The default request (768P, 5 s) is 8 × 5 = 40 credits = $0.4.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.4
+      variable_pricing:
+        - { per_second_usd: 0.08 }
+        - { when: { resolution: "480P" }, per_second_usd: 0.05 }
+    # The h3_max branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","promptText","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 6000 }
+    params:
+      duration_seconds: { kind: int, min: 5, max: 15, default: 5 }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # `resolution` in both modes, sent as 480p / 768p.
+      resolution: { kind: string, enum_values: [480P, 768P], default: 768P }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [promptExpansionMode]
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/seedance2
+    provider: runway
+    media_type: video
+    display_name: Seedance 2.0 (Runway)
+    description: ByteDance's Seedance 2.0 through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 4–15 s, 480p to 4k.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; seedance2:
+    #   | `seedance2` (480p) | 14 credits per second
+    #   | `seedance2` (720p) | 30 credits per second
+    #   | `seedance2` (1080p) | 40 credits per second
+    #   | `seedance2` (4K) | 150 credits per second
+    #   bill `bitrate: "standard"` (the default) and `bitrate: "high"` at the same rates.
+    # The default request (720p, audio, 5 s) is 30 × 5 = 150 credits = $1.5.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 1.5
+      variable_pricing:
+        - { per_second_usd: 0.3 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.14 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.4 }
+        - { when: { resolution: "4k" }, per_second_usd: 1.5 }
+    # The seedance2 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 10000 }
+    params:
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs SEEDANCE2_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [480p, 720p, 1080p, 4k], default: 720p }
+    ref_inputs:
+      max_total: 11
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: [bitrate]
+    extra_params:
+      # From the pricing comment above.
+      bitrate: { kind: string, enum_values: ["standard", "high"], default: "standard" }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/seedance2_fast
+    provider: runway
+    media_type: video
+    display_name: Seedance 2.0 Fast (Runway)
+    description: ByteDance's Seedance 2.0 Fast through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 4–15 s, 480p to 720p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; seedance2_fast:
+    #   | `seedance2_fast` (480p) | 11 credits per second
+    #   | `seedance2_fast` (720p) | 24 credits per second
+    #   bill `bitrate: "standard"` (the default) and `bitrate: "high"` at the same rates.
+    # The default request (720p, audio, 5 s) is 24 × 5 = 120 credits = $1.2.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 1.2
+      variable_pricing:
+        - { per_second_usd: 0.24 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.11 }
+    # The seedance2_fast branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 10000 }
+    params:
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs SEEDANCE2_FAST_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [480p, 720p], default: 720p }
+    ref_inputs:
+      max_total: 11
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: [bitrate]
+    extra_params:
+      # From the pricing comment above.
+      bitrate: { kind: string, enum_values: ["standard", "high"], default: "standard" }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/seedance2_mini
+    provider: runway
+    media_type: video
+    display_name: Seedance 2.0 Mini (Runway)
+    description: ByteDance's Seedance 2.0 Mini through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 4–15 s, 480p to 720p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; seedance2_mini:
+    #   | `seedance2_mini` (480p) | 7 credits per second
+    #   | `seedance2_mini` (720p) | 15 credits per second
+    #   bill `bitrate: "standard"` (the default) and `bitrate: "high"` at the same rates.
+    # The default request (720p, audio, 5 s) is 15 × 5 = 75 credits = $0.75.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.75
+      variable_pricing:
+        - { per_second_usd: 0.15 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.07 }
+    # The seedance2_mini branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 10000 }
+    params:
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs SEEDANCE2_FAST_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [480p, 720p], default: 720p }
+    ref_inputs:
+      max_total: 11
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: [bitrate]
+    extra_params:
+      # From the pricing comment above.
+      bitrate: { kind: string, enum_values: ["standard", "high"], default: "standard" }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/seedance2_5
+    provider: runway
+    media_type: video
+    display_name: Seedance 2.5 (Runway)
+    description: ByteDance's Seedance 2.5 through Runway's API — text-to-video, image-to-video (first and last frame), up to 30 reference images; 4–30 s, 480p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; seedance2_5:
+    #   | `seedance2_5` (480p) | 20 credits per second of output, plus … input and reference video
+    #   | `seedance2_5` (720p) | 30 credits per second of output, plus … input and reference video
+    #   | `seedance2_5` (1080p) | 68 credits per second of output, plus … input and reference video
+    #   A preview (`draft: true` …) bills at the 480p rate.
+    # The default request (720p, audio, 5 s) is 30 × 5 = 150 credits = $1.5.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 1.5
+      variable_pricing:
+        - { per_second_usd: 0.3 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.2 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.68 }
+        - { when: { extra.draft: true }, per_second_usd: 0.2 }
+    # The seedance2_5 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, max_length: 15000 }
+    params:
+      duration_seconds: { kind: int, min: 4, max: 30, default: 5 }
+      # `audio` "default": true; sent only when asked.
+      audio: { kind: bool, default: true }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs SEEDANCE2_5_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [480p, 720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 32
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 30 }
+    extra_allowlist: [draft]
+    extra_params:
+      # A switch: "A preview (`draft: true` …) bills at the 480p rate" (the price above).
+      draft: { kind: bool }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/grok_imagine_1_5
+    provider: runway
+    media_type: video
+    display_name: Grok Imagine Video 1.5 (Runway)
+    description: xAI's Grok Imagine Video 1.5 through Runway's API — text-to-video, image-to-video (first frame), up to 7 reference images; 1–15 s, 480p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; grok_imagine_1_5:
+    #   | `grok_imagine_1_5` (480p) | 10 credits per second, plus 1 credit per image or audio reference (including an image-to-video start frame)
+    #   (720p) 16, (1080p) 29 credits per second
+    # The default request (720p, 5 s) is 16 × 5 = 80 credits = $0.8.
+    # Then 1 credit per reference image or frame (the count rules below).
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.8
+      variable_pricing:
+        - { per_second_usd: 0.16 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.1 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.29 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+        - { when: { references: 5 }, add_usd: 0.05 }
+        - { when: { references: 6 }, add_usd: 0.06 }
+        - { when: { references: 7 }, add_usd: 0.07 }
+    # The grok_imagine_1_5 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
+      # `ratio`: text-to-video sent as the aspect itself, always; image-to-video not sent: the image sets the shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]
+        default: "16:9"
+        # image_to_video's grok_imagine_1_5 branch: duration, model, promptImage,
+        # promptText, resolution — no ratio, so a frame sets the shape (E5).
+        # @see https://docs.dev.runwayml.com/openapi.json (2026-11-11)
+        frames_set_shape: without_references
+      # `resolution` in both modes.
+      resolution: { kind: string, enum_values: [480p, 720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 8
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/grok_imagine_1_5_lite
+    provider: runway
+    media_type: video
+    display_name: Grok Imagine Video 1.5 Lite (Runway)
+    description: xAI's Grok Imagine Video 1.5 Lite through Runway's API — text-to-video, image-to-video (first frame); 1–15 s, 480p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; grok_imagine_1_5_lite:
+    #   | `grok_imagine_1_5_lite` (480p) | 2 credits per second, plus 1 credit for an image-to-video start frame
+    #   (720p) 3, (1080p) 14 credits per second
+    # The default request (720p, 5 s) is 3 × 5 = 15 credits = $0.15.
+    # Then 1 credit for an image-to-video start frame (the count rules below).
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.15
+      variable_pricing:
+        - { per_second_usd: 0.03 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.02 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.14 }
+        - { when: { references.first_frame: 1 }, add_usd: 0.01 }
+    # The grok_imagine_1_5_lite branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
+      # `ratio`: text-to-video always sent; image-to-video always `auto_<tier>`: the image sets the aspect. Each aspect × tier is one size of the branch's enum (video/runway.rs GROK_IMAGINE_1_5_LITE_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"]
+        default: "16:9"
+        # image_to_video's grok_imagine_1_5_lite branch: ratio "auto_480p" |
+        # "auto_720p" | "auto_1080p" only, so a frame sets the shape (E5).
+        # @see https://docs.dev.runwayml.com/openapi.json (2026-11-11)
+        frames_set_shape: without_references
+      resolution: { kind: string, enum_values: [480p, 720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/wan3
+    provider: runway
+    media_type: video
+    display_name: Wan 3.0 (Runway)
+    description: Alibaba's Wan 3.0 through Runway's API — text-to-video, image-to-video (first and last frame), up to 10 reference images; 2–30 s, 480p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; wan3:
+    #   | `wan3` (480p) | 5 credits per second
+    #   | `wan3` (720p) | 10 credits per second
+    #   | `wan3` (1080p) | 20 credits per second
+    # The default request (720p, 5 s) is 10 × 5 = 50 credits = $0.5.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+        - { per_second_usd: 0.1 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.05 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.2 }
+    # The wan3 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","promptText","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 20000 }
+    params:
+      duration_seconds: { kind: int, min: 2, max: 30, default: 5 }
+      # `audio` (no default documented); sent only when asked.
+      audio: { kind: bool }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape); a tier alone is `auto_<tier>`. Each aspect × tier is one size of the branch's enum (video/runway.rs WAN3_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:4", "4:3", "9:16", "16:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [480p, 720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 12
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/wan3_prime
+    provider: runway
+    media_type: video
+    display_name: Wan 3.0 Prime (Runway)
+    description: Alibaba's Wan 3.0 Prime through Runway's API — text-to-video, image-to-video (first and last frame), up to 10 reference images; 2–30 s, 480p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; wan3_prime:
+    #   | `wan3_prime` (480p) | 6.8 credits per second
+    #   | `wan3_prime` (720p) | 14 credits per second
+    #   | `wan3_prime` (1080p) | 28 credits per second
+    # The default request (720p, 5 s) is 14 × 5 = 70 credits = $0.7.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.7
+      variable_pricing:
+        - { per_second_usd: 0.14 }
+        - { when: { resolution: "480p" }, per_second_usd: 0.068 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.28 }
+    # The wan3_prime branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","promptText","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 20000 }
+    params:
+      duration_seconds: { kind: int, min: 2, max: 30, default: 5 }
+      # `audio` (no default documented); sent only when asked.
+      audio: { kind: bool }
+      # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape); a tier alone is `auto_<tier>`. Each aspect × tier is one size of the branch's enum (video/runway.rs WAN3_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:4", "4:3", "9:16", "16:9"]
+        default: "16:9"
+      resolution: { kind: string, enum_values: [480p, 720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 12
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: runway/happyhorse_1_0
+    provider: runway
+    media_type: video
+    display_name: HappyHorse 1.0 (Runway)
+    description: HappyHorse 1.0 through Runway's API — text-to-video, image-to-video (first frame); 3–15 s, 720p to 1080p.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
+    # "Credits can be purchased for $0.01 per credit"; happyhorse_1_0:
+    #   | `happyhorse_1_0` (720p) | 15 credits per second
+    #   | `happyhorse_1_0` (1080p) | 30 credits per second
+    # The default request (720p, 5 s) is 15 × 5 = 75 credits = $0.75.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    pricing:
+      base_cost_usd: 0.75
+      variable_pricing:
+        - { per_second_usd: 0.15 }
+        - { when: { resolution: "1080p" }, per_second_usd: 0.3 }
+    # The happyhorse_1_0 branches of POST /v1/text_to_video and /v1/image_to_video:
+    # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
+    capabilities: { text_to_video: true, image_to_video: true }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, min_length: 2, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # `ratio`: text-to-video always sent; image-to-video not sent: the image sets the shape. Each aspect × tier is one size of the branch's enum (video/runway.rs HAPPYHORSE_1_0_SIZES).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "3:4", "4:3", "9:16", "16:9"]
+        default: "16:9"
+        # image_to_video's happyhorse_1_0 branch: duration, model, promptImage,
+        # promptText, resolution — no ratio, so a frame sets the shape (E5).
+        # @see https://docs.dev.runwayml.com/openapi.json (2026-11-11)
+        frames_set_shape: without_references
+      # `resolution` on image-to-video (text-to-video takes the tier through `ratio`).
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]

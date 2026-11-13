@@ -1,17 +1,23 @@
 # Format research behind `litegen-core/src/mesh/`
 
-The two notes here were written on 2026-10-12, before the FBX, USD/USDZ, 3MF and
-Collada codecs were built. They hold what each format actually requires, checked
-against real files and tools, with the sources for every claim. Code comments that
-say "research notes §…" mean these files.
+The first two notes here were written on 2026-10-12, before the FBX, USD/USDZ, 3MF and
+Collada codecs were built. The other two were written on 2026-11-04 for the mesh-gaps
+specs ([overview](../specs/2026-11-04-mesh-gaps-overview-design.md)). They hold what each
+format actually requires, checked against real files and tools, with the sources for
+every claim. Code comments that say "research notes §…" mean these files.
 
 | Note | Covers |
 |---|---|
 | [`research-fbx.md`](research-fbx.md) | Binary FBX 7400/7500 written without the Autodesk SDK: container, objects, geometry layers, skins, blend shapes, materials, textures, animation curves, axis and unit settings, and what each reader (SDK tools, Blender, Assimp, three.js, ufbx) accepts. Also covers licensing. |
 | [`research-usd-3mf-dae.md`](research-usd-3mf-dae.md) | USD (USDA grammar, the USDC crate encoding, USDZ packaging, UsdPreviewSurface, UsdSkel, `usdchecker --arkit`), 3MF Core and Materials, and COLLADA 1.4.1, each mapped to and from glTF 2.0. |
+| [`research-codecs.md`](research-codecs.md) | Draco and meshopt decoding, KTX2/Basis Universal transcoding to RGBA8, and writing USDC crate files: what each spec requires, the Rust crates (versions, licences, maintenance), upstream source sizes, test assets, and what a std-only implementation would take. |
+| [`research-consumers.md`](research-consumers.md) | What real readers do with the mesh-gap features, in sections Q1–Q10: several USD clips, unlit USD materials, FBX animation layers, ASCII FBX, Collada morphs, points and lines, more than two UV sets, glTF cameras, lights and `skin.skeleton`, big-endian PLY, and glTF material extensions in other formats. |
+| [`research-blender-light-units.md`](research-blender-light-units.md) | Blender 5.2's light-strength factors for FBX and USD (import and export), each read from Blender's source and checked in Blender itself: the basis of the `fbx_light_units` and `usd_light_units` options. |
+| [`research-scenekit-collada-morphs.md`](research-scenekit-collada-morphs.md) | What SceneKit plays from a Collada morph controller: default weights, weight animation (and the one channel target it binds), skin over morph, NORMALIZED vs RELATIVE, and normals. The basis of the `dae_morphs=keep` form. |
 
 Each claim carries a tag that says how it was checked. The tags are defined at the
-top of each note. In short:
+top of each note, except in `research-codecs.md`, which cites its sources inline and
+ends with what it could not establish. In short:
 
 - **Checked locally with a real tool or real bytes:** `[V]` and `[L]`.
 - **Taken from a primary source** (a spec or upstream source, cited inline): `[S]`, `[3js]`, `[assimp]`, `[ufbx]`, `[SDK-doc]`.
@@ -24,6 +30,8 @@ it:
 
 - `scratchpad/fbx/…` is now [`fbx/`](fbx/).
 - `scratchpad/usd3mfdae/…` is now [`usd3mfdae/`](usd3mfdae/).
+- The 2026-11-04 notes' probe files weren't kept. `research-consumers.md`'s appendix
+  says how to redo each probe.
 
 Only the scripts we wrote and the hand-written inputs were kept:
 

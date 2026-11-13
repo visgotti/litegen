@@ -103,14 +103,13 @@ file_uri
 fps
 generationConfig
 google_search
-image
+imageConfig
 imageSearch
 imageSize
 includeThoughts
 inline_data
 mime_type
 parts
-responseFormat
 responseModalities
 role
 searchTypes

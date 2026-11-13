@@ -1,15 +1,19 @@
 models:
-  # Imagen 3 (imagen-3.0-generate-002) was shut down 2025-11-10. Imagen 4 is
-  # deprecated with an announced 2026-08-17 shutdown (not yet marked shut down
-  # on the deprecations page as of 2026-09-11). Google's stated migration
-  # target is Nano Banana — gemini-3.1-flash-image.
-  # @see https://ai.google.dev/gemini-api/docs/deprecations
+  # Imagen 3 (imagen-3.0-generate-002) was shut down 2025-11-10 and Imagen 4
+  # (imagen-4.0-*-001) on 2026-08-17; the deprecations table names
+  # gemini-nano-banana-2.1 as every Imagen model's replacement, and the image
+  # guide says "Imagen is shut down and no longer available through the
+  # Gemini API." (2026-11-09)
+  # @see https://aistudio.google.com/docs/deprecations
+  # @see https://aistudio.google.com/docs/image-generation
   #
-  # Nano Banana (generateContent) typings, verified 2026-09-11:
+  # Nano Banana (generateContent) typings, re-verified 2026-11-09 on the
+  # generateContent variant of Google's image guide (`?generate-content=true`;
+  # the plain page now documents the Interactions API):
   # - aspect ratios: the per-model tables under "Aspect ratios and image size"
-  #   @see https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size
-  # - reference images: "Gemini 3 image models let you mix up to 14 reference images"
-  #   @see https://ai.google.dev/gemini-api/docs/generate-content/image-generation#use-14-images
+  #   @see https://aistudio.google.com/docs/image-generation?generate-content=true#aspect-ratios-and-image-size
+  # - reference images: "Nano Banana models allow you to mix up to 14 reference images"
+  #   @see https://aistudio.google.com/docs/image-generation?generate-content=true#use-14-images
   # - personGeneration is not allowlisted: the Developer API's ImageConfig has
   #   only aspectRatio + imageSize, and python-genai rejects person_generation
   #   "in Gemini Developer API mode" (it is a Gemini Enterprise/Vertex field).
@@ -18,20 +22,26 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 3.1 Flash Image (Nano Banana 2)
-    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+    docs_url: https://aistudio.google.com/docs/image-generation?generate-content=true
     # Deprecated 2026-10-06 with no shutdown date; Google's successor is
-    # gemini-nano-banana-2.1. @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
+    # gemini-nano-banana-2.1. @see https://aistudio.google.com/docs/deprecations (2026-11-09)
     description: "Nano Banana 2 (GA 2026-05-28). Deprecated 2026-10-06, no shutdown date announced;
       Google's successor is gemini-nano-banana-2.1."
     # "The `gemini-3.1-flash-image` model is deprecated (no shutdown date
     # announced). Migrate to `gemini-nano-banana-2.1`." (changelog, Oct 6)
-    # @see https://ai.google.dev/gemini-api/docs/changelog (2026-10-30)
+    # @see https://aistudio.google.com/docs/changelog (2026-11-09)
     deprecated_at: 2026-10-06
     replaced_by: google/gemini-nano-banana-2.1
-    # Standard tier: $60 per 1M image output tokens; a 1K image (1024x1024, 1120
-    # tokens) is $0.067 — the default request (no imageSize). Verified 2026-09-11.
-    # @see https://ai.google.dev/gemini-api/docs/pricing
-    pricing: { base_cost_usd: 0.067 }
+    # Standard tier: $60 per 1M image output tokens, "Equivalent to $0.045 per
+    # 0.5K image … $0.067 per 1K image, $0.101 per 2K image, and $0.151 per 4K
+    # image" (747, 1120, 1680 and 2520 tokens); the default request is 1K.
+    # @see https://aistudio.google.com/docs/pricing (2026-11-09)
+    pricing:
+      base_cost_usd: 0.067
+      variable_pricing:
+        - { when: { resolution: "0.5K" }, usd: 0.045 }
+        - { when: { resolution: "2K" }, usd: 0.101 }
+        - { when: { resolution: "4K" }, usd: 0.151 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 8000 }
     params:
@@ -39,13 +49,20 @@ models:
         kind: aspect_ratio
         # "3.1 Flash Image" table: 14 ratios (1:4, 4:1, 1:8, 8:1 are new in 3.1)
         allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","1:8","8:1"]
+      # imageSize: "Supported values are `512`, `1K`, `2K`, `4K`. If not
+      # specified, the model will use default value `1K`", sent as
+      # imageConfig.imageSize (litegen's 0.5K is Google's 512).
+      # @see https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta (ImageConfig, 2026-11-03)
+      # 3.1 Flash Image "adds the smaller 512px (0.5K) resolution".
+      # @see https://aistudio.google.com/docs/image-generation?generate-content=true (2026-11-09)
+      resolution: { kind: string, enum_values: ["0.5K", "1K", "2K", "4K"], default: "1K" }
     ref_inputs:
       max_total: 14   # up to 10 object + 4 character references
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
-    extra_allowlist: [imageSize]
+    extra_allowlist: []
     tags: [text-to-image, image-to-image]
 
   # Google's successor to gemini-3.1-flash-image (GA 2026-10-06): the same
@@ -53,64 +70,82 @@ models:
   # ratios; imageSize 1K (default), 2K or 4K — "512 (0.5K) … not supported
   # on Gemini Nano Banana 2.1"; "character consistency for up to 4
   # characters and object fidelity for up to 10 objects".
-  # @see https://ai.google.dev/gemini-api/docs/generate-content/image-generation (2026-10-30)
-  # @see https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1 (2026-10-30)
+  # @see https://aistudio.google.com/docs/image-generation?generate-content=true (2026-11-09)
+  # @see https://aistudio.google.com/docs/models/gemini-nano-banana-2.1 (2026-11-09)
   - id: google/gemini-nano-banana-2.1
     provider: google
     media_type: image
     display_name: Gemini Nano Banana 2.1
     description: Google's successor to Nano Banana 2 (gemini-3.1-flash-image), GA 2026-10-06.
-    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+    docs_url: https://aistudio.google.com/docs/image-generation?generate-content=true
     # "Equivalent to $0.0336 per 1K image, $0.0504 per 2K image, and $0.113
     # per 4K image": the default request is 1K. Thinking (default medium) is
     # billed apart and not modelled.
-    # @see https://ai.google.dev/gemini-api/docs/pricing (2026-10-30)
+    # @see https://aistudio.google.com/docs/pricing (2026-11-09)
     pricing:
       base_cost_usd: 0.0336
       variable_pricing:
-        - { when: { extra.imageSize: 2K }, usd: 0.0504 }
-        - { when: { extra.imageSize: 4K }, usd: 0.113 }
+        - { when: { resolution: "2K" }, usd: 0.0504 }
+        - { when: { resolution: "4K" }, usd: 0.113 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 8000 }
     params:
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","1:8","8:1"]
+      # imageSize: "Supported values are `512`, `1K`, `2K`, `4K`. If not
+      # specified, the model will use default value `1K`", sent as
+      # imageConfig.imageSize (litegen's 0.5K is Google's 512).
+      # @see https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta (ImageConfig, 2026-11-03)
+      # Not 512: "(not supported on Gemini Nano Banana 2.1)".
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
     ref_inputs:
       max_total: 14   # up to 10 object + 4 character references
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
-    extra_allowlist: [imageSize]
+    extra_allowlist: []
     tags: [text-to-image, image-to-image]
 
   - id: google/gemini-3.1-flash-lite-image
     provider: google
     media_type: image
     display_name: Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)
-    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+    docs_url: https://aistudio.google.com/docs/image-generation?generate-content=true
     description: Fastest, cheapest Nano Banana 2 tier.
-    # Standard tier: $30 per 1M image output tokens; a 1K image (1120 tokens) is
-    # $0.0336. Verified 2026-09-11.
-    # @see https://ai.google.dev/gemini-api/docs/pricing
-    pricing: { base_cost_usd: 0.034 }
+    # Standard tier: "$30.00 (images)" per 1M output tokens, "Equivalent to
+    # $0.0336 per 1K resolution image"; "Output images at 1K (1024x1024px)
+    # consume 1120 tokens and are equivalent to $0.0336 per image". 1K is its
+    # only size.
+    # @see https://aistudio.google.com/docs/pricing (ai.google.dev/gemini-api/docs/pricing redirects here, 2026-11-09)
+    pricing: { base_cost_usd: 0.0336 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 8000 }
     params:
       aspect_ratio:
         kind: aspect_ratio
-        # "3.1 Flash Lite Image" table: the same 14 ratios as 3.1 Flash
+        # The same 14 ratios as 3.1 Flash. The guide's "Aspect ratios and
+        # image size" tabs no longer include a Flash Lite table (2026-11-09:
+        # Nano Banana 2.1, 3.1 Flash Image, 3.1 Pro Image, Gemini 2.5 Flash
+        # Image); the model card says "Supports a discrete set of 14 aspect
+        # ratios" and lists ten of them, and the discovery doc's
+        # ImageConfig.aspectRatio lists all 14 without a per-model scope.
+        # @see https://aistudio.google.com/docs/models/gemini-3.1-flash-lite-image (2026-11-09)
         allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","1:8","8:1"]
+    # "Nano Banana models allow you to mix up to 14 reference images" (Flash
+    # Lite is Nano Banana 2 Lite); the per-model breakdown beside it no longer
+    # lists Flash Lite (it had said "up to 14 objects").
+    # @see https://aistudio.google.com/docs/image-generation?generate-content=true#use-14-images (2026-11-09)
     ref_inputs:
-      max_total: 14   # up to 14 object references
+      max_total: 14
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
     # "Supported image_size values: 1024px (1K). (Note: 2K and 4K are
     # unsupported)." 1K is the default, so nothing passes through.
-    # @see https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image (2026-10-30)
+    # @see https://aistudio.google.com/docs/models/gemini-3.1-flash-lite-image (2026-11-09)
     extra_allowlist: []
     tags: [text-to-image, image-to-image, fast]
 
@@ -118,32 +153,38 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 2.5 Flash (image)
-    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+    docs_url: https://aistudio.google.com/docs/image-generation?generate-content=true
     # Google moved the shutdown from 2026-10-02 to 2027-03-15 and now names
     # gemini-3.1-flash-lite-image as the replacement.
-    # @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
+    # @see https://aistudio.google.com/docs/deprecations (2026-11-09)
     description: "Gemini 2.5 Flash image generation. Deprecated; shuts down 2027-03-15 —
       migrate to google/gemini-3.1-flash-lite-image."
     # "| `gemini-2.5-flash-image` | October 2, 2025 | March 15, 2027 |
     # `gemini-3.1-flash-lite-image` |" (the first date is its release).
-    # @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-30)
+    # @see https://aistudio.google.com/docs/deprecations (2026-11-09)
     retires_at: 2027-03-15
     replaced_by: google/gemini-3.1-flash-lite-image
-    pricing: { base_cost_usd: 0.02 }
+    # Standard tier, "Output price": "$0.039 per image" ($0.0195 on the Batch
+    # and Flex tiers, which litegen does not use).
+    # @see https://aistudio.google.com/docs/pricing (ai.google.dev/gemini-api/docs/pricing redirects here, 2026-11-09)
+    pricing: { base_cost_usd: 0.039 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 4000 }
     params:
       aspect_ratio:
         kind: aspect_ratio
-        # Google's per-model table lists 10 ratios, 4:5 and 5:4 included (2026-10-12):
-        # https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size
+        # Google's "Gemini 2.5 Flash Image" table lists 10 ratios, 4:5 and 5:4 included (2026-11-09):
+        # https://aistudio.google.com/docs/image-generation?generate-content=true#aspect-ratios-and-image-size
         allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"]
+    # "Maximum images per prompt: 3" (Google's model page); "works best with
+    # up to 3 images as input" (the Gemini API image page).
+    # @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-image (2026-11-03)
     ref_inputs:
-      max_total: 1
+      max_total: 3
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 1 }
+        init: { required: false, min_count: 0, max_count: 3 }
     extra_allowlist: []
     tags: [text-to-image, image-to-image]
 
@@ -151,33 +192,44 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 3 Pro (image)
-    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+    docs_url: https://aistudio.google.com/docs/image-generation?generate-content=true
     description: Gemini 3 Pro image generation.
-    # Standard tier: $120 per 1M image output tokens; a 1K/2K image (1120 tokens)
-    # is $0.134 (4K: $0.24). Verified 2026-09-11.
-    # @see https://ai.google.dev/gemini-api/docs/pricing
-    pricing: { base_cost_usd: 0.134 }
+    # Standard tier: "$120.00 (images)" per 1M output tokens, "Equivalent to
+    # $0.134 per 1K/2K image and $0.24 per 4K image" (1120 tokens at 1K/2K).
+    # @see https://aistudio.google.com/docs/pricing (2026-11-09)
+    pricing:
+      base_cost_usd: 0.134
+      # A 4K image (`resolution: 4K`) is $0.24.
+      variable_pricing:
+        - { when: { resolution: "4K" }, usd: 0.24 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 8000 }
     params:
       aspect_ratio:
         kind: aspect_ratio
-        # the Pro table (headed "3.1 Pro Image"; its 1K/2K/4K sizes and
-        # 1120/2000 tokens are gemini-3-pro-image's): 10 ratios, no 1:4/4:1/1:8/8:1
+        # the Pro table (headed "3.1 Pro Image" on the generateContent variant
+        # of the guide, "3 Pro Image" on the Interactions variant; its 1K/2K/4K
+        # sizes and 1120/2000 tokens are gemini-3-pro-image's): 10 ratios, no
+        # 1:4/4:1/1:8/8:1 (2026-11-09)
         allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"]
+      # imageSize: "Supported values are `512`, `1K`, `2K`, `4K`" — the Pro
+      # table has 1K, 2K and 4K only. Sent as imageConfig.imageSize.
+      # @see https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta (ImageConfig, 2026-11-03)
+      # @see https://aistudio.google.com/docs/image-generation?generate-content=true (2026-11-09)
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
     ref_inputs:
       max_total: 14   # up to 6 object + 5 character + 3 style references
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
-    extra_allowlist: [imageSize]
+    extra_allowlist: []
     tags: [text-to-image, image-to-image, multi-ref]
 
   # ─── Veo (video) ──────────────────────────────────────────────────────────
   # None carried. The Gemini API's Veo 3.1 previews (veo-3.1-generate-preview,
   # -fast-, -lite-) were shut down on 2026-10-22, and Google names
-  # gemini-omni-1.1-flash (Interactions API) as their replacement; the GA
+  # gemini-omni-1.2-flash (Interactions API) as their replacement; the GA
   # veo-3.1-generate-001 / -fast-generate-001 live on Agent Platform, which
   # this adapter does not call. Veo 2.0 and 3.0 were shut down 2026-06-30.
-  # @see https://ai.google.dev/gemini-api/docs/deprecations
+  # @see https://aistudio.google.com/docs/deprecations (2026-11-09)

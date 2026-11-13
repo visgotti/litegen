@@ -17,7 +17,7 @@ use crate::auth::password::{
 };
 use crate::config::Mode;
 use crate::types::{Application, Organization, PasswordReset, Role, User};
-use crate::util::slug::{default_org_name_from_email, slugify, unique_org_slug};
+use crate::management::slug::{default_org_name_from_email, slugify, unique_org_slug};
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -680,12 +680,11 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::api::middleware::{auth_middleware, csrf_middleware};
-    use once_cell::sync::Lazy;
-    use std::sync::Mutex;
     use crate::capabilities::CapabilityRegistry;
 
-    /// Mutex to serialize tests that mutate environment variables.
-    static ENV_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    /// Serializes the tests that mutate environment variables. Async-aware,
+    /// since each holds it across its awaits.
+    static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     use crate::config::{AppConfig, CacheGlobalConfig};
     use crate::db::sqlite::SqliteDatabase;
     use crate::proxy::cache::GenerationCache;
@@ -847,7 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn signup_requires_owner_email_when_set() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = ENV_MUTEX.lock().await;
         std::env::set_var("LITEGEN__OWNER_EMAIL", "allowed@test.com");
         let state = build_state().await;
         let app = build_auth_router(state);
@@ -1276,7 +1275,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_request_inserts_token_for_known_email() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = ENV_MUTEX.lock().await;
         std::env::set_var("LITEGEN__DEV__EXPOSE_RESET_TOKENS", "true");
         let state = build_state().await;
         create_user_with_password(&state, "reset@test.com", "password12345678").await;
@@ -1300,7 +1299,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_confirm_with_valid_token_updates_password() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = ENV_MUTEX.lock().await;
         std::env::set_var("LITEGEN__DEV__EXPOSE_RESET_TOKENS", "true");
         let state = build_state().await;
         create_user_with_password(&state, "resetconfirm@test.com", "oldpassword12345").await;
@@ -1343,7 +1342,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_confirm_token_is_single_use() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = ENV_MUTEX.lock().await;
         std::env::set_var("LITEGEN__DEV__EXPOSE_RESET_TOKENS", "true");
         let state = build_state().await;
         create_user_with_password(&state, "resetonce@test.com", "oldpassword12345").await;
@@ -1423,7 +1422,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_confirm_revokes_all_sessions() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = ENV_MUTEX.lock().await;
         std::env::set_var("LITEGEN__DEV__EXPOSE_RESET_TOKENS", "true");
         let state = build_state().await;
         create_user_with_password(&state, "revokeall@test.com", "oldpassword12345").await;

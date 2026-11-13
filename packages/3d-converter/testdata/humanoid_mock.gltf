@@ -1,0 +1,168 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "packages/3d-converter/testdata: hand-written"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0,
+    1
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "body",
+   "mesh": 0,
+   "skin": 0
+  },
+  {
+   "name": "hips",
+   "translation": [
+    0,
+    1,
+    0
+   ],
+   "children": [
+    2,
+    6,
+    7
+   ]
+  },
+  {
+   "name": "torso",
+   "translation": [
+    0,
+    0.2,
+    0
+   ],
+   "children": [
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "name": "head",
+   "translation": [
+    0,
+    0.3,
+    0
+   ]
+  },
+  {
+   "name": "arm_l",
+   "translation": [
+    0.2,
+    0.2,
+    0
+   ]
+  },
+  {
+   "name": "arm_r",
+   "translation": [
+    -0.2,
+    0.2,
+    0
+   ]
+  },
+  {
+   "name": "leg_l",
+   "translation": [
+    0.1,
+    -0.1,
+    0
+   ]
+  },
+  {
+   "name": "leg_r",
+   "translation": [
+    -0.1,
+    -0.1,
+    0
+   ]
+  }
+ ],
+ "meshes": [
+  {
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "JOINTS_0": 1,
+      "WEIGHTS_0": 2
+     }
+    }
+   ]
+  }
+ ],
+ "skins": [
+  {
+   "joints": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "skeleton": 1
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 3,
+   "type": "VEC3",
+   "min": [
+    0,
+    0,
+    0
+   ],
+   "max": [
+    1,
+    1,
+    0
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5121,
+   "count": 3,
+   "type": "VEC4"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 3,
+   "type": "VEC4"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 36
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 36,
+   "byteLength": 12
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 48,
+   "byteLength": 48
+  }
+ ],
+ "buffers": [
+  {
+   "byteLength": 96,
+   "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAA"
+  }
+ ]
+}

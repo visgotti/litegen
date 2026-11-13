@@ -144,6 +144,12 @@
   border-color: color-mix(in srgb, var(--success) 50%, var(--border-strong));
 }
 
+/* A 3D model output: the secondary accent, lightened to read on the dark surface. */
+.model3d {
+  color: color-mix(in srgb, var(--accent-2) 60%, #ffffff);
+  border-color: color-mix(in srgb, var(--accent-2) 50%, var(--border-strong));
+}
+
 /* An operation on a source (rig, animate, extend, segment …), not a fresh
    generation: worth a glance before choosing the model. */
 .task {
@@ -168,6 +174,42 @@
 .price {
   font-family: var(--font-mono);
   color: var(--text);
+  white-space: nowrap;
+}
+
+/* The row's price depends on the request: its rules are in the details. */
+.varies {
+  color: var(--muted);
+  font-family: inherit;
+}
+
+/* What the prices mean, once for the whole list. */
+.note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  max-width: 80ch;
+  margin: -16px 0 28px;
+}
+
+.priceLine {
+  margin: 0 0 6px;
+}
+
+/* A row's price rules, in the order the engine applies them. Some rows have
+   over a hundred, so a long list scrolls inside the details; the numbers sit
+   inside the box, since a scrolling box clips markers outside it. */
+.priceRules {
+  margin: 0;
+  padding: 0;
+  list-style-position: inside;
+  max-height: 18em;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.priceRules li + li {
+  margin-top: 2px;
 }
 
 .detail {
@@ -221,6 +263,32 @@
 .default {
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+/* A param's own description, under its line. */
+.paramDesc {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 2px 0 0;
+  max-width: 70ch;
+}
+
+/* An animate model's clips: hundreds on some rows, so the list scrolls. */
+.presets {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 12em;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Deprecated by the vendor, or with a shutdown date announced. */
+.deprecated {
+  color: #fbbf24;
+  border-color: color-mix(in srgb, #fbbf24 50%, var(--border-strong));
 }
 
 .tags {

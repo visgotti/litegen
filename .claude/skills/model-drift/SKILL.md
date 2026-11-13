@@ -19,9 +19,14 @@ Details: `scripts/model-drift/README.md`.
 node scripts/model-drift/check.mjs --json > "$TMPDIR/drift.json"; echo "exit=$?"
 ```
 
-Exit codes: 0 means clean. 1 means drift. 2 means a source or definition is
-broken. The run rewrites `scripts/model-drift/snapshots/`. Handle every exit-2
-item first, then re-run. Drift results from a broken provider mean nothing.
+Exit codes: 0 means clean. 1 means drift: a `new`, `missing` or `deprecated
+upstream` model, a `changed` snapshot, or a source with `no baseline`. 2
+means a source or definition is broken, or the command line is (a bad flag
+or value is refused before anything is fetched or written). The run rewrites
+`scripts/model-drift/snapshots/`. Handle every exit-2 item first, then
+re-run. Drift results from a broken provider mean nothing. In `--json`, each
+provider lists `noBaseline` (source keys) and `deprecated`
+(`[{ model, vendorIds }]`) beside `new`, `missing` and `changed`.
 
 ## Who decides what
 
@@ -31,8 +36,10 @@ item first, then re-run. Drift results from a broken provider mean nothing.
 | `FAILED (config)` | Map the model in `providers/<p>.mjs` from the adapter's model-resolution code | — |
 | `FAILED (typings)` | Add or re-scope a source whose snapshot holds that model's request schema (`untyped` only when the vendor publishes none) | — |
 | `changed` snapshot, or a schema showing our typings are wrong | Fix it (typings recipe) | — |
+| `no baseline: <key>` | The snapshot was never reviewed: read all of `<p>/<key>.txt` in the folder the run used, and run the typings recipe on it | — |
 | `new` id | Verify it in the vendor docs: endpoint, price, and whether our adapter serves it unchanged | Add or skip |
-| `missing` | Confirm it in the vendor changelog or deprecations page | Remove or replace |
+| `missing` | Confirm it in the vendor changelog or deprecations page. A model a source lists as deprecated is reported as `deprecated upstream`, not `missing` | Remove or replace |
+| `deprecated upstream: <model> (<ids>)` | The vendor still serves it but marks it deprecated. Confirm it, then set the row's `deprecated_at` (and `replaced_by` when the vendor's successor is a catalog model), or its `retires_at` plus the `SCHEDULED_SHUTDOWNS` entry once there is a date | Whether to move callers to the successor |
 | Our `pricing` differs from the vendor's published price | Note both prices, with the pricing URL | Update or keep |
 
 A wrong typing on a model we carry is a bug. Fix it; don't just report it.
@@ -40,6 +47,13 @@ A wrong typing on a model we carry is a bug. Fix it; don't just report it.
 Acknowledge an id only in two cases. The first is structural noise, such as a
 dated alias or a shutdown the vendor documents. The second is after the user
 says to skip it. Either way, record the reason.
+
+"Litegen carries this vendor or model direct" is never a reason. The user
+wants every hub's route carried as its own row (2026-11-04: "like how litellm
+can still use openrouter"), so a model TokenHub, fal, Replicate or Bedrock
+resells is a `new` id to carry. `test/aggregator-routes.test.mjs` fails on a
+new direct-route skip; its `PENDING` list names the definitions still being
+reversed.
 
 ## Repairing a failed source
 
@@ -49,19 +63,25 @@ says to skip it. Either way, record the reason.
 3. Prefer a machine-readable source, such as OpenAPI JSON or a `.md` twin of the
    page. Keep extraction scoped to the endpoints the adapter calls.
 4. Verify:
-   - Run `check.mjs --provider <p> --snapshots "$(mktemp -d)"` twice. The first
-     run must show no `FAILED`, and the second must show no `changed`.
+   - Run the check twice into one scratch folder: `D=$(mktemp -d)`, then
+     `check.mjs --provider <p> --snapshots "$D"` twice. The first run must
+     show no `FAILED` (it lists every source under `no baseline`, since the
+     folder starts empty). The second must show neither `changed` nor
+     `no baseline`.
    - Run `node --test 'scripts/model-drift/test/*.test.mjs'`.
 
 If several providers failed, dispatch one subagent per provider, in parallel.
 
 ## Typings recipe
 
-1. Run `git status --porcelain scripts/model-drift/snapshots/`. An untracked
-   (`??`) snapshot has never been reviewed, so read the whole file. A modified
-   one needs only its `git diff`. For each model we carry, compare the vendor
-   schema against `models/<p>.yaml`: enums, min and max bounds, capabilities,
-   and prompt limits.
+1. Read the whole file of every snapshot the report lists under
+   `no baseline` (the folder the run used had none before it, `--snapshots`
+   runs included). Then run `git status --porcelain scripts/model-drift/snapshots/`:
+   an untracked (`??`) snapshot, which an earlier run wrote and nobody
+   committed, has never been reviewed either, so read it whole too. A
+   modified one needs only its `git diff`. For each model we carry, compare
+   the vendor schema against `models/<p>.yaml`: enums, min and max bounds,
+   capabilities, and prompt limits.
 2. For each mismatch, first update the matching fact in
    `litegen-core/tests/catalog_conformance.rs` and watch it fail. Then fix the
    yaml.

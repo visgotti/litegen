@@ -2,16 +2,16 @@ import { ProviderMode } from '../../common/enums';
 import { ProviderConfig } from '../types';
 
 /**
- * OpenAI is scraped daily from the public API pricing page. `sora` is pinned to
- * manual mode (see seed) because its video pricing is not a simple per-call rate
- * and is not reliably parseable from the pricing table — demonstrating a
- * per-model override of the provider default.
+ * OpenAI's GPT Image models are billed per token: a per-image price follows
+ * from the output tokens a size and quality produce, which a pricing-table
+ * scrape can't read. Their prices are curated by hand (manual mode), from the
+ * token counts in the image-generation guide.
  */
 export const config: ProviderConfig = {
   id: 'openai',
   displayName: 'OpenAI',
-  mode: ProviderMode.SCRAPED,
-  cronSchedule: '0 6 * * *',
-  pricingUrl: 'https://openai.com/api/pricing/',
-  notes: 'Image models scraped daily; Sora is manually curated.',
+  mode: ProviderMode.MANUAL,
+  cronSchedule: null,
+  pricingUrl: 'https://developers.openai.com/api/docs/guides/image-generation',
+  notes: 'GPT Image prices are per token; curated by hand as per-image prices of the default request.',
 };

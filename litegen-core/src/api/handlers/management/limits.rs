@@ -81,7 +81,7 @@ pub(crate) fn merged_limits(
         reset_at = budget::initial_reset_at(input.budget_duration.as_deref(), now).unwrap_or(None);
     }
     // Raising the soft budget above current spend re-arms the alert.
-    if input.soft_budget_usd.map_or(true, |soft| spend < soft) {
+    if input.soft_budget_usd.is_none_or(|soft| spend < soft) {
         alerted = None;
     }
     EntityLimits {

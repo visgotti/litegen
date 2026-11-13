@@ -7,8 +7,12 @@
 //!
 //! A request that names an unknown client or an undeclared redirect URI, or
 //! names either twice, gets an error page: LiteGen never redirects to a URI it
-//! has not verified. Every other error, and every answer, goes back to the
-//! client's redirect URI with `iss` (RFC 9207).
+//! has not verified. Any other error goes back to the client's redirect URI
+//! with `iss` (RFC 9207) only when LiteGen trusts that URI: a loopback one, or
+//! a host the operator lists in `mcp.oauth.trusted_redirect_hosts`. Anyone may
+//! register any `https` URI, and no one has signed in yet, so for any other
+//! URI the error is a page with a link back (RFC 9700 §4.11.2). Every answer
+//! after the person's decision goes back to the redirect URI.
 
 use std::sync::Arc;
 
@@ -21,7 +25,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::clients::{redirect_allowed, resolve_client};
+use super::clients::{is_loopback_host, redirect_allowed, resolve_client, ClientError};
 use super::crypto::{random_token, sha256_hex};
 use super::discovery::{issuer, resource_target, scopes as surface_scopes, surfaces, ResourceTarget};
 use super::store::{AuthRequest, Decision, McpOAuthStore};
@@ -98,7 +102,14 @@ pub async fn authorize(State(shared): State<Arc<OAuthShared>>, query: Result<Que
     let now = Utc::now();
     let client = match resolve_client(store, shared.fetcher.as_ref(), client_id, now).await {
         Ok(client) => client,
-        Err(e) => return error_page(&e.to_string()),
+        // A storage failure says nothing about the link, and its text names
+        // the database's tables: logged, and the person asked to try again
+        // (SEC-DBERR).
+        Err(ClientError::Store(detail)) => {
+            tracing::error!(error = %detail, "oauth authorize: the client could not be looked up");
+            return unavailable_page();
+        }
+        Err(ClientError::Unknown(why) | ClientError::InvalidMetadata(why)) => return error_page(&why),
     };
     let redirect_uri = match p.redirect_uri.as_deref() {
         Some(uri) if redirect_allowed(&client.redirect_uris, uri) => uri.to_string(),
@@ -108,8 +119,8 @@ pub async fn authorize(State(shared): State<Arc<OAuthShared>>, query: Result<Que
     };
 
     // The redirect URI is verified: from here on the client hears about
-    // problems there.
-    let back = Back { redirect_uri: &redirect_uri, state: p.state.as_deref(), issuer: issuer(state) };
+    // problems there, at once when LiteGen trusts it (`Back::error`).
+    let back = Back::to(state, &redirect_uri, p.state.as_deref());
     if p.is_repeated("resource") {
         return back.error("invalid_target", "name one resource: one sign-in is for one MCP endpoint");
     }
@@ -218,9 +229,21 @@ struct Back<'a> {
     redirect_uri: &'a str,
     state: Option<&'a str>,
     issuer: String,
+    /// Whether an error may go back before anyone has signed in or decided
+    /// anything ([`trusted_redirect`]).
+    trusted: bool,
 }
 
-impl Back<'_> {
+impl<'a> Back<'a> {
+    fn to(state: &AppState, redirect_uri: &'a str, app_state: Option<&'a str>) -> Back<'a> {
+        Back {
+            redirect_uri,
+            state: app_state,
+            issuer: issuer(state),
+            trusted: trusted_redirect(redirect_uri, &state.router.config.mcp.oauth.trusted_redirect_hosts),
+        }
+    }
+
     fn url(&self, params: &[(&str, &str)]) -> String {
         let mut pairs = params.to_vec();
         if let Some(state) = self.state {
@@ -230,8 +253,42 @@ impl Back<'_> {
         with_query(self.redirect_uri, &pairs)
     }
 
+    /// An error in the request, found before anyone has signed in or decided
+    /// anything. A trusted redirect URI gets it at once. Any other gets a page
+    /// saying what's wrong and where the app's link leads, with a link back
+    /// the person may follow: anyone may register a client with any `https`
+    /// URI, so redirecting there at once would make LiteGen's own address a
+    /// hop to that site (RFC 9700 §4.11.2).
     fn error(&self, error: &str, description: &str) -> Response {
-        found(&self.url(&[("error", error), ("error_description", description)]))
+        let url = self.url(&[("error", error), ("error_description", description)]);
+        if self.trusted {
+            return found(&url);
+        }
+        let host = reqwest::Url::parse(self.redirect_uri).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+        page(
+            StatusCode::BAD_REQUEST,
+            &format!("This app's sign-in request has a problem: {} ({}).", html_escape(description), html_escape(error)),
+            &format!(
+                "Go back to the app and connect again. To give the app this error, <a href=\"{}\">return to {}</a>.",
+                html_escape(&url),
+                html_escape(&host)
+            ),
+        )
+    }
+}
+
+/// Whether an error may go back to `redirect_uri` before anyone has decided
+/// anything: a loopback URI (a native app on the person's own machine, RFC
+/// 8252, where a redirect adds nothing a plain link couldn't), or an `https`
+/// URI on a host the operator lists in `mcp.oauth.trusted_redirect_hosts`,
+/// matched exactly, ignoring case and port.
+fn trusted_redirect(redirect_uri: &str, trusted_hosts: &[String]) -> bool {
+    let Ok(url) = reqwest::Url::parse(redirect_uri) else { return false };
+    let host = url.host_str();
+    match url.scheme() {
+        "http" | "https" if is_loopback_host(host) => true,
+        "https" => host.is_some_and(|host| trusted_hosts.iter().any(|t| t.trim().eq_ignore_ascii_case(host))),
+        _ => false,
     }
 }
 
@@ -266,6 +323,16 @@ pub(super) fn busy_page(wait_secs: u64) -> Response {
         StatusCode::TOO_MANY_REQUESTS,
         "Too many sign-in attempts came from your network.",
         &format!("Wait {wait_secs} seconds, then connect again from the app."),
+    )
+}
+
+/// The page for a sign-in while the per-network limit can't be checked:
+/// fail-closed is on and Redis can't be reached.
+pub(super) fn unavailable_page() -> Response {
+    page(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Sign-in is briefly unavailable on this server.",
+        "Wait a few seconds, then connect again from the app.",
     )
 }
 
@@ -486,7 +553,7 @@ pub async fn approve_request(
         return Err(ConsentError::Decided);
     }
     log_org_audit(&state, &ctx, &body.org_id, "oauth.approve", "oauth_client", &request.client_id);
-    let back = Back { redirect_uri: &request.redirect_uri, state: request.state.as_deref(), issuer: issuer(&state) };
+    let back = Back::to(&state, &request.redirect_uri, request.state.as_deref());
     Ok(Json(OAuthRedirect { redirect_to: back.url(&[("code", &code)]) }))
 }
 
@@ -513,7 +580,7 @@ pub async fn deny_request(
     if !store.decide_request(&id, Decision::Deny { at: Utc::now() }).await? {
         return Err(ConsentError::Decided);
     }
-    let back = Back { redirect_uri: &request.redirect_uri, state: request.state.as_deref(), issuer: issuer(&state) };
+    let back = Back::to(&state, &request.redirect_uri, request.state.as_deref());
     let redirect_to = back.url(&[("error", "access_denied"), ("error_description", "the person declined the request")]);
     Ok(Json(OAuthRedirect { redirect_to }))
 }

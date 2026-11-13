@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_INLINE_TOTAL_BYTES,
-  MAX_UPLOAD_BYTES,
   formatMiB,
+  inlineBudget,
   inlineBytes,
   isFetchableUrl,
   inlineRefCount,
+  refsOfRoles,
   withoutInlineMasks,
   withoutInlineRefs,
 } from './ref-images';
@@ -41,13 +41,23 @@ describe('inlineBytes', () => {
 });
 
 describe('upload caps', () => {
-  it('leave room for base64 inside the 25 MiB request body the server buffers', () => {
-    expect(Math.ceil((MAX_INLINE_TOTAL_BYTES * 4) / 3)).toBeLessThan(25 * 1024 * 1024);
-    expect(MAX_UPLOAD_BYTES).toBeLessThanOrEqual(MAX_INLINE_TOTAL_BYTES);
+  it('come from the request-body limit the server serves, with images inline at 4/3 their size', () => {
+    // capabilities.max_request_bytes (N2): 25 MiB today, less a megabyte for
+    // the rest of the request, is 18 MiB of images.
+    expect(inlineBudget(25 * 1024 * 1024)).toBe(18 * 1024 * 1024);
+    expect(inlineBudget(9 * 1024 * 1024)).toBe(6 * 1024 * 1024);
+    // A server that states no limit: only its own answer (413) says when a request is too large.
+    expect(inlineBudget(undefined)).toBeUndefined();
+    expect(inlineBudget(0)).toBeUndefined();
+  });
+
+  it('leave a whole budget inside the body the server takes', () => {
+    const budget = inlineBudget(26_214_400)!;
+    expect(Math.ceil((budget * 4) / 3)).toBeLessThan(26_214_400);
   });
 
   it('formats a size in MB', () => {
-    expect(formatMiB(MAX_UPLOAD_BYTES)).toBe('10.0 MB');
+    expect(formatMiB(10 * 1024 * 1024)).toBe('10.0 MB');
   });
 });
 
@@ -129,5 +139,20 @@ describe('a history write that cannot be stored', () => {
     } finally {
       (globalThis as { localStorage?: unknown }).localStorage = saved;
     }
+  });
+});
+
+
+describe('refsOfRoles', () => {
+  it('leaves out references in a role the selected models no longer take', () => {
+    // After a switch from an image-to-video model (first_frame) to an edit
+    // model (init), the old first_frame upload is never sent, so it must not
+    // count toward the new model's caps either.
+    const refs = [
+      { id: 'a', role: 'first_frame', type: 'base64' as const, value: 'data:image/png;base64,AAAA' },
+      { id: 'b', role: 'init', type: 'url' as const, value: 'https://example.com/a.png' },
+    ];
+    expect(refsOfRoles(refs, [{ role: 'init' }]).map(r => r.id)).toEqual(['b']);
+    expect(refsOfRoles(refs, [])).toEqual([]);
   });
 });

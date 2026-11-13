@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ModelSchema } from '@litegen/sdk';
-import { derivedParams, fanOutJobs, mergeParams, refsForModel, schemaInputs, wireValue } from './params';
+import { fanOutJobs, mergeParams, paramsOf, refsForModel, schemaInputs, wireValue } from './params';
 import type { RefEntry } from './types';
 
 // SingleMode's module tree reads localStorage through the shared SDK client;
@@ -27,48 +27,52 @@ describe('wireValue: what a structured control sends', () => {
     expect(wireValue(spec, { left: '-4' })).toBeUndefined();
   });
 
-  it('sends a time range only when it ends after it starts', () => {
+  // N4: a value is sent as typed once it is complete; whether it is a window,
+  // a colour or inside the canvas is the server's to say, in its words.
+  it('sends a time range as typed once both ends are numbers: the server judges the window', () => {
     const spec = { kind: 'time_range' };
     expect(wireValue(spec, { start_s: '0.5', end_s: '1.5' })).toEqual({ start_s: 0.5, end_s: 1.5 });
-    expect(wireValue(spec, { start_s: '2', end_s: '1' })).toBeUndefined();
+    expect(wireValue(spec, { start_s: '2', end_s: '1' })).toEqual({ start_s: 2, end_s: 1 });
     expect(wireValue(spec, { start_s: '1' })).toBeUndefined();
   });
 
-  it('sends a palette as distinct #rrggbb colours, at most max_colors', () => {
+  it('sends a palette as typed, every colour filled in: the server judges each and the count', () => {
     const spec = { kind: 'palette', max_colors: 2 };
-    expect(wireValue(spec, ['#FF0000', '#ff0000', 'red', '#00ff00', '#0000ff'])).toEqual(['#ff0000', '#00ff00']);
-    expect(wireValue(spec, ['nope'])).toBeUndefined();
+    expect(wireValue(spec, ['#FF0000', '#ff0000', 'red', ' ', '#00ff00'])).toEqual(['#FF0000', '#ff0000', 'red', '#00ff00']);
+    expect(wireValue(spec, [''])).toBeUndefined();
   });
 
-  it('sends layout boxes as fractions, words with their text', () => {
+  it('sends layout boxes as typed fractions once all four are numbers, words with their text', () => {
     const spec = { kind: 'layout', max_items: 8 };
     expect(wireValue(spec, [
       { kind: 'text', text: 'SALE', x: '0.1', y: '0.1', w: '0.5', h: '0.2' },
       { kind: 'object', prompt: 'a red bicycle', x: '0.2', y: '0.4', w: '0.6', h: '0.5' },
       { kind: 'text', text: '', x: '0', y: '0', w: '0.5', h: '0.5' },
       { kind: 'object', x: '0.5', y: '0.5', w: '0.7', h: '0.2' },
+      { kind: 'object', x: '0.5', y: '0.5', w: '', h: '0.2' },
     ])).toEqual([
       { kind: 'text', text: 'SALE', box: { x: 0.1, y: 0.1, w: 0.5, h: 0.2 } },
       { kind: 'object', prompt: 'a red bicycle', box: { x: 0.2, y: 0.4, w: 0.6, h: 0.5 } },
+      { kind: 'object', box: { x: 0.5, y: 0.5, w: 0.7, h: 0.2 } },
     ]);
   });
 
-  it('sends each animation by a name the server takes, with a preset or a prompt', () => {
+  it('sends a clip name as typed, and none for a blank one: the server names and judges it', () => {
+    // E11c: litegen names a clip sent without one (its canonical preset,
+    // `clip-<n>`, `-2` on a repeat) and refuses an illegal or repeated name
+    // in its own words; the page invents and drops nothing.
     const spec = { kind: 'animation_list', max_items: 5, presets: [{ id: 'mock:walk', canonical: 'walk' }, { id: 'mock:wave' }] };
     expect(wireValue(spec, [
       { name: '', preset: 'mock:walk', loop: true },
+      { name: 'bad name!', preset: 'mock:wave' },
+      { name: 'walk', preset: 'mock:walk' },
       { name: 'jump', prompt: 'a big jump', duration_s: '1.5' },
-      { name: '', preset: 'mock:wave' },
-      { name: '', preset: 'mock:walk' },
-      { name: 'bad name!', preset: 'mock:walk' },
       { name: 'nothing' },
     ])).toEqual([
-      // Named for the canonical preset, else the preset id made legal; a
-      // repeat gets a suffix (names must be 1–64 of A–Z a–z 0–9 _ . -, unique).
-      { name: 'walk', preset: 'mock:walk', loop: true },
+      { preset: 'mock:walk', loop: true },
+      { name: 'bad name!', preset: 'mock:wave' },
+      { name: 'walk', preset: 'mock:walk' },
       { name: 'jump', prompt: 'a big jump', duration_s: 1.5 },
-      { name: 'mock_wave', preset: 'mock:wave' },
-      { name: 'walk-2', preset: 'mock:walk' },
     ]);
   });
 
@@ -88,42 +92,71 @@ describe('wireValue: what a structured control sends', () => {
       .toEqual({ type: 'url', value: 'https://x/clip.gif', format: 'gif' });
   });
 
-  it('sends segmentation prompts of the kinds the model takes', () => {
+  it("sends segmentation prompts of the kinds the model takes, a point's label as typed", () => {
     const spec = { kind: 'segmentation_prompts', types: ['point', 'text'], max_items: 16 };
     expect(wireValue(spec, [
       { type: 'point', x: '12', y: '30', label: '1' },
       { type: 'box', x: '0', y: '0', w: '10', h: '10' },
       { type: 'text', text: 'the cat' },
       { type: 'point', x: '', y: '3' },
+      { type: 'point', x: '5', y: '6', label: '2' },
+      { type: 'point', x: '7', y: '8', label: '' },
     ])).toEqual([
       { type: 'point', x: 12, y: 30, label: 1 },
       { type: 'text', text: 'the cat' },
+      { type: 'point', x: 5, y: 6, label: 2 },
+      { type: 'point', x: 7, y: 8 },
     ]);
   });
 });
 
-describe('fields a model takes without declaring them', () => {
-  const masked = schema({ params: {}, ref_inputs: { roles: { init: {}, mask: {} } } });
-  const regioned = schema({ params: { region: { kind: 'region' } } });
-  const plain = schema({ params: { steps: { kind: 'int' } } });
+describe('fields litegen applies, as the server serves them', () => {
+  // As GET /v1/models/{id} serves them (E11a): the fields and their bounds are
+  // the server's, in `litegen_params`; the page derives none from a shape.
+  const maskFields = {
+    mask_grow_px: { kind: 'int', min: 0, max: 100, label: 'Mask grow (px)' },
+    preserve_unmasked: { kind: 'bool', default: false, label: 'Keep unmasked pixels' },
+    feather_px: { kind: 'int', min: 0, max: 256, label: 'Feather (px)' },
+  };
+  const masked = schema({ media_type: 'image', params: {}, ref_inputs: { roles: { init: {}, mask: {} } }, litegen_params: maskFields });
+  const regioned = schema({ media_type: 'image', params: { region: { kind: 'region' } }, litegen_params: maskFields });
+  const plain = schema({ media_type: 'image', params: { steps: { kind: 'int' } } });
+  const mesh = schema({
+    media_type: 'model3d',
+    params: {},
+    litegen_params: { ground: { kind: 'bool', default: false }, center: { kind: 'bool', default: false }, height_m: { kind: 'float', max: 10000 } },
+  });
 
-  it('offers mask growth and keeping unmasked pixels wherever a mask or a region goes', () => {
-    expect(Object.keys(derivedParams(masked)).sort()).toEqual(['feather_px', 'mask_grow_px', 'preserve_unmasked']);
-    expect(Object.keys(derivedParams(regioned)).sort()).toEqual(['feather_px', 'mask_grow_px', 'preserve_unmasked']);
-    expect(derivedParams(plain)).toEqual({});
+  it('takes each field and its bounds from litegen_params', () => {
+    const served = { ground: { kind: 'bool', default: false }, height_m: { kind: 'float', max: 12000 } };
+    expect(paramsOf(schema({ media_type: 'model3d', params: {}, litegen_params: served }))).toEqual(served);
     expect(mergeParams({ m: masked }).map(p => p.name)).toContain('mask_grow_px');
   });
 
-  it('offers placement on every 3D model, as the server applies it to any mesh it delivers', () => {
-    const mesh = schema({ media_type: 'model3d', params: {} });
-    expect(Object.keys(derivedParams(mesh)).sort()).toEqual(['center', 'ground', 'height_m']);
+  it("derives nothing from the model's shape", () => {
+    expect(paramsOf(schema({ media_type: 'image', params: {}, ref_inputs: { roles: { init: {}, mask: {} } } }))).toEqual({});
+    expect(paramsOf(schema({ media_type: 'model3d', params: {} }))).toEqual({});
+  });
+
+  it('sends a typed height as typed; the server says what it takes', () => {
+    expect(schemaInputs(mesh, { params: { height_m: '0.0005' } })).toEqual({ height_m: 0.0005 });
+    expect(schemaInputs(mesh, { params: { height_m: '0' } })).toEqual({ height_m: 0 });
     expect(schemaInputs(mesh, { params: { ground: true, center: true, height_m: '1.8' } })).toEqual({ ground: true, center: true, height_m: 1.8 });
-    expect(derivedParams(schema({ media_type: 'image', params: {} }))).toEqual({});
+  });
+
+  it('lets a declared param keep its own spec', () => {
+    const rig = schema({
+      media_type: 'model3d',
+      params: { height_m: { kind: 'float', min: 0.5, max: 3, default: 1.7 } },
+      litegen_params: { ground: { kind: 'bool', default: false }, height_m: { kind: 'float', max: 10000 } },
+    });
+    expect(paramsOf(rig).height_m).toEqual({ kind: 'float', min: 0.5, max: 3, default: 1.7 });
   });
 
   it('sends them to the models that take them only', () => {
     const shared = { params: { mask_grow_px: '8', preserve_unmasked: true } };
     expect(schemaInputs(masked, shared)).toEqual({ mask_grow_px: 8, preserve_unmasked: true });
+    expect(schemaInputs(regioned, shared)).toEqual({ mask_grow_px: 8, preserve_unmasked: true });
     expect(schemaInputs(plain, shared)).toEqual({});
   });
 
@@ -183,11 +216,11 @@ describe('what a run is', () => {
       .toEqual(['segments an uploaded image, not a URL']);
     expect(buildSegmentationBody('mock/segment-image', spec, { params: {}, refs: [] }).problems)
       .toEqual(['needs an image to segment', 'needs a point, box or text prompt']);
-    // "a text prompt selects every instance of what it names and cannot be
-    // mixed with point or box prompts".
+    // Which prompts go together is the server's rule ("a text prompt ...
+    // cannot be mixed with point or box prompts"): the submit says so, in its
+    // words; the page holds back only what is missing (E11b).
     const mixed = { params: { prompts: [{ type: 'point', x: '1', y: '2' }, { type: 'text', text: 'cat' }] }, refs };
-    expect(buildSegmentationBody('mock/segment-image', spec, mixed).problems)
-      .toEqual(['takes a text prompt alone, not with point or box prompts or a second text prompt']);
+    expect(buildSegmentationBody('mock/segment-image', spec, mixed).problems).toEqual([]);
   });
 });
 
@@ -202,5 +235,16 @@ describe('N images in Compare mode', () => {
       ['mock/visual-image-gen#1', { model: 'mock/visual-image-gen' }],
       ['mock/mesh-3d#0', { model: 'mock/mesh-3d' }],
     ]);
+  });
+
+  it('give a fixed seed one step per copy, within the model\'s range: N copies of one seed are one image billed N times', () => {
+    const image = (seed: number | undefined, seedMax?: number) => ({
+      modelId: 'mock/visual-image-gen', mediaType: 'image' as const, seedMax,
+      request: seed === undefined ? { model: 'mock/visual-image-gen' } : { model: 'mock/visual-image-gen', seed },
+    });
+    const seeds = (jobs: Array<{ request: object }>) => jobs.map(j => (j.request as { seed?: number }).seed);
+    expect(seeds(fanOutJobs([image(7)], 3))).toEqual([7, 8, 9]);
+    expect(seeds(fanOutJobs([image(7, 8)], 3))).toEqual([7, 8, 0]);
+    expect(seeds(fanOutJobs([image(undefined)], 2))).toEqual([undefined, undefined]);
   });
 });

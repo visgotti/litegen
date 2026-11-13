@@ -29,6 +29,11 @@ fn ref_bytes_for_role(materialized: &MaterializedRequest, role: &str) -> Option<
 const EXTEND_MODEL: &str = "mock/extend-video";
 const RETAKE_MODEL: &str = "mock/retake-video";
 const EDIT_MODEL: &str = "mock/edit-video";
+/// Stays processing until cancelled: the cancel path, without a race.
+const HELD_MODEL: &str = "mock/held-video";
+/// Reports its video finished, with neither the bytes nor a URL: nothing
+/// litegen can keep, so the generation fails at the first poll.
+const EMPTY_MODEL: &str = "mock/empty-video";
 
 /// A GIF's frames as the `gif` crate reads them — indexed, each with the
 /// palette it was drawn with — so they can be written back exactly.
@@ -235,6 +240,28 @@ impl VideoProvider for MockVideoProvider {
         &self,
         handle: &VideoGenerationHandle,
     ) -> Result<VideoGenerationPollResult, ProviderError> {
+        if handle.model == EMPTY_MODEL {
+            return Ok(VideoGenerationPollResult {
+                status: GenerationStatus::Completed,
+                progress: 100,
+                video_url: None,
+                video_data: None,
+                content_type: None,
+                error: None,
+                metadata: Default::default(),
+            });
+        }
+        if handle.model == HELD_MODEL {
+            return Ok(VideoGenerationPollResult {
+                status: GenerationStatus::Processing,
+                progress: 50,
+                video_url: None,
+                video_data: None,
+                content_type: None,
+                error: None,
+                metadata: HashMap::new(),
+            });
+        }
         if should_render_visual_video(&handle.model) {
             // Return a local URL pointing to the stashed GIF bytes, and the
             // bytes themselves, which litegen keeps (as with a vendor whose
@@ -452,6 +479,28 @@ mod tests {
             .get(&handle2.provider_job_id).await.expect("stored bytes");
         assert_ne!(stored, stored2,
             "keyframe-blend output must differ from prompt-only fallback");
+    }
+
+    #[tokio::test]
+    async fn the_held_mock_stays_in_flight_until_it_is_cancelled() {
+        let provider = MockVideoProvider::new();
+        let schema = ref_schema(HELD_MODEL);
+        let base = crate::types::BaseGenerationRequest {
+            prompt: "a held clip".into(), model: HELD_MODEL.into(), n: 1, negative_prompt: None, seed: None,
+            reference_images: vec![], strict: true, extra: None, metadata: None,
+        };
+        let extras = VideoExtras {
+            duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None,
+            audio: None, r#loop: None, source: None, direction: None, time_range: None, replace: None,
+        };
+        let materialized = MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() };
+        let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        for _ in 0..3 {
+            let poll = provider.poll_status(&handle).await.unwrap();
+            assert_eq!((poll.status, poll.progress), (GenerationStatus::Processing, 50));
+            assert!(poll.video_url.is_none() && poll.video_data.is_none());
+        }
+        assert_eq!(provider.cancel(&handle).await.unwrap(), crate::providers::CancelOutcome::Requested);
     }
 
     #[tokio::test]

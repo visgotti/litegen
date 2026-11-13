@@ -1,10 +1,11 @@
 /**
- * Coverage guarantee: every provider/model that litegen-core supports MUST have
- * at least a stubbed implementation here — a provider config, seed data, and a
- * registered scraper (real or stub). Run in CI; non-zero exit on any gap.
+ * Coverage guarantee: the registry mirrors litegen's catalog. Every provider
+ * and model litegen-core carries MUST have a provider config, seed data and a
+ * registered scraper (real or stub), and nothing the catalog dropped may stay
+ * seeded. Run in CI; non-zero exit on any gap.
  *
  *   npm run coverage:check      # verify
- *   npm run coverage:fix        # scaffold missing provider folders
+ *   npm run coverage:fix        # scaffold missing providers, regenerate every seed
  *
  * The canonical model set is read from litegen-core's models/*.yaml at dev/CI
  * time only (LITEGEN_MODELS_DIR); there is no runtime dependency.
@@ -13,33 +14,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { loadEnv } from '../src/config/load-env';
 import { PROVIDER_REGISTRY, getProviderDefinition } from '../src/providers/registry';
+import { findGaps } from './lib/coverage';
 import { LitegenModel, readLitegenModels } from './lib/litegen-models';
+import { renderSeed } from './lib/seed-render';
 
 loadEnv();
 
 const FIX = process.argv.includes('--fix');
 const modelsDir = process.env.LITEGEN_MODELS_DIR ?? '../../models';
-
-function registryModelIds(): Set<string> {
-  return new Set(PROVIDER_REGISTRY.flatMap((p) => p.seed.map((m) => m.id)));
-}
-
-interface Gap {
-  providerMissing: string[]; // canonical providers with no registry entry
-  modelsMissing: LitegenModel[]; // canonical models not seeded
-}
-
-function findGaps(canonical: LitegenModel[]): Gap {
-  const seeded = registryModelIds();
-  const modelsMissing = canonical.filter((m) => !seeded.has(m.id));
-  const providersMissingSet = new Set<string>();
-  for (const m of canonical) {
-    if (!getProviderDefinition(m.provider)) {
-      providersMissingSet.add(m.provider);
-    }
-  }
-  return { providerMissing: [...providersMissingSet], modelsMissing };
-}
 
 function printSummary(canonical: LitegenModel[]): void {
   const byProvider = new Map<string, LitegenModel[]>();
@@ -63,7 +45,8 @@ function printSummary(canonical: LitegenModel[]): void {
   }
 }
 
-function scaffoldProvider(provider: string, models: LitegenModel[]): void {
+/** A manual-mode config and a stub scraper for a provider the registry lacks. */
+function scaffoldProvider(provider: string): void {
   const dir = path.resolve(__dirname, '..', 'src', 'providers', provider);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -76,30 +59,8 @@ export const config: ProviderConfig = {
   mode: ProviderMode.MANUAL,
   cronSchedule: null,
   pricingUrl: null,
-  notes: 'Auto-scaffolded stub — fill in display name, pricing URL, and prices.',
+  notes: 'Auto-scaffolded stub — fill in the display name and pricing URL.',
 };
-`;
-
-  const seedEntries = models
-    .map((m) => {
-      const unit = m.mediaType === 'video' ? 'PriceUnit.PER_VIDEO' : 'PriceUnit.PER_IMAGE';
-      const media = m.mediaType === 'video' ? 'MediaType.VIDEO' : 'MediaType.IMAGE';
-      const amount = m.baseCostUsd ?? 0;
-      return `  {
-    id: '${m.id}',
-    displayName: '${m.id}',
-    mediaType: ${media},
-    prices: [{ unit: ${unit}, amountUsd: ${amount} }],
-  },`;
-    })
-    .join('\n');
-
-  const seedTs = `import { MediaType, PriceUnit } from '../../common/enums';
-import { SeedModel } from '../types';
-
-export const seed: SeedModel[] = [
-${seedEntries}
-];
 `;
 
   const scraperTs = `import { StubScraper } from '../base';
@@ -108,30 +69,37 @@ export const scraper = new StubScraper('${provider}');
 `;
 
   fs.writeFileSync(path.join(dir, `${provider}.config.ts`), configTs);
-  fs.writeFileSync(path.join(dir, `${provider}.seed.ts`), seedTs);
   fs.writeFileSync(path.join(dir, `${provider}.scraper.ts`), scraperTs);
   console.log(`  scaffolded src/providers/${provider}/`);
+}
+
+function writeSeed(provider: string, models: LitegenModel[]): void {
+  const dir = path.resolve(__dirname, '..', 'src', 'providers', provider);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${provider}.seed.ts`), renderSeed(models));
 }
 
 function main(): void {
   const canonical = readLitegenModels(modelsDir);
   console.log(`Canonical litegen models: ${canonical.length} across ${new Set(canonical.map((m) => m.provider)).size} providers (from ${modelsDir})`);
 
-  let gaps = findGaps(canonical);
+  const gaps = findGaps(canonical, PROVIDER_REGISTRY);
 
-  if (FIX && gaps.providerMissing.length > 0) {
-    console.log('\n--fix: scaffolding missing provider folders...');
-    for (const provider of gaps.providerMissing) {
-      scaffoldProvider(
-        provider,
-        canonical.filter((m) => m.provider === provider),
-      );
+  if (FIX) {
+    if (gaps.providerMissing.length > 0) {
+      console.log('\n--fix: scaffolding missing provider folders...');
+      for (const provider of gaps.providerMissing) {
+        scaffoldProvider(provider);
+      }
+      console.log('\nRegister the new provider(s) in src/providers/registry.ts, then re-run coverage:check.');
     }
-    console.log(
-      '\nScaffolding done. Register the new provider(s) in src/providers/registry.ts, then re-run coverage:check.',
-    );
-    // Models within existing providers can't be auto-merged safely; re-evaluate.
-    gaps = findGaps(canonical);
+    console.log("\n--fix: regenerating every provider's seed from the catalog...");
+    for (const provider of new Set(canonical.map((m) => m.provider))) {
+      writeSeed(provider, canonical.filter((m) => m.provider === provider));
+    }
+    // The registry was loaded before the rewrite; re-run coverage:check to
+    // see the regenerated seeds.
+    return;
   }
 
   printSummary(canonical);
@@ -145,19 +113,22 @@ function main(): void {
       `Models missing a seeded implementation:\n    - ${gaps.modelsMissing.map((m) => m.id).join('\n    - ')}`,
     );
   }
+  if (gaps.modelsRetired.length > 0) {
+    hardFailures.push(
+      `Seeded models the catalog no longer carries:\n    - ${gaps.modelsRetired.join('\n    - ')}`,
+    );
+  }
 
   if (hardFailures.length > 0) {
     console.error('\n❌ Coverage check FAILED:');
     for (const f of hardFailures) {
       console.error(`  - ${f}`);
     }
-    if (!FIX) {
-      console.error('\n  Run `npm run coverage:fix` to scaffold missing provider folders.');
-    }
+    console.error('\n  Run `npm run coverage:fix` to scaffold missing providers and regenerate the seeds.');
     process.exit(1);
   }
 
-  console.log(`\n✅ Coverage OK: all ${canonical.length} litegen models have a config, seed, and scraper.`);
+  console.log(`\n✅ Coverage OK: all ${canonical.length} litegen models have a config, seed, and scraper, and nothing else is seeded.`);
 }
 
 main();

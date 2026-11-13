@@ -66,7 +66,7 @@ fn img_extras() -> ImageExtras {
     ImageExtras {
         vendor_job: Default::default(),
         size: None,
-        aspect_ratio: Some("1:1".to_string()),
+        resolution: None, aspect_ratio: Some("1:1".to_string()),
         quality: None,
         style: None,
         steps: None,
@@ -237,11 +237,11 @@ async fn live_leonardo_image() {
 }
 
 #[tokio::test]
-#[ignore = "live: set KLING_ACCESS_KEY + KLING_SECRET_KEY"]
+#[ignore = "live: set KLING_API_KEY"]
 async fn live_kling_image() {
-    skip_if_missing!("KLING_ACCESS_KEY", "KLING_SECRET_KEY");
+    skip_if_missing!("KLING_API_KEY");
     let mut p = litegen::providers::image::kling::KlingImageProvider::new();
-    p.configure(keypair_cfg(&env("KLING_ACCESS_KEY").unwrap(), &env("KLING_SECRET_KEY").unwrap(), None));
+    p.configure(api_key_cfg(&env("KLING_API_KEY").unwrap()));
     let out = p.generate(&schema("kling/kling-v2-1"), &base("a jade dragon", "kling/kling-v2-1"), &img_extras(), &empty_mat()).await.expect("kling image");
     assert!(!out.data.is_empty());
 }
@@ -310,11 +310,11 @@ async fn live_bytedance_seedance_video() {
 }
 
 #[tokio::test]
-#[ignore = "live: set KLING_ACCESS_KEY + KLING_SECRET_KEY"]
+#[ignore = "live: set KLING_API_KEY"]
 async fn live_kling_video() {
-    skip_if_missing!("KLING_ACCESS_KEY", "KLING_SECRET_KEY");
+    skip_if_missing!("KLING_API_KEY");
     let mut p = litegen::providers::video::kling::KlingVideoProvider::new();
-    p.configure(keypair_cfg(&env("KLING_ACCESS_KEY").unwrap(), &env("KLING_SECRET_KEY").unwrap(), None));
+    p.configure(api_key_cfg(&env("KLING_API_KEY").unwrap()));
     let h = p.generate(&schema("kling/video-kling-v2-6"), &base("a phoenix rising", "kling/video-kling-v2-6"), &vid_extras(), &empty_mat()).await.expect("kling submit");
     assert!(drive_video(&p, h).await.is_some());
 }

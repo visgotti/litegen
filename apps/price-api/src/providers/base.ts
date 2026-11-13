@@ -13,6 +13,7 @@ const USER_AGENT = 'litegen-price-api/0.1 (+https://github.com/litegen)';
  */
 export abstract class BaseProviderScraper implements ProviderScraper {
   abstract readonly providerId: string;
+  abstract readonly modelIds: readonly string[];
   readonly implemented: boolean = true;
 
   abstract scrape(ctx: ScrapeContext): Promise<ScrapedPriceComponent[]>;
@@ -59,6 +60,7 @@ export abstract class BaseProviderScraper implements ProviderScraper {
  */
 export class StubScraper implements ProviderScraper {
   readonly implemented = false;
+  readonly modelIds: readonly string[] = [];
   constructor(public readonly providerId: string) {}
 
   async scrape(): Promise<ScrapedPriceComponent[]> {

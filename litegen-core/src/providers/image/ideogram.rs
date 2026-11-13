@@ -30,6 +30,20 @@ enum Generation {
     ///   Verbatim: "`y_min,x_min,y_max,x_max` names the region explicitly, by its
     ///   corners. Rows come first" and "The maximum edges are exclusive".
     PreciseEdit45,
+    /// `POST /v2/image/generate/ideogram-4-5` (multipart): `prompt`, `images`
+    /// (the edited one first), `mask`, `size`, `background`, `quality`, `seed`.
+    /// @see <https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5.md> (2026-11-03)
+    Generate45,
+    /// `POST /v2/image/generate/{slug}`: a model Ideogram resells (Nano Banana),
+    /// multipart: `prompt`, `images`, `aspect_ratio`, `resolution_tier`, `seed`,
+    /// `num_images`; synchronous, the same `data[]` answer.
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-03)
+    V2Resold(&'static str),
+    /// `POST /v2/image/generate/p-image-ideogram` (JSON): `prompt`, `quality`
+    /// ("Defaults to `medium`"), `resolution` "1k" | "2k" ("Defaults to
+    /// `1k`"), `aspect_ratio` as "16x9", `seed`, `num_images`.
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-04)
+    V2PImage,
 }
 
 /// Ideogram 3.0 and 4.0 image generation provider.
@@ -55,23 +69,35 @@ pub struct IdeogramProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
-    /// Fetches the result: no redirects, no key.
+    /// Fetches the result: no redirects, no key, and only from public
+    /// addresses, judged again at connect.
     asset_client: Client,
+    /// Fetches a result on the configured API host itself, which the operator
+    /// chose (it may be an internal relay), so it isn't held to public
+    /// addresses.
+    own_asset_client: Client,
     /// Results only from public addresses; tests serve them from loopback.
     pub(crate) public_assets_only: bool,
 }
 
 impl IdeogramProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::raw_header("Api-Key"),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(
+            client: Self::api_client(&Default::default()),
+            asset_client: crate::util::ssrf::public_only_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            own_asset_client: crate::util::ssrf::no_redirect_download_client(
                 std::time::Duration::from_secs(120),
                 std::time::Duration::from_secs(30),
             ),
@@ -119,6 +145,12 @@ impl IdeogramProvider {
             "ideogram-v3" | "ideogram-v3-turbo" | "ideogram-v3-quality" => Generation::V3,
             "ideogram-v4" | "ideogram-v4-turbo" | "ideogram-v4-quality" => Generation::V4,
             "ideogram-4-5-precise-edit" => Generation::PreciseEdit45,
+            "ideogram-4-5" => Generation::Generate45,
+            // Resold on v2 ("/v2/image/generate/nano-banana-2", ".../nano-banana-pro").
+            "nano-banana-2" => Generation::V2Resold("nano-banana-2"),
+            "nano-banana-pro" => Generation::V2Resold("nano-banana-pro"),
+            // P-Image, Ideogram's budget tier, on v2 with a JSON body.
+            "p-image-ideogram" => Generation::V2PImage,
             // An id with no arm is refused, not run as Ideogram 3.0.
             _ => return None,
         })
@@ -135,13 +167,8 @@ impl IdeogramProvider {
     /// field litegen sends (`rendering_speed` QUALITY on a TURBO row would
     /// bill another tier).
     fn v3_extras<'a>(model: &ModelSchema, extras: &'a ImageExtras) -> Vec<(&'a String, &'a Value)> {
-        match &extras.extra {
-            Some(Value::Object(map)) => map
-                .iter()
-                .filter(|(k, _)| model.extra_allowlist.iter().any(|a| a == *k) && !Self::V3_OWNED_FIELDS.contains(&k.as_str()))
-                .collect(),
-            _ => Vec::new(),
-        }
+        let owned = |k: &str| !model.extra_allowlist.iter().any(|a| a == k) || Self::V3_OWNED_FIELDS.contains(&k);
+        crate::providers::extra_fields(extras.extra.as_ref(), owned).collect()
     }
 
     /// The text fields of a `POST /v1/ideogram-v4/generate` request.
@@ -169,18 +196,13 @@ impl IdeogramProvider {
         if let Some(s) = Self::rendering_speed(&model.id) {
             fields.push(("rendering_speed".to_string(), s.to_string()));
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            for (k, v) in map {
-                if !model.extra_allowlist.iter().any(|a| a == k) {
-                    continue;
-                }
-                let text = match v {
-                    Value::String(s) => s.clone(),
-                    Value::Bool(_) | Value::Number(_) => v.to_string(),
-                    _ => continue,
-                };
-                fields.push((k.clone(), text));
-            }
+        for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| !model.extra_allowlist.iter().any(|a| a == k)) {
+            let text = match v {
+                Value::String(s) => s.clone(),
+                Value::Bool(_) | Value::Number(_) => v.to_string(),
+                _ => continue,
+            };
+            fields.push((k.clone(), text));
         }
         fields
     }
@@ -231,7 +253,8 @@ impl IdeogramProvider {
         // a reason for the router to generate again. A result on the
         // configured API host is that host's own; any other must be public.
         let own = crate::providers::model3d::fal::same_origin_url(self.api_base(), Some(image_url)).is_some();
-        let bytes = super::fetch_result(&self.asset_client, image_url, self.public_assets_only && !own, "ideogram image").await?;
+        let client = if own { &self.own_asset_client } else { &self.asset_client };
+        let bytes = super::fetch_result(client, image_url, self.public_assets_only && !own, "ideogram image").await?;
         let mut metadata = HashMap::new();
         metadata.insert("url".to_string(), Value::String(image_url.to_string()));
         if let Some(seed) = first["seed"].as_i64() {
@@ -247,6 +270,152 @@ impl IdeogramProvider {
     }
 
     /// Ideogram uses `WxH` aspect-ratio tokens (e.g. "16x9"), not "16:9".
+    /// What litegen itself sends to Ideogram 4.5 generate; `extra` cannot
+    /// replace it. `num_images` is never sent (one image is billed), nor
+    /// `async` (litegen waits) or `webhook_url` (litegen fires its own).
+    const GENERATE_45_OWNED: &'static [&'static str] =
+        &["prompt", "images", "mask", "size", "background", "quality", "seed", "num_images", "async", "webhook_url"];
+
+    /// Ideogram 4.5 generate: one multipart request, answered when the image
+    /// is ready (`async` false, the default), as Precise Edit is.
+    /// @see <https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5.md> (2026-11-03)
+    async fn generate_4_5(
+        &self,
+        model: &ModelSchema,
+        base: &BaseGenerationRequest,
+        extras: &ImageExtras,
+        materialized: &MaterializedRequest,
+        creds: &ProviderCredentials,
+    ) -> Result<GenerationOutput, ProviderError> {
+        let field = |r: &crate::proxy::materializer::MaterializedRef| match &r.form {
+            MaterializedRefForm::MultipartField { field_name, .. } => Some(field_name.clone()),
+            _ => None,
+        };
+        let images = materialized.refs.iter().filter(|r| field(r).as_deref() == Some("images")).count();
+        let masked = materialized.refs.iter().any(|r| field(r).as_deref() == Some("mask"));
+        let refuse = |why: &str| Err(ProviderError::InvalidRequest(format!("'{}': {why}", model.id)));
+        // "`very_low`, the fastest and cheapest, requires source images."
+        if extras.quality.as_deref() == Some("very_low") && images == 0 {
+            return refuse("quality very_low needs a source image");
+        }
+        if masked {
+            if images == 0 {
+                return refuse("a mask edits a source image: send one with role init");
+            }
+            // "With a mask, the output is always the first source image's own
+            // size, so `size` cannot be set."
+            if extras.size.is_some() {
+                return refuse("with a mask the output is the source image's size; send no size");
+            }
+            // "A masked request can include at most three other source images."
+            if images > 4 {
+                return refuse("takes at most 3 other images beside a mask");
+            }
+        }
+        let url = format!("{}/v2/image/generate/ideogram-4-5", self.api_base());
+        let mut form = Form::new().text("prompt", base.prompt.clone());
+        if let Some(size) = extras.size.as_deref() {
+            form = form.text("size", size.to_string());
+        }
+        if let Some(q) = extras.quality.as_deref() {
+            form = form.text("quality", q.to_string());
+        }
+        if let Some(b) = extras.background.as_deref() {
+            form = form.text("background", b.to_string());
+        }
+        if let Some(seed) = base.seed {
+            form = form.text("seed", seed.to_string());
+        }
+        let owned = |k: &str| !model.extra_allowlist.iter().any(|a| a == k) || Self::GENERATE_45_OWNED.contains(&k);
+        for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+            let text = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+            form = form.text(k.clone(), text);
+        }
+        // "The first image is the one being edited; any others are extra
+        // references": the `init` first, then each reference, then the mask.
+        let order = |r: &&crate::proxy::materializer::MaterializedRef| match r.role.as_str() {
+            "init" => 0,
+            "mask" => 2,
+            _ => 1,
+        };
+        let mut refs: Vec<_> = materialized.refs.iter().collect();
+        refs.sort_by_key(order);
+        for r in refs {
+            if let MaterializedRefForm::MultipartField { field_name, bytes, content_type } = &r.form {
+                let part = Part::bytes(bytes.to_vec())
+                    .file_name(format!("{field_name}.png"))
+                    .mime_str(content_type)
+                    .map_err(|e| ProviderError::InvalidRequest(format!("ideogram 4.5: {e}")))?;
+                form = form.part(field_name.clone(), part);
+            }
+        }
+        self.send(self.client.post(&url).multipart(form), creds).await
+    }
+
+    /// A model Ideogram resells on v2: litegen's prompt, ratio, tier and seed as
+    /// its own fields, the images in order (the edited one first), one image.
+    async fn generate_v2_resold(
+        &self,
+        slug: &str,
+        base: &BaseGenerationRequest,
+        extras: &ImageExtras,
+        materialized: &MaterializedRequest,
+        creds: &ProviderCredentials,
+    ) -> Result<GenerationOutput, ProviderError> {
+        let url = format!("{}/v2/image/generate/{slug}", self.api_base());
+        // One image: litegen returns and bills one, whatever `n` was.
+        let mut form = Form::new().text("prompt", base.prompt.clone()).text("num_images", "1");
+        if let Some(ar) = extras.aspect_ratio.as_deref() {
+            form = form.text("aspect_ratio", ar.to_string());
+        }
+        // "resolution_tier … The output resolution tier." (1K, 2K, 4K: litegen's own spelling).
+        form = form.text("resolution_tier", extras.resolution.clone().unwrap_or_else(|| "1K".into()));
+        if let Some(seed) = base.seed {
+            form = form.text("seed", seed.to_string());
+        }
+        let mut refs: Vec<_> = materialized.refs.iter().collect();
+        refs.sort_by_key(|r| u8::from(r.role != "init"));
+        for r in refs {
+            if let MaterializedRefForm::MultipartField { field_name, bytes, content_type } = &r.form {
+                let part = Part::bytes(bytes.to_vec())
+                    .file_name(format!("{field_name}.png"))
+                    .mime_str(content_type)
+                    .map_err(|e| ProviderError::InvalidRequest(format!("ideogram {slug}: {e}")))?;
+                form = form.part(field_name.clone(), part);
+            }
+        }
+        self.send(self.client.post(&url).multipart(form), creds).await
+    }
+
+    /// P-Image (`POST /v2/image/generate/p-image-ideogram`, JSON): the prompt,
+    /// one image, the asked `quality` or the row's medium, the tier as
+    /// Ideogram's "1k" | "2k" (litegen's 1K | 2K), the ratio as "16x9", and the
+    /// seed. `extra` adds `magic_prompt` and `enable_copyright_detection` but
+    /// can't replace these.
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-04)
+    async fn generate_p_image(&self, base: &BaseGenerationRequest, extras: &ImageExtras, creds: &ProviderCredentials) -> Result<GenerationOutput, ProviderError> {
+        let url = format!("{}/v2/image/generate/p-image-ideogram", self.api_base());
+        let mut body = serde_json::Map::new();
+        let owned = |k: &str| {
+            matches!(k, "prompt" | "num_images" | "quality" | "resolution" | "aspect_ratio" | "seed" | "async" | "webhook_url" | "custom_width" | "custom_height")
+        };
+        for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+            body.insert(k.clone(), v.clone());
+        }
+        body.insert("prompt".into(), Value::String(base.prompt.clone()));
+        // One image: litegen returns and bills one, whatever `n` was.
+        body.insert("num_images".into(), json!(1));
+        body.insert("quality".into(), Value::String(extras.quality.clone().unwrap_or_else(|| "medium".into())));
+        body.insert("resolution".into(), Value::String(extras.resolution.as_deref().unwrap_or("1K").to_lowercase()));
+        if let Some(ar) = extras.aspect_ratio.as_deref() {
+            body.insert("aspect_ratio".into(), Value::String(Self::ideogram_aspect(ar)));
+        }
+        if let Some(seed) = base.seed {
+            body.insert("seed".into(), json!(seed));
+        }
+        self.send(self.client.post(&url).json(&Value::Object(body)), creds).await
+    }
+
     fn ideogram_aspect(ar: &str) -> String {
         ar.replace(':', "x")
     }
@@ -269,6 +438,7 @@ impl ImageProvider for IdeogramProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -301,7 +471,20 @@ impl ImageProvider for IdeogramProvider {
             if let Some(seed) = base.seed {
                 form = form.text("seed", seed.to_string());
             }
-            // `image` and `mask` (already black-edits: litegen converted it).
+            // "A request with a `mask` can include at most three [reference
+            // images], because the mask takes up one reference slot" — a mask
+            // litegen drew from a region counts, so this is checked here.
+            // @see https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md (2026-11-03)
+            let field_count = |name: &str| {
+                materialized.refs.iter().filter(|r| matches!(&r.form, MaterializedRefForm::MultipartField { field_name, .. } if field_name == name)).count()
+            };
+            if field_count("mask") > 0 && field_count("reference_images") > 3 {
+                return Err(ProviderError::InvalidRequest(format!(
+                    "'{}' takes at most 3 reference images beside a mask or region (the mask takes the fourth slot)", model.id
+                )));
+            }
+            // `image`, `mask` (already black-edits: litegen converted it) and
+            // each `reference_images` part.
             let mut has_image = false;
             for r in &materialized.refs {
                 if let MaterializedRefForm::MultipartField { field_name, bytes, content_type } = &r.form {
@@ -318,6 +501,15 @@ impl ImageProvider for IdeogramProvider {
             }
             return self.send(self.client.post(&url).multipart(form), &creds).await;
         }
+        if generation == Generation::Generate45 {
+            return self.generate_4_5(model, base, extras, materialized, &creds).await;
+        }
+        if let Generation::V2Resold(slug) = generation {
+            return self.generate_v2_resold(slug, base, extras, materialized, &creds).await;
+        }
+        if generation == Generation::V2PImage {
+            return self.generate_p_image(base, extras, &creds).await;
+        }
         if generation == Generation::V4 {
             let url = format!("{}/v1/ideogram-v4/generate", self.api_base());
             let mut form = Form::new();
@@ -332,11 +524,14 @@ impl ImageProvider for IdeogramProvider {
 
         // Collect the common string fields once (shared by JSON + multipart).
         let mut fields: Vec<(&str, String)> = vec![("prompt", base.prompt.clone())];
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            fields.push(("aspect_ratio", Self::ideogram_aspect(ar)));
-        }
+        // "aspect_ratio … Cannot be combined with resolution": an exact size
+        // (`resolution`, the ResolutionV3 enum) wins, and the ratio it already
+        // fixes is not sent beside it.
+        // @see https://developer.ideogram.ai/openapi/ideogram-api-v1.json (2026-11-03)
         if let Some(size) = extras.size.as_deref() {
             fields.push(("resolution", size.to_string()));
+        } else if let Some(ar) = extras.aspect_ratio.as_deref() {
+            fields.push(("aspect_ratio", Self::ideogram_aspect(ar)));
         }
         if let Some(s) = speed {
             fields.push(("rendering_speed", s.to_string()));
@@ -486,7 +681,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: None,
-            aspect_ratio: Some("16:9".to_string()),
+            resolution: None, aspect_ratio: Some("16:9".to_string()),
             quality: None,
             style: None,
             steps: None,
@@ -595,7 +790,7 @@ mod tests {
     }
 
     fn v4_extras(size: Option<&str>) -> ImageExtras {
-        ImageExtras { size: size.map(str::to_string), aspect_ratio: None, ..make_extras() }
+        ImageExtras { size: size.map(str::to_string), resolution: None, aspect_ratio: None, ..make_extras() }
     }
 
     /// Start an image host serving b"V4PNG", then mount the v4 generate
@@ -750,10 +945,11 @@ mod tests {
         dir.pop();
         dir.push("models");
         let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
-        for m in catalog.for_provider("ideogram") {
+        // Video rows are video/ideogram.rs's (its own resolution test).
+        for m in catalog.for_provider("ideogram").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
             assert!(IdeogramProvider::generation(&m.id).is_some(), "{} has no arm", m.id);
         }
-        assert!(IdeogramProvider::generation("ideogram/ideogram-4-5").is_none());
+        assert!(IdeogramProvider::generation("ideogram/ideogram-9").is_none());
     }
 
     /// Ideogram answers every 3.0 generate with a 400, so only the outbound
@@ -823,5 +1019,246 @@ mod tests {
         assert_eq!(multipart_field(&received[0].body, "color_palette").as_deref(), Some("{\"name\":\"EMBER\"}"));
         assert_eq!(body.matches("name=\"rendering_speed\"").count(), 1, "{body}");
         assert_eq!(multipart_field(&received[0].body, "rendering_speed").as_deref(), Some("TURBO"));
+    }
+
+    // ─── Vendor feature audit, 2026-11-03 ───────────────────────────────────
+
+    /// 3.0: "aspect_ratio … Output aspect ratio. Cannot be combined with
+    /// resolution." An exact size goes as `resolution` and the ratio it already
+    /// fixes is not sent beside it; a ratio alone still goes.
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v1.json> (2026-11-03)
+    #[tokio::test]
+    async fn a_3_0_size_goes_as_resolution_without_an_aspect_ratio() {
+        let server = refusing_v3().await;
+        let provider = make_provider(&server.uri());
+        let id = "ideogram/ideogram-v3";
+        let mut both = make_extras();
+        both.size = Some("1024x1024".into());
+        both.aspect_ratio = Some("16:9".into());
+        let _ = provider.generate(&ref_schema(id), &make_base("x", id), &both, &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }).await;
+        let _ = provider.generate(&ref_schema(id), &make_base("x", id), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }).await;
+        let received = server.received_requests().await.unwrap();
+        let sized: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(sized["resolution"], "1024x1024", "{sized}");
+        assert!(sized.get("aspect_ratio").is_none(), "{sized}");
+        let ratio: Value = serde_json::from_slice(&received[1].body).unwrap();
+        assert_eq!(ratio["aspect_ratio"], "16x9", "{ratio}");
+        assert!(ratio.get("resolution").is_none(), "{ratio}");
+    }
+
+    fn parts(fields: &[&str]) -> MaterializedRequest {
+        MaterializedRequest {
+            refs: fields
+                .iter()
+                .map(|f| crate::proxy::materializer::MaterializedRef {
+                    role: match *f { "image" => "init", "mask" => "mask", _ => "reference" }.into(),
+                    form: MaterializedRefForm::MultipartField {
+                        field_name: (*f).into(),
+                        bytes: bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\n"),
+                        content_type: "image/png".into(),
+                    },
+                    time_s: None,
+                })
+                .collect(),
+            cleanup: Cleanup::empty(),
+        }
+    }
+
+    /// Precise Edit: "`reference_images` … Optional images to guide the edit
+    /// (max 4 …). A request with a `mask` can include at most three, because
+    /// the mask takes up one reference slot." Each goes as its own
+    /// `reference_images` part; four beside a mask (one litegen drew from a
+    /// region counts) are refused before anything is sent.
+    /// @see <https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md> (2026-11-03)
+    #[tokio::test]
+    async fn a_masked_precise_edit_takes_at_most_three_references() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/image/precise-edit/ideogram-4-5"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" })))
+            .mount(&server)
+            .await;
+        let provider = make_provider(&server.uri());
+        let id = "ideogram/ideogram-4-5-precise-edit";
+        let r = "reference_images";
+        let err = provider
+            .generate(&ref_schema(id), &make_base("x", id), &make_extras(), &parts(&["image", "mask", r, r, r, r]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+        for fields in [&["image", r, r, r, r][..], &["image", "mask", r, r, r][..]] {
+            let _ = provider.generate(&ref_schema(id), &make_base("x", id), &make_extras(), &parts(fields)).await;
+        }
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 2);
+        for (req, n) in received.iter().zip([4, 3]) {
+            let body = String::from_utf8_lossy(&req.body).to_string();
+            assert_eq!(body.matches("name=\"reference_images\"").count(), n, "{body}");
+        }
+    }
+
+    // ─── Ideogram 4.5: POST /v2/image/generate/ideogram-4-5 ────────────────
+    // @see <https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5.md> (2026-11-03)
+
+    /// Source images as 4.5 takes them: (role, multipart field, a byte tag).
+    fn parts_45(items: &[(&str, &str, &'static [u8])]) -> MaterializedRequest {
+        MaterializedRequest {
+            refs: items
+                .iter()
+                .map(|(role, field, tag)| crate::proxy::materializer::MaterializedRef {
+                    role: (*role).into(),
+                    form: MaterializedRefForm::MultipartField { field_name: (*field).into(), bytes: bytes::Bytes::from_static(tag), content_type: "image/png".into() },
+                    time_s: None,
+                })
+                .collect(),
+            cleanup: Cleanup::empty(),
+        }
+    }
+
+    async fn refusing_45() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/image/generate/ideogram-4-5"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn extras_45() -> ImageExtras {
+        ImageExtras { aspect_ratio: None, ..make_extras() }
+    }
+
+    /// "POST https://api.ideogram.ai/v2/image/generate/ideogram-4-5" as
+    /// multipart: prompt, size, quality, background and seed as their own
+    /// fields; `extra` adds `magic_prompt` but cannot replace a field litegen
+    /// sends, nor ask for more than one image.
+    #[tokio::test]
+    async fn ideogram_4_5_generates_with_its_own_fields() {
+        let server = refusing_45().await;
+        let id = "ideogram/ideogram-4-5";
+        let mut base = make_base("a lighthouse", id);
+        base.seed = Some(7);
+        let mut extras = extras_45();
+        extras.size = Some("2048x2048".into());
+        extras.quality = Some("high".into());
+        extras.background = Some("transparent".into());
+        extras.extra = Some(json!({ "magic_prompt": "off", "quality": "low", "num_images": 4, "prompt": "other" }));
+        let _ = make_provider(&server.uri()).generate(&ref_schema(id), &base, &extras, &empty_materialized()).await;
+        let req = &server.received_requests().await.unwrap()[0];
+        assert_eq!(req.url.path(), "/v2/image/generate/ideogram-4-5");
+        for (field, want) in [("prompt", "a lighthouse"), ("size", "2048x2048"), ("quality", "high"), ("background", "transparent"), ("seed", "7"), ("magic_prompt", "off")] {
+            assert_eq!(multipart_field(&req.body, field).as_deref(), Some(want), "{field}");
+        }
+        let body = String::from_utf8_lossy(&req.body).to_string();
+        assert!(!body.contains("name=\"num_images\"") && !body.contains("name=\"images\""), "{body}");
+        assert_eq!(body.matches("name=\"quality\"").count(), 1, "{body}");
+    }
+
+    /// Nano Banana resold on Ideogram v2 (`POST /v2/image/generate/nano-banana-2`,
+    /// multipart): prompt, the images (the edited one first), aspect_ratio,
+    /// `resolution_tier` (litegen's tier), seed, one image ("num_images" 1);
+    /// `async` and `webhook_url` never go out.
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-03)
+    #[tokio::test]
+    async fn nano_banana_through_ideogram_sends_its_own_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" }))).mount(&server).await;
+        let id = "ideogram/nano-banana-2";
+        let mut base = make_base("a koi pond", id);
+        base.seed = Some(7);
+        base.n = 3;
+        let mut extras = extras_45();
+        extras.aspect_ratio = Some("21:9".into());
+        extras.resolution = Some("2K".into());
+        let refs = parts_45(&[("reference", "images", b"REF-A"), ("init", "images", b"INIT")]);
+        let _ = make_provider(&server.uri()).generate(&ref_schema(id), &base, &extras, &refs).await;
+        let req = &server.received_requests().await.unwrap()[0];
+        assert_eq!(req.url.path(), "/v2/image/generate/nano-banana-2");
+        for (field, want) in [("prompt", "a koi pond"), ("aspect_ratio", "21:9"), ("resolution_tier", "2K"), ("seed", "7"), ("num_images", "1")] {
+            assert_eq!(multipart_field(&req.body, field).as_deref(), Some(want), "{field}");
+        }
+        let body = String::from_utf8_lossy(&req.body).to_string();
+        assert!(body.find("INIT").unwrap() < body.find("REF-A").unwrap(), "the edited image first: {body}");
+        assert!(!body.contains("name=\"async\"") && !body.contains("name=\"webhook_url\""), "{body}");
+    }
+
+    /// P-Image on Ideogram v2 (`POST /v2/image/generate/p-image-ideogram`,
+    /// JSON): prompt, `quality` (the row's default, medium, when none is
+    /// asked), `resolution` as Ideogram's "1k" | "2k", aspect_ratio as "16x9",
+    /// seed, one image; `async` and `webhook_url` never go out.
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-04)
+    #[tokio::test]
+    async fn p_image_through_ideogram_sends_its_json_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" }))).mount(&server).await;
+        let id = "ideogram/p-image-ideogram";
+        let mut base = make_base("a paper boat", id);
+        base.seed = Some(7);
+        base.n = 3;
+        let mut extras = extras_45();
+        extras.quality = Some("high".into());
+        extras.resolution = Some("2K".into());
+        extras.aspect_ratio = Some("16:9".into());
+        let p = make_provider(&server.uri());
+        let _ = p.generate(&ref_schema(id), &base, &extras, &empty_materialized()).await;
+        let _ = p.generate(&ref_schema(id), &make_base("a paper boat", id), &extras_45(), &empty_materialized()).await;
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received[0].url.path(), "/v2/image/generate/p-image-ideogram");
+        let body: serde_json::Value = serde_json::from_slice(&received[0].body).expect("a JSON body");
+        assert_eq!(body, json!({ "prompt": "a paper boat", "num_images": 1, "quality": "high", "resolution": "2k", "aspect_ratio": "16x9", "seed": 7 }));
+        let plain: serde_json::Value = serde_json::from_slice(&received[1].body).expect("a JSON body");
+        assert_eq!((plain["quality"].as_str(), plain["resolution"].as_str()), (Some("medium"), Some("1k")), "the row's defaults go out: {plain}");
+    }
+
+    /// "The first image is the one being edited; any others are extra
+    /// references": the `init` goes first whatever order the request listed
+    /// them in, then each reference, then the mask.
+    #[tokio::test]
+    async fn ideogram_4_5_sends_the_edited_image_first() {
+        let server = refusing_45().await;
+        let id = "ideogram/ideogram-4-5";
+        let refs = parts_45(&[("reference", "images", b"REF-A"), ("mask", "mask", b"MASK"), ("init", "images", b"INIT"), ("reference", "images", b"REF-B")]);
+        let _ = make_provider(&server.uri()).generate(&ref_schema(id), &make_base("x", id), &extras_45(), &refs).await;
+        let body = String::from_utf8_lossy(&server.received_requests().await.unwrap()[0].body).to_string();
+        let at = |tag: &str| body.find(tag).unwrap_or_else(|| panic!("{tag} missing: {body}"));
+        assert!(at("INIT") < at("REF-A") && at("REF-A") < at("REF-B") && at("REF-B") < at("MASK"), "{body}");
+        assert_eq!((body.matches("name=\"images\"").count(), body.matches("name=\"mask\"").count()), (3, 1), "{body}");
+    }
+
+    /// What 4.5 cannot make is refused before any call: "`very_low` … requires
+    /// source images"; "With a mask, the output is always the first source
+    /// image's own size, so `size` cannot be set"; "A masked request can
+    /// include at most three other source images"; a mask needs an image.
+    #[tokio::test]
+    async fn what_ideogram_4_5_cannot_make_is_refused_before_any_call() {
+        let server = refusing_45().await;
+        let id = "ideogram/ideogram-4-5";
+        let p = make_provider(&server.uri());
+        let none = empty_materialized();
+        let very_low = ImageExtras { quality: Some("very_low".into()), ..extras_45() };
+        let sized = ImageExtras { size: Some("1024x1024".into()), ..extras_45() };
+        let plain = extras_45();
+        let masked = parts_45(&[("init", "images", b"I"), ("mask", "mask", b"M")]);
+        let crowded = parts_45(&[
+            ("init", "images", b"I"),
+            ("reference", "images", b"A"),
+            ("reference", "images", b"B"),
+            ("reference", "images", b"C"),
+            ("reference", "images", b"D"),
+            ("mask", "mask", b"M"),
+        ]);
+        let mask_only = parts_45(&[("mask", "mask", b"M")]);
+        for (extras, refs, why) in [
+            (&very_low, &none, "very_low without source images"),
+            (&sized, &masked, "a size beside a mask"),
+            (&plain, &crowded, "four others beside a mask"),
+            (&plain, &mask_only, "a mask with no image"),
+        ] {
+            let err = p.generate(&ref_schema(id), &make_base("x", id), extras, refs).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{why}: {err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
     }
 }

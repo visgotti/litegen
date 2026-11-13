@@ -73,6 +73,14 @@ impl Package {
     }
 }
 
+/// Whether a reference is a `data:` URI (RFC 2397; the scheme is
+/// case-insensitive, RFC 3986 §3.1). Compared as bytes: slicing the string's
+/// first five bytes panics when byte 5 falls inside a character, as it does
+/// in "モデル.bin" or "Textür.png".
+pub fn is_data_uri(reference: &str) -> bool {
+    reference.as_bytes().get(..5).is_some_and(|p| p.eq_ignore_ascii_case(b"data:"))
+}
+
 /// Percent-decode a URI path component (RFC 3986). Invalid escapes are kept
 /// verbatim rather than guessed at.
 pub fn percent_decode(s: &str) -> String {

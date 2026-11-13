@@ -1,5 +1,13 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { ModelCapabilities, VideoCamera, VideoGenerationRequest, VideoGenerationResponse, VideoMedia } from "../src";
+import type {
+  FramesSetShape,
+  ModelCapabilities,
+  ParamSpecAspectRatio,
+  VideoCamera,
+  VideoGenerationRequest,
+  VideoGenerationResponse,
+  VideoMedia,
+} from "../src";
 
 // Compile-time checks on video controls for sprites (PixelGenie L10), from
 // the OpenAPI document — `tsc --noEmit` covers this file.
@@ -16,5 +24,10 @@ describe("video control types", () => {
     expectTypeOf<VideoGenerationResponse["media"]>().toEqualTypeOf<VideoMedia | null | undefined>();
     expectTypeOf<ModelCapabilities["supports_loop"]>().toEqualTypeOf<boolean | undefined>();
     expectTypeOf<ModelCapabilities["duration_values"]>().toEqualTypeOf<number[] | undefined>();
+  });
+
+  it("types when a frame image sets the clip's shape", () => {
+    expectTypeOf<FramesSetShape>().toEqualTypeOf<"always" | "without_references">();
+    expectTypeOf<ParamSpecAspectRatio["frames_set_shape"]>().toEqualTypeOf<FramesSetShape | null | undefined>();
   });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import type { PieLabelRenderProps } from 'recharts';
 import { client } from '../sdk-client';
 import type { ProxyStats, RequestLog, ApiKeyInfo } from '@litegen/sdk';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
@@ -162,7 +163,7 @@ export default function Overview() {
                 cx="50%"
                 cy="50%"
                 outerRadius={100}
-                label={(props: any) => `${props.name ?? ''}: $${Number(props.value ?? 0).toFixed(4)}`}
+                label={(props: PieLabelRenderProps) => `${props.name ?? ''}: $${Number(props.value ?? 0).toFixed(4)}`}
               >
                 {stats.providers_used.map((_, i) => (
                   <Cell key={i} fill={COLORS[i % COLORS.length]} />

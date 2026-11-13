@@ -368,7 +368,7 @@ mod tests {
             let sent = decoded(out.mask_png.as_ref().unwrap());
             assert_eq!(sent.dimensions(), (16, 16));
             for (x, y) in [(2, 3), (5, 7), (1, 3), (6, 3), (2, 8), (0, 0)] {
-                let inside = x >= 2 && x < 6 && y >= 3 && y < 8;
+                let inside = (2..6).contains(&x) && (3..8).contains(&y);
                 assert_eq!(edited(&sent, x, y, convention), inside, "{convention:?} at {x},{y}");
             }
             if convention == MaskConvention::TransparentEdits {
@@ -472,7 +472,7 @@ mod tests {
         let w = out.window.unwrap();
         assert!(w.x + w.w <= 2000 && w.y + w.h <= 400, "{w:?}");
         assert!(w.w as f64 / w.h as f64 <= 6.0 + 1e-9 && w.h >= 256, "{w:?}");
-        assert!(w.x <= 0 && w.y <= 380 && w.y + w.h >= 400, "covers the region: {w:?}");
+        assert!(w.x == 0 && w.y <= 380 && w.y + w.h >= 400, "covers the region: {w:?}");
     }
 
     #[test]

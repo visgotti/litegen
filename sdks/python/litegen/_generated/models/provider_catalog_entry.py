@@ -17,7 +17,7 @@ class ProviderCatalogEntry:
     field knowledge.
 
         Attributes:
-            auth_scheme (str): Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3" | "kling_jwt".
+            auth_scheme (str): Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3".
             fields (List['CredentialFieldSpec']): Fields to collect per pool entry, besides the universal `weight`/`label`.
             modalities (List[str]): Which media this provider serves — any of "image", "video".
             name (str): Provider id (e.g. "openai", "bedrock").

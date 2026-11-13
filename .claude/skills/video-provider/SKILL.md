@@ -37,16 +37,29 @@ read [Vendors with more than one family](#vendors-with-more-than-one-family).
   deferral explains why). Raise it with the user instead of working around
   it.
 - **Two observers poll the same job.**
-  - Client polls go through `ProxyRouter::get_video_status`, using the
-    *platform* instance (see known-gaps.md).
+  - Client polls go through `ProxyRouter::get_video_status_claimed`, using
+    the instance that submitted the job (`VideoJob.provider`: an org's own
+    key when it brought one). A job no longer in memory (after a restart,
+    once this replica's poller has ended it, or when a later submit finds it
+    over 3 h old) is answered from the row.
   - The background poller (`proxy/poller.rs`) uses a fresh instance built
     with the org's BYO credential. It rebuilds the handle from the DB row,
     which keeps **only `provider_job_id`, `provider` and `model`**, and it
     may run after a restart.
-- **The output is a URL.** The poller stores `video_url` as the row's
-  `result_url` and fires the webhook. Nothing re-hosts video, and
-  `video_data` is dropped today. The URL you return is the one the customer
-  gets.
+- **The output is kept.** The poll that sees a video finish keeps it
+  (`rehost_video`, `proxy/router.rs`): your `video_data` when you return
+  bytes, otherwise one download of `video_url`, without credentials, from a
+  public http(s) URL. Only one observer keeps it, the one that takes the
+  row's delivery claim (`poll_video_claimed`); the other reports the job
+  still processing. The customer gets litegen's copy, never your URL. A
+  video finished with neither bytes nor such a URL fails at once (refunded,
+  with its webhook); a copy that fails for a passing reason is retried.
+  A generation that keeps nothing (`keep_outputs: false`) hands out your
+  `video_url` instead, in the app's access mode, so **return a public
+  http(s) `video_url`**, even with `video_data`. A vendor whose video comes
+  only as bytes, or behind its key, says so: `hands_out_links` returns
+  false, and core refuses a keep-nothing request (400
+  `keep_outputs_unsupported`) before the vendor runs.
 - **Inputs.**
   - `base`: prompt, `negative_prompt`, `seed`, `extra`.
   - `extras: VideoExtras`: `duration_seconds` (always set: the caller's
@@ -144,7 +157,12 @@ specific to video.
   - a `last_frame` plus a start image → start-end;
   - any image → image-to-video;
   - otherwise text-to-video, but only if the row advertises `text_to_video`.
-    If it doesn't, return `InvalidRequest` naming the role to attach.
+    If it doesn't, return `InvalidRequest` naming the role to attach. If
+    text-to-video needs the prompt and image-to-video doesn't, the row says
+    `prompt: { required: false, required_for_text_to_video: true }`, so the
+    validator refuses a text-to-video request with an empty prompt before
+    anything is quoted or reserved; keep the adapter's refusal as a
+    backstop (Runway's `t2v_needs_prompt`).
 - **Order positional images yourself.** If the vendor reads an array by
   position (start, then end), sort by role rather than trusting the order
   the caller sent.
@@ -159,13 +177,19 @@ specific to video.
     `EndpointSpec`).
 - **Resolution, ratio and fps.**
   - Map each value to the vendor's preset names (Leonardo `RESOLUTION_720`).
-  - If no value was requested, choose a default that is valid for the
+  - If no value was requested, send the row's declared default
+    (`extras.resolution.as_deref().or(model.string_default("resolution"))`,
+    as Kling, ByteDance and fal do): that is what the request is priced at,
+    never a default the vendor picks for itself. It must be valid for the
     specific model (Leonardo's Kling models take only `RESOLUTION_1080`).
   - Never derive a value outside the vendor's enum.
 - **Audio, camera and loop switches** are `extra` passthroughs. Allowlist
   them only on rows whose endpoint schema has them.
 - **Vendor callbacks and webhooks.** litegen fires its own webhooks from the
-  poller. Don't configure a vendor callback URL as a substitute.
+  poller. Don't configure a vendor callback URL as a substitute, and never
+  let a caller set one through `extra`: the loader refuses a callback or
+  webhook key in `extra_allowlist`, and `providers::extra_fields` never
+  sends one (`capabilities::gateway_owned_extra`).
 - **Return as soon as the vendor accepts.** Check that the response carries
   the job id before you return a handle. A missing id is a non-retryable
   error with the body attached.
@@ -176,15 +200,17 @@ specific to video.
   poller has nothing else:
   - the plain task id, when the poll URL depends only on it (`vidu`,
     `pixverse`);
-  - `{kind}/{task_id}`, when the poll path differs by endpoint (`kling`);
+  - `{kind}/{task_id}`, when the poll path differs by endpoint (Kling's
+    legacy design did this; its current API polls one `GET /tasks`, so its
+    handle is the plain id and the old form is still read for jobs in flight);
   - a JSON object, when you need the endpoint and the vendor's status or
     result URLs (`fal`: `{"request_id", "endpoint", "status_url",
     "response_url"}`).
 - If the poll URL comes from the vendor, store it in the handle and use it
   as given. Send your key to it only if its host is the vendor's API host or
   the `api_base` host; otherwise fall back to the documented path built from
-  `api_base()`. Build every fallback from `api_base()`: `video/fal.rs`
-  hard-codes `queue.fal.run` there, which is a known gap.
+  `api_base()`. Build every fallback from `api_base()`, as `queue_urls` in
+  `video/fal.rs` does.
 - Never use `self` state or caches to poll. The instance that polls may not
   be the one that submitted.
 
@@ -202,27 +228,44 @@ specific to video.
   - Failed, cancelled, expired and moderated map to `Failed`, with the
     vendor's reason in `error`. Runway's `CANCELLED` once polled until the
     timeout.
-  - Queued and running map to `Pending` and `Processing`.
-  - For an undocumented state, return a *retryable* error that names the
-    state, not `Processing`. The poller asks again every 5 s, logs a warning
-    each time, and reaps the row after 2 h. That makes the problem loud
-    without failing a job that may still finish. If the vendor documents a
-    closed enum, a non-retryable error is justified, as `model3d/fal.rs`
-    does. `video/fal.rs` still maps unknown states to `Pending`; don't copy
-    that.
+  - Queued and running map to `Pending` and `Processing`: list each one
+    the vendor documents, with its `@see`.
+  - Any other state, or none, returns `Ok(super::unknown_state("<p>",
+    state))`: `Failed`, with the state named in `error`, through the normal
+    terminal path that fires the webhook. Never a catch-all `Processing`:
+    such a job polled until the reaper's 2 h maximum age.
+    `every_video_and_3d_poll_fails_an_undocumented_state`
+    (`proxy/config_conformance.rs`) holds every adapter to this; add
+    your vendor's answer shape and in-progress states to its `state_answer`.
 - **Report progress honestly.** Use the vendor's percentage when it gives
   one, a fixed mid value otherwise, and 100 on completion.
-- **The output URL** has to be fetchable by the customer without vendor
-  credentials, and should stay alive long enough to download. If it isn't,
-  don't ship silently. Veo's auth-gated `video.uri` is the current case;
-  Bedrock's `s3://` output and Sora's bytes were earlier ones. Set
-  `content_type` (usually `video/mp4`).
-- **Return vendor verdicts as `Ok(Failed)`, never as `Err`.** Only a
-  terminal `Ok` result goes through the poller's normal tail, which fires
-  the customer's webhook. A retryable `Err` leaves the row in flight for the
-  next tick. A non-retryable `Err` makes the poller *reap* the row as failed
-  without any webhook. Use it only when the job's state can never be
-  learned: a 401 or 404 on the status call, or a malformed handle.
+- **The output URL** has to be fetchable without vendor credentials, and
+  should stay alive long enough to download. When it isn't, download the
+  video in the poll (with the key, only from the vendor's API host)
+  and return `video_data`, as Veo's adapter does for its key-gated
+  `video.uri`; then `hands_out_links` is false. Set `content_type`
+  (usually `video/mp4`). Cap that download at 1 GiB, as Veo's and
+  Bedrock's adapters do (`MAX_VIDEO_BYTES`): refuse a declared length
+  over the cap before reading, stop a body that runs past it, and size
+  the buffer from the declared length instead of growing it as chunks
+  arrive (Sora's adapter, payloads review #5). For a public URL,
+  `crate::util::ssrf::download_capped` does all three.
+- **An adapter that downloads in its poll asks the delivery gate first.**
+  Put the poll's body in `poll_status_gated(handle, gate: &dyn FetchGate)`,
+  and have `poll_status` call it with `&crate::providers::AlwaysFetch`. Call
+  `gate.ask()` once, after the vendor says the video is ready and before the
+  download. On `Fetch::StandAside`, download nothing and return
+  `super::standing_aside()`. Veo, Bedrock and Sora do this, each with
+  `a_gate_that_says_stand_aside_downloads_nothing`. An adapter that returns
+  a link keeps the trait's default, which never asks: the caller claims
+  after the poll, before it downloads the link.
+- **Return vendor verdicts as `Ok(Failed)`, never as `Err`.** A terminal
+  `Ok` result goes through the poller's normal tail with the vendor's
+  reason. A retryable `Err` leaves the row in flight for the next tick. A
+  non-retryable `Err` makes the poller *reap* the row: failed, refunded and
+  webhooked, with the poll error as its only reason. Use it only when the
+  job's state can never be learned: a 401 or 404 on the status call, or a
+  malformed handle.
 
 ## The catalog row
 
@@ -240,6 +283,15 @@ specific to video:
   duration range must be valid on every endpoint the row can reach.
   MiniMax and Runway have conformance tests for exactly this. If the modes
   differ too much, split the model into two rows.
+- **A frame that sets the shape.** When the vendor takes no ratio with a
+  `first_frame`, `last_frame` or `init` image, declare `frames_set_shape` on
+  `aspect_ratio`: `without_references` when a `reference` image beside the
+  frame reaches a mode that takes a ratio (or the vendor refuses the mix),
+  `always` when it changes nothing. The validator then refuses the ratio
+  with such a frame when `strict`, and drops and names it otherwise, rather
+  than your adapter leaving it out unreported. Add the row to
+  `every_row_whose_frames_set_the_shape_declares_it` in
+  `catalog_conformance.rs`, which lists every such row.
 - **`duration_seconds`** is `float` (most vendors) or `int` (Runway). Declare
   `min`, `max` and a `default`.
 - **Price** is per second × the default duration at the default

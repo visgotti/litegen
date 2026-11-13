@@ -90,7 +90,9 @@ describe("timeouts (L19)", () => {
   });
 
   it("waits out the server's worst case — three 120 s vendor attempts — before giving up on a request", async () => {
-    expect(DEFAULT_TIMEOUT_MS).toBeGreaterThan(3 * 120_000);
+    // A 3D operation's URL source is fetched first (up to 300 s), then the
+    // vendor attempts run.
+    expect(DEFAULT_TIMEOUT_MS).toBeGreaterThan(300_000 + 3 * 120_000);
     vi.useFakeTimers();
     const hanging = ((_: unknown, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {

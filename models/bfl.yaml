@@ -1,6 +1,9 @@
 models:
   # Black Forest Labs (FLUX) direct API. Async: POST /v1/{model} -> poll polling_url.
-  # Auth: x-key header. Image-only. width/height 256-1440 (mult of 32).
+  # Auth: x-key header. Image rows only: BFL's video endpoints (POST
+  # /v1/flux-3-video, "Generate a video with FLUX 3.", and the flux-tools
+  # video-edit-v1 / video-upscale-v1 in api.bfl.ai/openapi.json, 2026-11-09)
+  # are not carried. width/height 256-1440 (mult of 32).
   - id: bfl/flux-pro-1.1
     provider: bfl
     media_type: image
@@ -30,16 +33,23 @@ models:
       roles:
         redux: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [prompt_upsampling, safety_tolerance]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      prompt_upsampling: { kind: bool, default: false }
+      safety_tolerance: { kind: int, min: 0, max: 6, default: 2 }
     tags: [text-to-image]
 
   - id: bfl/flux-dev
     provider: bfl
     media_type: image
     display_name: FLUX.1 [dev]
-    description: Black Forest Labs FLUX.1 dev (hosted) text-to-image.
+    description: Black Forest Labs FLUX.1 dev (hosted) text-to-image (Redux image_prompt ref).
     docs_url: https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux1-%5Bdev%5D
+    # "FLUX.1 [dev]" "Per image" "$0.025/img" on bfl.ai/pricing (its structured
+    # data too: "price":0.025). The docs pricing table no longer lists FLUX.1 [dev].
+    # @see https://bfl.ai/pricing (2026-11-09)
     pricing: { base_cost_usd: 0.025 }
-    capabilities: { text_to_image: true }
+    capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
       # PixelGenie L9: output_format jpeg | png | webp (api.bfl.ai/openapi.json);
@@ -54,17 +64,35 @@ models:
         min_height: 256
         max_height: 1440
         multiple_of: 32
-    extra_allowlist: [prompt_upsampling, safety_tolerance, steps, guidance]
+      # "steps … Number of steps for the image generation process" (1-50,
+      # default 28) and "guidance … Guidance scale for image generation"
+      # (1.5-5, default 3), sent as `steps` and `guidance`.
+      # @see https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux1-%5Bdev%5D (2026-11-03)
+      steps: { kind: int, min: 1, max: 50, default: 28 }
+      guidance_scale: { kind: float, min: 1.5, max: 5.0, default: 3.0 }
+    # "image_prompt … Optional base64 encoded image to use as a prompt for
+    # generation" (Redux).
+    ref_inputs:
+      max_total: 1
+      default_role: redux
+      provider_format: { form: base64 }
+      roles:
+        redux: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [prompt_upsampling, safety_tolerance]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      prompt_upsampling: { kind: bool, default: false }
+      safety_tolerance: { kind: int, min: 0, max: 6, default: 2 }
     tags: [text-to-image]
 
   - id: bfl/flux-pro-1.1-ultra
     provider: bfl
     media_type: image
     display_name: FLUX 1.1 [pro] Ultra
-    description: FLUX 1.1 pro Ultra — high-resolution, aspect-ratio based.
+    description: FLUX 1.1 pro Ultra — high-resolution, aspect-ratio based (Redux image_prompt ref).
     docs_url: https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D-ultra-mode
     pricing: { base_cost_usd: 0.06 }
-    capabilities: { text_to_image: true }
+    capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
       # PixelGenie L9: output_format jpeg | png | webp (api.bfl.ai/openapi.json);
@@ -75,7 +103,23 @@ models:
         kind: aspect_ratio
         allowed: ["21:9","16:9","4:3","1:1","3:4","9:16","9:21"]
         default: "16:9"
-    extra_allowlist: [raw, safety_tolerance]
+    # "image_prompt … Optional image to remix in base64 format", blended by
+    # "image_prompt_strength … Blend between the prompt and the image prompt"
+    # (0-1, default 0.1) — the vendor's own extra, not `strength` (here 1 keeps
+    # more of the image, there less).
+    # @see https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D-ultra-mode (2026-11-03)
+    ref_inputs:
+      max_total: 1
+      default_role: redux
+      provider_format: { form: base64 }
+      roles:
+        redux: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [raw, safety_tolerance, image_prompt_strength]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      raw: { kind: bool, default: false }
+      safety_tolerance: { kind: int, min: 0, max: 6, default: 2 }
+      image_prompt_strength: { kind: float, min: 0, max: 1, default: 0.1 }
     tags: [text-to-image]
 
   - id: bfl/flux-kontext-pro
@@ -89,12 +133,19 @@ models:
     prompt: { required: true, max_length: 10000 }
     params:
       # PixelGenie L9: output_format jpeg | png | webp (api.bfl.ai/openapi.json);
-      # litegen asks for png unless told otherwise (BFL's own default is jpeg).
+      # litegen asks for png unless told otherwise, which is also Kontext's own
+      # default (FluxKontextProInputs.output_format "default": "png", 2026-11-09).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["21:9","16:9","4:3","1:1","3:4","9:16","9:21"]
+    # One reference: input_image_2 … input_image_4 are "*Experimental
+    # Multiref*" in the Kontext spec, and BFL points multi-reference work at
+    # FLUX.2 ("For new projects, we recommend FLUX.2 with multi-reference
+    # support and up to 4MP output").
+    # @see https://docs.bfl.ml/api-reference/models/edit-or-create-an-image-with-flux1-kontext-%5Bpro%5D (2026-11-09)
+    # @see https://docs.bfl.ml/kontext/kontext_image_editing.md (2026-11-09)
     ref_inputs:
       max_total: 1
       default_role: init
@@ -102,6 +153,9 @@ models:
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      safety_tolerance: { kind: int, min: 0, max: 6, default: 2 }
     tags: [text-to-image, image-to-image, editing]
 
   - id: bfl/flux-kontext-max
@@ -115,12 +169,20 @@ models:
     prompt: { required: true, max_length: 10000 }
     params:
       # PixelGenie L9: output_format jpeg | png | webp (api.bfl.ai/openapi.json);
-      # litegen asks for png unless told otherwise (BFL's own default is jpeg).
+      # litegen asks for png unless told otherwise, which is also Kontext's own
+      # default (FluxKontextProInputs.output_format "default": "png", 2026-11-09).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["21:9","16:9","4:3","1:1","3:4","9:16","9:21"]
+    # One reference: input_image_2 … input_image_4 are "*Experimental
+    # Multiref*" in the Kontext spec (the max page shares the pro body,
+    # FluxKontextProInputs), and BFL points multi-reference work at FLUX.2
+    # ("For new projects, we recommend FLUX.2 with multi-reference support
+    # and up to 4MP output").
+    # @see https://docs.bfl.ml/api-reference/models/edit-or-create-an-image-with-flux1-kontext-%5Bmax%5D (2026-11-09)
+    # @see https://docs.bfl.ml/kontext/kontext_image_editing.md (2026-11-09)
     ref_inputs:
       max_total: 1
       default_role: init
@@ -128,6 +190,9 @@ models:
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      safety_tolerance: { kind: int, min: 0, max: 6, default: 2 }
     tags: [text-to-image, image-to-image, editing]
 
   # bfl/flux-pro (FLUX.1 [pro]) is gone: api.bfl.ai/openapi.json has no
@@ -137,12 +202,22 @@ models:
     media_type: image
     display_name: FLUX.2 [pro]
     description: Black Forest Labs FLUX.2 pro — recommended default for image
-    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bpro%5D
       generation and multi-reference editing.
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bpro%5D
     # FLUX.2 is priced per megapixel: [pro] text-to-image is "from $0.03", the
     # price of the default 1 MP request (re-read 2026-09-11).
-    # @see https://docs.bfl.ml/quick_start/pricing.md
-    pricing: { base_cost_usd: 0.03 }
+    # The pricing page's own rates ([pro] firstMpPrice 3, mpPrice 1.5 credits, "1 credit =
+    # $0.01 USD"): "The first megapixel costs a flat rate, then each
+    # additional MP adds to the total", rounded up (`Math.ceil(outputMP)`),
+    # 1 MP = 1024 × 1024. Input megapixels (an edit's references) are
+    # billed by BFL too and not here: their size is unknown at the quote.
+    # @see https://docs.bfl.ml/quick_start/pricing (2026-11-03)
+    pricing:
+      base_cost_usd: 0.03
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.097152 } }, usd: 0.045 }
+        - { when: { size: '*', megapixels: { gt: 2.097152, lte: 3.145728 } }, usd: 0.06 }
+        - { when: { size: '*', megapixels: { gt: 3.145728, lte: 4.194304 } }, usd: 0.075 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
@@ -158,13 +233,19 @@ models:
         min_height: 256
         max_height: 2048
         multiple_of: 32
+    # "Reference multiple images simultaneously - up to 8 via API": sent as
+    # input_image, input_image_2 … input_image_8, in order.
+    # @see https://docs.bfl.ml/flux_2/flux2_image_editing.md (2026-11-03)
     ref_inputs:
-      max_total: 1
+      max_total: 8
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 1 }
+        init: { required: false, min_count: 0, max_count: 8 }
     extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      safety_tolerance: { kind: int, min: 0, max: 7, default: 2 }
     tags: [text-to-image, image-to-image]
 
   # POST /v1/flux-2-max takes the same `Flux2Inputs` body as /v1/flux-2-pro
@@ -174,20 +255,30 @@ models:
   # route and organization determine the approved maximum … Unapproved levels
   # return 422"), its errors page "| 0–5 | FLUX.2 endpoints …"; 0-5 is safe
   # (https://docs.bfl.ml/api_integration/errors.md, 2026-10-30). The
-  # adapter sends one reference, as `input_image`.
+  # adapter sends every reference, as `input_image` … `input_image_8`.
   # @see https://api.bfl.ai/openapi.json (/v1/flux-2-max, re-read 2026-09-11)
   - id: bfl/flux-2-max
     provider: bfl
     media_type: image
     display_name: FLUX.2 [max]
     description: Black Forest Labs FLUX.2 max — the highest-quality FLUX.2
-    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bmax%5D
       model for image generation and editing, with the strongest editing
       consistency and prompt following, and grounding search.
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bmax%5D
     # [max] text-to-image is "from $0.07" per megapixel: the default 1 MP
     # request (re-read 2026-09-11).
-    # @see https://docs.bfl.ml/quick_start/pricing.md
-    pricing: { base_cost_usd: 0.07 }
+    # The pricing page's own rates ([max] firstMpPrice 7, mpPrice 3 credits, "1 credit =
+    # $0.01 USD"): "The first megapixel costs a flat rate, then each
+    # additional MP adds to the total", rounded up (`Math.ceil(outputMP)`),
+    # 1 MP = 1024 × 1024. Input megapixels (an edit's references) are
+    # billed by BFL too and not here: their size is unknown at the quote.
+    # @see https://docs.bfl.ml/quick_start/pricing (2026-11-03)
+    pricing:
+      base_cost_usd: 0.07
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.097152 } }, usd: 0.1 }
+        - { when: { size: '*', megapixels: { gt: 2.097152, lte: 3.145728 } }, usd: 0.13 }
+        - { when: { size: '*', megapixels: { gt: 3.145728, lte: 4.194304 } }, usd: 0.16 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
@@ -203,15 +294,22 @@ models:
         min_height: 256
         max_height: 2048
         multiple_of: 32
+    # "Reference multiple images simultaneously - up to 8 via API": sent as
+    # input_image, input_image_2 … input_image_8, in order.
+    # @see https://docs.bfl.ml/flux_2/flux2_image_editing.md (2026-11-03)
     ref_inputs:
-      max_total: 1
+      max_total: 8
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 1 }
+        init: { required: false, min_count: 0, max_count: 8 }
     # disable_pup: "FLUX.2 [pro] and [max] apply prompt upsampling by default;
     # set this to true to generate from your prompt exactly as written."
     extra_allowlist: [safety_tolerance, disable_pup]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      safety_tolerance: { kind: int, min: 0, max: 7, default: 2 }
+      disable_pup: { kind: bool, default: false }
     tags: [text-to-image, image-to-image, premium]
 
   # POST /v1/flux-2-klein-9b takes `Flux2KleinInputs`: "like Pro but max 4
@@ -224,12 +322,22 @@ models:
     media_type: image
     display_name: FLUX.2 [klein] 9B
     description: Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled
-    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bklein%5D-9b
       FLUX.2 generation and editing, balancing quality and speed.
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bklein%5D-9b
     # [klein] 9B is "$0.015 + $0.002/MP" (the first megapixel at the flat
     # rate): "from $0.015", the default 1 MP request (re-read 2026-09-11).
-    # @see https://docs.bfl.ml/quick_start/pricing.md
-    pricing: { base_cost_usd: 0.015 }
+    # The pricing page's own rates ([klein] 9B firstMpPrice 1.5, mpPrice .2 credits, "1 credit =
+    # $0.01 USD"): "The first megapixel costs a flat rate, then each
+    # additional MP adds to the total", rounded up (`Math.ceil(outputMP)`),
+    # 1 MP = 1024 × 1024. Input megapixels (an edit's references) are
+    # billed by BFL too and not here: their size is unknown at the quote.
+    # @see https://docs.bfl.ml/quick_start/pricing (2026-11-03)
+    pricing:
+      base_cost_usd: 0.015
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.097152 } }, usd: 0.017 }
+        - { when: { size: '*', megapixels: { gt: 2.097152, lte: 3.145728 } }, usd: 0.019 }
+        - { when: { size: '*', megapixels: { gt: 3.145728, lte: 4.194304 } }, usd: 0.021 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
@@ -245,11 +353,270 @@ models:
         min_height: 256
         max_height: 2048
         multiple_of: 32
+    # input_image … input_image_4 ("Path to the fourth input image"), in order.
+    # @see https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bklein%5D-9b (2026-11-03)
     ref_inputs:
-      max_total: 1
+      max_total: 4
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 1 }
+        init: { required: false, min_count: 0, max_count: 4 }
     extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From BFL's OpenAPI per endpoint (drift snapshot bfl/openapi.txt).
+      safety_tolerance: { kind: int, min: 0, max: 7, default: 2 }
+    tags: [text-to-image, image-to-image, fast]
+
+  # FLUX.2 [flex] (POST /v1/flux-2-flex, `Flux2FlexInputs`): "Specialized for
+  # typography and text rendering, and for preserving small details" — the
+  # FLUX.2 body (prompt, seed, width/height, input_image … input_image_8,
+  # safety_tolerance, output_format jpeg | png | webp) with "Adjustable steps
+  # & guidance": steps 1-50 (default 50) and guidance 1.5-10 (default 5),
+  # sent as `steps` and `guidance`; prompt_upsampling (default true). The
+  # size typing mirrors flux-2-pro.
+  # @see https://api.bfl.ai/openapi.json (/v1/flux-2-flex, 2026-11-03)
+  # @see https://docs.bfl.ml/flux_2/flux2_overview.md (2026-11-03)
+  - id: bfl/flux-2-flex
+    provider: bfl
+    media_type: image
+    display_name: FLUX.2 [flex]
+    description: Black Forest Labs FLUX.2 flex — generation and multi-reference editing tuned for typography, text rendering and small details, with adjustable steps and guidance.
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bflex%5D
+    # The pricing page's own rates (firstMpPrice 5, mpPrice 5 credits, "1
+    # credit = $0.01 USD"): $0.05 for the first megapixel and each further
+    # one, rounded up (1 MP = 1024 × 1024). Input megapixels (an edit's
+    # references, $0.05 each) are billed by BFL too and not here: their size
+    # is unknown at the quote.
+    # @see https://docs.bfl.ml/quick_start/pricing (2026-11-03)
+    pricing:
+      base_cost_usd: 0.05
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.097152 } }, usd: 0.10 }
+        - { when: { size: '*', megapixels: { gt: 2.097152, lte: 3.145728 } }, usd: 0.15 }
+        - { when: { size: '*', megapixels: { gt: 3.145728, lte: 4.194304 } }, usd: 0.20 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # PixelGenie L9: output_format jpeg | png | webp (`OutputFormat`);
+      # litegen asks for png unless told otherwise (BFL's own default is jpeg).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+        multiple_of: 32
+      # "Number of steps for image generation" and "Guidance scale for image
+      # generation. High guidance scales improve prompt adherence at the cost
+      # of reduced realism."
+      steps: { kind: int, min: 1, max: 50, default: 50 }
+      guidance_scale: { kind: float, min: 1.5, max: 10, default: 5 }
+    # input_image … input_image_8 ("Up to 8 (API)"), in order.
+    ref_inputs:
+      max_total: 8
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 8 }
+    extra_allowlist: [prompt_upsampling, safety_tolerance]
+    extra_params:
+      # From the FLUX.2 body above (safety_tolerance as /v1/flux-2-pro's, bfl/openapi.txt).
+      prompt_upsampling: { kind: bool, default: true }
+      safety_tolerance: { kind: int, min: 0, max: 7, default: 2 }
+    tags: [text-to-image, image-to-image, typography]
+
+  # FLUX 3 Image (2026-10-01; width/height and match_input since 2026-10-22):
+  # POST /v1/flux-3-image takes `Flux3ImageInputs` — prompt, images
+  # ("Optional reference image(s) the prompt edits or draws from; each is an
+  # http(s) URL or base64, one to 10 total"), aspect_ratio (15 ratios, or
+  # `auto`, the default), resolution ("an equal-pixel-area tier: `768sq`, `1k`
+  # (default), `1.5k`, `2k`, or `4k`", and `match_input` for edits),
+  # width/height, safety_tolerance (0-7, default 2), grounding ("web search
+  # and image search", default true) and version — with
+  # `additionalProperties: false`, so no seed, steps or output_format (the
+  # adapter sends the container only to rows that declare one). Bounding
+  # boxes are a JSON list at the end of the prompt ("there is no separate
+  # parameter"). Results poll like every BFL job.
+  # @see https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3 (2026-11-03)
+  # @see https://docs.bfl.ml/release-notes (October 1 and October 22, 2026)
+  - id: bfl/flux-3-image
+    provider: bfl
+    media_type: image
+    display_name: FLUX 3 Image
+    description: Black Forest Labs FLUX 3 Image — generation and editing with up to ten references, bounding boxes in the prompt and web-grounded prompts.
+    docs_url: https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3
+    # "Per image, by `resolution`": the page's rates, in credits ("1 credit =
+    # $0.01 USD"), are tier768 4.1, tier1k 4.8, tier1_5k 7, tier2k 10 and
+    # tier4k 60.7 — $0.041, $0.048, $0.07, $0.10, $0.607. The default request
+    # is 1k, edits too ("requests without the new fields work as before and
+    # return `1k`"). "Custom and `match_input` sizes are billed at the
+    # smallest `resolution` with at least as many pixels. Anything above `2k`
+    # (about 4MP) is billed as `4k`": a `size` takes the band of its pixels,
+    # the tiers' areas 768², 1024², 1536² and 2048² (k × 1024 a side; BFL's
+    # equal-area bins vary a little by ratio, so a size within a few percent
+    # of an edge may land one tier off), and wins over a tier, as width and
+    # height "Override resolution". `match_input` keeps the first
+    # reference's size "up to 4MP", so it bills at most the 2k price, $0.10.
+    # @see https://docs.bfl.ml/quick_start/pricing (2026-11-03)
+    # @see https://docs.bfl.ml/release-notes (October 22, 2026)
+    pricing:
+      base_cost_usd: 0.048
+      variable_pricing:
+        - { when: { resolution: "0.75K" }, usd: 0.041 }
+        - { when: { resolution: "1.5K" }, usd: 0.07 }
+        - { when: { resolution: "2K" }, usd: 0.10 }
+        - { when: { resolution: "4K" }, usd: 0.607 }
+        - { when: { resolution: match_input }, usd: 0.10 }
+        - { when: { size: '*', megapixels: { lte: 0.589824 } }, usd: 0.041 }
+        - { when: { size: '*', megapixels: { gt: 0.589824, lte: 1.048576 } }, usd: 0.048 }
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.359296 } }, usd: 0.07 }
+        - { when: { size: '*', megapixels: { gt: 2.359296, lte: 4.194304 } }, usd: 0.1 }
+        - { when: { size: '*', megapixels: { gt: 4.194304 } }, usd: 0.607 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9","2:1","16:9","3:2","7:5","4:3","5:4","1:1","4:5","3:4","5:7","2:3","9:16","1:2","9:21"]
+      # "Image resolution class, an equal-pixel-area tier: `768sq`, `1k`
+      # (default), `1.5k`, `2k`, or `4k`"; "`match_input` (edits only): the
+      # output keeps the first reference's own size (shrunk to 4 MP when
+      # larger)". litegen's 0.75K is `768sq`; "Ignored when width and height
+      # are set".
+      resolution: { kind: string, enum_values: ["0.75K", "1K", "1.5K", "2K", "4K", match_input], default: "1K" }
+      # Bounding boxes: "Write a description using `<id>` to name each
+      # element, then append a JSON array of rows" ({id, bbox, desc}; "Every
+      # box is `[top, left, bottom, right]` in integers from 0 to 1000"),
+      # written by the adapter from litegen's layout; boxes "guide, they don't
+      # clip". No documented maximum: 32, as Recraft's.
+      # @see https://docs.bfl.ml/flux_3/flux3_image_bounding_boxes.md (2026-11-03)
+      layout:
+        kind: layout
+        kinds: [object, text]
+        max_items: 32
+        label: Layout
+        description: Objects and lines of text to place, as fractions of the canvas.
+      # "Exact output width in pixels, [256, 6256]; set together with height.
+      # Overrides resolution and aspect_ratio"; "width x height at most
+      # 16822272 pixels, and at most 4194304 with reference images" (the
+      # adapter refuses a larger edit before any call); "at aspect ratios up
+      # to 8:1". Sent as width/height.
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 6256
+        min_height: 256
+        max_height: 6256
+        max_pixels: 16822272
+        max_aspect: 8
+    # One `images` list, in order; a reference "larger than 16 megapixels" is
+    # a 400 and one "smaller than 256 × 256" a 422.
+    # @see https://docs.bfl.ml/flux_3/flux3_image_generate.md (2026-11-03)
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [safety_tolerance, grounding]
+    extra_params:
+      # From the comment above.
+      safety_tolerance: { kind: int, min: 0, max: 7, default: 2 }
+      grounding: { kind: bool, default: true }
+    tags: [text-to-image, image-to-image, premium]
+
+  # FLUX 3 Image Klein (5.6B, open weights; 2026-10-15): POST
+  # /v1/flux-3-image-klein takes `Flux3ImageKleinInputs` — "the same fields
+  # as FLUX 3 Image, plus `seed`, `steps`, and `output_format`. By default, a
+  # Klein edit is the same size as the first reference, so Klein has no
+  # `match_input`. Its `width` and `height` start at 64 pixels." Its schema
+  # has no grounding or version, and `additionalProperties: false`.
+  # @see https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3-klein (2026-11-03)
+  # @see https://docs.bfl.ml/flux_3/flux3_image_klein.md (2026-11-03)
+  # @see https://docs.bfl.ml/release-notes (October 15, 2026)
+  - id: bfl/flux-3-image-klein
+    provider: bfl
+    media_type: image
+    display_name: FLUX 3 Image Klein
+    description: Black Forest Labs FLUX 3 Image Klein — the fast 5.6B open-weights FLUX 3 Image, for generation and editing with up to ten references.
+    docs_url: https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3-klein
+    # "Priced per image by output resolution. Text to image and image editing
+    # cost the same": tier768 .8, tier1k .9, tier1_5k 1.1, tier2k 1.4, tier4k
+    # 3.6 credits — $0.008, $0.009, $0.011, $0.014, $0.036 (the release
+    # notes' table). The default request is 1k ("Omitted: `1k` for
+    # text-to-image"). A `size` takes the band of its pixels, as on FLUX 3
+    # Image ("the same request"), and wins over a tier. An edit with neither
+    # keeps the first reference's size: BFL bills its tier (at most $0.036),
+    # billed here at 1k.
+    # @see https://docs.bfl.ml/quick_start/pricing (2026-11-03)
+    pricing:
+      base_cost_usd: 0.009
+      variable_pricing:
+        - { when: { resolution: "0.75K" }, usd: 0.008 }
+        - { when: { resolution: "1.5K" }, usd: 0.011 }
+        - { when: { resolution: "2K" }, usd: 0.014 }
+        - { when: { resolution: "4K" }, usd: 0.036 }
+        - { when: { size: '*', megapixels: { lte: 0.589824 } }, usd: 0.008 }
+        - { when: { size: '*', megapixels: { gt: 0.589824, lte: 1.048576 } }, usd: 0.009 }
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.359296 } }, usd: 0.011 }
+        - { when: { size: '*', megapixels: { gt: 2.359296, lte: 4.194304 } }, usd: 0.014 }
+        - { when: { size: '*', megapixels: { gt: 4.194304 } }, usd: 0.036 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      # "Output image format: `jpeg` (default) or `png`"; litegen asks for png
+      # unless told otherwise, as on every BFL row.
+      output_format: { kind: string, enum_values: [png, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # "Denoising steps (default 16)", 1-16.
+      steps: { kind: int, min: 1, max: 16, default: 16 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9","2:1","16:9","3:2","7:5","4:3","5:4","1:1","4:5","3:4","5:7","2:3","9:16","1:2","9:21"]
+      # "Equal-area size tier, as in flux-3-image: `768sq`, `1k`, `1.5k`, `2k`
+      # or `4k`. Omitted: `1k` for text-to-image; for edits the first
+      # reference's own size" (no match_input). litegen's 0.75K is `768sq`.
+      resolution: { kind: string, enum_values: ["0.75K", "1K", "1.5K", "2K", "4K"], default: "1K" }
+      # Bounding boxes: "Write a description using `<id>` to name each
+      # element, then append a JSON array of rows" ({id, bbox, desc}; "Every
+      # box is `[top, left, bottom, right]` in integers from 0 to 1000"),
+      # written by the adapter from litegen's layout; boxes "guide, they don't
+      # clip". No documented maximum: 32, as Recraft's.
+      # @see https://docs.bfl.ml/flux_3/flux3_image_bounding_boxes.md (2026-11-03)
+      layout:
+        kind: layout
+        kinds: [object, text]
+        max_items: 32
+        label: Layout
+        description: Objects and lines of text to place, as fractions of the canvas.
+      # "Exact output width in pixels, [64, 6256]"; "width x height at most
+      # 16822272 pixels (16.8 MP, the largest 4k bin)"; up to 8:1, FLUX 3
+      # Image's bound ("at aspect ratios up to 8:1"), which Klein's page
+      # doesn't restate. Sent as width/height, which "Overrides resolution and
+      # aspect_ratio".
+      size:
+        kind: size
+        mode: freeform
+        min_width: 64
+        max_width: 6256
+        min_height: 64
+        max_height: 6256
+        max_pixels: 16822272
+        max_aspect: 8
+    # One `images` list, in order: "The first is the image being edited and
+    # sets the default output size."
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From the comment above (FLUX 3 Image's fields).
+      safety_tolerance: { kind: int, min: 0, max: 7, default: 2 }
     tags: [text-to-image, image-to-image, fast]

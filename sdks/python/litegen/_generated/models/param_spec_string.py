@@ -16,8 +16,11 @@ class ParamSpecString:
         description (Union[None, Unset, str]):
         enum_values (Union[Unset, List[str]]):
         label (Union[None, Unset, str]):
-        max_length (Union[None, Unset, int]):
-        pattern (Union[None, Unset, str]):
+        max_length (Union[None, Unset, int]): The most characters a value may have, counted as JSON Schema's
+            `maxLength` counts them (characters, not bytes).
+        pattern (Union[None, Unset, str]): A regular expression the value must match, anywhere in it as JSON
+            Schema's `pattern` does: `^…$` anchors it to the whole value. A value
+            it does not match is refused (`param_invalid`).
     """
 
     default: Union[None, Unset, str] = UNSET

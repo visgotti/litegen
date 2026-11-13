@@ -18,6 +18,50 @@ The problems fall into four groups:
 - legitimate files converted wrong with no error;
 - gaps in loss reporting, the test harness and the documentation.
 
+**Status, 2026-11-01.** Every finding is closed. The review of 2026-10-31 to 2026-11-01
+([`3d-format-conversion.md`](3d-format-conversion.md) §10) and the pass after it (§11) fixed
+each with a test that failed first. Obsolete: 5 (the synthesis path was removed), 30.5 and
+30.7. Two findings were left to the client by decision (6, Rodin's fbx/usdz-first routing; 21,
+the FBX material colour space): the defaults are unchanged, and a request overrides them with
+`format_source: "glb"` and `fbx_color_space: "linear"`. The converter takes `fbx_color_space`
+too. The last items closed on 2026-11-01, with their tests:
+
+- **17's composition memo**, measured: a 4 KB lattice of references six wide took 86 ms and six
+  times longer per level. A site now joins a prim's composition once, at its strongest
+  occurrence (`a_lattice_of_references_composes_each_site_once`).
+- **23.2-23.9**, against OpenUSD v26.11.1's source:
+  - skin bindings inherited inside the SkelRoot, and constant primvars from ancestors;
+  - an incomplete SkelAnimation leaves the rest pose;
+  - samples beat a default, except as the rest pose of animation the scene carries;
+  - sublayer and reference time scaling by the authoring layer's rate, which also fixes
+    N5's `framesPerSecond` fallback.
+- **22's specular wash**: the Phong specular is glTF's F0 faded by roughness, in FBX's
+  `SpecularColor` and OBJ's `Ks`.
+- **29.6**: a texture on a dropped uv set is reported as a lost texture.
+- **30.1 and 30.2**: a delivery lease, so one observer converts a finished job; delivery
+  slots; and the poller polls eight rows at a time.
+- **30.4**: a conversion slot is held until the converted file is sent, with a send deadline.
+- **30.6**: peak memory measured and documented (`examples/mesh_peak.rs`; §2 "Memory and
+  limits").
+- **30.8**: FBX normals, tangents and binormals are indexed, and compressed containers share a
+  1 GiB expansion budget, so litegen's own FBX and 3MF read back at the scene caps.
+- **31**:
+  - native DIFFs, mismatched refusals and refused imports fail the run;
+  - single-file outputs are rendered;
+  - the uv mode compares on the textured fixture;
+  - there is a `metal` fixture;
+  - `matrix_tests` runs on the scene API;
+  - the mock derives from its GLB;
+  - the dead code is removed.
+- **32.3, 32.4, 32.6, 32.7**: the core codec steps cite their specifications, the design doc
+  has pinned references (§12), and the sRGB and `rest()` comments are corrected.
+- **The notes**:
+  - N1: a metallic-roughness map is decoded once per image, within a decode budget;
+  - N3: already fixed, with `faces_before_their_vertices_are_fanned_with_a_warning`;
+  - N4 and M4: stale comments corrected;
+  - D4: resampled USD clips and dropped tangents are no longer reported as lost animation
+    and normals.
+
 **Method.** Eleven finders each reviewed one area, and an independent verifier then re-checked
 every candidate. Nearly all candidates were reproduced on release builds of a standalone copy of
 the mesh module. Abort-sized allocations were measured to a safe size and extrapolated. The

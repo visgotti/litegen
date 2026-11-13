@@ -25,11 +25,14 @@ const nextConfig: NextConfig = {
   // Pin the tracing root to this app (a stray lockfile above the repo would
   // otherwise make Next infer the wrong workspace root).
   outputFileTracingRoot: import.meta.dirname,
-  // Let a production/deploy build use a SEPARATE build dir from `next dev`.
-  // `next dev` and `next build` both manage `.next`; running a deploy build
-  // while a dev server (port 8019) is up makes the dev file-watcher rewrite
-  // `.next` mid-build and the build dies with `ENOENT … _ssgManifest.js`.
-  // deploy.js sets NEXT_DIST_DIR=.next-prod so the two never share state.
+  // With `output: 'export'`, a distDir other than '.next' is where the static
+  // export goes, not a separate build folder: `next build` still compiles in
+  // `.next` (Next resets config.distDir to '.next' and exports to this one).
+  // deploy.js sets NEXT_DIST_DIR=out, the folder it ships; unset, the export
+  // goes to ./out as well. It does not keep a production build off a running
+  // `next dev` (port 8019), which uses `.next` too: stop the dev server first,
+  // or its file-watcher rewrites `.next` mid-build and the build dies with
+  // `ENOENT … _ssgManifest.js`.
   distDir: process.env.NEXT_DIST_DIR || '.next',
 };
 

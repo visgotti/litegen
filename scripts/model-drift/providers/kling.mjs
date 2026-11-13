@@ -1,6 +1,8 @@
 // Kling — the official API docs (app.klingai.com/…/document-api) are a JS app,
 // but every page has an LLM markdown twin at kling.ai/document-api/<page>.md,
-// indexed by app.klingai.com/global/dev/document-api/llms.txt. Each API page's
+// indexed by kling.ai/document-api/llms.txt (the old
+// app.klingai.com/global/dev/document-api/llms.txt 301s to it since 2026-11,
+// with the same content). Each API page's
 // "## Create Task" section names its endpoint (`- Method:` / `- Path:`) and
 // carries a Request Body table plus "Request Body Field Notes", which hold the
 // per-model limits the table cannot (prompt length, "Only kling-v2-1 supports
@@ -9,9 +11,14 @@
 // Kling runs two API designs side by side (get-started/authentication.md; API
 // Updates 2026-07-15: "The legacy API will continue to be available with no
 // current plans for deprecation"):
-//   legacy  POST /v1/<endpoint>, model in the body as `model_name`, AK/SK JWT.
-//           Both adapters speak this design.
-//   new     POST /<endpoint>/<model>, model in the path, API key only.
+//   legacy  POST /v1/<endpoint>, model in the body as `model_name`.
+//           The image adapter's /v1/images/generations is still documented
+//           in this design, now with "Auth: `Authorization: Bearer <API_KEY>`".
+//   new     POST /<endpoint>/<model>, model in the path, API key only. The
+//           video adapter speaks this design since 2026-11-03 (POST
+//           /text-to-video/<model>, /image-to-video/<model>, GET /tasks).
+//   Both adapters authenticate with the API key ("API Key authentication must
+//   be used to call Kling AI API"); the AK/SK JWT is legacy-only.
 // Images: the legacy /v1/images/generations page is still published, so its
 // `model_name` enum is the id list. Video: Kling deleted the legacy
 // /v1/videos/text2video and /v1/videos/image2video docs together with the
@@ -162,18 +169,18 @@ export default {
   provider: 'kling',
   // Image ids: the legacy `model_name` the image adapter sends
   // (litegen-core/src/providers/image/kling.rs resolve_model strips `kling/`).
-  // Video ids: the new API's path model for the same version. The video adapter
-  // (video/kling.rs resolve_model strips `kling/` and `video-`) sends the legacy
-  // `model_name` noted on each line, which Kling no longer documents. Keeping
-  // video in the path namespace also separates the ids the legacy API shared
-  // across endpoints (kling-v3 was both Image 3.0 and Video 3.0, kling-v2-1
-  // both Image 2.1 and Video 2.1), so a retired video model can show as missing.
+  // Video ids: the current API's path model, which the video adapter sends
+  // (video/kling.rs `path_model`, since 2026-11-03). The path namespace also
+  // separates the ids the legacy API shared across endpoints (kling-v3 was
+  // both Image 3.0 and Video 3.0), so a retired video model can show as missing.
   models: {
     'kling/kling-v2-1': 'kling-v2-1',
     'kling/kling-v3': 'kling-v3',
-    'kling/video-kling-v2-5-turbo': 'kling-2.5-turbo', // sends kling-v2-5-turbo
-    'kling/video-kling-v2-6': 'kling-2.6', // sends kling-v2-6
-    'kling/video-kling-v3': 'kling-3.0', // sends kling-v3
+    'kling/video-kling-v2-5-turbo': 'kling-2.5-turbo',
+    'kling/video-kling-v2-6': 'kling-2.6',
+    'kling/video-kling-v3': 'kling-3.0',
+    'kling/video-kling-v3-turbo': 'kling-3.0-turbo',
+    'kling/video-kling-v4': 'kling-4.0',
   },
   sources: [
     legacyPage('images', 'image/2-1/image-generation', 'POST /v1/images/generations'),
@@ -185,12 +192,14 @@ export default {
     videoPage('i2v-3-0', 'video/3-0-omni/image-to-video', 'image-to-video'),
     videoPage('t2v-3-0-turbo', 'video/3-0-turbo/text-to-video', 'text-to-video'),
     videoPage('i2v-3-0-turbo', 'video/3-0-turbo/image-to-video', 'image-to-video'),
+    videoPage('t2v-4-0', 'video/4-0/text-to-video', 'text-to-video'),
+    videoPage('i2v-4-0', 'video/4-0/image-to-video', 'image-to-video'),
     capabilityMap('capability-video', 'video', ['Models', 'Text to Video', 'Image to Video']),
     capabilityMap('capability-image', 'image', ['Models', 'Text to Image', 'Image to Image']),
     {
       key: 'pages',
       index: true,
-      url: 'https://app.klingai.com/global/dev/document-api/llms.txt',
+      url: 'https://kling.ai/document-api/llms.txt',
       expect: 'text',
       extract: /\/document-api\/api\/((?:video|image)\/[\w./-]+?)\.md/g,
     },

@@ -5,6 +5,86 @@ Every release of `@litegen/sdk`. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html): until 1.0.0 a
 minor release may change behaviour, and says how here.
 
+## [Unreleased]
+
+### Added
+
+- `package: "zip"` on `models3d.convert`: the answer is a zip
+  (`application/zip`, `model.<to>.zip`) holding the converted file first and
+  whatever goes beside it, such as an OBJ's `.mtl` and textures. The SDK hands
+  the zip back unopened.
+- `ktx2Textures` on `models3d.convert`: `"png"` (the default) re-encodes every
+  KTX2 (Basis Universal) texture as PNG, and `"keep"` leaves it as it is when
+  `to` is `glb` or `gltf`, which then require `KHR_texture_basisu`.
+- `ktx2_textures` on 3D generation requests, and its type
+  `Model3dKtx2Textures`: the same choice for delivery. `"keep"` with
+  `keepOutputs: false` is refused (`option_needs_keeping`).
+- `fbxLightUnits` and `usdLightUnits` on `models3d.convert`: the units FBX
+  and USD light strengths are stored in at that end, `"photometric"` (the
+  default; glTF's candela and lux) or `"blender"` (so the lights open in
+  Blender as bright as the glTF does).
+- `fbx_light_units` and `usd_light_units` on 3D generation requests, and
+  their type `Model3dLightUnits`: the same choice, for when litegen reads the
+  vendor's FBX or USD or writes one for the request.
+- `daeMorphs` on `models3d.convert`, when `to` is `dae`: `"bake"` (the
+  default) writes each mesh at its weights and drops the morph targets'
+  animation, which every Collada reader opens; `"keep"` writes the targets as
+  `<morph>` controllers with their weight animation, which SceneKit (Xcode)
+  and Godot read and three.js and assimp refuse.
+- `dae_morphs` on 3D generation requests, and its type `Model3dDaeMorphs`:
+  the same choice for a Collada litegen writes for the request. `"keep"` with
+  `keepOutputs: false` is refused (`option_needs_keeping`).
+- `"usdc"` in `Model3dFormat`: a USD layer written as a binary crate, for
+  `models3d.convert`'s `from` and `to` and for `output_formats`. `"usda"` and
+  `"usdc"` each read either encoding.
+- `usdzRoot` and `usdClips` on `models3d.convert`. `usdzRoot` (when `to` is
+  `usdz`) writes the package's root layer as `"usda"` text (the default) or a
+  `"usdc"` crate, as Apple's own packagers do. `usdClips` (when `to` is
+  `usda`, `usdc` or `usdz`) keeps `"all"` clips as the variant set
+  `Animation` or the `"first"` alone; by default all for usda and usdc, the
+  first for usdz.
+- `usdz_root` and `usd_clips` on 3D generation requests, and their types
+  `Model3dUsdzRoot` and `Model3dUsdClips`: the same choices for a USD litegen
+  writes for the request. `"usdc"` and `"all"` with `keepOutputs: false` are
+  refused (`option_needs_keeping`).
+- `output_packages` on 3D generation requests, and the `"package"` asset kind
+  it delivers: one zip per requested container that has files to go beside
+  its mesh.
+- `FramesSetShape`, the type of `frames_set_shape` on a video model's
+  `params.aspect_ratio`: whether a `first_frame`, `last_frame` or `init` image
+  sets the clip's shape, so `aspect_ratio` is refused (or dropped in lax mode)
+  beside one.
+- On `ModelSchema` (`models.get`): `litegen_params` (read-only), the fields
+  litegen applies to the model itself (`ground`, `center` and `height_m` on 3D
+  models; `mask_grow_px`, `preserve_unmasked` and `feather_px` on mask and
+  region editors) in the `ParamSpec` shape; `extra_params`, the types of its
+  `extra_allowlist` keys; and `status`. A served schema may be posted back to
+  `admin.models.create` or `replace` as it came.
+- `ModelCapabilities.max_request_bytes` (the largest generation or quote body,
+  25 MiB; on every listed model, so typed `number`, not optional),
+  `PromptSpec.required_for_text_to_video`, `ProviderHealth.modality`,
+  `GatewaySettings.cache_max_bytes` and the cache's `max_bytes` in force, and
+  `strict` on `images.segment` requests.
+
+### Changed
+
+- `AnimationRequest.name` is optional and may be `null`: litegen names a clip
+  that leaves it out (`walk` after its preset, else `clip-<n>`).
+- `health.ready()` resolves to the server's `ReadinessResponse` (`status`, and
+  `checks` with `db` and the providers set up with the gateway's own keys)
+  instead of `{ status }` alone.
+- What `X-Litegen-Dropped-Params` covers: fields the request has no such name
+  for too, one inside an object by its path, on the quotes, `images.segment`
+  and the image 202 as well. It lists at most 32 names and ends with a
+  `+N more` count past that; `parseDroppedParams`, `droppedParams` and
+  `readResponseMeta` keep that entry.
+- `LiteGenAPIError.retryable` comes with every router error, such as a 503
+  `circuit_open` (every deployment of a model route cooling down, with
+  `retryAfterMs`), not only a vendor's. New codes callers may see:
+  `circuit_open`, `cache_clear_incomplete` (`cache.clear`, 503),
+  `request_unsupported`, `provider_not_configured`, `prompt_required`,
+  `range_not_satisfiable` (416).
+
 ## [0.1.0] - 2026-10-30
 
 ### Added

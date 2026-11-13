@@ -1,3 +1,4 @@
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -24,17 +25,23 @@ pub struct LumaProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
 }
 
 impl LumaProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(600), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::auth::AuthSpec::bearer(),
         }
     }
 
@@ -84,6 +91,7 @@ impl VideoProvider for LumaProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -123,7 +131,7 @@ impl VideoProvider for LumaProvider {
         }
 
         let mut body = json!({
-            "model": model_name,
+            "model": crate::providers::wire_model(self.config.as_ref(), &model.id, model_name),
             "prompt": base.prompt,
         });
 
@@ -173,11 +181,10 @@ impl VideoProvider for LumaProvider {
 
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11), and `camera_motion` is not a field at all.
-        if let (Some(Value::Object(extra_map)), Some(body_obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in extra_map {
-                if !matches!(k.as_str(), "model" | "prompt" | "aspect_ratio" | "duration" | "resolution" | "keyframes" | "camera_motion") {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let Some(body_obj) = body.as_object_mut() {
+            let owned = |k: &str| matches!(k, "model" | "prompt" | "aspect_ratio" | "duration" | "resolution" | "keyframes" | "camera_motion");
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L10: a clip that ends on its first frame.
@@ -188,7 +195,7 @@ impl VideoProvider for LumaProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("Content-Type", "application/json")
                 .json(&body),
         )
@@ -203,18 +210,23 @@ impl VideoProvider for LumaProvider {
         })?;
 
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         let resp_json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
 
         if !status.is_success() {
             // Luma's error is `{"detail": "Invalid API key is provided"}`; a rate
-            // limit (429) was never accepted, so it may be sent again.
+            // limit (429) was never accepted, so it may be sent again, after the
+            // wait Luma names.
             let err = resp_json["detail"]
                 .as_str()
                 .or_else(|| resp_json["message"].as_str())
                 .or_else(|| resp_json["error"].as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| text.chars().take(200).collect());
+            if let Some(e) = crate::providers::rate_limited("luma", status, retry_after, &format!("Luma API error: {err}"), (!resp_json.is_null()).then_some(&resp_json)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
                 message: format!("Luma API error: {err}"),
                 status_code: Some(status.as_u16()),
@@ -257,7 +269,7 @@ impl VideoProvider for LumaProvider {
                     self.api_base(),
                     handle.provider_job_id
                 ))
-                .header("Authorization", format!("Bearer {api_key}")),
+                .authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -273,8 +285,10 @@ impl VideoProvider for LumaProvider {
         let status = match data["state"].as_str() {
             Some("completed") => GenerationStatus::Completed,
             Some("failed") => GenerationStatus::Failed,
+            // state: queued | dreaming | completed | failed.
             Some("dreaming") | Some("processing") => GenerationStatus::Processing,
-            _ => GenerationStatus::Pending,
+            Some("queued") => GenerationStatus::Pending,
+            other => return Ok(super::unknown_state("luma", other)),
         };
 
         let video_url = data["assets"]["video"].as_str().map(String::from);
@@ -327,14 +341,11 @@ impl VideoProvider for LumaProvider {
                 }
             }
         };
-        match self
-            .client
-            .get(format!("{}/generations?limit=1", self.api_base()))
-            .header("Authorization", format!("Bearer {api_key}"))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
+        let request = match self.client.get(format!("{}/generations?limit=1", self.api_base())).authorized(&self.auth, &api_key) {
+            Ok(request) => request,
+            Err(e) => return HealthCheckResult { healthy: false, message: format!("Luma health check failed: {e}"), latency_ms: None },
+        };
+        match request.timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => HealthCheckResult {
                 healthy: true,
                 message: "Luma API key valid".into(),
@@ -530,6 +541,21 @@ mod tests {
         let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert!(body.get("camera_motion").is_none(), "{body}");
         assert_eq!(body["model"], "ray-2", "{body}");
+    }
+
+    /// E4a: where the result goes is litegen's (it polls, then fires the
+    /// key's webhook), so Luma's `callback_url` is never sent; Luma's own
+    /// fields still are.
+    #[tokio::test]
+    async fn callback_url_is_never_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": "g1" }))).mount(&server).await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "callback_url": "https://attacker.example/cb", "concepts": [{ "key": "dolly_zoom" }] }));
+        make_provider(&server.uri()).generate(&ref_schema("luma/ray-2"), &make_base("a lighthouse", "luma/ray-2"), &extras, &frames(&[])).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("callback_url").is_none(), "{body}");
+        assert_eq!(body["concepts"], json!([{ "key": "dolly_zoom" }]), "{body}");
     }
 
     /// L6: Luma's error is its `detail`, and a rate limit was never accepted.

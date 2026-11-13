@@ -6,6 +6,11 @@ services:
   litegen:
     image: ${LITEGEN_IMAGE:?LITEGEN_IMAGE must be set}
     restart: unless-stopped
+    # A stop gives open requests and the poller's current rows litegen's
+    # shutdown grace (server.shutdown_grace_secs; unset, the vendor timeout +
+    # 30 s = 150 s), then gives back its poll claims. Docker's own default is
+    # 10 s, after which it kills litegen: keep this the grace + 15 s.
+    stop_grace_period: 165s
     # Kept results (meshes, videos, images, published references) outlive
     # the container; litegen refuses to start if it cannot write here.
     volumes:

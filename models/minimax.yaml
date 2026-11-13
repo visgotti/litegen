@@ -1,5 +1,6 @@
 models:
-  # MiniMax (api.minimax.io/v1; api.minimaxi.com for China via api_base). Bearer.
+  # MiniMax (api.minimax.io/v1; api.minimax.cn for China via api_base, per the
+  # platform.minimax.cn specs' `servers: - url: https://api.minimax.cn`, 2026-11-09). Bearer.
   - id: minimax/image-01
     provider: minimax
     media_type: image
@@ -15,6 +16,14 @@ models:
         kind: aspect_ratio
         allowed: ["1:1","16:9","4:3","3:2","2:3","3:4","9:16","21:9"]
         default: "1:1"
+      # "width … Only effective for `image-01`. Must be set together with
+      # `height`. Range [512, 2048], must be divisible by 8"; sent as width and
+      # height, without an aspect_ratio ("`aspect_ratio` takes priority").
+      # @see https://platform.minimax.io/docs/api-reference/image-generation-t2i.md (2026-11-03)
+      size: { kind: size, mode: freeform, min_width: 512, max_width: 2048, min_height: 512, max_height: 2048, multiple_of: 8 }
+      # "seed … Using the same seed and parameters produces reproducible
+      # images" (int64; litegen offers the int32 range).
+      seed: { kind: seed, min: 0, max: 2147483647 }
     ref_inputs:
       max_total: 1
       default_role: subject
@@ -22,6 +31,9 @@ models:
       roles:
         subject: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [prompt_optimizer]
+    extra_params:
+      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
+      prompt_optimizer: { kind: bool }
     tags: [text-to-image, image-to-image]
 
   # ─── Hailuo video ─────────────────────────────────────────────────────────
@@ -33,7 +45,12 @@ models:
     description: Hailuo 02 text-to-video and image-to-video (first/last frame).
     # $0.28 per 768P 6s video (the defaults); $0.56 at 768P 10s, $0.49 at 1080P 6s:
     # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
-    pricing: { base_cost_usd: 0.28 }
+    pricing:
+      base_cost_usd: 0.28
+      # 768P 6 s (the defaults) $0.28; 768P 10 s $0.56; 1080P (6 s only) $0.49.
+      variable_pricing:
+        - { when: { duration_seconds: 10 }, usd: 0.56 }
+        - { when: { resolution: 1080P }, usd: 0.49 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
@@ -55,7 +72,11 @@ models:
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # fast_pretreatment: "Applies only to MiniMax-Hailuo-2.3 and MiniMax-Hailuo-02".
     # @see https://platform.minimax.io/docs/api-reference/video-generation-t2v.md
-    extra_allowlist: [prompt_optimizer, fast_pretreatment, callback_url]
+    extra_allowlist: [prompt_optimizer, fast_pretreatment]
+    extra_params:
+      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
+      prompt_optimizer: { kind: bool }
+      fast_pretreatment: { kind: bool }
     tags: [text-to-video, image-to-video]
 
   - id: minimax/MiniMax-Hailuo-2.3
@@ -66,7 +87,12 @@ models:
     description: Hailuo 2.3 text-to-video and image-to-video.
     # $0.28 per 768P 6s video (the defaults); $0.56 at 768P 10s, $0.49 at 1080P 6s:
     # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
-    pricing: { base_cost_usd: 0.28 }
+    pricing:
+      base_cost_usd: 0.28
+      # 768P 6 s (the defaults) $0.28; 768P 10 s $0.56; 1080P (6 s only) $0.49.
+      variable_pricing:
+        - { when: { duration_seconds: 10 }, usd: 0.56 }
+        - { when: { resolution: 1080P }, usd: 0.49 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
@@ -84,7 +110,11 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
     # fast_pretreatment: "Applies only to MiniMax-Hailuo-2.3 and MiniMax-Hailuo-02".
     # @see https://platform.minimax.io/docs/api-reference/video-generation-t2v.md
-    extra_allowlist: [prompt_optimizer, fast_pretreatment, callback_url]
+    extra_allowlist: [prompt_optimizer, fast_pretreatment]
+    extra_params:
+      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
+      prompt_optimizer: { kind: bool }
+      fast_pretreatment: { kind: bool }
     tags: [text-to-video, image-to-video]
 
   # Added 2026-09-11 (model-drift): the cheapest Hailuo image-to-video.
@@ -96,7 +126,12 @@ models:
     description: Hailuo 2.3 Fast image-to-video (requires a first-frame image).
     # $0.19 per 768P 6s video (the defaults); $0.32 at 768P 10s, $0.33 at 1080P 6s:
     # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
-    pricing: { base_cost_usd: 0.19 }
+    pricing:
+      base_cost_usd: 0.19
+      # 768P 6 s (the defaults) $0.19; 768P 10 s $0.32; 1080P (6 s only) $0.33.
+      variable_pricing:
+        - { when: { duration_seconds: 10 }, usd: 0.32 }
+        - { when: { resolution: 1080P }, usd: 0.33 }
     # Image-to-video only: the text-to-video `model` enum has no
     # MiniMax-Hailuo-2.3-Fast, and the i2v request requires first_frame_image.
     # @see https://platform.minimax.io/docs/api-reference/video-generation-t2v.md
@@ -124,7 +159,11 @@ models:
     # fast_pretreatment "Applies only to MiniMax-Hailuo-2.3, MiniMax-Hailuo-2.3-Fast
     # and MiniMax-Hailuo-02" (i2v).
     # @see https://platform.minimax.io/docs/api-reference/video-generation-i2v.md
-    extra_allowlist: [prompt_optimizer, fast_pretreatment, callback_url]
+    extra_allowlist: [prompt_optimizer, fast_pretreatment]
+    extra_params:
+      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
+      prompt_optimizer: { kind: bool }
+      fast_pretreatment: { kind: bool }
     tags: [image-to-video, fast]
 
   - id: minimax/T2V-01-Director
@@ -138,7 +177,10 @@ models:
     prompt: { required: true, max_length: 2000 }
     params:
       duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
-    extra_allowlist: [prompt_optimizer, callback_url]
+    extra_allowlist: [prompt_optimizer]
+    extra_params:
+      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
+      prompt_optimizer: { kind: bool }
     tags: [text-to-video]
 
   - id: minimax/S2V-01
@@ -162,7 +204,10 @@ models:
       roles:
         # Required; "only one image supported".
         subject: { required: true, min_count: 1, max_count: 1 }
-    extra_allowlist: [prompt_optimizer, callback_url]
+    extra_allowlist: [prompt_optimizer]
+    extra_params:
+      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
+      prompt_optimizer: { kind: bool }
     tags: [image-to-video, subject-reference]
 
   # ─── H3 video (V2 API) ────────────────────────────────────────────────────
@@ -180,13 +225,18 @@ models:
     docs_url: https://platform.minimax.io/docs/api-reference/video-generation-v2-create
     description: MiniMax H3 text-to-video, image-to-video (first/last frame) and reference-to-video, up to 2K.
     # $0.08 per second at 768P, so the default request (768P, 5 s) is $0.40;
-    # $0.13 per second at 2K. Input images: the first 5 are free, then $0.04 each.
+    # $0.13 per second at 2K. Input images: the first 5 are free, then $0.04 each
+    # (re-read 2026-11-03; at most 9 are sent, the last rules).
     # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing:
       base_cost_usd: 0.4
       variable_pricing:
         - { per_second_usd: 0.08 }
         - { when: { resolution: 2K }, per_second_usd: 0.13 }
+        - { when: { references: 6 }, add_usd: 0.04 }
+        - { when: { references: 7 }, add_usd: 0.08 }
+        - { when: { references: 8 }, add_usd: 0.12 }
+        - { when: { references: 9 }, add_usd: 0.16 }
     capabilities: { text_to_video: true, image_to_video: true }
     # "a maximum of 7000 characters per `text`"; every request needs one.
     prompt: { required: true, max_length: 7000 }
@@ -208,6 +258,12 @@ models:
         kind: aspect_ratio
         allowed: ["21:9","16:9","4:3","1:1","3:4","9:16"]
         default: "16:9"
+        # Image-to-video: "the aspect ratio is determined by the input image and
+        # `ratio` is always `adaptive`"; "passing another valid value does not
+        # error but is ignored and treated as `adaptive`." Frames and references
+        # "cannot be mixed" (E5).
+        # @see https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md (2026-11-11)
+        frames_set_shape: without_references
     # Images only: first frame ≤ 1, last frame ≤ 1, reference images ≤ 9.
     # Frames and references are mutually exclusive upstream (the schema cannot
     # say so). Reference video/audio (`video_url` / `audio_url`) are not
@@ -220,8 +276,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
         reference:   { required: false, min_count: 0, max_count: 9 }
-    # callback_url is the only other documented body field.
-    extra_allowlist: [callback_url]
+    # callback_url is the only other documented body field, and it is
+    # litegen's (it polls the task and fires the key's webhook): nothing is
+    # allowlisted.
     tags: [text-to-video, image-to-video, reference-to-video]
 
   - id: minimax/MiniMax-H3-Max
@@ -231,17 +288,25 @@ models:
     docs_url: https://platform.minimax.io/docs/api-reference/video-generation-v2-create
     description: MiniMax H3 Max, the fast H3 variant — text-to-video, image-to-video (first/last frame) and reference-to-video.
     # $0.08 per second at 768P, so the default request (768P, 5 s) is $0.40;
-    # $0.05 per second at 480P. Only the output video is billed.
+    # $0.05 per second at 480P. Input images past the first 2 are $0.074 each
+    # (the last rules; re-read 2026-11-03).
     # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing:
       base_cost_usd: 0.4
       variable_pricing:
         - { per_second_usd: 0.08 }
         - { when: { resolution: 480P }, per_second_usd: 0.05 }
+        - { when: { references: 3 }, add_usd: 0.074 }
+        - { when: { references: 4 }, add_usd: 0.148 }
+        - { when: { references: 5 }, add_usd: 0.222 }
+        - { when: { references: 6 }, add_usd: 0.296 }
+        - { when: { references: 7 }, add_usd: 0.37 }
+        - { when: { references: 8 }, add_usd: 0.444 }
+        - { when: { references: 9 }, add_usd: 0.518 }
     # "Supports text-to-video, image-to-video (first / last frame), and
     # reference-to-video (reference image / video / audio)" (read 2026-10-30).
     # Reference images: "The first 2 images per task are free; additional
-    # images are billed per image" ($0.074), which the flat price omits.
+    # images are billed per image" ($0.074), billed by the rules above.
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 7000 }
     params:
@@ -257,6 +322,8 @@ models:
         kind: aspect_ratio
         allowed: ["21:9","16:9","4:3","1:1","3:4","9:16"]
         default: "16:9"
+        # As MiniMax-H3: a frame sets the shape (E5).
+        frames_set_shape: without_references
     # Reference images, ≤ 9 as on H3.
     ref_inputs:
       max_total: 9
@@ -266,5 +333,112 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
         reference:   { required: false, min_count: 0, max_count: 9 }
-    extra_allowlist: [callback_url]
     tags: [text-to-video, image-to-video, reference-to-video, fast]
+  # MiniMax-H3-Highspeed (new 2026-11-03) on the V2 video API, like MiniMax-H3 and H3-Max:
+  # "Supports text-to-video, image-to-video (first / last frame), and
+  # reference-to-video (reference image / video / audio); `480P` / `768P`
+  # resolution, **`2K` is not supported**; 4–15s duration"; "reference images
+  # ≤ 9". V2_MODELS in video/minimax.rs routes it there.
+  # @see https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md (2026-11-03)
+  - id: minimax/MiniMax-H3-Highspeed
+    provider: minimax
+    media_type: video
+    display_name: MiniMax H3 Highspeed
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-v2-create
+    description: MiniMax H3 Highspeed — balances quality and speed; text-to-video, image-to-video (first/last frame) and reference-to-video.
+    # "MiniMax-H3-Highspeed … 768P $0.06 … 480P $0.04" per output second: the default request (768P, 5 s) is $0.30.
+    # "The first 5 images per task are free; additional images are billed per
+    # image": $0.03 each (at most 9 are sent, the last rules); audio input is
+    # free.
+    # @see https://platform.minimax.io/docs/pricing/overview.md (2026-11-03)
+    pricing:
+      base_cost_usd: 0.3
+      variable_pricing:
+        - { per_second_usd: 0.06 }
+        - { when: { resolution: 480P }, per_second_usd: 0.04 }
+        - { when: { references: 6 }, add_usd: 0.03 }
+        - { when: { references: 7 }, add_usd: 0.06 }
+        - { when: { references: 8 }, add_usd: 0.09 }
+        - { when: { references: 9 }, add_usd: 0.12 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 7000 }
+    params:
+      # "Duration of the generated video in seconds. Required, integer" — 4–15.
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      # "`480P`, `768P` (`2K` is not supported)"; litegen sends 768P when none
+      # is named, so the price and the clip agree.
+      resolution:
+        kind: string
+        enum_values: [480P, 768P]
+        default: 768P
+      # Same `ratio` rules as MiniMax-H3 (see there).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9","16:9","4:3","1:1","3:4","9:16"]
+        default: "16:9"
+        # As MiniMax-H3: a frame sets the shape (E5).
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        reference:   { required: false, min_count: 0, max_count: 9 }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  # MiniMax-H3-Lite (new 2026-11-03) on the V2 video API, like MiniMax-H3 and H3-Max:
+  # "Supports text-to-video, image-to-video (first / last frame), and
+  # reference-to-video (reference image / video / audio); `480P` / `768P`
+  # resolution, **`2K` is not supported**; 4–15s duration"; "reference images
+  # ≤ 9". V2_MODELS in video/minimax.rs routes it there.
+  # @see https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md (2026-11-03)
+  - id: minimax/MiniMax-H3-Lite
+    provider: minimax
+    media_type: video
+    display_name: MiniMax H3 Lite
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-v2-create
+    description: MiniMax H3 Lite — the lower-cost H3 variant; text-to-video, image-to-video (first/last frame) and reference-to-video.
+    # "MiniMax-H3-Lite … 768P $0.04 … 480P $0.025" per output second: the default request (768P, 5 s) is $0.20.
+    # "The first 5 images per task are free; additional images are billed per
+    # image": $0.02 each (at most 9 are sent, the last rules); audio input is
+    # free.
+    # @see https://platform.minimax.io/docs/pricing/overview.md (2026-11-03)
+    pricing:
+      base_cost_usd: 0.2
+      variable_pricing:
+        - { per_second_usd: 0.04 }
+        - { when: { resolution: 480P }, per_second_usd: 0.025 }
+        - { when: { references: 6 }, add_usd: 0.02 }
+        - { when: { references: 7 }, add_usd: 0.04 }
+        - { when: { references: 8 }, add_usd: 0.06 }
+        - { when: { references: 9 }, add_usd: 0.08 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 7000 }
+    params:
+      # "Duration of the generated video in seconds. Required, integer" — 4–15.
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      # "`480P`, `768P` (`2K` is not supported)"; litegen sends 768P when none
+      # is named, so the price and the clip agree.
+      resolution:
+        kind: string
+        enum_values: [480P, 768P]
+        default: 768P
+      # Same `ratio` rules as MiniMax-H3 (see there).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9","16:9","4:3","1:1","3:4","9:16"]
+        default: "16:9"
+        # As MiniMax-H3: a frame sets the shape (E5).
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        reference:   { required: false, min_count: 0, max_count: 9 }
+    tags: [text-to-video, image-to-video, reference-to-video]
+

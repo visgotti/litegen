@@ -18,6 +18,10 @@
 //! Keys belong to their owner: the org, app and API key (or session user) the
 //! request authenticated as. Another owner's key of the same spelling is a
 //! different key.
+//!
+//! Every billed POST, key or no key, runs to its end in a task of its own: a
+//! client that hangs up mid-call does not cancel the vendor call, and the
+//! request's reservations are settled exactly as if it had stayed.
 
 use std::sync::Arc;
 
@@ -40,8 +44,10 @@ pub struct VendorAttempted;
 /// Longest key accepted, as Stripe and the IETF draft suggest.
 const MAX_KEY_LEN: usize = 255;
 
-/// The largest request body hashed; the generation routes refuse larger ones.
-const MAX_BODY: usize = 25 * 1024 * 1024;
+/// The largest request body hashed: the generation routes' own limit, which
+/// `GET /v1/models` serves as `capabilities.max_request_bytes`, so a keyed
+/// request may be as large as the listing says (dashboard-server review #1).
+const MAX_BODY: usize = super::body::MAX_GENERATION_BODY;
 
 /// The largest response stored for replay (an image response carries its
 /// image inline when `b64_json` was asked for).
@@ -85,6 +91,11 @@ pub(crate) fn scope_of(ctx: Option<&KeyContext>) -> String {
 /// is chosen per send, so it is taken out first; a JSON body is canonicalised,
 /// so key order and whitespace do not make one request two.
 pub(crate) fn request_hash(method: &str, path: &str, content_type: Option<&str>, body: &[u8]) -> String {
+    // Up to 25 MiB parsed, re-serialised and hashed: off the async workers (P15).
+    crate::util::blocking::cpu_heavy(body.len(), || hash_request(method, path, content_type, body))
+}
+
+fn hash_request(method: &str, path: &str, content_type: Option<&str>, body: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(method.as_bytes());
     h.update(b" ");
@@ -96,8 +107,16 @@ pub(crate) fn request_hash(method: &str, path: &str, content_type: Option<&str>,
         .map(|b| b.trim_matches('"').to_string());
     match boundary {
         Some(b) if !b.is_empty() => {
-            let text = String::from_utf8_lossy(body);
-            h.update(text.replace(&b, "litegen-boundary").as_bytes());
+            // Byte for byte: a file part needn't be UTF-8, and a lossy read
+            // would make two different uploads one request.
+            let needle = b.as_bytes();
+            let mut rest = body;
+            while let Some(i) = rest.windows(needle.len()).position(|w| w == needle) {
+                h.update(&rest[..i]);
+                h.update(b"litegen-boundary");
+                rest = &rest[i + needle.len()..];
+            }
+            h.update(rest);
         }
         _ => match serde_json::from_slice::<serde_json::Value>(body) {
             Ok(v) => h.update(v.to_string().as_bytes()),
@@ -126,7 +145,7 @@ fn rebuild(stored: &StoredResponse) -> Response {
 /// The middleware. Layered on each billed POST route, inside authentication.
 pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let Some(raw) = req.headers().get("idempotency-key") else {
-        return next.run(req).await;
+        return run_to_completion(next.run(req)).await;
     };
     let key = match raw.to_str() {
         Ok(k) if !k.is_empty() && k.len() <= MAX_KEY_LEN && k.bytes().all(|b| b.is_ascii_graphic()) => k.to_string(),
@@ -139,19 +158,15 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
         }
     };
     let scope = scope_of(req.extensions().get::<KeyContext>());
-    let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
-        Ok(b) => b,
-        Err(e) => {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                Json(crate::api::middleware::validator::err_body("body_too_large", &e.to_string(), None, "")),
-            )
-                .into_response()
-        }
+    // Read through the same body budget and deadline as the routes behind
+    // (`body.rs`): a keyed body is charged as it arrives, and handed on with
+    // its charge, so the route reads it from memory without charging again.
+    let (parts, body) = match state.in_flight.body().read_request(req, MAX_BODY).await {
+        Ok(read) => read,
+        Err(e) => return e.into_response(),
     };
     let content_type = parts.headers.get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let hash = request_hash(parts.method.as_str(), parts.uri.path(), content_type.as_deref(), &bytes);
+    let hash = request_hash(parts.method.as_str(), parts.uri.path(), content_type.as_deref(), &body.bytes);
 
     match state.db.idempotency_begin(&scope, &key, &hash).await {
         Err(e) => {
@@ -191,19 +206,33 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
         Ok(IdempotencyBegin::Started) => {}
     }
 
-    // Run and record in a task of its own: a client that hangs up mid-call
-    // drops this future, not the request, so the vendor call still finishes
-    // and its outcome is stored — the client's retry replays it instead of
-    // waiting out a stale "in progress" record and running (and billing) again.
-    let run = tokio::spawn(async move {
-        let resp = next.run(Request::from_parts(parts, Body::from(bytes))).await;
+    // Run and record in a task of its own (see `run_to_completion`): the
+    // outcome is stored even when the client hung up, so its retry replays it
+    // instead of waiting out a stale "in progress" record and running (and
+    // billing) again.
+    run_to_completion(async move {
+        let resp = next.run(body.into_request(parts)).await;
         settle(&state, &scope, &key, resp).await
-    });
-    match run.await {
+    })
+    .await
+}
+
+/// Run a billed request to its end in a task of its own. A client that hangs
+/// up mid-call drops this future, not the request: the vendor call still
+/// finishes, and its reservations are settled exactly as if the client had
+/// stayed (released when nothing was made, charged when something was). Run
+/// inline, the handler was dropped at its vendor `.await` and its key quota
+/// and limit reservations stayed held for good (E12). The task keeps the
+/// request's span, so its vendor calls carry the request's `traceparent`.
+async fn run_to_completion(fut: impl std::future::Future<Output = Response> + Send + 'static) -> Response {
+    use tracing::Instrument;
+    match tokio::spawn(fut.instrument(tracing::Span::current())).await {
         Ok(resp) => resp,
         Err(e) => {
-            tracing::error!(error = %e, "an idempotent request's task failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "the request failed").into_response()
+            // The panic's text stays in the log; the caller gets the JSON
+            // `internal_error` every other 500 has (handlers review #9).
+            tracing::error!(error = %e, "a billed request's task failed");
+            super::internal_error_response("internal server error")
         }
     }
 }
@@ -266,6 +295,82 @@ mod tests {
         let a = request_hash("POST", "/x", Some("multipart/form-data; boundary=aaa111"), body("aaa111").as_bytes());
         let b = request_hash("POST", "/x", Some("multipart/form-data; boundary=zzz999"), body("zzz999").as_bytes());
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn two_uploads_that_differ_only_in_binary_bytes_are_two_requests() {
+        // Image bytes aren't UTF-8; read lossily, both files became U+FFFD.
+        let body = |file: &[u8]| {
+            let mut b = b"--bnd\r\nContent-Disposition: form-data; name=\"image\"; filename=\"a.png\"\r\n\r\n".to_vec();
+            b.extend_from_slice(file);
+            b.extend_from_slice(b"\r\n--bnd--\r\n");
+            b
+        };
+        let ct = Some("multipart/form-data; boundary=bnd");
+        let a = request_hash("POST", "/x", ct, &body(&[0x89, 0xff, 0xfe]));
+        let b = request_hash("POST", "/x", ct, &body(&[0x89, 0xfd, 0xfc]));
+        assert_ne!(a, b);
+    }
+
+    /// E12: the task a billed request runs in keeps the request's span, so its
+    /// vendor calls still carry its `traceparent` (`inject_trace_headers`
+    /// reads `Span::current()`) and its logs stay in `TraceLayer`'s trace.
+    #[tokio::test]
+    async fn a_billed_request_keeps_its_span_in_its_own_task() {
+        use tracing::Instrument;
+        let _subscriber = tracing::subscriber::set_default(tracing_subscriber::registry());
+        let resp = run_to_completion(async {
+            let name = tracing::Span::current().metadata().map_or("none", |m| m.name());
+            let mut r = StatusCode::OK.into_response();
+            r.headers_mut().insert("x-span", HeaderValue::from_static(name));
+            r
+        })
+        .instrument(tracing::info_span!("billed-request"))
+        .await;
+        assert_eq!(resp.headers()["x-span"], "billed-request", "the handler ran outside the request's span");
+    }
+
+    /// A billed handler that panics.
+    async fn a_handler_that_panics() -> Response {
+        panic!("a handler bug at src/api/handlers/x.rs:12")
+    }
+
+    /// Handlers review #9: a billed request whose task panicked answers the
+    /// JSON `internal_error` body every other 500 has, naming nothing of the
+    /// panic. It answered `text/plain` "the request failed", which a client
+    /// that reads `error.code` can't parse; since E12 that is every billed
+    /// POST, keyed or not.
+    #[tokio::test]
+    async fn a_billed_request_that_panics_answers_the_json_internal_error() {
+        let resp = run_to_completion(a_handler_that_panics()).await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            (content_type.as_str(), body["error"]["code"].as_str(), body["error"]["type"].as_str()),
+            ("application/json", Some("internal_error"), Some("internal_error")),
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(body["error"]["message"], "internal server error", "{body}");
+    }
+
+    /// P15 (timing; run alone): hashing a maximum-size body holds no async
+    /// worker. On today's one-worker runtime, a task queued behind the hash
+    /// waited as long as the hash took (over a second in a debug build).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn hashing_a_large_body_leaves_the_runtime_free() {
+        let pad = "A".repeat(25 * 1024 * 1024 - 1024);
+        let body = format!(r#"{{"model":"m","prompt":"p","reference_images":[{{"type":"base64","value":"{pad}"}}]}}"#).into_bytes();
+        let started = std::time::Instant::now();
+        let inline = request_hash("POST", "/v1/images/generations", Some("application/json"), &body);
+        let alone = started.elapsed();
+        assert!(alone >= std::time::Duration::from_millis(200), "too light to show a stall: {alone:?}");
+        let (hash, stall) =
+            crate::util::blocking::longest_stall_while(async move { request_hash("POST", "/v1/images/generations", Some("application/json"), &body) }).await;
+        assert_eq!(hash, inline, "the same hash, wherever it ran");
+        assert!(stall < alone / 4, "the runtime stalled {stall:?} while hashing (the hash alone takes {alone:?})");
     }
 
     #[test]

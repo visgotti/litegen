@@ -184,16 +184,19 @@ impl Default for TripoModel3dProvider {
 }
 
 impl TripoModel3dProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(Duration::from_secs(600), Duration::from_secs(60)),
+            client: Self::api_client(&Default::default()),
+            asset_client: crate::util::ssrf::public_only_download_client(Duration::from_secs(600), Duration::from_secs(60)),
             public_assets_only: true,
             max_asset_bytes: MAX_ASSET_BYTES,
             check_interval: CHECK_INTERVAL,
@@ -405,6 +408,37 @@ impl TripoModel3dProvider {
         self.check_interval = Duration::from_millis(5);
     }
 
+    /// For the poller's and the router's tests: a Tripo on a wiremock server
+    /// whose rig task `rig-1` has finished, with its mesh at
+    /// `/files/rigged.glb` ([`Self::rig_downloads_for_tests`] counts them).
+    #[cfg(test)]
+    pub(crate) async fn finished_rig_for_tests() -> (wiremock::MockServer, Self) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let task = json!({ "code": 0, "data": {
+            "task_id": "rig-1", "status": "success", "progress": 100,
+            "output": { "model_url": format!("{}/files/rigged.glb", server.uri()) },
+        }});
+        Mock::given(method("GET")).and(path("/v3/tasks/rig-1")).respond_with(ResponseTemplate::new(200).set_body_json(task)).mount(&server).await;
+        let mesh = crate::providers::model3d::glb::generate_cube_glb("a rig");
+        Mock::given(method("GET")).and(path("/files/rigged.glb")).respond_with(ResponseTemplate::new(200).set_body_bytes(mesh)).mount(&server).await;
+        let mut p = Self::new();
+        p.configure(ProviderInstanceConfig {
+            api_keys: vec![ApiKeyEntry { key: "tsk_pooled".into(), weight: 1, label: None }],
+            api_base: Some(format!("{}/v3", server.uri())),
+            ..Default::default()
+        });
+        p.on_loopback_for_tests();
+        (server, p)
+    }
+
+    /// How often the mesh of [`Self::finished_rig_for_tests`] was downloaded.
+    #[cfg(test)]
+    pub(crate) async fn rig_downloads_for_tests(server: &wiremock::MockServer) -> usize {
+        server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/files/rigged.glb").count()
+    }
+
     fn served(model: &ModelSchema) -> Result<(), ProviderError> {
         if MODELS.contains(&model.id.as_str()) {
             Ok(())
@@ -426,6 +460,7 @@ impl Model3dProvider for TripoModel3dProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -576,6 +611,17 @@ impl Model3dProvider for TripoModel3dProvider {
     /// `GET /v3/tasks/{task_id}`; on success, download `output.model_url`
     /// (a temporary signed URL) in the same call.
     async fn poll_status(&self, handle: &Model3dGenerationHandle) -> Result<Model3dGenerationPollResult, ProviderError> {
+        self.poll_status_gated(handle, &crate::providers::AlwaysFetch).await
+    }
+
+    /// On success, `gate` decides whether this observer downloads the
+    /// result; after a long wait for it, the task is read again for links
+    /// that have not expired.
+    async fn poll_status_gated(
+        &self,
+        handle: &Model3dGenerationHandle,
+        gate: &dyn crate::providers::FetchGate,
+    ) -> Result<Model3dGenerationPollResult, ProviderError> {
         let task = handle
             .stage_context
             .as_ref()
@@ -591,9 +637,24 @@ impl Model3dProvider for TripoModel3dProvider {
         match status {
             "queued" => Ok(poll(GenerationStatus::Pending, progress.unwrap_or(0), None, Vec::new(), meta)),
             "success" => {
-                let Some(url) = t["output"]["model_url"].as_str().filter(|u| !u.is_empty()) else {
+                if t["output"]["model_url"].as_str().filter(|u| !u.is_empty()).is_none() {
                     return Ok(poll(GenerationStatus::Failed, 100, Some("tripo finished without a model_url".into()), Vec::new(), meta));
+                }
+                let t = match gate.ask().await {
+                    crate::providers::Fetch::StandAside => {
+                        let mut aside = poll(GenerationStatus::Completed, 100, None, Vec::new(), meta);
+                        crate::proxy::model3d_deliver::stand_aside(&mut aside);
+                        return Ok(aside);
+                    }
+                    crate::providers::Fetch::Go { waited } if waited >= crate::providers::REFRESH_LINKS_AFTER => {
+                        let again = self.call(self.request(Method::GET, &format!("tasks/{task}"))?, "poll", false).await?;
+                        let fresh = again["status"].as_str() == Some("success")
+                            && again["output"]["model_url"].as_str().is_some_and(|u| !u.is_empty());
+                        if fresh { again } else { t }
+                    }
+                    crate::providers::Fetch::Go { .. } => t,
                 };
+                let url = t["output"]["model_url"].as_str().unwrap_or_default();
                 let (bytes, served_ct) =
                     match super::download::fetch_asset(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "tripo").await {
                         Ok(v) => v,
@@ -603,7 +664,7 @@ impl Model3dProvider for TripoModel3dProvider {
                         }
                     };
                 let format = format_of(url);
-                let content_type = crate::proxy::storage::model3d_content_type(&format, &served_ct).to_string();
+                let content_type = crate::store::model3d_content_type(&format, &served_ct).to_string();
                 let mut files = vec![Model3dFile {
                     kind: Model3dAssetKind::Mesh,
                     format,
@@ -613,6 +674,7 @@ impl Model3dProvider for TripoModel3dProvider {
                     width: None,
                     height: None,
                     manifest: None,
+                    source_url: Some(url.to_string()),
                 }];
                 // A preview is a courtesy: one that will not download never
                 // fails a good mesh.
@@ -627,6 +689,7 @@ impl Model3dProvider for TripoModel3dProvider {
                             width: None,
                             height: None,
                             manifest: None,
+                            source_url: Some(img.to_string()),
                         }),
                         Err(_) => tracing::warn!(task = %task, "tripo preview could not be downloaded; skipped"),
                     }
@@ -636,9 +699,16 @@ impl Model3dProvider for TripoModel3dProvider {
             "failed" => Ok(poll(GenerationStatus::Failed, 100, Some(format!("tripo task failed: {}", task_error(&t))), Vec::new(), meta)),
             "cancelled" => Ok(poll(GenerationStatus::Failed, 100, Some("tripo task was cancelled".into()), Vec::new(), meta)),
             "banned" | "expired" => Ok(poll(GenerationStatus::Failed, 100, Some(format!("tripo task {status}: {}", task_error(&t))), Vec::new(), meta)),
-            // `running`, and any status Tripo adds: a bounded wait, which the
-            // poller's max age provides.
-            _ => Ok(poll(GenerationStatus::Processing, progress.unwrap_or(50), None, Vec::new(), meta)),
+            // `unknown` is Tripo's own word for a status it can't tell yet:
+            // asked again, like `queued` and `running`.
+            "running" | "unknown" => Ok(poll(GenerationStatus::Processing, progress.unwrap_or(50), None, Vec::new(), meta)),
+            other => Ok(poll(
+                GenerationStatus::Failed,
+                0,
+                Some(crate::providers::video::unknown_state_message("tripo", Some(other).filter(|s| !s.is_empty()))),
+                Vec::new(),
+                meta,
+            )),
         }
     }
 
@@ -705,6 +775,7 @@ mod tests {
             facts: crate::proxy::model3d_source::SourceFacts { triangles: 12, skinned: false, textured: false },
             vendor_task_id: vendor_task_id.map(str::to_string),
             front: None,
+            joint_naming: None,
             delivered: Default::default(),
         }
     }
@@ -719,7 +790,7 @@ mod tests {
             extra: None,
             source: Some(src),
             animations: Vec::new(), fps: None,
-            preflight: None,
+            preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
             texture_resolution: None, keep_uvs: None,
             ground: None, center: None,
         }
@@ -1046,8 +1117,69 @@ mod tests {
         let f = &done.files[0];
         assert_eq!((f.kind, f.format.as_str(), f.content_type.as_str()), (Model3dAssetKind::Mesh, "glb", "model/gltf-binary"));
         assert_eq!(f.bytes, rig);
+        assert_eq!(f.source_url.as_deref(), Some(format!("{}/cdn/rigged.glb?Expires=1", server.uri()).as_str()), "the URL it came from");
         let cdn = received(&server, "/cdn/rigged.glb").await;
         assert!(cdn[0].headers.get("authorization").is_none(), "no key to the CDN");
+    }
+
+    /// A delivery gate that always says another observer delivers.
+    struct Refuse;
+
+    #[async_trait]
+    impl crate::providers::FetchGate for Refuse {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::StandAside
+        }
+    }
+
+    /// A delivery gate that says go after an 11 s wait for a slot.
+    struct SlowGo;
+
+    #[async_trait]
+    impl crate::providers::FetchGate for SlowGo {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::Go { waited: Duration::from_secs(11) }
+        }
+    }
+
+    /// Review 2026-11-11 P5: an observer that does not deliver the job
+    /// downloads neither the mesh nor the preview.
+    #[tokio::test]
+    async fn a_gate_that_says_stand_aside_downloads_nothing() {
+        let server = MockServer::start().await;
+        for at in ["/cdn/rigged.glb", "/cdn/preview.png"] {
+            Mock::given(method("GET")).and(path(at)).respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec())).mount(&server).await;
+        }
+        mount_task(&server, "rig-1", json!({
+            "task_id": "rig-1", "status": "success", "progress": 100,
+            "output": { "model_url": format!("{}/cdn/rigged.glb", server.uri()), "rendered_image_url": format!("{}/cdn/preview.png", server.uri()) },
+        })).await;
+        let r = provider(&server).poll_status_gated(&rig_handle(), &Refuse).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Processing);
+        assert!(r.files.is_empty() && r.error.is_none() && r.progress < 100, "{:?} {:?} {}", r.files.len(), r.error, r.progress);
+        assert!(received(&server, "/cdn/rigged.glb").await.is_empty(), "no mesh download");
+        assert!(received(&server, "/cdn/preview.png").await.is_empty(), "no preview download");
+    }
+
+    /// Review 2026-11-11 P5: Tripo's links are signed and expire, so an
+    /// observer that waited long for the delivery reads the task again and
+    /// downloads the fresh link, not the one it first saw.
+    #[tokio::test]
+    async fn links_are_read_again_after_a_long_wait_for_the_delivery() {
+        let server = MockServer::start().await;
+        let rig = crate::providers::model3d::glb::generate_cube_glb("a rig");
+        Mock::given(method("GET")).and(path("/cdn/old.glb")).respond_with(ResponseTemplate::new(403)).mount(&server).await;
+        Mock::given(method("GET")).and(path("/cdn/new.glb")).respond_with(ResponseTemplate::new(200).set_body_bytes(rig.clone())).mount(&server).await;
+        let task = |at: &str| json!({ "task_id": "rig-1", "status": "success", "progress": 100, "output": { "model_url": format!("{}{at}", server.uri()) } });
+        Mock::given(method("GET")).and(path("/v3/tasks/rig-1")).respond_with(ok(task("/cdn/old.glb"))).up_to_n_times(1).mount(&server).await;
+        Mock::given(method("GET")).and(path("/v3/tasks/rig-1")).respond_with(ok(task("/cdn/new.glb"))).mount(&server).await;
+
+        let r = provider(&server).poll_status_gated(&rig_handle(), &SlowGo).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        assert_eq!(r.files[0].bytes, rig);
+        assert_eq!(r.files[0].source_url.as_deref(), Some(format!("{}/cdn/new.glb", server.uri()).as_str()));
+        assert!(received(&server, "/cdn/old.glb").await.is_empty(), "the stale link was not tried");
+        assert_eq!(received(&server, "/v3/tasks/rig-1").await.len(), 2, "the task was read again");
     }
 
     #[tokio::test]

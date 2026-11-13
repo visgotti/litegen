@@ -46,6 +46,9 @@ async fn app_storage_upsert_get_delete_roundtrip() {
         access_key_id_hint: Some("…E123".to_string()),
         secret_ciphertext: ct.clone(),
         secret_nonce: nonce.clone(),
+        credential_mode: None,
+        role_arn: None,
+        fallback_to_litegen_store: None,
     };
     db.upsert_app_storage(&input).await.unwrap();
 

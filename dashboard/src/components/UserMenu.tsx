@@ -36,7 +36,8 @@ export default function UserMenu() {
   const navigate = useNavigate();
   const { activeOrgRole } = useTenant();
   const [me, setMe] = useState<MeUser | null>(null);
-  const [authChecked, setAuthChecked] = useState(false);
+  // The API-key flow has no session to check: it is checked from the start.
+  const [authChecked, setAuthChecked] = useState(() => Boolean(getApiKey()));
   const [dropdownOpen, setDropdownOpen] = useState(false);
   // OAuth-only (hosted) mode disables the legacy master-API-key path entirely.
   // Default to "password enabled" until config resolves so dev behavior is unchanged.
@@ -53,11 +54,7 @@ export default function UserMenu() {
   // Fetch current session user on mount.
   // Skip if there's already an API key in localStorage (user is in API-key flow).
   useEffect(() => {
-    if (getApiKey()) {
-      // API-key flow: skip session check, just mark auth checked with no session user.
-      setAuthChecked(true);
-      return;
-    }
+    if (getApiKey()) return;
     client.auth.me()
       .then((resp) => {
         const r = resp as { user?: MeUser };

@@ -98,7 +98,12 @@ pub fn is_mirroring(m: &Mat4) -> bool {
 pub fn normal_matrix(m: &Mat4) -> [f64; 9] {
     let u = upper3(m);
     let det = det3(&u);
-    if det.abs() < 1e-12 || !det.is_finite() {
+    // Singular relative to the matrix's own scale: an absolute threshold
+    // called a small but regular scale (1e-5, 1e-5, 1e-3; det 1e-13)
+    // singular and tilted its normals.
+    let col = |c: usize| (u[c * 3] * u[c * 3] + u[c * 3 + 1] * u[c * 3 + 1] + u[c * 3 + 2] * u[c * 3 + 2]).sqrt();
+    let scale = col(0) * col(1) * col(2);
+    if !det.is_finite() || !(det.abs() > 1e-12 * scale) {
         return u;
     }
     let inv = [
@@ -291,6 +296,37 @@ pub fn mat3_to_quat(u: &[f64; 9]) -> [f64; 4] {
 /// must then say so rather than emit a rotation that is only nearly right. A
 /// mirror is folded into a negative X scale, which is how glTF, USD and FBX
 /// all express it. Degenerate scales decompose; see [`decompose_near`].
+/// The nearest TRS to `m`, exact when it has one ([`decompose`]); else any
+/// shear folded into the nearest rotation (Gram–Schmidt on its columns), a
+/// mirror into the third scale.
+pub fn decompose_lossy(m: &Mat4) -> ([f64; 3], [f64; 4], [f64; 3]) {
+    if let Some(trs) = decompose(m) {
+        return trs;
+    }
+    let col = |c: usize| [m[c * 4], m[c * 4 + 1], m[c * 4 + 2]];
+    let len = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let norm = |v: [f64; 3]| {
+        let l = len(v);
+        if l > 1e-300 {
+            [v[0] / l, v[1] / l, v[2] / l]
+        } else {
+            [0.0; 3]
+        }
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let (c0, c1) = (col(0), col(1));
+    let x = norm(c0);
+    let y = norm([c1[0] - dot(c1, x) * x[0], c1[1] - dot(c1, x) * x[1], c1[2] - dot(c1, x) * x[2]]);
+    // The right-handed frame; a mirror goes into the third scale.
+    let z = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    let mut s = [len(c0), len(c1), len(col(2))];
+    if is_mirroring(m) {
+        s[2] = -s[2];
+    }
+    let r = [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]];
+    ([m[12], m[13], m[14]], mat3_to_quat(&r), s)
+}
+
 pub fn decompose(m: &Mat4) -> Option<([f64; 3], [f64; 4], [f64; 3])> {
     decompose_near(m, None)
 }

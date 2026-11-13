@@ -1,464 +1,54 @@
-import React, { useEffect, useEffectEvent, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
-// Type-only: erased at compile time, so it does not defeat the lazy import
-// below, but it makes tsc check every element API used here (getDimensions,
-// resetTurntableRotation, cameraOrbit, …) against the installed version.
-import type { ModelViewerElement } from '@google/model-viewer';
-import {
-  canPreviewMesh, classifyViewerError, describeViewerError, loadEventMatches, matchResourceStatus, retrySrc,
-  type Dimensions, type ResourceStatusEntry, type ViewerErrorReason,
-} from './model3d-assets';
+// The compact 3D viewer: the Playground's compare tiles. It is the shared
+// viewer (@litegen/3d-viewer, packages/3d-viewer), the same one the 3D
+// converter tool draws with, for every format litegen delivers. Loaded on
+// first use, so a session that never shows a 3D result never downloads
+// three.js. `ModelPreview` is the full inspector around the same viewer.
+import { lazy, Suspense, type CSSProperties } from 'react';
+import type { ViewerBackground, ViewerLoadInfo } from '@litegen/3d-viewer';
+import { fetchStoredFile, useFileSrc } from '../file-src';
+import ViewerBoundary from './ViewerBoundary';
 
-export type ViewerBackground = 'dark' | 'light' | 'checker';
+const RemoteMeshViewer = lazy(() => import('@litegen/3d-viewer').then((m) => ({ default: m.RemoteMeshViewer })));
 
-/** Camera reset is a one-shot command rather than state, so it is exposed as
- *  an imperative handle instead of a prop the caller would have to toggle. */
-export interface ModelViewerHandle {
-  resetCamera(): void;
-}
-
-export interface ModelViewerLoadInfo {
-  /** Bounding-box size in metres; null if the element could not report it. */
-  dimensions: Dimensions | null;
-}
-
-const BACKGROUNDS: Record<ViewerBackground, string> = {
-  dark: '#0d1117',
-  light: '#f0f3f6',
-  // Transparency checkerboard, kept dark so it sits in the dashboard palette.
-  checker: 'repeating-conic-gradient(#30363d 0% 25%, #161b22 0% 50%) 50% / 20px 20px',
-};
-
-// The framing is set explicitly (these equal model-viewer's own defaults) so
-// that "reset camera" re-applies values this file owns rather than relying on
-// an undocumented default staying put across upgrades.
-const CAMERA_ORBIT = '0deg 75deg 105%';
-const CAMERA_TARGET = 'auto auto auto';
-const FIELD_OF_VIEW = 'auto';
-
-interface LoadState {
-  src: string;
-  status: 'loading' | 'loaded' | 'error';
-  progress: number;
-  message: string;
-  /** Only meaningful when status === 'error'. */
-  reason?: ViewerErrorReason;
-}
-
-const loadingState = (src: string): LoadState => ({ src, status: 'loading', progress: 0, message: '' });
-
-const IMPORT_FAILED_MESSAGE = 'The 3D viewer could not be loaded in this browser.';
-const WEBGL_MESSAGE = "WebGL 2 is unavailable in this browser, so the mesh can't be previewed — download it instead.";
-
-let webgl2Support: boolean | undefined;
-
-/**
- * Whether this browser can create a WebGL 2 context, probed once per page.
- * Needed because model-viewer 4.3.1 catches a failed WebGLRenderer
- * construction with only a console.warn (Renderer.js), then still parses the
- * model and fires `load` — a blank box reported as success. WebGL 2
- * specifically: the bundled three.js (0.183) dropped WebGL 1, so a WebGL 1
- * context would pass a looser probe and still render nothing.
- */
-function hasWebGL2(): boolean {
-  if (webgl2Support === undefined) {
-    try {
-      const gl = document.createElement('canvas').getContext('webgl2');
-      webgl2Support = gl != null;
-      // Release the probe context now; browsers cap live contexts per page.
-      gl?.getExtension('WEBGL_lose_context')?.loseContext();
-    } catch {
-      webgl2Support = false;
-    }
-  }
-  return webgl2Support;
-}
-
-type FallbackReason = 'import' | 'webgl' | 'format' | 'load' | 'parse';
-
-/**
- * Resolves a mesh URL to the exact absolute form Chromium records it under in
- * a `PerformanceResourceTiming` entry's `name`. Verified empirically (see the
- * Task 17B report) that this RETAINS the URL fragment — `retrySrc`'s
- * `#retry-N` cache-buster included — rather than stripping it, so exact
- * string equality is the right match, not a fragment-stripped one.
- *
- * Fragment uniqueness alone does NOT make a stale entry unmatchable — a
- * fresh remount's first attempt reuses the exact same bare `src` (no
- * fragment) as an earlier mount's first attempt. What actually prevents a
- * stale match is `buffered: false` on the `PerformanceObserver` this is used
- * with (see the layout effect below): it only ever delivers entries recorded
- * AFTER `observe()` was called for the CURRENT attempt, so an entry from any
- * earlier load — same URL or not — is structurally excluded, not just
- * unlikely to collide.
- */
-function resolveUrl(url: string): string {
-  try {
-    return new URL(url, typeof location !== 'undefined' ? location.href : undefined).href;
-  } catch {
-    return url;
-  }
-}
-
-/** The one failure presentation for every way the viewer can't show a mesh:
- *  the mesh is still downloadable, so it degrades to a link rather than an
- *  empty box. Retry is offered only for a load failure — the one case a
- *  second attempt can fix (a flaky network, a lost GL context). */
-function MeshFallback({ src, message, reason, testId, onRetry }: {
-  src: string;
-  message: string;
-  reason: FallbackReason;
-  testId?: string;
-  onRetry?: () => void;
-}) {
-  return (
-    <div
-      role="alert"
-      data-testid={testId ? `${testId}-fallback` : undefined}
-      data-reason={reason}
-      style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
-        minHeight: 160, padding: 16, textAlign: 'center', boxSizing: 'border-box', width: '100%',
-        background: '#0d1117', border: '1px dashed #30363d', borderRadius: 6, color: '#8b949e', fontSize: 13,
-      }}
-    >
-      <span>{message}</span>
-      <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        {/* target=_blank: the URL is absolute and usually cross-origin, where
-            `download` is ignored — and this is exactly the broken-mesh case,
-            so it must not navigate the dashboard away. */}
-        <a
-          href={src}
-          download
-          target="_blank"
-          rel="noopener noreferrer"
-          data-testid={testId ? `${testId}-fallback-link` : undefined}
-          style={{ color: '#58a6ff' }}
-        >
-          Download mesh
-        </a>
-        {onRetry && (
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ padding: '4px 10px', fontSize: 12 }}
-            data-testid={testId ? `${testId}-retry` : undefined}
-            onClick={onRetry}
-          >
-            Retry
-          </button>
-        )}
-      </span>
-    </div>
-  );
-}
-
-/**
- * Lazily loads the `<model-viewer>` custom element the first time a 3D result is
- * actually shown, so the ~1MB WebGL bundle never lands on a dashboard session
- * that only looks at images.
- *
- * This is the compact viewer (grid tiles, trace panel). `ModelPreview` wraps
- * it with the inspector chrome; the display props below exist for that.
- */
-export default function ModelViewer({
-  src,
-  poster,
-  testId,
-  style,
-  autoRotate = true,
-  exposure = 1,
-  background = 'dark',
-  format,
-  onLoad,
-  onError,
-  onRetry,
-  ref,
-}: {
+export interface ModelViewerProps {
   src: string;
   poster?: string | null;
+  /** The mesh's container, from its asset. */
+  format?: string;
   testId?: string;
-  style?: React.CSSProperties;
+  style?: CSSProperties;
   autoRotate?: boolean;
   exposure?: number;
   background?: ViewerBackground;
-  /** Mesh format, when known. A non-glTF format is never handed to the
-   *  element (see `canPreviewMesh`). */
-  format?: string;
-  onLoad?: (info: ModelViewerLoadInfo) => void;
-  /** Fired for every failure that leaves no rendered mesh: bundle import,
-   *  missing WebGL 2, and the element's own load/runtime errors. */
+  onLoad?: (info: ViewerLoadInfo) => void;
   onError?: (message: string) => void;
-  /** Fired when the user retries a failed load; the viewer is loading again. */
-  onRetry?: () => void;
-  ref?: React.Ref<ModelViewerHandle>;
-}) {
-  const [ready, setReady] = useState(() => !!customElements.get('model-viewer'));
-  const [failed, setFailed] = useState(false);
-  const elRef = useRef<ModelViewerElement | null>(null);
-  // The current attempt's mesh-request status, captured live by a scoped
-  // PerformanceObserver (see the effect below) rather than a one-shot read of
-  // the global performance buffer — see matchResourceStatus's doc comment for
-  // why. Reset whenever viewSrc changes so a PREVIOUS attempt's entry can
-  // never leak into this one's classification.
-  const statusRef = useRef<{ resolvedSrc: string; status: number | null }>({ resolvedSrc: '', status: null });
-  const observerRef = useRef<PerformanceObserver | null>(null);
-  // Load state is keyed by src and derived during render, so a new src reads
-  // as "loading" immediately without a reset effect.
-  const [load, setLoad] = useState<LoadState>(() => loadingState(src));
-  const current = load.src === src ? load : loadingState(src);
-  // Retry attempt, keyed by src like the load state so a new mesh starts at 0.
-  const [attempt, setAttempt] = useState({ src, n: 0 });
-  const attemptN = attempt.src === src ? attempt.n : 0;
-  // What the element is given: the raw src, or a fragment-busted copy after a
-  // retry (see retrySrc). Only the element ever sees it — the download link
-  // and everything the caller exposes keep the raw URL.
-  const viewSrc = retrySrc(src, attemptN);
+}
 
-  // Conditions known before anything is fetched. Either one means the element
-  // is never mounted and the ~1MB bundle is never imported.
-  const formatLabel = typeof format === 'string' && format !== '' ? `${format.toUpperCase()} files` : 'this mesh format';
-  const blocker: { reason: 'format' | 'webgl'; message: string } | null =
-    !canPreviewMesh(format ?? '')
-      ? { reason: 'format', message: `3D preview isn't available for ${formatLabel} — download the mesh.` }
-      : !hasWebGL2()
-        ? { reason: 'webgl', message: WEBGL_MESSAGE }
-        : null;
-  const blocked = blocker !== null;
-  const webglBlocked = blocker?.reason === 'webgl';
-  const showElement = ready && !blocked && current.status !== 'error';
-
-  const reportError = useEffectEvent((message: string) => onError?.(message));
-
-  const handleLoad = useEffectEvent((el: ModelViewerElement, detail: unknown) => {
-    // A load for a src that has since been replaced (see loadEventMatches)
-    // must not mark the new one loaded with the old one's dimensions. Compared
-    // with viewSrc: model-viewer reports the string it was given, fragment and all.
-    if (!loadEventMatches(detail, viewSrc)) return;
-    let dimensions: Dimensions | null = null;
-    try {
-      const d = el.getDimensions();
-      dimensions = { x: d.x, y: d.y, z: d.z };
-    } catch {
-      // A scene that reports no bounds leaves the stat blank; not a load failure.
-    }
-    setLoad({ src, status: 'loaded', progress: 1, message: '' });
-    onLoad?.({ dimensions });
-  });
-
-  const handleError = useEffectEvent((detail: unknown) => {
-    // Entries can be recorded by the browser slightly before the observer's
-    // callback microtask actually runs; drain anything pending before
-    // reading the captured status so a same-tick race can't read stale null.
-    const observer = observerRef.current;
-    if (observer) {
-      const drained = matchResourceStatus(observer.takeRecords() as unknown as ResourceStatusEntry[], statusRef.current.resolvedSrc);
-      if (drained !== null) statusRef.current.status = drained;
-    }
-    const reason = classifyViewerError(detail, statusRef.current.status);
-    const message = describeViewerError(detail, reason);
-    setLoad({ src, status: 'error', progress: 0, message, reason });
-    onError?.(message);
-  });
-
-  const handleProgress = useEffectEvent((progress: number) => {
-    // `progress` keeps firing around completion; never regress a settled state.
-    // Unlike `load`, its detail carries no url in 4.3.1 ({totalProgress,
-    // reason}), so it can't be filtered by src — but with stale loads ignored
-    // above, a new src stays "loading" and its progress is no longer dropped.
-    setLoad(prev => (prev.src === src && prev.status !== 'loading'
-      ? prev
-      : { src, status: 'loading', progress, message: '' }));
-  });
-
-  // Listeners go on the element directly via the ref: these are CustomEvents
-  // from a web component, and `load`/`error` collide with names React special-
-  // cases for <img>/<video>, so JSX `on*` props are not a reliable route.
-  useEffect(() => {
-    const el = elRef.current;
-    if (!showElement || !el) return;
-    const onLoadEvent = (e?: Event) => handleLoad(el, (e as CustomEvent | undefined)?.detail);
-    const onErrorEvent = (e: Event) => handleError((e as CustomEvent).detail);
-    const onProgressEvent = (e: Event) =>
-      handleProgress(Number((e as CustomEvent<{ totalProgress?: number }>).detail?.totalProgress) || 0);
-    el.addEventListener('load', onLoadEvent);
-    el.addEventListener('error', onErrorEvent);
-    el.addEventListener('progress', onProgressEvent);
-    // The element is fresh here, so `loaded` can only mean this mesh finished
-    // before the effect ran (e.g. a cached file) — don't miss that load.
-    if (el.loaded) onLoadEvent();
-    return () => {
-      el.removeEventListener('load', onLoadEvent);
-      el.removeEventListener('error', onErrorEvent);
-      el.removeEventListener('progress', onProgressEvent);
-    };
-  }, [showElement]);
-
-  // Resets the captured status AND (re)creates the scoped PerformanceObserver
-  // for every attempt (a new src, or a retry's new #retry-N fragment), in a
-  // LAYOUT effect rather than a passive one: <model-viewer> only starts
-  // fetching once its own IntersectionObserver reports visible (model-viewer-
-  // base.js, features/loading.js — it never gets `loading="eager"` here),
-  // which happens on a later rendering update than this synchronous,
-  // pre-paint layout effect. That ordering — observer alive before the
-  // element can possibly start a fetch — is what makes `buffered: false`
-  // sufficient on its own, with no supplementary read of any kind: reading
-  // performance.getEntriesByType('resource') to backfill a "missed" entry
-  // (an earlier version of this fix did that as a "safety net") reintroduces
-  // exactly the bug this whole approach exists to avoid — it can match a
-  // STALE entry from an EARLIER, unrelated load of the same URL (a previous
-  // component instance, a different tile), misclassifying a genuine 404 as
-  // an unfixable parse failure and withholding Retry. Reproduced in a real
-  // browser and fixed by deleting that read — see the Task 17B report.
-  // Not keyed on showElement: the observer must exist even before the
-  // element mounts (e.g. while the ~1MB bundle is still importing), or a
-  // fetch that starts the moment it does mount would already be missed.
-  useLayoutEffect(() => {
-    statusRef.current = { resolvedSrc: resolveUrl(viewSrc), status: null };
-    if (typeof PerformanceObserver === 'undefined'
-      || !PerformanceObserver.supportedEntryTypes?.includes('resource')) {
-      // Not a browser without resource-timing entries — e.g. Safari has
-      // them — just one without the `responseStatus` field yet
-      // (Resource Timing Level 2). matchResourceStatus already maps a
-      // matched entry with no responseStatus to null, so this early return
-      // (skipping the observer outright) only saves the allocation; either
-      // way statusRef.current.status stays null, and classifyViewerError
-      // treats that as the safe 'load' default, never a wrong 'parse'.
-      return;
-    }
-    const observer = new PerformanceObserver(list => {
-      const status = matchResourceStatus(list.getEntries() as unknown as ResourceStatusEntry[], statusRef.current.resolvedSrc);
-      if (status !== null) statusRef.current.status = status;
-    });
-    // buffered:false: a backlog of entries from BEFORE this observer existed
-    // (including an earlier load of the exact same URL) is exactly what must
-    // never match this attempt.
-    observer.observe({ type: 'resource', buffered: false });
-    observerRef.current = observer;
-    return () => {
-      observer.disconnect();
-      observerRef.current = null;
-    };
-  }, [viewSrc]);
-
-  useImperativeHandle(ref, () => ({
-    resetCamera() {
-      const el = elRef.current;
-      if (!el) return;
-      el.resetTurntableRotation(0);
-      // model-viewer 4.x declares these three with `hasChanged: () => true`,
-      // so re-assigning the same value re-syncs the camera even though user
-      // orbiting never touched the properties. Left to animate to the goal.
-      el.cameraTarget = CAMERA_TARGET;
-      el.fieldOfView = FIELD_OF_VIEW;
-      el.cameraOrbit = CAMERA_ORBIT;
-    },
-  }), []);
-
-  useEffect(() => {
-    if (ready || blocked) return;
-    let cancelled = false;
-    import('@google/model-viewer')
-      .then(() => { if (!cancelled) setReady(true); })
-      // Most often a stale chunk hash after a redeploy. The bundle stays
-      // broken for this instance, so `failed` is not keyed by src.
-      .catch(() => { if (!cancelled) setFailed(true); });
-    return () => { cancelled = true; };
-  }, [ready, blocked]);
-
-  // Page-level failures (no bundle, no WebGL 2) are reported, not just
-  // rendered, so an enclosing inspector leaves "loading" — and re-reported per
-  // src, because a caller keying its state by mesh URL (an unkeyed
-  // ModelPreview replaying Playground history) needs it for each new mesh.
-  useEffect(() => {
-    if (failed) reportError(IMPORT_FAILED_MESSAGE);
-  }, [failed, src]);
-
-  useEffect(() => {
-    if (webglBlocked) reportError(WEBGL_MESSAGE);
-  }, [webglBlocked, src]);
-
-  const retry = () => {
-    // A failed load is cached by model-viewer under the exact src string, so
-    // the next attempt gets a new string via a URL FRAGMENT — never a query
-    // param, which would invalidate presigned/signed-CDN URLs (fragments are
-    // not sent on the wire). Rationale in full on retrySrc.
-    setAttempt({ src, n: attemptN + 1 });
-    setLoad(loadingState(src));
-    onRetry?.();
-  };
-
-  if (blocker) {
-    return <MeshFallback src={src} testId={testId} reason={blocker.reason} message={blocker.message} />;
-  }
-  if (failed) {
-    return <MeshFallback src={src} testId={testId} reason="import" message={IMPORT_FAILED_MESSAGE} />;
-  }
-  if (current.status === 'error') {
-    const reason = current.reason ?? 'load';
-    // A parse failure re-fetches the exact same bytes and fails the same
-    // way, so Retry (the fragment-busting cache-buster) cannot help — offer
-    // download only.
-    return (
-      <MeshFallback
-        src={src}
-        testId={testId}
-        reason={reason}
-        message={current.message}
-        onRetry={reason === 'load' ? retry : undefined}
-      />
-    );
-  }
-  if (!ready) {
-    return <span data-testid={testId ? `${testId}-loading` : undefined} style={{ color: '#8b949e' }}>loading viewer…</span>;
-  }
-
-  const pct = Math.round(current.progress * 100);
+export default function ModelViewer({ src, poster, format, testId, ...rest }: ModelViewerProps) {
+  // The poster is an <img>: a private app's file route reaches it as a
+  // blob: URL fetched with the dashboard's credentials. The mesh is fetched
+  // by the viewer itself, through the same client (fetchStoredFile).
+  const posterSrc = useFileSrc(poster);
+  const loading = <span data-testid={testId ? `${testId}-loading` : undefined} style={{ color: '#8b949e' }}>loading viewer…</span>;
   return (
-    <div className="model-viewer-wrap" style={{ position: 'relative', width: '100%' }}>
-      {React.createElement(
-        'model-viewer',
-        {
-          ref: elRef,
-          src: viewSrc,
-          poster: poster ?? undefined,
-          alt: '3D model preview',
-          'camera-controls': true,
-          // Boolean attributes are omitted rather than set to false: a present
-          // `auto-rotate="false"` attribute would still read as on.
-          'auto-rotate': autoRotate || undefined,
-          'camera-orbit': CAMERA_ORBIT,
-          'camera-target': CAMERA_TARGET,
-          'field-of-view': FIELD_OF_VIEW,
-          // The idle hand-gesture hint overlays compact tiles; the toolbar and
-          // auto-rotate already make interactivity obvious without it.
-          'interaction-prompt': 'none',
-          // A number, not a string: React 19 assigns this as the element's
-          // `exposure` property (it exists on the upgraded element), and the
-          // renderer uses the property value as-is.
-          exposure,
-          'shadow-intensity': '1',
-          // Lets a vertical swipe scroll the page on touch screens instead of
-          // being captured as an orbit (the viewer sits inside scrolling tables).
-          'touch-action': 'pan-y',
-          'data-testid': testId,
-          style: { width: '100%', height: 360, background: BACKGROUNDS[background], borderRadius: 6, display: 'block', ...style },
-        },
-        // An empty slot replaces model-viewer's built-in progress bar with ours.
-        React.createElement('div', { slot: 'progress-bar' }),
-      )}
-      {current.status === 'loading' && (
-        <div
-          role="progressbar"
-          aria-label="Loading mesh"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={pct}
-          data-testid={testId ? `${testId}-progress` : undefined}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: '#21262d', borderRadius: '6px 6px 0 0', overflow: 'hidden', pointerEvents: 'none' }}
-        >
-          <div style={{ width: `${Math.max(pct, 2)}%`, height: '100%', background: '#58a6ff', transition: 'width 120ms linear' }} />
-        </div>
-      )}
-    </div>
+    // A viewer that can't load (its chunk gone after a deploy) leaves the
+    // mesh downloadable and the dashboard up.
+    <ViewerBoundary key={src} meshUrl={src} testId={testId}>
+      <Suspense fallback={loading}>
+        <RemoteMeshViewer
+          {...rest}
+          url={src}
+          // An unlabelled mesh (a row older than assets[], whose result_url has
+          // no extension) is tried as glTF Binary, as <model-viewer> tried it;
+          // a file that isn't one ends in the parse fallback with its link.
+          format={format?.toLowerCase() || 'glb'}
+          poster={posterSrc ?? null}
+          fetch={fetchStoredFile}
+          testId={testId}
+          // Compare tiles can fill a page: each draws only while on screen.
+          mountWhenVisible
+        />
+      </Suspense>
+    </ViewerBoundary>
   );
 }

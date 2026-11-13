@@ -1,4 +1,5 @@
 pub mod backpressure;
+pub mod body;
 pub mod idempotency;
 pub mod rate_limit;
 pub mod validator;
@@ -151,6 +152,39 @@ pub(crate) fn is_platform_admin(ctx: &KeyContext) -> bool {
     ctx.user.is_none() && ctx.key_id.is_none() && ctx.session_id.is_none()
 }
 
+/// Whether `ctx` may read what concerns the whole deployment rather than one
+/// tenant (the process's metrics; `/health`): in hosted mode only the
+/// platform admin (the master key); in single-tenant mode a caller with the
+/// `read` scope acting in the deployment's org.
+pub(crate) fn is_deployment_reader(ctx: &KeyContext, mode: Mode) -> bool {
+    match mode {
+        Mode::Hosted => is_platform_admin(ctx),
+        Mode::SingleTenant => ctx.scopes.contains(&Scope::Read) && acts_in_default_org(ctx),
+    }
+}
+
+/// Middleware: lets a deployment reader through ([`is_deployment_reader`]);
+/// anyone else, and a request with no credential context, gets 403. Layer it
+/// inside the auth layer, with the deployment's mode as its state.
+pub async fn require_deployment_reader(axum::extract::State(mode): axum::extract::State<Mode>, request: Request, next: Next) -> Response {
+    match request.extensions().get::<KeyContext>() {
+        Some(ctx) if is_deployment_reader(ctx, mode) => next.run(request).await,
+        _ => forbidden_with(
+            "forbidden_scope",
+            "forbidden_scope",
+            "Reading the deployment's own state takes the master key, or, in single-tenant mode, the read scope in the deployment's org",
+        ),
+    }
+}
+
+/// Whether `ctx` acts in the default org. In single-tenant mode that org is
+/// the deployment, and deployment-wide authority (the gateway, the users
+/// table, the cache) is held only from it: a session's permissions are its
+/// role in the org it acts in, and an Owner of any other org is just that.
+pub(crate) fn acts_in_default_org(ctx: &KeyContext) -> bool {
+    ctx.org_id.as_deref() == Some(DEFAULT_ORG_ID)
+}
+
 /// The maximal set of scopes `ctx` is permitted to grant to a newly created API
 /// key. A key must never carry more privilege than the principal that mints it:
 /// the `admin` scope bypasses permission gates on the Bearer auth path, so it
@@ -202,130 +236,48 @@ pub(crate) fn validate_grant(ctx: &KeyContext, scopes_csv: &str) -> Result<(), R
     Ok(())
 }
 
-fn grant_error(status: StatusCode, kind: &str, message: String) -> Response {
-    (status, Json(serde_json::json!({ "error": { "message": message, "type": kind, "code": kind } }))).into_response()
+/// What a key's owner's role must hold for the key to hold a scope, as
+/// `resolve_db_key` applies it at every request: `admin` while the role can
+/// grant it, `generate` while it may start generations (a Viewer only reads).
+const OWNER_MUST_HOLD: [(Scope, &str, Permission, &str); 2] = [
+    (Scope::Admin, "admin", Permission::KeyWriteAny, "can't grant it"),
+    (Scope::Generate, "generate", Permission::GenerationCreate, "can't start generations"),
+];
+
+/// Refuse `admin` or `generate` in `scopes_csv` for a DB key whose owner's
+/// role in the key's org can't hold it ([`OWNER_MUST_HOLD`]).
+/// `resolve_db_key` drops such a scope from the key on every request, so the
+/// edit would answer 200 and change nothing. A key with no owner (the org's)
+/// can hold any scope its editor may grant.
+pub(crate) async fn validate_owner_can_hold(state: &AppState, key: &crate::types::ApiKey, scopes_csv: &str) -> Result<(), Response> {
+    let wanted: Vec<Scope> = scopes_csv.split(',').map(str::trim).filter_map(Scope::parse).collect();
+    let asked: Vec<_> = OWNER_MUST_HOLD.iter().filter(|(scope, ..)| wanted.contains(scope)).collect();
+    let Some(owner) = key.owner_user_id.as_deref().filter(|_| !asked.is_empty()) else { return Ok(()) };
+    let role = match owner_org(state, key.org_id.as_deref()) {
+        Some(org_id) => owner_role(state, owner, org_id).await,
+        None => Ok(None),
+    };
+    let role = match role {
+        Ok(role) => role,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to look up an API key's owner");
+            return Err(internal_error_response("Internal error"));
+        }
+    };
+    for (_, name, permission, why) in asked {
+        if !role.is_some_and(|role| permissions_for(role).contains(permission)) {
+            return Err(grant_error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!("the key's owner can't hold scope '{name}': their role in its organization {why}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
-#[cfg(test)]
-mod scope_grant_tests {
-    use super::*;
-    use crate::auth::permissions::{permissions_for, Permission};
-    use crate::types::Role;
-
-    fn session_ctx(role: Role) -> KeyContext {
-        KeyContext {
-            key_id: None,
-            scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
-            rpm_limit: None,
-            quota_remaining: None,
-            webhook_url: None,
-            user: Some(UserContext {
-                user_id: "u1".into(),
-                email: "u@example.com".into(),
-                role,
-            }),
-            permissions: permissions_for(role).to_vec(),
-            session_id: Some("sess-1".into()),
-            org_id: Some("org-1".into()),
-            app_id: Some("app-1".into()),
-            oauth_grant_id: None,
-        }
-    }
-
-    fn bearer_ctx(scopes: Vec<Scope>) -> KeyContext {
-        KeyContext {
-            key_id: Some(uuid::Uuid::new_v4()),
-            scopes,
-            rpm_limit: None,
-            quota_remaining: None,
-            webhook_url: None,
-            user: None,
-            permissions: vec![],
-            session_id: None,
-            org_id: Some("org-1".into()),
-            app_id: Some("app-1".into()),
-            oauth_grant_id: None,
-        }
-    }
-
-    /// An org owner signed in to MCP through OAuth, with a grant holding `scopes`.
-    fn oauth_ctx(scopes: Vec<Scope>) -> KeyContext {
-        KeyContext { scopes, session_id: None, oauth_grant_id: Some("grant-1".into()), ..session_ctx(Role::Owner) }
-    }
-
-    #[tokio::test]
-    async fn an_oauth_principal_needs_its_grants_scope_where_roles_decide() {
-        use axum::body::Body;
-        use axum::routing::get;
-        use tower::ServiceExt;
-        let status = |ctx: KeyContext, method: &str, path: &str| {
-            let app = axum::Router::new()
-                .route("/v1/orgs/o1", get(|| async { "ok" }).patch(|| async { "ok" }))
-                .route("/v1/auth/me", get(|| async { "me" }))
-                .layer(axum::middleware::from_fn(check_grant_scope))
-                .layer(axum::Extension(ctx));
-            let req = Request::builder().method(method).uri(path).body(Body::empty()).unwrap();
-            async move { app.oneshot(req).await.unwrap().status() }
-        };
-        let ok = StatusCode::OK;
-        let refused = StatusCode::FORBIDDEN;
-
-        assert_eq!(status(oauth_ctx(vec![Scope::Read]), "GET", "/v1/orgs/o1").await, ok);
-        assert_eq!(status(oauth_ctx(vec![Scope::Read]), "PATCH", "/v1/orgs/o1").await, refused, "a read grant changes nothing");
-        assert_eq!(status(oauth_ctx(vec![Scope::Admin]), "PATCH", "/v1/orgs/o1").await, ok);
-        assert_eq!(status(oauth_ctx(vec![Scope::Admin]), "GET", "/v1/orgs/o1").await, ok, "admin covers reads");
-        assert_eq!(status(oauth_ctx(vec![Scope::Generate]), "GET", "/v1/orgs/o1").await, refused, "an AI grant reads no org data");
-        assert_eq!(status(oauth_ctx(vec![Scope::Generate]), "GET", "/v1/auth/me").await, ok, "but may ask who it is");
-
-        // Sessions hold every scope and keys answer to their routes' own layers.
-        assert_eq!(status(session_ctx(Role::Viewer), "PATCH", "/v1/orgs/o1").await, ok);
-        assert_eq!(status(bearer_ctx(vec![Scope::Read]), "PATCH", "/v1/orgs/o1").await, ok);
-    }
-
-    #[test]
-    fn an_oauth_principal_stays_in_its_grants_org() {
-        assert!(within_grant(&oauth_ctx(vec![Scope::Admin]), "org-1"));
-        assert!(!within_grant(&oauth_ctx(vec![Scope::Admin]), "org-2"));
-        assert!(within_grant(&session_ctx(Role::Owner), "org-2"), "a session's handlers check membership themselves");
-        assert!(within_grant(&bearer_ctx(vec![Scope::Admin]), "org-2"), "a key's handlers check its org themselves");
-    }
-
-    #[test]
-    fn member_session_cannot_grant_admin_scope() {
-        let g = grantable_scopes(&session_ctx(Role::Member));
-        assert!(!g.contains(&Scope::Admin), "a Member must not be able to mint an admin-scope key");
-        assert!(g.contains(&Scope::Generate) && g.contains(&Scope::Read));
-    }
-
-    #[test]
-    fn admin_session_can_grant_admin_scope() {
-        assert!(grantable_scopes(&session_ctx(Role::Admin)).contains(&Scope::Admin));
-        assert!(grantable_scopes(&session_ctx(Role::Owner)).contains(&Scope::Admin));
-    }
-
-    #[test]
-    fn bearer_key_can_only_grant_scopes_it_holds() {
-        // A generate+read key cannot escalate by minting an admin key.
-        let g = grantable_scopes(&bearer_ctx(vec![Scope::Generate, Scope::Read]));
-        assert!(!g.contains(&Scope::Admin));
-        // An admin-scope key may pass admin along.
-        assert!(grantable_scopes(&bearer_ctx(vec![Scope::Admin])).contains(&Scope::Admin));
-    }
-
-    #[test]
-    fn platform_master_key_can_grant_admin() {
-        let mut ctx = bearer_ctx(vec![]);
-        ctx.key_id = None; // master key: no user, no key_id, no session
-        assert!(grantable_scopes(&ctx).contains(&Scope::Admin));
-    }
-
-    // Guard against the permission model drifting: the whole check hinges on
-    // Member lacking KeyWriteAny while Admin/Owner hold it.
-    #[test]
-    fn member_lacks_key_write_any() {
-        assert!(!permissions_for(Role::Member).contains(&Permission::KeyWriteAny));
-        assert!(permissions_for(Role::Admin).contains(&Permission::KeyWriteAny));
-    }
+fn grant_error(status: StatusCode, kind: &str, message: String) -> Response {
+    (status, Json(serde_json::json!({ "error": { "message": message, "type": kind, "code": kind } }))).into_response()
 }
 
 // ─── AppState ────────────────────────────────────────────────────────────────
@@ -384,12 +336,13 @@ pub async fn auth_middleware(
 
     // Try session cookie auth
     if let Some(sid) = cookie_value(request.headers(), "litegen_session") {
-        if let Ok(Some(sess)) = state.db.get_session(&sid).await {
+        // The session and its user in one read (review 2026-11-11, P14).
+        if let Ok(Some((sess, user))) = state.db.get_session_with_user(&sid).await {
             if sess.expires_at < chrono::Utc::now() {
                 let _ = state.db.delete_session(&sid).await;
                 return unauthorized_response("Session expired");
             }
-            if let Ok(Some(user)) = state.db.get_user_by_id(&sess.user_id).await {
+            if let Some(user) = user {
                 if !user.is_active {
                     return unauthorized_response("Account inactive");
                 }
@@ -420,13 +373,14 @@ pub async fn auth_middleware(
                             let (org, role) = v.remove(0);
                             (Some(org.id), Some(role))
                         }
-                        _ => {
-                            if state.mode == Mode::SingleTenant {
-                                (Some(DEFAULT_ORG_ID.to_string()), None)
-                            } else {
-                                (None, None)
-                            }
-                        }
+                        // No membership: hosted users make an org of their
+                        // own; in single-tenant mode every account joins the
+                        // default org at signup or invitation, so having none
+                        // means its member was removed.
+                        Ok(_) => (None, None),
+                        // A lookup that failed says nothing about membership:
+                        // answer 5xx (retryable), as the header path does.
+                        Err(_) => return internal_error_response("organization lookup failed"),
                     }
                 };
                 // Active app: explicit header (validated to belong to org) ->
@@ -456,11 +410,15 @@ pub async fn auth_middleware(
                     }
                     _ => None,
                 };
-                // Permissions: membership role if resolved, else fall back to
-                // the user's global role (preserves single_tenant behavior +
-                // existing tests).
-                let role_for_perms = membership_role.unwrap_or(user.role);
-                let perms = permissions_for(role_for_perms).to_vec();
+                // Permissions: the membership role. Without one, a hosted
+                // user keeps their account's role (they act in no org); a
+                // single-tenant account removed from the default org holds
+                // nothing, or removal would leave its role in force.
+                let perms = match (membership_role, state.mode) {
+                    (Some(role), _) => permissions_for(role).to_vec(),
+                    (None, Mode::Hosted) => permissions_for(user.role).to_vec(),
+                    (None, Mode::SingleTenant) => Vec::new(),
+                };
 
                 let ctx = KeyContext {
                     key_id: None,
@@ -619,8 +577,10 @@ async fn resolve_db_key(state: &AppState, api_key: &str) -> Result<KeyContext, R
         hex::encode(hasher.finalize())
     };
 
-    let key = match state.db.lookup_api_key_by_hash(&hash).await {
-        Ok(Some(key)) => key,
+    // The key and where its maker stands, in one read (review 2026-11-11,
+    // P14): nothing is cached, so a removal still ends a key at once.
+    let (key, owner) = match state.db.lookup_api_key_with_owner(&hash, owner_org(state, None)).await {
+        Ok(Some(found)) => found,
         Ok(None) => return Err(unauthorized_response("Invalid or inactive API key")),
         Err(e) => {
             tracing::error!(error = %e, "Failed to look up API key");
@@ -662,10 +622,34 @@ async fn resolve_db_key(state: &AppState, api_key: &str) -> Result<KeyContext, R
 
     let quota_remaining = key.token_quota.map(|quota| quota - key.tokens_used);
 
-    let scopes: Vec<Scope> = key.scopes
+    let mut scopes: Vec<Scope> = key.scopes
         .split(',')
         .filter_map(Scope::parse)
         .collect();
+
+    // A key acts for the person who made it (`owner_user_id`). It works only
+    // while they're an active member of the key's org, holds `admin` only
+    // while their role there could still grant it (`grantable_scopes`), and
+    // holds `generate` only while that role may start generations (a Viewer
+    // only reads, as their sessions and sign-ins do: review 2026-11-12), so
+    // removing, deactivating or demoting someone ends what their keys can do.
+    // Keys made with the master key have no owner: they belong to the org.
+    match owner {
+        crate::db::KeyOwner::None => {}
+        crate::db::KeyOwner::Member(role) => {
+            if !permissions_for(role).contains(&Permission::KeyWriteAny) {
+                scopes.retain(|s| *s != Scope::Admin);
+            }
+            if !permissions_for(role).contains(&Permission::GenerationCreate) {
+                scopes.retain(|s| *s != Scope::Generate);
+            }
+        }
+        crate::db::KeyOwner::Gone => {
+            return Err(unauthorized_response(
+                "API key is inactive: the person who made it is no longer an active member of its organization",
+            ))
+        }
+    }
 
     Ok(KeyContext {
         key_id: Some(key.id),
@@ -682,15 +666,51 @@ async fn resolve_db_key(state: &AppState, api_key: &str) -> Result<KeyContext, R
     })
 }
 
+/// The org a key's owner must belong to: the key's own. A key with no org (none
+/// is made today: migration 0008 backfilled them) counts as the default org's
+/// in single-tenant mode, where that org is the deployment. A hosted
+/// deployment's default org is nobody's, so there it counts as no org at all,
+/// and no membership vouches for the key.
+fn owner_org<'a>(state: &AppState, key_org: Option<&'a str>) -> Option<&'a str> {
+    match key_org {
+        Some(org_id) => Some(org_id),
+        None if state.mode == crate::config::Mode::Hosted => None,
+        None => Some(DEFAULT_ORG_ID),
+    }
+}
+
+/// The role a key's maker holds in `org_id`, or `None` when they're no longer
+/// an active member of it: what a key edit checks (`validate_owner_can_hold`).
+/// Authenticating a key reads the same in one statement
+/// (`DatabaseStore::lookup_api_key_with_owner`).
+async fn owner_role(state: &AppState, user_id: &str, org_id: &str) -> Result<Option<Role>, sqlx::Error> {
+    match state.db.get_user_by_id(user_id).await? {
+        Some(user) if user.is_active => state.db.get_membership(org_id, user_id).await,
+        _ => Ok(None),
+    }
+}
+
+
 /// Run the request as `ctx`, applying a DB key's per-minute rate limit (429
-/// with `Retry-After` once exhausted) and reporting it in `X-RateLimit-*`. The
+/// with `Retry-After` once exhausted; 503 `rate_limit_unverifiable` when Redis
+/// is out and fail-closed is on) and reporting it in `X-RateLimit-*`. The
 /// master key, the dev bypass and keys without an `rpm_limit` are unlimited.
 async fn run_rate_limited(ctx: KeyContext, state: Arc<AppState>, mut request: Request, next: Next) -> Response {
     let limit = ctx.key_id.zip(ctx.rpm_limit);
 
-    // RPM rate limit check
+    // RPM rate limit check. The take also says what is left in the bucket,
+    // which is what the headers on a served request report: one round trip
+    // to Redis per limited request, and nothing that can fail after the
+    // take and leave the header wrong. The reset time is fixed here too,
+    // since the handler may run for a while.
+    let mut left = None;
     if let Some((key_id, rpm)) = limit {
-        if let Err(retry_after) = state.rate_limiter.try_take(key_id, rpm).await {
+        let taken = state.rate_limiter.try_take(key_id, rpm).await;
+        if let Err(refusal) = taken {
+            let retry_after = match refusal {
+                rate_limit::LimitRefusal::Exceeded { retry_after_secs } => retry_after_secs,
+                rate_limit::LimitRefusal::Unverifiable => return rate_limit::unverifiable_response(),
+            };
             let rpm_str = rpm.to_string();
             let mut resp = (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -719,26 +739,24 @@ async fn run_rate_limited(ctx: KeyContext, state: Arc<AppState>, mut request: Re
             }
             return resp;
         }
+        left = taken.ok().map(|snapshot| {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            (snapshot.remaining, now + snapshot.reset_in.as_secs())
+        });
     }
 
     request.extensions_mut().insert(ctx);
     let mut response = next.run(request).await;
 
     // Attach X-RateLimit-* headers for rate-limited keys
-    if let Some((key_id, rpm)) = limit {
-        let snapshot = state.rate_limiter.snapshot(key_id, rpm).await;
+    if let (Some((_, rpm)), Some((remaining, reset_epoch))) = (limit, left) {
         let headers = response.headers_mut();
         if let Ok(v) = axum::http::HeaderValue::from_str(&rpm.to_string()) {
             headers.insert("x-ratelimit-limit", v);
         }
-        if let Ok(v) = axum::http::HeaderValue::from_str(&snapshot.remaining.to_string()) {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&remaining.to_string()) {
             headers.insert("x-ratelimit-remaining", v);
         }
-        let reset_epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            + snapshot.reset_in.as_secs();
         if let Ok(v) = axum::http::HeaderValue::from_str(&reset_epoch.to_string()) {
             headers.insert("x-ratelimit-reset", v);
         }
@@ -749,6 +767,39 @@ async fn run_rate_limited(ctx: KeyContext, state: Arc<AppState>, mut request: Re
 }
 
 // ─── Scope middleware ─────────────────────────────────────────────────────────
+
+/// For the routes that start or change generations, on top of their scope:
+/// a person (a dashboard session or an OAuth grant) needs an organization to
+/// act in and `generation:create` there. A session keeps every scope
+/// whatever its role, so without this a single-tenant account removed from
+/// the default org, which holds no org and no permission, would still
+/// generate. It would do so on the deployment's own vendor keys, outside
+/// every budget, model allowlist and rate cap, since those hang off the org.
+/// API keys and the master key are bound to their app already.
+pub async fn check_generation_principal(request: Request, next: Next) -> Response {
+    if let Some(ctx) = request.extensions().get::<KeyContext>() {
+        if ctx.user.is_some() && ctx.key_id.is_none() {
+            if ctx.org_id.is_none() {
+                return forbidden_with("forbidden", "no_active_org", "No active organization");
+            }
+            // A Viewer lacks it (read-only), so these routes' status reads and
+            // quotes refuse them too; `GET /v1/generations/{id}` still reads.
+            if !ctx.permissions.contains(&Permission::GenerationCreate) {
+                return forbidden_with("forbidden_permission", "forbidden_permission", "Permission 'generation:create' required");
+            }
+        }
+    }
+    next.run(request).await
+}
+
+/// A 403 in the shape the other refusals here use.
+fn forbidden_with(kind: &str, code: &str, msg: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": { "message": msg, "type": kind, "code": code } })),
+    )
+        .into_response()
+}
 
 /// Axum middleware function that checks the `KeyContext` for the required scope.
 /// Returns 403 if the scope is missing, 401 if there's no context.
@@ -963,4 +1014,171 @@ pub async fn create_session_cookies(
     db.create_session(&sess).await?;
     let (sc, cc) = make_session_cookies(&session_token, &csrf_token);
     Ok((session_token, csrf_token, sc, cc))
+}
+
+#[cfg(test)]
+mod scope_grant_tests {
+    use super::*;
+    use crate::auth::permissions::{permissions_for, Permission};
+    use crate::types::Role;
+
+    fn session_ctx(role: Role) -> KeyContext {
+        KeyContext {
+            key_id: None,
+            scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: Some(UserContext {
+                user_id: "u1".into(),
+                email: "u@example.com".into(),
+                role,
+            }),
+            permissions: permissions_for(role).to_vec(),
+            session_id: Some("sess-1".into()),
+            org_id: Some("org-1".into()),
+            app_id: Some("app-1".into()),
+            oauth_grant_id: None,
+        }
+    }
+
+    fn bearer_ctx(scopes: Vec<Scope>) -> KeyContext {
+        KeyContext {
+            key_id: Some(uuid::Uuid::new_v4()),
+            scopes,
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: None,
+            permissions: vec![],
+            session_id: None,
+            org_id: Some("org-1".into()),
+            app_id: Some("app-1".into()),
+            oauth_grant_id: None,
+        }
+    }
+
+    /// An org owner signed in to MCP through OAuth, with a grant holding `scopes`.
+    fn oauth_ctx(scopes: Vec<Scope>) -> KeyContext {
+        KeyContext { scopes, session_id: None, oauth_grant_id: Some("grant-1".into()), ..session_ctx(Role::Owner) }
+    }
+
+    #[tokio::test]
+    async fn an_oauth_principal_needs_its_grants_scope_where_roles_decide() {
+        use axum::body::Body;
+        use axum::routing::get;
+        use tower::ServiceExt;
+        let status = |ctx: KeyContext, method: &str, path: &str| {
+            let app = axum::Router::new()
+                .route("/v1/orgs/o1", get(|| async { "ok" }).patch(|| async { "ok" }))
+                .route("/v1/auth/me", get(|| async { "me" }))
+                .layer(axum::middleware::from_fn(check_grant_scope))
+                .layer(axum::Extension(ctx));
+            let req = Request::builder().method(method).uri(path).body(Body::empty()).unwrap();
+            async move { app.oneshot(req).await.unwrap().status() }
+        };
+        let ok = StatusCode::OK;
+        let refused = StatusCode::FORBIDDEN;
+
+        assert_eq!(status(oauth_ctx(vec![Scope::Read]), "GET", "/v1/orgs/o1").await, ok);
+        assert_eq!(status(oauth_ctx(vec![Scope::Read]), "PATCH", "/v1/orgs/o1").await, refused, "a read grant changes nothing");
+        assert_eq!(status(oauth_ctx(vec![Scope::Admin]), "PATCH", "/v1/orgs/o1").await, ok);
+        assert_eq!(status(oauth_ctx(vec![Scope::Admin]), "GET", "/v1/orgs/o1").await, ok, "admin covers reads");
+        assert_eq!(status(oauth_ctx(vec![Scope::Generate]), "GET", "/v1/orgs/o1").await, refused, "an AI grant reads no org data");
+        assert_eq!(status(oauth_ctx(vec![Scope::Generate]), "GET", "/v1/auth/me").await, ok, "but may ask who it is");
+
+        // Sessions hold every scope and keys answer to their routes' own layers.
+        assert_eq!(status(session_ctx(Role::Viewer), "PATCH", "/v1/orgs/o1").await, ok);
+        assert_eq!(status(bearer_ctx(vec![Scope::Read]), "PATCH", "/v1/orgs/o1").await, ok);
+    }
+
+    #[test]
+    fn an_oauth_principal_stays_in_its_grants_org() {
+        assert!(within_grant(&oauth_ctx(vec![Scope::Admin]), "org-1"));
+        assert!(!within_grant(&oauth_ctx(vec![Scope::Admin]), "org-2"));
+        assert!(within_grant(&session_ctx(Role::Owner), "org-2"), "a session's handlers check membership themselves");
+        assert!(within_grant(&bearer_ctx(vec![Scope::Admin]), "org-2"), "a key's handlers check its org themselves");
+    }
+
+    #[test]
+    fn member_session_cannot_grant_admin_scope() {
+        let g = grantable_scopes(&session_ctx(Role::Member));
+        assert!(!g.contains(&Scope::Admin), "a Member must not be able to mint an admin-scope key");
+        assert!(g.contains(&Scope::Generate) && g.contains(&Scope::Read));
+    }
+
+    #[test]
+    fn admin_session_can_grant_admin_scope() {
+        assert!(grantable_scopes(&session_ctx(Role::Admin)).contains(&Scope::Admin));
+        assert!(grantable_scopes(&session_ctx(Role::Owner)).contains(&Scope::Admin));
+    }
+
+    #[test]
+    fn bearer_key_can_only_grant_scopes_it_holds() {
+        // A generate+read key cannot escalate by minting an admin key.
+        let g = grantable_scopes(&bearer_ctx(vec![Scope::Generate, Scope::Read]));
+        assert!(!g.contains(&Scope::Admin));
+        // An admin-scope key may pass admin along.
+        assert!(grantable_scopes(&bearer_ctx(vec![Scope::Admin])).contains(&Scope::Admin));
+    }
+
+    #[test]
+    fn platform_master_key_can_grant_admin() {
+        let mut ctx = bearer_ctx(vec![]);
+        ctx.key_id = None; // master key: no user, no key_id, no session
+        assert!(grantable_scopes(&ctx).contains(&Scope::Admin));
+    }
+
+    // Guard against the permission model drifting: the whole check hinges on
+    // Member lacking KeyWriteAny while Admin/Owner hold it.
+    #[test]
+    fn member_lacks_key_write_any() {
+        assert!(!permissions_for(Role::Member).contains(&Permission::KeyWriteAny));
+        assert!(permissions_for(Role::Admin).contains(&Permission::KeyWriteAny));
+    }
+}
+
+#[cfg(test)]
+mod deployment_reader_tests {
+    use super::*;
+
+    fn ctx(key_id: Option<Uuid>, scopes: Vec<Scope>, org_id: Option<&str>) -> KeyContext {
+        KeyContext {
+            key_id,
+            scopes,
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: None,
+            permissions: vec![],
+            session_id: None,
+            org_id: org_id.map(str::to_string),
+            app_id: None,
+            oauth_grant_id: None,
+        }
+    }
+
+    /// The deployment-reader rule (rulings, cross-area): hosted, only the
+    /// master key; single-tenant, `read` in the deployment's org.
+    #[test]
+    fn only_the_deployments_own_readers_read_it() {
+        let all = || vec![Scope::Generate, Scope::Read, Scope::Admin];
+        let key = || Some(Uuid::new_v4());
+        assert!(is_deployment_reader(&ctx(None, all(), None), Mode::Hosted), "the hosted master key");
+        assert!(!is_deployment_reader(&ctx(key(), all(), Some("org-a")), Mode::Hosted), "a tenant's key, whatever its scopes");
+        assert!(is_deployment_reader(&ctx(None, all(), Some(DEFAULT_ORG_ID)), Mode::SingleTenant), "the master key");
+        assert!(is_deployment_reader(&ctx(key(), vec![Scope::Read], Some(DEFAULT_ORG_ID)), Mode::SingleTenant), "a read key");
+        assert!(!is_deployment_reader(&ctx(key(), vec![Scope::Generate], Some(DEFAULT_ORG_ID)), Mode::SingleTenant), "a key without read");
+        assert!(!is_deployment_reader(&ctx(key(), vec![Scope::Read], Some("org-b")), Mode::SingleTenant), "a key acting in another org");
+    }
+
+    #[tokio::test]
+    async fn a_request_with_no_credential_context_is_refused_403() {
+        use tower::ServiceExt;
+        let app = axum::Router::new()
+            .route("/m", axum::routing::get(|| async { "metrics" }))
+            .layer(axum::middleware::from_fn_with_state(Mode::SingleTenant, require_deployment_reader));
+        let resp = app.oneshot(axum::http::Request::get("/m").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
 }

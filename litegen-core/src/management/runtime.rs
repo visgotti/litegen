@@ -9,7 +9,12 @@
 //!   A job already in flight keeps the instance it submitted with.
 
 
-use chrono::Utc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+use chrono::{DateTime, Utc};
+use tokio::sync::Notify;
 
 use super::store::ManagementStore;
 use super::types::*;
@@ -17,6 +22,8 @@ use crate::api::middleware::AppState;
 use crate::capabilities::schema::{MediaType, ModelSchema};
 use crate::config::{CacheRouteConfig, DeploymentConfig, ModelRouteConfig, ProviderEnvConfig};
 use crate::proxy::registry::{IMAGE_PROVIDERS, MODEL3D_PROVIDERS, VIDEO_PROVIDERS};
+use crate::shared::events::SharedEvent;
+use crate::shared::Throttle;
 
 /// `gateway_settings` key holding the [`GatewaySettings`] JSON.
 pub const SETTINGS_KEY: &str = "gateway";
@@ -62,6 +69,34 @@ pub fn validate_gateway_settings(s: &GatewaySettings) -> Result<(), String> {
     if let Some(d) = &s.default_end_user_budget_duration {
         super::budget::parse_duration(d)?;
     }
+    let range = |v: Option<u64>, field: &str, lo: u64, hi: u64| match v {
+        Some(v) if !(lo..=hi).contains(&v) => Err(format!("{field} must be between {lo} and {hi}")),
+        _ => Ok(()),
+    };
+    range(s.cache_ttl_seconds, "cache_ttl_seconds", 1, 604_800)?;
+    range(s.cache_max_items, "cache_max_items", 1, 1_000_000)?;
+    range(s.cache_max_bytes, "cache_max_bytes", 1_048_576, 68_719_476_736)?;
+    range(s.retry_max_retries.map(u64::from), "retry_max_retries", 0, 5)?;
+    range(s.retry_backoff_ms, "retry_backoff_ms", 0, 60_000)?;
+    range(s.retry_max_backoff_ms, "retry_max_backoff_ms", 0, 60_000)?;
+    if let (Some(first), Some(longest)) = (s.retry_backoff_ms, s.retry_max_backoff_ms) {
+        if longest < first {
+            return Err("retry_max_backoff_ms must be at least retry_backoff_ms".into());
+        }
+    }
+    range(s.vendor_timeout_seconds, "vendor_timeout_seconds", 5, 3600)?;
+    range(s.circuit_breaker_threshold.map(u64::from), "circuit_breaker_threshold", 1, 1000)?;
+    range(s.circuit_breaker_open_for_seconds, "circuit_breaker_open_for_seconds", 1, 3600)?;
+    if let Some(t) = s.storage_access_signed_url_ttl_seconds {
+        if !crate::access::ttl_in_range(i64::from(t)) {
+            return Err(format!(
+                "storage_access_signed_url_ttl_seconds must be between {} and {} seconds",
+                crate::access::MIN_SIGNED_URL_TTL_SECONDS,
+                crate::access::MAX_SIGNED_URL_TTL_SECONDS,
+            ));
+        }
+    }
+    range(s.storage_access_retention_days.map(u64::from), "storage_access_retention_days", 0, u64::from(crate::access::MAX_RETENTION_DAYS))?;
     Ok(())
 }
 
@@ -352,7 +387,276 @@ pub fn all_provider_names() -> Vec<&'static str> {
     names
 }
 
-// ─── Boot ────────────────────────────────────────────────────────────────────
+// ─── Boot and refresh ────────────────────────────────────────────────────────
+
+/// What this replica has applied of the stored runtime models and provider
+/// configs: each id with the `updated_at` of the row it applied. Boot and
+/// [`refresh`] write it, and nothing else does, so it never claims more than
+/// they applied. A row that does not validate is recorded as seen too, though
+/// none of it is served, so it is not parsed and warned about again until it
+/// changes. A save made on this replica through the API is not in it until the
+/// next refresh re-applies that row, which changes nothing.
+///
+/// That is also how a refresh that raced such a save heals. If it applied an
+/// older row after the save's own apply, the record holds the older
+/// `updated_at` and the database holds the newer one, so the next refresh
+/// applies the newer row again.
+#[derive(Debug, Default)]
+pub(crate) struct AppliedRuntime {
+    pub models: HashMap<String, DateTime<Utc>>,
+    pub providers: HashMap<String, DateTime<Utc>>,
+}
+
+/// Keeps the warning for a provider config that cannot be applied to once a
+/// minute per provider: one that stays unusable would otherwise repeat at every
+/// refresh, and one provider's warning must not hide another's. The map holds
+/// at most one entry per provider name.
+static NOT_APPLIED: LazyLock<Mutex<HashMap<String, Throttle>>> = LazyLock::new(Default::default);
+
+/// Whether the warning for `provider` may be logged now.
+fn not_applied_warning_due(provider: &str) -> bool {
+    // A panic while holding the lock leaves a map that is still right.
+    let mut throttles = NOT_APPLIED.lock().unwrap_or_else(|p| p.into_inner());
+    throttles.entry(provider.to_string()).or_default().due(Instant::now())
+}
+
+/// Reload everything the management API stores from the database and apply
+/// what differs from what this replica runs, so a change saved on another
+/// replica reaches this one (`docs/gateway-settings.md`): the gateway
+/// settings, the runtime routes, runtime models, disabled models and provider
+/// configs. Whether anything changed. On an error what is in force stays.
+/// It also empties the cache's local tier if another replica cleared the
+/// cache (`GenerationCache::sync_epoch`), which is not counted as a change.
+pub async fn refresh(state: &AppState) -> Result<bool, sqlx::Error> {
+    // First, and whatever the database says: a cache cleared on another
+    // replica is emptied here too (the event for it can be lost).
+    state.router.cache.sync_epoch().await;
+    let Some(store) = state.db.management() else { return Ok(false) };
+    // Each part runs even when an earlier one changed something.
+    let mut changed = sync_gateway(state, store).await?;
+    changed |= sync_models(state, store).await?;
+    changed |= sync_model_states(state, store).await?;
+    changed |= sync_providers(state, store).await?;
+    Ok(changed)
+}
+
+/// The gateway settings and the runtime routes. Whether they changed.
+async fn sync_gateway(state: &AppState, store: &dyn ManagementStore) -> Result<bool, sqlx::Error> {
+    // Read before the database: a save that lands during the read wins.
+    let version = state.router.overrides_version();
+    let gateway = load_gateway_settings(store).await?;
+    let model_routes = load_routes(store).await?.map(|r| r.iter().map(route_spec_to_config).collect::<Vec<_>>());
+    let current = state.router.overrides();
+    if current.gateway == gateway && current.model_routes == model_routes {
+        return Ok(false);
+    }
+    Ok(state.router.set_overrides_unless_changed(version, crate::proxy::router::RuntimeOverrides { model_routes, gateway }))
+}
+
+/// The runtime models: a row new or changed since this replica applied it is
+/// applied again, and a model whose row is gone leaves the runtime layer.
+/// That covers a model this replica saved itself, which the record does not
+/// know: the layer is held to the database's rows, not only to the record.
+async fn sync_models(state: &AppState, store: &dyn ManagementStore) -> Result<bool, sqlx::Error> {
+    // Read before the database, as `sync_gateway` does: a save or delete on
+    // this replica that lands during the read wins (the update below is then
+    // refused), and the next refresh applies the database, which holds it.
+    let version = state.registry.runtime_version();
+    // The models served now, taken before the rows are read. A handler writes
+    // its row before it serves the model, so a model in this list had its row
+    // committed before the read below, and is swept only if the row is gone
+    // since. Taken after the read, it could hold a model whose row the read
+    // missed, and sweep it until the next tick.
+    let served: Vec<String> = state.registry.runtime_models().into_iter().map(|m| m.id).collect();
+    let rows = store.list_runtime_models().await?;
+    #[cfg(test)]
+    state.router.pause_after_sync_read("runtime_models").await;
+    let applied = state.router.applied_runtime().models.clone();
+    let (mut upserts, mut removals, mut seen) = (Vec::new(), Vec::new(), Vec::new());
+    for row in rows.iter().filter(|r| applied.get(&r.id) != Some(&r.updated_at)) {
+        match runtime_model_of(state, row) {
+            Some(m) => upserts.push(m),
+            // A row that does not validate changes what is served only by
+            // taking an older version out.
+            None => removals.push(row.id.clone()),
+        }
+        seen.push((row.id.clone(), row.updated_at));
+    }
+    let stored: HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    let gone: Vec<String> = applied.keys().cloned().chain(served).filter(|id| !stored.contains(id.as_str())).collect();
+    removals.extend(gone.iter().cloned());
+    let Some(changed) = state.registry.update_runtime_unless_changed(version, upserts, &removals) else {
+        return Ok(false);
+    };
+    let mut record = state.router.applied_runtime();
+    for (id, updated_at) in seen {
+        record.models.insert(id, updated_at);
+    }
+    for id in &gone {
+        record.models.remove(id);
+    }
+    Ok(changed)
+}
+
+/// Disabled models: the registry is made to hold the database's set, unless
+/// a PATCH on this replica changed it while the database was read. That PATCH
+/// stands (the replica skips its own reload event), and the next refresh
+/// applies the database, which holds it.
+async fn sync_model_states(state: &AppState, store: &dyn ManagementStore) -> Result<bool, sqlx::Error> {
+    // Read before the database, as `sync_gateway` does.
+    let version = state.registry.disabled_version();
+    let stored: HashSet<String> = store.list_model_states().await?.into_iter().filter(|(_, disabled)| *disabled).map(|(id, _)| id).collect();
+    #[cfg(test)]
+    state.router.pause_after_sync_read("model_states").await;
+    Ok(state.registry.replace_disabled_unless_changed(version, stored).unwrap_or(false))
+}
+
+/// Provider configs: one whose row is new or changed since this replica applied
+/// it, or whose row is gone, goes through [`apply_provider`] again, which also
+/// handles the deleted row (the env config, or out of service). A provider
+/// this replica configured itself and no row backs any more is swept the same
+/// way, for the reason [`sync_models`] gives.
+async fn sync_providers(state: &AppState, store: &dyn ManagementStore) -> Result<bool, sqlx::Error> {
+    let rows = store.list_provider_configs().await?;
+    let applied = state.router.applied_runtime().providers.clone();
+    let stored: HashSet<&str> = rows.iter().map(|r| r.provider.as_str()).collect();
+    let mut changed = false;
+
+    for row in rows.iter().filter(|r| applied.get(&r.provider) != Some(&r.updated_at)) {
+        if reapply_provider(state, store, &row.provider).await {
+            state.router.applied_runtime().providers.insert(row.provider.clone(), row.updated_at);
+            changed = true;
+        }
+    }
+
+    let mut gone: Vec<&str> = applied.keys().map(String::as_str).filter(|name| !stored.contains(name)).collect();
+    for name in all_provider_names() {
+        if !stored.contains(name) && !applied.contains_key(name) && env_config(state, name).is_none() && state.router.registry.registered_config(name).await.is_some() {
+            gone.push(name);
+        }
+    }
+    for name in gone {
+        if reapply_provider(state, store, name).await {
+            state.router.applied_runtime().providers.remove(name);
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// [`apply_provider`] for a refresh. Whether it applied; a failure is logged
+/// and tried again at the next refresh.
+async fn reapply_provider(state: &AppState, store: &dyn ManagementStore, name: &str) -> bool {
+    match apply_provider(state, store, name).await {
+        Ok(_) => true,
+        Err(e) => {
+            if not_applied_warning_due(name) {
+                tracing::warn!(provider = %name, error = %e, "runtime provider config not applied; trying again at the next refresh");
+            }
+            false
+        }
+    }
+}
+
+/// [`refresh`] every `every`, from the next tick (boot loaded everything
+/// already), and at once when another replica says it changed something. The
+/// listener needs Redis and `subscribe`; without it the tick alone keeps the
+/// replicas in step, which takes up to `every` for a change.
+pub fn spawn_runtime_sync(state: Arc<AppState>, every: Duration, subscribe: bool) -> tokio::task::JoinHandle<()> {
+    let listen = if subscribe { state.router.shared().cloned().map(|shared| (shared, state.router.cache.clone())) } else { None };
+    spawn_sync_loop(every, listen, move || {
+        let state = state.clone();
+        async move { refresh(&state).await }
+    })
+}
+
+/// [`spawn_runtime_sync`]'s loop, with what one refresh does given by
+/// `refresh` (a test passes its own), and Redis's events heard when `listen`
+/// names it and the cache a heard clear empties.
+fn spawn_sync_loop<R, F>(
+    every: Duration,
+    listen: Option<(Arc<crate::shared::SharedRedis>, Arc<crate::proxy::cache::GenerationCache>)>,
+    mut refresh: R,
+) -> tokio::task::JoinHandle<()>
+where
+    R: FnMut() -> F + Send + 'static,
+    F: std::future::Future<Output = Result<bool, sqlx::Error>> + Send,
+{
+    tokio::spawn(async move {
+        let wake = Arc::new(Notify::new());
+        // Held for as long as this task runs: dropping the task stops the listener.
+        let _listener = listen.map(|(shared, cache)| {
+            let wake = wake.clone();
+            StopOnDrop(crate::shared::events::spawn_event_listener(shared, move |event| match event {
+                SharedEvent::Reload => wake.notify_one(),
+                // Not through `wake`: a cache clear needs one read of the epoch,
+                // not a reload of everything from the database. Spawned, so the
+                // listener goes on reading events while Redis answers.
+                SharedEvent::CacheClear => {
+                    let cache = cache.clone();
+                    tokio::spawn(async move { cache.sync_epoch().await });
+                }
+            }))
+        });
+        let mut tick = tokio::time::interval(every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = wake.notified() => {}
+            }
+            // A refresh that panics is logged by the guard, and the next tick
+            // (or event) refreshes again.
+            let Some(refreshed) = crate::supervise::guarded("a runtime configuration refresh", refresh()).await else { continue };
+            match refreshed {
+                Ok(true) => tracing::info!("runtime configuration refreshed from the database; changes applied"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "could not refresh the runtime configuration; keeping the current one"),
+            }
+        }
+    })
+}
+
+/// Aborts the task when dropped.
+struct StopOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Tell the other replicas a change was saved, so they refresh now rather than
+/// at their next tick. Best effort: with no shared Redis it does nothing, and a
+/// failure is logged and never fails the request.
+pub async fn announce(state: &AppState, event: SharedEvent) {
+    if let Some(shared) = state.router.shared() {
+        crate::shared::events::publish_event(shared, event).await;
+    }
+}
+
+/// Run `work` to its end even if whoever awaits this is dropped: a client that
+/// goes away makes the server drop the handler, and a clear of the shared cache
+/// stopped half way would leave answers behind with no epoch raised and no
+/// event sent. The caller still waits for `work`, so the answer to the client
+/// is the same. A panic in `work` is the caller's.
+pub async fn finish_even_if_dropped(work: impl std::future::Future<Output = ()> + Send + 'static) {
+    finish_even_if_dropped_with(work).await;
+}
+
+/// [`finish_even_if_dropped`] for work whose outcome the caller answers with.
+/// `None` only when the runtime is shutting down and cancelled the work.
+pub async fn finish_even_if_dropped_with<T: Send + 'static>(work: impl std::future::Future<Output = T> + Send + 'static) -> Option<T> {
+    match tokio::spawn(work).await {
+        Ok(outcome) => Some(outcome),
+        // Only a panic gets here, or the runtime shutting down.
+        Err(e) => match e.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(_) => None,
+        },
+    }
+}
 
 /// What [`apply_at_boot`] loaded.
 #[derive(Debug, Default, PartialEq)]
@@ -362,6 +666,35 @@ pub struct BootReport {
     pub disabled_models: usize,
     pub provider_configs: usize,
     pub routes_overridden: bool,
+}
+
+/// Install one stored runtime model, as boot and [`refresh`] both do: parsed
+/// and validated like a model posted to the API. Whether it is now served. A
+/// row that does not hold up is logged and left out of the runtime layer, even
+/// if an earlier version of it was in.
+fn apply_runtime_model(state: &AppState, row: &StoredRuntimeModel) -> bool {
+    match runtime_model_of(state, row) {
+        Some(m) => {
+            state.registry.upsert_runtime(m);
+            true
+        }
+        None => {
+            state.registry.remove_runtime(&row.id);
+            false
+        }
+    }
+}
+
+/// A stored runtime model, parsed and validated like a model posted to the
+/// API. `None`, logged, for a row that does not hold up.
+fn runtime_model_of(state: &AppState, row: &StoredRuntimeModel) -> Option<ModelSchema> {
+    let parsed: Result<ModelSchema, String> = serde_json::from_str(&row.schema_json).map_err(|e| e.to_string());
+    match parsed.and_then(|m| validate_runtime_model(state, &m).map(|_| m)) {
+        Ok(m) if m.id == row.id => return Some(m),
+        Ok(_) => tracing::warn!(model = %row.id, "runtime model id does not match its schema; skipped"),
+        Err(e) => tracing::warn!(model = %row.id, error = %e, "invalid runtime model skipped"),
+    }
+    None
 }
 
 /// Apply everything the management API stored to a freshly built gateway.
@@ -379,21 +712,12 @@ pub async fn apply_at_boot(state: &AppState) -> Result<BootReport, sqlx::Error> 
     });
 
     for row in store.list_runtime_models().await? {
-        let parsed: Result<ModelSchema, String> = serde_json::from_str(&row.schema_json).map_err(|e| e.to_string());
-        match parsed.and_then(|m| validate_runtime_model(state, &m).map(|_| m)) {
-            Ok(m) if m.id == row.id => {
-                state.registry.upsert_runtime(m);
-                report.runtime_models += 1;
-            }
-            Ok(_) => {
-                tracing::warn!(model = %row.id, "runtime model id does not match its schema; skipped");
-                report.skipped_models += 1;
-            }
-            Err(e) => {
-                tracing::warn!(model = %row.id, error = %e, "invalid runtime model skipped");
-                report.skipped_models += 1;
-            }
+        if apply_runtime_model(state, &row) {
+            report.runtime_models += 1;
+        } else {
+            report.skipped_models += 1;
         }
+        state.router.applied_runtime().models.insert(row.id.clone(), row.updated_at);
     }
 
     for (id, disabled) in store.list_model_states().await? {
@@ -403,11 +727,13 @@ pub async fn apply_at_boot(state: &AppState) -> Result<BootReport, sqlx::Error> 
         }
     }
 
-    let names: Vec<String> = store.list_provider_configs().await?.into_iter().map(|c| c.provider).collect();
-    for name in names {
-        match apply_provider(state, store, &name).await {
-            Ok(_) => report.provider_configs += 1,
-            Err(e) => tracing::warn!(provider = %name, error = %e, "runtime provider config not applied"),
+    for row in store.list_provider_configs().await? {
+        match apply_provider(state, store, &row.provider).await {
+            Ok(_) => {
+                report.provider_configs += 1;
+                state.router.applied_runtime().providers.insert(row.provider.clone(), row.updated_at);
+            }
+            Err(e) => tracing::warn!(provider = %row.provider, error = %e, "runtime provider config not applied"),
         }
     }
     Ok(report)
@@ -424,6 +750,70 @@ pub(crate) fn sorted(m: &std::collections::HashMap<String, String>) -> Vec<(Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_provider_that_fails_to_apply_gets_its_own_warning_a_minute() {
+        // The throttles are process-wide, so these names belong to this test.
+        let (a, b) = (format!("test-a-{}", uuid::Uuid::new_v4()), format!("test-b-{}", uuid::Uuid::new_v4()));
+        assert!(not_applied_warning_due(&a), "the first failure of a provider warns");
+        assert!(!not_applied_warning_due(&a), "and then not again within the minute");
+        assert!(not_applied_warning_due(&b), "another provider's failure is not hidden by it");
+        assert!(!not_applied_warning_due(&b));
+    }
+
+    /// N5 (P11's guard): a refresh that panics is logged, and the sync goes on
+    /// at its next tick; it used to end the task, so this replica stopped
+    /// taking other replicas' saves until a restart.
+    #[tokio::test]
+    async fn the_sync_goes_on_after_a_refresh_panicked() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let counted = refreshes.clone();
+        let sync = spawn_sync_loop(Duration::from_millis(20), None, move || {
+            let n = counted.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    panic!("a refresh that panics");
+                }
+                Ok::<bool, sqlx::Error>(false)
+            }
+        });
+        for _ in 0..150 {
+            if refreshes.load(Ordering::SeqCst) >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let finished = sync.is_finished();
+        sync.abort();
+        assert!(refreshes.load(Ordering::SeqCst) >= 3, "the sync stopped at the panic (task finished: {finished})");
+    }
+
+    #[tokio::test]
+    async fn work_given_to_finish_even_if_dropped_outlives_a_dropped_caller() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let gate = Arc::new(Notify::new());
+        let done = Arc::new(AtomicBool::new(false));
+        let work = {
+            let (gate, done) = (gate.clone(), done.clone());
+            async move {
+                gate.notified().await;
+                done.store(true, Ordering::SeqCst);
+            }
+        };
+        let caller = tokio::spawn(finish_even_if_dropped(work));
+        tokio::task::yield_now().await;
+        caller.abort();
+        let _ = caller.await;
+        gate.notify_one();
+        for _ in 0..200 {
+            if done.load(Ordering::SeqCst) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the work was dropped with its caller");
+    }
 
     fn spec(model: &str, provider: &str) -> RouteSpec {
         RouteSpec {
@@ -468,6 +858,40 @@ mod tests {
         assert!(bad(GatewaySettings { alert_webhook_url: Some("ftp://x".into()), ..Default::default() }).contains("alert_webhook_url"));
         assert!(bad(GatewaySettings { default_end_user_max_budget_usd: Some(-2.0), ..Default::default() }).contains("default_end_user"));
         assert!(bad(GatewaySettings { default_end_user_budget_duration: Some("soon".into()), ..Default::default() }).contains("budget_duration"));
+        assert!(bad(GatewaySettings { storage_access_signed_url_ttl_seconds: Some(59), ..Default::default() }).contains("storage_access_signed_url_ttl_seconds"));
+        assert!(bad(GatewaySettings { storage_access_signed_url_ttl_seconds: Some(604_801), ..Default::default() }).contains("604800"));
+        assert!(validate_gateway_settings(&GatewaySettings { storage_access_signed_url_ttl_seconds: Some(60), ..Default::default() }).is_ok());
+        assert!(bad(GatewaySettings { storage_access_retention_days: Some(36_501), ..Default::default() }).contains("storage_access_retention_days"));
+        assert!(validate_gateway_settings(&GatewaySettings { storage_access_retention_days: Some(36_500), ..Default::default() }).is_ok());
+        assert!(validate_gateway_settings(&GatewaySettings { storage_access_retention_days: Some(0), ..Default::default() }).is_ok());
+        for (s, field) in [
+            (GatewaySettings { cache_ttl_seconds: Some(0), ..Default::default() }, "cache_ttl_seconds"),
+            (GatewaySettings { cache_max_items: Some(1_000_001), ..Default::default() }, "cache_max_items"),
+            (GatewaySettings { cache_max_bytes: Some(1_048_575), ..Default::default() }, "cache_max_bytes"),
+            (GatewaySettings { cache_max_bytes: Some(68_719_476_737), ..Default::default() }, "cache_max_bytes"),
+            (GatewaySettings { retry_max_retries: Some(6), ..Default::default() }, "retry_max_retries"),
+            (GatewaySettings { retry_backoff_ms: Some(60_001), ..Default::default() }, "retry_backoff_ms"),
+            (GatewaySettings { retry_backoff_ms: Some(2000), retry_max_backoff_ms: Some(1000), ..Default::default() }, "retry_max_backoff_ms"),
+            (GatewaySettings { vendor_timeout_seconds: Some(4), ..Default::default() }, "vendor_timeout_seconds"),
+            (GatewaySettings { circuit_breaker_threshold: Some(0), ..Default::default() }, "circuit_breaker_threshold"),
+            (GatewaySettings { circuit_breaker_open_for_seconds: Some(3601), ..Default::default() }, "circuit_breaker_open_for_seconds"),
+        ] {
+            assert!(bad(s).contains(field), "{field}");
+        }
+        let fine = GatewaySettings {
+            cache_enabled: Some(true),
+            cache_ttl_seconds: Some(604_800),
+            cache_max_items: Some(1),
+            cache_max_bytes: Some(68_719_476_736),
+            retry_max_retries: Some(0),
+            retry_backoff_ms: Some(0),
+            retry_max_backoff_ms: Some(60_000),
+            vendor_timeout_seconds: Some(3600),
+            circuit_breaker_threshold: Some(1000),
+            circuit_breaker_open_for_seconds: Some(1),
+            ..Default::default()
+        };
+        assert!(validate_gateway_settings(&fine).is_ok());
     }
 
     #[test]

@@ -28,6 +28,11 @@ class Generation:
         app_id (Union[None, Unset, str]): Owning application. None for pre-tenancy / untenanted rows.
         completed_at (Union[None, Unset, datetime.datetime]):
         error_message (Union[None, Unset, str]):
+        files_deleted_at (Union[None, Unset, datetime.datetime]): When litegen deleted this generation's kept files:
+            after its app's
+            `retention_days`, or on request. The record stays. Absent while they
+            are kept.
+        files_deleted_reason (Union[None, Unset, str]): Why they were deleted: `retention` or `deleted`.
         key_id (Union[None, UUID, Unset]): API key that submitted this generation; None when master key was used.
         metadata (Union[Unset, Any]): Arbitrary JSON metadata.
         org_id (Union[None, Unset, str]): Owning tenant (organization). None for pre-tenancy / untenanted rows.
@@ -46,6 +51,8 @@ class Generation:
     app_id: Union[None, Unset, str] = UNSET
     completed_at: Union[None, Unset, datetime.datetime] = UNSET
     error_message: Union[None, Unset, str] = UNSET
+    files_deleted_at: Union[None, Unset, datetime.datetime] = UNSET
+    files_deleted_reason: Union[None, Unset, str] = UNSET
     key_id: Union[None, UUID, Unset] = UNSET
     metadata: Union[Unset, Any] = UNSET
     org_id: Union[None, Unset, str] = UNSET
@@ -89,6 +96,20 @@ class Generation:
             error_message = UNSET
         else:
             error_message = self.error_message
+
+        files_deleted_at: Union[None, Unset, str]
+        if isinstance(self.files_deleted_at, Unset):
+            files_deleted_at = UNSET
+        elif isinstance(self.files_deleted_at, datetime.datetime):
+            files_deleted_at = self.files_deleted_at.isoformat()
+        else:
+            files_deleted_at = self.files_deleted_at
+
+        files_deleted_reason: Union[None, Unset, str]
+        if isinstance(self.files_deleted_reason, Unset):
+            files_deleted_reason = UNSET
+        else:
+            files_deleted_reason = self.files_deleted_reason
 
         key_id: Union[None, Unset, str]
         if isinstance(self.key_id, Unset):
@@ -138,6 +159,10 @@ class Generation:
             field_dict["completed_at"] = completed_at
         if error_message is not UNSET:
             field_dict["error_message"] = error_message
+        if files_deleted_at is not UNSET:
+            field_dict["files_deleted_at"] = files_deleted_at
+        if files_deleted_reason is not UNSET:
+            field_dict["files_deleted_reason"] = files_deleted_reason
         if key_id is not UNSET:
             field_dict["key_id"] = key_id
         if metadata is not UNSET:
@@ -205,6 +230,36 @@ class Generation:
 
         error_message = _parse_error_message(d.pop("error_message", UNSET))
 
+        def _parse_files_deleted_at(
+            data: object,
+        ) -> Union[None, Unset, datetime.datetime]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                files_deleted_at_type_0 = isoparse(data)
+
+                return files_deleted_at_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, datetime.datetime], data)
+
+        files_deleted_at = _parse_files_deleted_at(d.pop("files_deleted_at", UNSET))
+
+        def _parse_files_deleted_reason(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        files_deleted_reason = _parse_files_deleted_reason(
+            d.pop("files_deleted_reason", UNSET)
+        )
+
         def _parse_key_id(data: object) -> Union[None, UUID, Unset]:
             if data is None:
                 return data
@@ -263,6 +318,8 @@ class Generation:
             app_id=app_id,
             completed_at=completed_at,
             error_message=error_message,
+            files_deleted_at=files_deleted_at,
+            files_deleted_reason=files_deleted_reason,
             key_id=key_id,
             metadata=metadata,
             org_id=org_id,

@@ -1295,3 +1295,52 @@ async fn deleting_a_provider_credential_writes_an_audit_entry() {
         entries.iter().map(|e| e.action.clone()).collect::<Vec<_>>()
     );
 }
+
+/// Security fix 1 (2026-11-05): in hosted mode `app_bucket` checks a bucket
+/// at every use, so one whose requests would go inside the deployment is
+/// unavailable however its row was saved. The same row is a usable bucket
+/// where the operator may name internal stores (single-tenant).
+#[tokio::test]
+async fn an_app_bucket_inside_the_deployment_is_unavailable_when_checked() {
+    let db = build_db().await;
+    let (_owner, sess, csrf) = seed_user(&db, "owner@bucket-use.com").await;
+    let key = [9u8; 32];
+    let app = create_router(build_state(db.clone(), Some(key)).await);
+    let (_org, app_id) = create_org_returning_app(&app, &sess, &csrf, "BucketUse").await;
+    let (secret_ciphertext, secret_nonce) =
+        crate::auth::secrets::encrypt(&key, br#"{"access_key_id":"AKIATEST","secret_access_key":"secret"}"#).unwrap();
+    db.upsert_app_storage(&crate::types::AppStorageUpsert {
+        app_id: app_id.clone(),
+        backend: "s3".into(),
+        bucket_name: "b".into(),
+        region: "us-east-1".into(),
+        endpoint_url: Some("http://169.254.169.254".into()),
+        custom_public_url: None,
+        path_prefix: None,
+        access_key_id_hint: Some("AKIA…TEST".into()),
+        secret_ciphertext,
+        secret_nonce,
+        credential_mode: None,
+        role_arn: None,
+        fallback_to_litegen_store: Some(true),
+    })
+    .await
+    .unwrap();
+    let db: Arc<dyn DatabaseStore> = db;
+    let aws = crate::config::AwsConfig::default();
+
+    match crate::api::handlers::app_bucket(&db, Some(key), &aws, crate::api::handlers::TenantBucket::Hosted, &app_id).await {
+        crate::api::handlers::AppBucket::Unavailable { reason, fallback } => {
+            assert!(reason.contains("may not be used"), "{reason}");
+            assert!(fallback, "litegen's own store may still stand in");
+        }
+        _ => panic!("a bucket on the metadata address must be unavailable in hosted mode"),
+    }
+    assert!(
+        matches!(
+            crate::api::handlers::app_bucket(&db, Some(key), &aws, crate::api::handlers::TenantBucket::Operator, &app_id).await,
+            crate::api::handlers::AppBucket::Ready { .. }
+        ),
+        "without the hosted check the same row is a usable bucket"
+    );
+}

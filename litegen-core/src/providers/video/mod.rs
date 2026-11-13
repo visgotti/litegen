@@ -2,6 +2,8 @@ pub mod bedrock;
 pub mod bytedance;
 pub mod google;
 pub mod hunyuan;
+pub mod ideogram;
+pub mod tokenhub;
 pub mod kling;
 pub mod leonardo;
 pub mod minimax;
@@ -51,6 +53,46 @@ pub(crate) async fn read_poll_json(
         provider_error: None,
         retryable: false,
     })
+}
+
+/// What a poll answers when its gate said another observer keeps the
+/// finished video ([`crate::providers::Fetch::StandAside`]): still
+/// processing, short of done, nothing downloaded and no error.
+pub(crate) fn standing_aside() -> crate::providers::VideoGenerationPollResult {
+    crate::providers::VideoGenerationPollResult {
+        status: crate::types::GenerationStatus::Processing,
+        progress: 99,
+        video_url: None,
+        video_data: None,
+        content_type: None,
+        error: None,
+        metadata: Default::default(),
+    }
+}
+
+/// A poll answer naming a job state its vendor doesn't document (or none):
+/// the job fails now, naming it, through the normal terminal path (its
+/// webhook fires), rather than polling until the reaper's maximum age.
+/// Every adapter lists its vendor's in-progress states and sends anything
+/// else here, as Replicate's and BFL's adapters did first (2026-10-30 audit).
+pub(crate) fn unknown_state(vendor: &str, state: Option<&str>) -> crate::providers::VideoGenerationPollResult {
+    crate::providers::VideoGenerationPollResult {
+        status: crate::types::GenerationStatus::Failed,
+        progress: 0,
+        video_url: None,
+        video_data: None,
+        content_type: None,
+        error: Some(unknown_state_message(vendor, state)),
+        metadata: Default::default(),
+    }
+}
+
+/// `{vendor} reported job status '{state}'`, the message every family uses.
+pub(crate) fn unknown_state_message(vendor: &str, state: Option<&str>) -> String {
+    match state {
+        Some(s) => format!("{vendor} reported job status '{s}', which litegen does not know"),
+        None => format!("{vendor} answered without a job status"),
+    }
 }
 
 #[cfg(test)]

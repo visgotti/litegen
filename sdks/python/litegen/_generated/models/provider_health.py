@@ -13,6 +13,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from dateutil.parser import isoparse
 
+from ..models.media_type import MediaType
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="ProviderHealth")
@@ -23,6 +24,7 @@ class ProviderHealth:
     """
     Attributes:
         healthy (bool):
+        modality (MediaType):
         provider (str):
         last_checked (Union[None, Unset, datetime.datetime]):
         latency_ms (Union[None, Unset, int]):
@@ -30,6 +32,7 @@ class ProviderHealth:
     """
 
     healthy: bool
+    modality: MediaType
     provider: str
     last_checked: Union[None, Unset, datetime.datetime] = UNSET
     latency_ms: Union[None, Unset, int] = UNSET
@@ -38,6 +41,8 @@ class ProviderHealth:
 
     def to_dict(self) -> Dict[str, Any]:
         healthy = self.healthy
+
+        modality = self.modality.value
 
         provider = self.provider
 
@@ -66,6 +71,7 @@ class ProviderHealth:
         field_dict.update(
             {
                 "healthy": healthy,
+                "modality": modality,
                 "provider": provider,
             }
         )
@@ -82,6 +88,8 @@ class ProviderHealth:
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
         healthy = d.pop("healthy")
+
+        modality = MediaType(d.pop("modality"))
 
         provider = d.pop("provider")
 
@@ -122,6 +130,7 @@ class ProviderHealth:
 
         provider_health = cls(
             healthy=healthy,
+            modality=modality,
             provider=provider,
             last_checked=last_checked,
             latency_ms=latency_ms,

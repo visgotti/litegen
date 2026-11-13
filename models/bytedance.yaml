@@ -13,15 +13,14 @@ models:
     prompt: { required: true, max_length: 3000 }
     # No `seed`: the Image generation API has no seed parameter for Seedream 4.0
     # (it was a Seedream 3.0 / SeedEdit 3.0 option, both deactivated).
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+    # @see https://docs.byteplus.com/en/docs/modelark/image-generation-api
     params:
-      # BytePlus rule for WxH: total pixels in [921600 (1280x720), 16777216
-      # (4096x4096)] AND aspect ratio in [1/16, 16]. A WxH box cannot express
-      # that, so these are the rule's extremes — 240 = sqrt(921600/16),
-      # 16384 = sqrt(16777216*16) — and every size in the vendor's 1K/2K/4K
-      # table (up to 6240x2656) fits. The vendor rejects sizes that pass the
-      # box but break the pixel range (e.g. 800x800).
-      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+      # "Total pixels range: [`1280x720=921,600`, `4096x4096=16,777,216`]" and
+      # "Aspect ratio range: [1/16, 16]": refused before billing, never
+      # snapped (800x800 is under the floor). The edge box is the rule's
+      # extremes — 240 = sqrt(921600/16), 16384 = sqrt(16777216*16) — and every
+      # size in the vendor's 1K/2K/4K table (up to 6240x2656) fits.
+      # @see https://docs.byteplus.com/en/docs/modelark/image-generation-api (2026-11-03)
       size:
         kind: size
         mode: freeform
@@ -29,29 +28,37 @@ models:
         max_width: 16384
         min_height: 240
         max_height: 16384
+        min_pixels: 921600
+        max_pixels: 16777216
+        max_aspect: 16.0
     ref_inputs:
       # "Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images."
-      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+      # @see https://docs.byteplus.com/en/docs/modelark/image-generation-api
       max_total: 14
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
     extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's image API (drift snapshot bytedance/image-api.txt: "watermark `boolean` `Default: true`").
+      watermark: { kind: bool, default: true }
     tags: [text-to-image, image-to-image]
 
   # Seedream 3.0 (seedream-3-0-t2i-250415) was deactivated 2026-05-13; the
   # vendor's recommended replacement is Seedream 5.0 lite.
-  # @see https://docs.byteplus.com/en/docs/ModelArk/1350667
+  # @see https://docs.byteplus.com/en/docs/modelark/model-deprecation-notice
   #
-  # Seedream 5.0 lite and 4.5 share one request contract (verified 2026-09-11):
+  # Seedream 5.0 lite and 4.5 share one request contract (re-read 2026-11-03):
   # no `seed` (the Image generation API documents none), up to 14 reference
-  # images, and WxH sizes with total pixels in [3686400 (2560x1440), 16777216
-  # (4096x4096)] AND aspect ratio in [1/16, 16] — a stricter floor than 4.0's
-  # 921600. As for 4.0, the box is the rule's extremes: 480 = sqrt(3686400/16),
-  # 16384 = sqrt(16777216*16); the vendor rejects sizes that pass the box but
-  # break the pixel range (e.g. 1500x1500). The vendor default is 2048x2048.
-  # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+  # images, and WxH sizes with "Total pixels range: [`2560x1440`(3,686,400),
+  # `4096x4096`(16,777,216)]" and "Aspect ratio range: [1/16, 16]" — a stricter
+  # floor than 4.0's 921600, held as min_pixels/max_pixels/max_aspect so the
+  # page's "Invalid example: `1500x1500`" is refused before billing. The edge
+  # box is the rule's extremes: 480 = sqrt(3686400/16), 16384 =
+  # sqrt(16777216*16). The vendor default is 2048x2048. Only 5.0 lite takes
+  # `output_format` ("Supported models: … Seedream 5.0 lite").
+  # @see https://docs.byteplus.com/en/docs/modelark/image-generation-api (2026-11-03)
   - id: bytedance/seedream-5-0-lite-260128
     provider: bytedance
     media_type: image
@@ -59,7 +66,7 @@ models:
     docs_url: https://docs.byteplus.com/en/docs/modelark/image-generation-api
     description: ByteDance Seedream 5.0 lite text-to-image + multi-reference edit.
     # "seedream-5-0-lite-260128 | Free | 0.035" (USD per output image).
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
+    # @see https://docs.byteplus.com/en/docs/modelark/model-pricing
     pricing: { base_cost_usd: 0.035 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 3000 }
@@ -67,8 +74,10 @@ models:
     # ap-southeast-1"); still served in ap-southeast-1, the adapter's default
     # api_base (ark.ap-southeast.bytepluses.com). An api_base pointed at the
     # eu-west-1 host will fail for this model.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1350667
+    # @see https://docs.byteplus.com/en/docs/modelark/model-deprecation-notice
     params:
+      # "output_format `string` `Default: jpeg` … Valid values: `png`, `jpeg`".
+      output_format: { kind: string, enum_values: [png, jpeg], default: jpeg }
       size:
         kind: size
         mode: freeform
@@ -76,15 +85,21 @@ models:
         max_width: 16384
         min_height: 480
         max_height: 16384
+        min_pixels: 3686400
+        max_pixels: 16777216
+        max_aspect: 16.0
     ref_inputs:
       # "Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images."
-      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+      # @see https://docs.byteplus.com/en/docs/modelark/image-generation-api
       max_total: 14
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
     extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's image API (drift snapshot bytedance/image-api.txt: "watermark `boolean` `Default: true`").
+      watermark: { kind: bool, default: true }
     tags: [text-to-image, image-to-image]
 
   - id: bytedance/seedream-4-5-251128
@@ -94,7 +109,7 @@ models:
     docs_url: https://docs.byteplus.com/en/docs/modelark/image-generation-api
     description: ByteDance Seedream 4.5 text-to-image + multi-reference edit.
     # "seedream-4-5-251128 | Free | 0.04" (USD per output image).
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
+    # @see https://docs.byteplus.com/en/docs/modelark/model-pricing
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 3000 }
@@ -106,16 +121,125 @@ models:
         max_width: 16384
         min_height: 480
         max_height: 16384
+        min_pixels: 3686400
+        max_pixels: 16777216
+        max_aspect: 16.0
     ref_inputs:
       # "Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images."
-      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+      # @see https://docs.byteplus.com/en/docs/modelark/image-generation-api
       max_total: 14
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
     extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's image API (drift snapshot bytedance/image-api.txt: "watermark `boolean` `Default: true`").
+      watermark: { kind: bool, default: true }
     tags: [text-to-image, image-to-image]
+
+  # Seedream 5.0 pro and 5.0 flash (new 2026-11-03) on the same Image
+  # generation API: BytePlus ids `dola-seedream-5-0-pro-260628` and
+  # `dola-seedream-5-0-flash-260915` (ark_model_id swaps `dola-` for
+  # `doubao-` on a Volcengine host). "Seedream 5.0 pro and Seedream 5.0 flash
+  # support up to 10 reference images"; WxH "Total pixels range: [`1280x720`
+  # (921,600), `2048x2048x1.1025`(4,624,220)]", "Aspect ratio range: [1/16,
+  # 16]" — the edge box is the rule's extremes, 240 = sqrt(921600/16) and 8601 =
+  # floor(sqrt(4624220*16)); "sequential_image_generation is not supported"
+  # (litegen never sends it); no `seed`. The vendor default with no size is the
+  # `2K` preset. Not carried: layer decomposition, interactive editing, the
+  # transparent background (one alpha input image only) and
+  # optimize_prompt_options.
+  # @see https://docs.byteplus.com/en/docs/modelark/image-generation-api (2026-11-03)
+  # @see https://docs.byteplus.com/en/docs/modelark/model-list (2026-11-03)
+  - id: bytedance/dola-seedream-5-0-pro-260628
+    provider: bytedance
+    media_type: image
+    display_name: Seedream 5.0 Pro
+    docs_url: https://docs.byteplus.com/en/docs/modelark/image-generation-api
+    description: ByteDance Seedream 5.0 pro text-to-image + up to 10-reference edit.
+    # "dola-seedream-5-0-pro-260628 | First image: Free · From the second
+    # image: $0.003 | Up to 2.61 million pixels (1.5K or lower): $0.045 · More
+    # than 2.61 million pixels (higher than 1.5K): $0.09". The default request
+    # (2K) is $0.09; a size of 2.61 MP or less is $0.045 (the first rule).
+    # References after the first add $0.003 each (the rules after it; at most
+    # 10 are sent).
+    # @see https://docs.byteplus.com/en/docs/modelark/model-pricing (2026-11-03)
+    pricing:
+      base_cost_usd: 0.09
+      variable_pricing:
+        - { when: { size: '*', megapixels: { lte: 2.61 } }, usd: 0.045 }
+        - { when: { references: 2 }, add_usd: 0.003 }
+        - { when: { references: 3 }, add_usd: 0.006 }
+        - { when: { references: 4 }, add_usd: 0.009 }
+        - { when: { references: 5 }, add_usd: 0.012 }
+        - { when: { references: 6 }, add_usd: 0.015 }
+        - { when: { references: 7 }, add_usd: 0.018 }
+        - { when: { references: 8 }, add_usd: 0.021 }
+        - { when: { references: 9 }, add_usd: 0.024 }
+        - { when: { references: 10 }, add_usd: 0.027 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 3000 }
+    params:
+      # "output_format `string` `Default: jpeg` … Valid values: `png`, `jpeg`".
+      output_format: { kind: string, enum_values: [png, jpeg], default: jpeg }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 240
+        max_width: 8601
+        min_height: 240
+        max_height: 8601
+        min_pixels: 921600
+        max_pixels: 4624220
+        max_aspect: 16.0
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's image API (drift snapshot bytedance/image-api.txt: "watermark `boolean` `Default: true`").
+      watermark: { kind: bool, default: true }
+    tags: [text-to-image, image-to-image]
+
+  - id: bytedance/dola-seedream-5-0-flash-260915
+    provider: bytedance
+    media_type: image
+    display_name: Seedream 5.0 Flash
+    docs_url: https://docs.byteplus.com/en/docs/modelark/image-generation-api
+    description: ByteDance Seedream 5.0 flash — fast text-to-image + up to 10-reference edit.
+    # "dola-seedream-5-0-flash-260915 | Free | $0.018" (input images free;
+    # USD per output image).
+    # @see https://docs.byteplus.com/en/docs/modelark/model-pricing (2026-11-03)
+    pricing: { base_cost_usd: 0.018 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 3000 }
+    params:
+      output_format: { kind: string, enum_values: [png, jpeg], default: jpeg }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 240
+        max_width: 8601
+        min_height: 240
+        max_height: 8601
+        min_pixels: 921600
+        max_pixels: 4624220
+        max_aspect: 16.0
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's image API (drift snapshot bytedance/image-api.txt: "watermark `boolean` `Default: true`").
+      watermark: { kind: bool, default: true }
+    tags: [text-to-image, image-to-image, fast]
 
   # ─── Seedance (video, async task) ─────────────────────────────────────────
   - id: bytedance/doubao-seedance-1-0-pro-250528
@@ -126,18 +250,30 @@ models:
     description: ByteDance Seedance 1.0 Pro text/image-to-video (first/last frame).
     # $2.5 per 1M tokens; the default request (1080p, 16:9 1920x1088, 5 s, 24
     # fps = 244800 tokens) is listed at $0.61. Verified 2026-09-11.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
-    pricing: { base_cost_usd: 0.61 }
+    # @see https://docs.byteplus.com/en/docs/modelark/model-pricing
+    # @see scripts/model-drift/snapshots/bytedance/pricing.txt ("billing example", re-read 2026-11-03)
+    pricing:
+      base_cost_usd: 0.612
+      # $2.5 per 1M tokens, at width x height x 24 fps / 1024 tokens a second
+      # (16:9): 1080p 1920x1088 = 48960, 720p 1248x704 = 20592, 480p 864x480 =
+      # 9720 — the billing example's 5 s prices $0.61, $0.26, $0.12. Other
+      # ratios run within 5% of these.
+      variable_pricing:
+        - { per_second_usd: 0.1224 }
+        - { when: { resolution: 720p }, per_second_usd: 0.05148 }
+        - { when: { resolution: 480p }, per_second_usd: 0.0243 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 3000 }
     params:
       # PixelGenie L10: camera fixed is sent as camera_fixed: true (default false).
       camera: { kind: string, enum_values: [fixed, auto], default: auto }
       # "Dreamina Seedance 1.0 pro: Default 5; supports [2, 12]."
-      # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
-      duration_seconds: { kind: float, min: 2.0, max: 12.0, default: 5.0 }
+      # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
+      # "duration `integer`": whole seconds, so a fraction is rounded once,
+      # before the per-second price (C5).
+      duration_seconds: { kind: int, min: 2, max: 12, default: 5 }
       # seed: [-1, 2147483647], supported by Seedance 1.0 pro (-1 = random;
-      # omit it instead). @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+      # omit it instead). @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
       seed: { kind: seed, min: 0, max: 2147483647 }
       # "Seedance 1.0 pro: Default 1080p; supports 480p, 720p, and 1080p."
       # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api (2026-10-12)
@@ -157,13 +293,16 @@ models:
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # Extras are merged into the request body, where the documented field is
     # `camera_fixed` (`camerafixed` was the legacy `--camerafixed` prompt flag).
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
-    extra_allowlist: [watermark, callback_url]
+    # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
+    extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's video API (drift snapshot bytedance/video-api.txt: "watermark `boolean` `Default value: false`").
+      watermark: { kind: bool, default: false }
     tags: [text-to-video, image-to-video]
 
   # Seedance 1.0 Lite (seedance-1-0-lite-i2v-250428) was deactivated
   # 2026-05-13; the vendor's recommended replacement is Seedance 1.0 Pro Fast.
-  # @see https://docs.byteplus.com/en/docs/ModelArk/1350667
+  # @see https://docs.byteplus.com/en/docs/modelark/model-deprecation-notice
   - id: bytedance/seedance-1-0-pro-fast-251015
     provider: bytedance
     media_type: video
@@ -172,21 +311,31 @@ models:
     description: ByteDance Seedance 1.0 Pro Fast text-to-video and first-frame image-to-video.
     # $1 per 1M tokens; the default request (1080p, 16:9 1920x1088, 5 s, 24 fps
     # = 244800 tokens) is listed at $0.24.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
-    pricing: { base_cost_usd: 0.24 }
+    # @see https://docs.byteplus.com/en/docs/modelark/model-pricing
+    # @see scripts/model-drift/snapshots/bytedance/pricing.txt ("billing example", re-read 2026-11-03)
+    pricing:
+      base_cost_usd: 0.2448
+      # $1 per 1M tokens at the same token rates as 1.0 Pro: 5 s at 1080p is
+      # $0.24, at 720p $0.10, at 480p $0.05.
+      variable_pricing:
+        - { per_second_usd: 0.04896 }
+        - { when: { resolution: 720p }, per_second_usd: 0.020592 }
+        - { when: { resolution: 480p }, per_second_usd: 0.00972 }
     # "Dreamina Seedance 1.0 pro fast: Supports image-to-video (first frame) and
     # text-to-video" — no first-and-last-frame mode, so no last_frame role.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+    # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 3000 }
     params:
       # PixelGenie L10: camera fixed is sent as camera_fixed: true (default false).
       camera: { kind: string, enum_values: [fixed, auto], default: auto }
       # "Dreamina Seedance 1.0 pro fast: Default 5; supports [2, 12]."
-      # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
-      duration_seconds: { kind: float, min: 2.0, max: 12.0, default: 5.0 }
+      # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
+      # "duration `integer`": whole seconds, so a fraction is rounded once,
+      # before the per-second price (C5).
+      duration_seconds: { kind: int, min: 2, max: 12, default: 5 }
       # seed: [-1, 2147483647], supported by Seedance 1.0 pro fast (-1 = random;
-      # omit it instead). @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+      # omit it instead). @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
       seed: { kind: seed, min: 0, max: 2147483647 }
       # "Dreamina Seedance 1.0 pro fast: Default 1080p; supports 480p, 720p, and 1080p."
       resolution:
@@ -205,9 +354,14 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
     # watermark, camera_fixed (1.5 pro / 1.0 pro / 1.0 pro fast) and
-    # callback_url are documented request-body fields.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
-    extra_allowlist: [watermark, callback_url]
+    # callback_url are documented request-body fields. callback_url is
+    # litegen's (it polls the task and fires the key's webhook), so it is
+    # never allowlisted.
+    # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
+    extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's video API (drift snapshot bytedance/video-api.txt: "watermark `boolean` `Default value: false`").
+      watermark: { kind: bool, default: false }
     tags: [text-to-video, image-to-video, fast]
 
   # Seedance 2.0 mini: text-to-video plus first-frame and first-and-last-frame
@@ -216,8 +370,8 @@ models:
   # sends image_url blocks and tags only first_frame / last_frame roles.
   # Activation: the 2.0 series (mini included) needs USD 30 in BytePlus credits,
   # an AI Savings Plan or a resource pack before the model can be enabled.
-  # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
-  # @see https://docs.byteplus.com/en/docs/ModelArk/2637911
+  # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
+  # @see https://docs.byteplus.com/en/docs/modelark/seedance-model-activation-usage-and-refund
   - id: bytedance/dreamina-seedance-2-0-mini-260615
     provider: bytedance
     media_type: video
@@ -225,20 +379,30 @@ models:
     docs_url: https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
     description: ByteDance Dreamina Seedance 2.0 mini text/image-to-video (first/last frame), with generated audio.
     # $3.5 per 1M tokens (480p/720p, input without video); the default request
-    # (720p, 5 s) is listed at $0.38 per video. List price: a time-limited 60%
-    # discount runs until 2026-10-07. Verified 2026-09-11.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
-    pricing: { base_cost_usd: 0.38 }
+    # (720p, 5 s) is listed at $0.38 per video. List price, no discount
+    # (re-read 2026-11-09; the 60% launch discount ended 2026-10-07).
+    # @see https://docs.byteplus.com/en/docs/modelark/model-pricing (2026-11-09)
+    # @see scripts/model-drift/snapshots/bytedance/video-api.txt (sizes, re-read 2026-11-03)
+    pricing:
+      base_cost_usd: 0.378
+      # $3.5 per 1M tokens (no input video) at the 2.0 series' 16:9 sizes,
+      # 24 fps: 720p 1280x720 = 21600 tokens a second ($0.378 for 5 s), 480p
+      # 864x496 = 10044.
+      variable_pricing:
+        - { per_second_usd: 0.0756 }
+        - { when: { resolution: 480p }, per_second_usd: 0.035154 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 3000 }
     # No `seed` and no `camera_fixed`: both are documented for Seedance 1.5 pro
     # / 1.0 pro / 1.0 pro fast only.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+    # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
     params:
       # PixelGenie L10: audio is sent as generate_audio (default true).
       audio: { kind: bool, default: true }
       # "Dreamina Seedance 2.0 series: Default 5; supports [4, 15] or -1."
-      duration_seconds: { kind: float, min: 4.0, max: 15.0, default: 5.0 }
+      # "duration `integer`": whole seconds, so a fraction is rounded once,
+      # before the per-second price (C5). `-1` (the model picks) is not offered.
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
       # "Dreamina Seedance 2.0 mini: Default 720p; supports 480p and 720p."
       resolution:
         kind: string
@@ -256,6 +420,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # generate_audio (default true) is a 2.5 / 2.0 series / 1.5 pro body field.
-    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
-    extra_allowlist: [watermark, callback_url]
+    # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
+    extra_allowlist: [watermark]
+    extra_params:
+      # From Ark's video API (drift snapshot bytedance/video-api.txt: "watermark `boolean` `Default value: false`").
+      watermark: { kind: bool, default: false }
     tags: [text-to-video, image-to-video, fast]

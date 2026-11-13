@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { LiteGenClient } from "../src";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
+import { LiteGenClient, type GatewaySettings, type GatewaySettingsView } from "../src";
 
 interface Captured {
   url: string;
@@ -50,6 +50,8 @@ describe("limits on keys, orgs, members and apps", () => {
     ["apps.limits.set", (c) => c.apps.limits.set("a1", limits), "PUT", "/v1/apps/a1/limits", limits],
     ["apps.limits.delete", (c) => c.apps.limits.delete("a1"), "DELETE", "/v1/apps/a1/limits", undefined],
     ["apps.limits.resetSpend", (c) => c.apps.limits.resetSpend("a1"), "POST", "/v1/apps/a1/limits/reset", undefined],
+    ["apps.access.get", (c) => c.apps.access.get("a/1"), "GET", "/v1/apps/a%2F1/access", undefined],
+    ["apps.access.put", (c) => c.apps.access.put("a1", { mode: "signed", signed_url_ttl_seconds: 900 }), "PUT", "/v1/apps/a1/access", { mode: "signed", signed_url_ttl_seconds: 900 }],
   ];
   for (const [name, call, method, path, body] of cases) {
     it(`${name} → ${method} ${path}`, async () => {
@@ -184,5 +186,13 @@ describe("admin", () => {
     expect(last()).toMatchObject({ method: "GET", path: "/v1/admin/settings" });
     await client.admin.settings.update({ cost_markup_percent: 10 });
     expect(last()).toMatchObject({ method: "PUT", path: "/v1/admin/settings", body: { cost_markup_percent: 10 } });
+  });
+
+  it("settings carry the cache's memory bound, set and in force", async () => {
+    expectTypeOf<GatewaySettings["cache_max_bytes"]>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<GatewaySettingsView["effective_cache"]["max_bytes"]>().toEqualTypeOf<number>();
+    const { client, last } = recordingClient({});
+    await client.admin.settings.update({ cache_max_bytes: 268_435_456 });
+    expect(last()).toMatchObject({ method: "PUT", path: "/v1/admin/settings", body: { cache_max_bytes: 268_435_456 } });
   });
 });

@@ -87,9 +87,13 @@ export default {
     'pixverse/v3.5': 'v3.5',
     'pixverse/v6': 'v6',
     'pixverse/c1': 'c1',
+    'pixverse/v6-max': 'v6-max',
     // Timed keyframes on POST /openapi/v2/video/multi_transition/generate.
     'pixverse/v5-multi-transition': 'v5',
   },
+  // v5-multi-transition sends pixverse/v5's id to another endpoint: its typings
+  // are that endpoint's schema, which the id search alone would take from v5's.
+  typingsFrom: { 'pixverse/v5-multi-transition': ['multi-transition'] },
   sources: [
     // Page slugs as the docs index lists them (renamed 2026-10).
     endpoint('text-to-video', 'text-to-video-13016634e0', '/openapi/v2/video/text/generate'),
@@ -118,5 +122,9 @@ export default {
     { id: 'v5.5', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
     { id: 'v5.6', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
     { id: 'v4', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
+    {
+      id: 'v5-fast',
+      reason: 'skipped 2026-11-03: "Access to v5-fast depends on account" and no price or capability entry is published, so litegen cannot bill it',
+    },
   ],
 };

@@ -162,3 +162,66 @@ async fn the_listing_says_how_each_model_edits_part_of_an_image() {
         (Some(true), Some(true), Some(false)),
     );
 }
+
+async fn get(app: &axum::Router, uri: &str) -> Value {
+    let resp = app.clone().oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+    serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap()).unwrap()
+}
+
+/// `POST /v1/images/cost`: validation only, no vendor is called.
+async fn quote(app: &axum::Router, body: Value) -> (StatusCode, Value) {
+    let resp = app
+        .clone()
+        .oneshot(Request::post("/v1/images/cost").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// E11a: mask growth, kept pixels and their feather are litegen's own fields
+/// on a model that edits part of an image, so `GET /v1/models/{id}` serves
+/// them in `litegen_params` with the caps the validator keeps.
+#[tokio::test]
+async fn a_model_that_edits_part_of_an_image_serves_mask_growth_and_kept_pixels_with_their_caps() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let region = get(&app, "/v1/models/mock/region-image").await;
+    let lp = &region["litegen_params"];
+    let int = |f: &str| (lp[f]["kind"].as_str(), lp[f]["min"].as_i64(), lp[f]["max"].as_i64());
+    assert_eq!(int("mask_grow_px"), (Some("int"), Some(0), Some(100)), "{region}");
+    assert_eq!(int("feather_px"), (Some("int"), Some(0), Some(256)), "{region}");
+    let keep = &lp["preserve_unmasked"];
+    assert_eq!((keep["kind"].as_str(), keep["default"].as_bool()), (Some("bool"), Some(false)), "{region}");
+    let plain = get(&app, "/v1/models/mock/image-gen").await;
+    assert!(plain.get("litegen_params").is_none(), "{plain}");
+    // The listing's flag and the served fields agree on every image model.
+    let list = get(&app, "/v1/models?media_type=image").await;
+    for m in list["data"].as_array().unwrap() {
+        let id = m["id"].as_str().unwrap();
+        let served = get(&app, &format!("/v1/models/{id}")).await;
+        assert_eq!(served["litegen_params"].get("mask_grow_px").is_some(), m["capabilities"]["supports_mask_grow"] == true, "{id}: {served}");
+    }
+    // The served caps are the validator's.
+    let body = |extra: Value| {
+        let mut b = json!({ "model": "mock/region-image", "prompt": "make it glow", "reference_images": [
+            { "type": "url", "value": "https://example.com/init.png", "role": "init" },
+            { "type": "url", "value": "https://example.com/mask.png", "role": "mask" },
+        ] });
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    };
+    let (grow, feather) = (int("mask_grow_px").2.unwrap(), int("feather_px").2.unwrap());
+    for (at, over) in [
+        (json!({ "mask_grow_px": grow }), json!({ "mask_grow_px": grow + 1 })),
+        (json!({ "preserve_unmasked": true, "feather_px": feather }), json!({ "preserve_unmasked": true, "feather_px": feather + 1 })),
+    ] {
+        let (s, resp) = quote(&app, body(at.clone())).await;
+        assert_eq!(s, StatusCode::OK, "{at}: {resp}");
+        let (s, resp) = quote(&app, body(over.clone())).await;
+        assert_eq!((s, resp["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("param_out_of_range")), "{over}: {resp}");
+    }
+}

@@ -1,9 +1,18 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
-from attrs import field as _attrs_field
 
 from ..models.capability_media_type import CapabilityMediaType
+from ..models.model_status import ModelStatus
 from ..models.model_task import ModelTask
 from ..models.preserves_unmasked import PreservesUnmasked
 from ..types import UNSET, Unset
@@ -11,6 +20,8 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.capability_model_pricing import CapabilityModelPricing
     from ..models.model_capability_flags import ModelCapabilityFlags
+    from ..models.model_schema_extra_params import ModelSchemaExtraParams
+    from ..models.model_schema_litegen_params import ModelSchemaLitegenParams
     from ..models.model_schema_params import ModelSchemaParams
     from ..models.native_orientation import NativeOrientation
     from ..models.prompt_spec import PromptSpec
@@ -39,6 +50,24 @@ class ModelSchema:
             `https://` URL (the loader refuses anything else); every non-mock 3D
             model carries one.
         extra_allowlist (Union[Unset, List[str]]):
+        extra_params (Union[Unset, ModelSchemaExtraParams]): The vendor's type for an `extra_allowlist` key, by key:
+            `bool`,
+            `int`, `float`, `string` or `string_array`, with its bounds or values
+            when they are known. A request's value is checked like a param's
+            (`param: "extra.<key>"`); `null` passes as sent, and an allowlisted key
+            with no type here passes as any JSON.
+        litegen_params (Union[Unset, ModelSchemaLitegenParams]): Request fields litegen applies to this model itself,
+            beyond what its
+            vendor takes, each with the bounds litegen holds it to and in the same
+            `ParamSpec` shape as `params`: on every 3D model `ground`, `center` and
+            `height_m` (unless `params` declares the model's own `height_m`); on an
+            image model that takes a `mask` reference or a `region`,
+            `mask_grow_px`, `preserve_unmasked` and `feather_px`. No name is in
+            both maps. Computed by the server and served by `GET /v1/models/{id}`,
+            so read-only (`readOnly` in the OpenAPI document): a catalog row that
+            sets it is refused, and the admin API reads and ignores it, as it
+            does `status`, so a served schema posted back to `POST`/`PUT
+            /v1/admin/models` works.
         native_orientation (Union['NativeOrientation', None, Unset]):
         params (Union[Unset, ModelSchemaParams]):
         preserves_unmasked (Union[None, PreservesUnmasked, Unset]):
@@ -46,6 +75,7 @@ class ModelSchema:
         replaced_by (Union[None, Unset, str]): The catalog model to move to.
         retires_at (Union[None, Unset, str]): The vendor's announced shutdown date (`YYYY-MM-DD`). From the day
             after it, litegen neither lists nor serves the model.
+        status (Union[Unset, ModelStatus]): Where a model is in its vendor's lifecycle (L14).
         tags (Union[Unset, List[str]]):
         task (Union[Unset, ModelTask]): What a catalog model does.
 
@@ -71,15 +101,17 @@ class ModelSchema:
     description: Union[Unset, str] = UNSET
     docs_url: Union[None, Unset, str] = UNSET
     extra_allowlist: Union[Unset, List[str]] = UNSET
+    extra_params: Union[Unset, "ModelSchemaExtraParams"] = UNSET
+    litegen_params: Union[Unset, "ModelSchemaLitegenParams"] = UNSET
     native_orientation: Union["NativeOrientation", None, Unset] = UNSET
     params: Union[Unset, "ModelSchemaParams"] = UNSET
     preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
     ref_inputs: Union["RefInputSpec", None, Unset] = UNSET
     replaced_by: Union[None, Unset, str] = UNSET
     retires_at: Union[None, Unset, str] = UNSET
+    status: Union[Unset, ModelStatus] = UNSET
     tags: Union[Unset, List[str]] = UNSET
     task: Union[Unset, ModelTask] = UNSET
-    additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         from ..models.native_orientation import NativeOrientation
@@ -116,6 +148,14 @@ class ModelSchema:
         extra_allowlist: Union[Unset, List[str]] = UNSET
         if not isinstance(self.extra_allowlist, Unset):
             extra_allowlist = self.extra_allowlist
+
+        extra_params: Union[Unset, Dict[str, Any]] = UNSET
+        if not isinstance(self.extra_params, Unset):
+            extra_params = self.extra_params.to_dict()
+
+        litegen_params: Union[Unset, Dict[str, Any]] = UNSET
+        if not isinstance(self.litegen_params, Unset):
+            litegen_params = self.litegen_params.to_dict()
 
         native_orientation: Union[Dict[str, Any], None, Unset]
         if isinstance(self.native_orientation, Unset):
@@ -157,6 +197,10 @@ class ModelSchema:
         else:
             retires_at = self.retires_at
 
+        status: Union[Unset, str] = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
+
         tags: Union[Unset, List[str]] = UNSET
         if not isinstance(self.tags, Unset):
             tags = self.tags
@@ -166,7 +210,6 @@ class ModelSchema:
             task = self.task.value
 
         field_dict: Dict[str, Any] = {}
-        field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "capabilities": capabilities,
@@ -186,6 +229,10 @@ class ModelSchema:
             field_dict["docs_url"] = docs_url
         if extra_allowlist is not UNSET:
             field_dict["extra_allowlist"] = extra_allowlist
+        if extra_params is not UNSET:
+            field_dict["extra_params"] = extra_params
+        if litegen_params is not UNSET:
+            field_dict["litegen_params"] = litegen_params
         if native_orientation is not UNSET:
             field_dict["native_orientation"] = native_orientation
         if params is not UNSET:
@@ -198,6 +245,8 @@ class ModelSchema:
             field_dict["replaced_by"] = replaced_by
         if retires_at is not UNSET:
             field_dict["retires_at"] = retires_at
+        if status is not UNSET:
+            field_dict["status"] = status
         if tags is not UNSET:
             field_dict["tags"] = tags
         if task is not UNSET:
@@ -209,6 +258,8 @@ class ModelSchema:
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.capability_model_pricing import CapabilityModelPricing
         from ..models.model_capability_flags import ModelCapabilityFlags
+        from ..models.model_schema_extra_params import ModelSchemaExtraParams
+        from ..models.model_schema_litegen_params import ModelSchemaLitegenParams
         from ..models.model_schema_params import ModelSchemaParams
         from ..models.native_orientation import NativeOrientation
         from ..models.prompt_spec import PromptSpec
@@ -250,6 +301,20 @@ class ModelSchema:
         docs_url = _parse_docs_url(d.pop("docs_url", UNSET))
 
         extra_allowlist = cast(List[str], d.pop("extra_allowlist", UNSET))
+
+        _extra_params = d.pop("extra_params", UNSET)
+        extra_params: Union[Unset, ModelSchemaExtraParams]
+        if isinstance(_extra_params, Unset):
+            extra_params = UNSET
+        else:
+            extra_params = ModelSchemaExtraParams.from_dict(_extra_params)
+
+        _litegen_params = d.pop("litegen_params", UNSET)
+        litegen_params: Union[Unset, ModelSchemaLitegenParams]
+        if isinstance(_litegen_params, Unset):
+            litegen_params = UNSET
+        else:
+            litegen_params = ModelSchemaLitegenParams.from_dict(_litegen_params)
 
         def _parse_native_orientation(
             data: object,
@@ -335,6 +400,13 @@ class ModelSchema:
 
         retires_at = _parse_retires_at(d.pop("retires_at", UNSET))
 
+        _status = d.pop("status", UNSET)
+        status: Union[Unset, ModelStatus]
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = ModelStatus(_status)
+
         tags = cast(List[str], d.pop("tags", UNSET))
 
         _task = d.pop("task", UNSET)
@@ -356,31 +428,17 @@ class ModelSchema:
             description=description,
             docs_url=docs_url,
             extra_allowlist=extra_allowlist,
+            extra_params=extra_params,
+            litegen_params=litegen_params,
             native_orientation=native_orientation,
             params=params,
             preserves_unmasked=preserves_unmasked,
             ref_inputs=ref_inputs,
             replaced_by=replaced_by,
             retires_at=retires_at,
+            status=status,
             tags=tags,
             task=task,
         )
 
-        model_schema.additional_properties = d
         return model_schema
-
-    @property
-    def additional_keys(self) -> List[str]:
-        return list(self.additional_properties.keys())
-
-    def __getitem__(self, key: str) -> Any:
-        return self.additional_properties[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.additional_properties[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self.additional_properties[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.additional_properties

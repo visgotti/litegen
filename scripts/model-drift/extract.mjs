@@ -18,7 +18,7 @@ function resolveRef(doc, ref) {
 }
 
 /** Inline local $refs. A ref already being expanded is left as-is (recursive schemas). */
-function deref(doc, node, stack = new Set()) {
+export function deref(doc, node, stack = new Set()) {
   if (Array.isArray(node)) return node.map((n) => deref(doc, n, stack));
   if (!node || typeof node !== 'object') return node;
   if (typeof node.$ref === 'string') {
@@ -183,10 +183,11 @@ export function yamlPrune(text) {
 
 /**
  * Strict block-style YAML subset, for vendors that publish only a YAML spec
- * (no dependency). Maps, sequences, plain/quoted scalars and block scalars
- * (prose only in practice, kept whole); anything else — flow collections,
- * anchors, tags — throws instead of being guessed at, so a spec that starts
- * using it fails its source loudly.
+ * (no dependency). Maps (explicit `? key` / `: value` entries included),
+ * sequences, plain/quoted scalars and block scalars (prose only in practice,
+ * kept whole); anything else — flow collections, anchors, tags — throws
+ * instead of being guessed at, so a spec that starts using it fails its
+ * source loudly.
  */
 export function parseYaml(text) {
   const lines = [];
@@ -199,6 +200,7 @@ export function parseYaml(text) {
   const err = (why) => new Error(`YAML line ${lines[Math.min(i, lines.length - 1)]?.n}: ${why}`);
   const KEY = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s'"#-][^#]*?|-[^\s#][^#]*?)\s*:(?:\s+(.*))?$/;
   const isItem = (t) => t === '-' || t.startsWith('- ');
+  const isExplicitKey = (t) => t === '?' || t.startsWith('? ');
   const unquote = (s) => (s.startsWith('"') ? JSON.parse(s) : s.startsWith("'") ? s.slice(1, -1).replace(/''/g, "'") : s);
 
   const scalar = (s) => {
@@ -232,8 +234,34 @@ export function parseYaml(text) {
   const map = (indent) => {
     const out = {};
     while (i < lines.length && lines[i].indent === indent) {
-      const m = lines[i].text.match(KEY);
-      if (!m || isItem(lines[i].text)) break;
+      const t = lines[i].text;
+      if (isExplicitKey(t)) {
+        // An explicit key: "? key" on one line, ": value" on the next. PyYAML
+        // writes a key this way once it is 128 characters or longer, as
+        // openai-python's transformed spec does for one long path (2026-11).
+        // The key is a one-line plain or quoted scalar; the value is a scalar
+        // after ": " or a node starting there ("- x" / "k: v"), as in a
+        // sequence item, or a deeper node under a bare ":".
+        const key = t.slice(1).trim();
+        i++;
+        if (!key || (i < lines.length && lines[i].indent > indent)) throw err('unsupported YAML syntax: a multi-line explicit key');
+        if (!(i < lines.length && lines[i].indent === indent && (lines[i].text === ':' || lines[i].text.startsWith(': ')))) {
+          out[unquote(key)] = null;
+          continue;
+        }
+        const rest = lines[i].text.slice(1).trimStart();
+        if (rest && (isItem(rest) || KEY.test(rest))) {
+          const col = indent + lines[i].text.length - rest.length;
+          lines[i] = { ...lines[i], indent: col, text: rest };
+          out[unquote(key)] = node(col);
+        } else {
+          i++;
+          out[unquote(key)] = value(rest || undefined, indent, true);
+        }
+        continue;
+      }
+      const m = t.match(KEY);
+      if (!m || isItem(t)) break;
       i++;
       out[unquote(m[1])] = value(m[2], indent, true);
     }
@@ -257,7 +285,7 @@ export function parseYaml(text) {
   };
   const node = (indent) => {
     if (isItem(lines[i].text)) return seq(indent);
-    if (KEY.test(lines[i].text)) return map(indent);
+    if (KEY.test(lines[i].text) || isExplicitKey(lines[i].text)) return map(indent);
     const parts = [];
     while (i < lines.length && lines[i].indent >= indent) parts.push(lines[i++].text);
     return scalar(parts.join(' '));

@@ -28,7 +28,7 @@ from typing_extensions import Literal, NotRequired, Required, TypedDict
 
 # ─── Vocabularies ────────────────────────────────────────────────────────────
 
-Model3dFormat = Literal["glb", "gltf", "obj", "stl", "ply", "fbx", "usdz", "usda", "3mf", "dae"]
+Model3dFormat = Literal["glb", "gltf", "obj", "stl", "ply", "fbx", "usdz", "usda", "usdc", "3mf", "dae"]
 """A mesh container: the whole vocabulary any 3D model may deliver. ``glb`` is
 the one every 3D model can emit. Which of the others a given model can deliver
 is the server's decision, advertised per model by ``GET /v1/models/{id}``:
@@ -49,6 +49,33 @@ Model3dSkeleton = Literal[
 
 Model3dJointNaming = Literal["vendor", "vrm", "mixamo", "unity", "unreal"]
 """The joint names a rig is delivered with; ``vendor`` keeps the vendor's own."""
+Model3dFbxColorSpace = Literal["srgb", "linear"]
+Model3dFormatSource = Literal["native", "glb"]
+Model3dKtx2Textures = Literal["png", "keep"]
+"""What delivery does with a KTX2 (Basis Universal) texture: ``"png"`` (the
+default) or ``"keep"``. See ``Model3dGenerateParams.ktx2_textures``."""
+Model3dLightUnits = Literal["photometric", "blender"]
+"""How a delivered or read FBX or USD stores its light strengths:
+``"photometric"`` (the default; the scene's own, glTF's candela and lux) or
+``"blender"`` (Blender's ``energy``, so the lights open in Blender as bright
+as the glTF does). See ``Model3dGenerateParams.fbx_light_units``."""
+Model3dDaeMorphs = Literal["bake", "keep"]
+"""How a Collada (``dae``) file LiteGen writes stores a mesh's morph targets:
+``"bake"`` (the default; each node's mesh at that node's weights, which every
+Collada reader opens) or ``"keep"`` (``<morph>`` controllers with their weight
+animation, which SceneKit and Godot read and three.js and assimp refuse). See
+``Model3dGenerateParams.dae_morphs``."""
+Model3dUsdzRoot = Literal["usda", "usdc"]
+"""What the root layer of a ``usdz`` LiteGen writes is: ``"usda"`` (the
+default; text, which ``usdchecker --arkit`` accepts and ``<model-viewer>``
+hands to AR Quick Look) or ``"usdc"`` (the binary crate, as Apple's own
+packagers write it). See ``Model3dGenerateParams.usdz_root``."""
+Model3dUsdClips = Literal["all", "first"]
+"""Which animation clips a USD file LiteGen writes holds: ``"all"`` (every
+clip as an alternative, chosen by a variant set ``Animation``; rigid node
+motion is the first clip's only, the others' named in the losses) or
+``"first"`` (the first, the rest named in the losses). See
+``Model3dGenerateParams.usd_clips``."""
 
 Model3dAnimationPreset = Literal[
     "idle", "walk", "run", "jump", "fall", "attack_melee", "attack_ranged",
@@ -57,7 +84,7 @@ Model3dAnimationPreset = Literal[
 """The canonical animation presets. A model maps the ones it plays onto its own
 preset ids (``params.animations.presets``); a clip may name either."""
 
-Model3dAssetKind = Literal["mesh", "texture", "preview", "original"]
+Model3dAssetKind = Literal["mesh", "texture", "preview", "original", "package"]
 """What a :class:`Model3dAsset` is: the mesh itself, a texture map, a preview
 render, or ``original`` — the vendor's own file, kept beside a mesh litegen
 changed to deliver it in glTF's conventions."""
@@ -115,13 +142,23 @@ ImageBackground = Literal["transparent", "opaque"]
 channel, on models with ``supports_transparent_background``; it needs PNG or WebP."""
 
 ModelStatus = Literal["active", "deprecated", "retired"]
-"""Where a model is in its vendor's lifecycle (``status`` on ``GET /v1/models``):
-``deprecated`` models are still served until the day after their
+"""Where a model is in its vendor's lifecycle (``status`` on ``GET /v1/models``
+and ``GET /v1/models/{id}``, derived from its dates and ignored when a schema
+is posted back): ``deprecated`` models are still served until the day after their
 ``retires_at``; ``replaced_by`` names the catalog model to move to."""
 
 KeyframeTiming = Literal["any", "even"]
 """Where a video model's ``keyframe`` references may sit (``capabilities.keyframe_timing``):
 ``any`` time each, or ``even`` spacing from the start of the clip to its end."""
+
+FramesSetShape = Literal["always", "without_references"]
+"""When a video model's frame image sets the clip's shape
+(``params.aspect_ratio.frames_set_shape`` in ``GET /v1/models/{id}``): with a
+``first_frame``, ``last_frame`` or ``init`` image its vendor takes no ratio, so
+``aspect_ratio`` is refused (``param_unsupported``) when ``strict`` and dropped
+and named otherwise. ``always``: with any frame image; ``without_references``:
+unless a ``reference`` image goes too, which sends the request to a vendor
+mode that takes a ratio. Absent: the ratio applies with any image."""
 
 MaskConvention = Literal["white_edits", "black_edits", "transparent_edits"]
 """Which pixels of a mask edit. Callers always send ``white_edits`` (white,
@@ -327,11 +364,17 @@ class SourceRef(TypedDict):
 
 class AnimationRequest(TypedDict):
     """One clip an ``animate`` model makes: exactly one of ``preset`` and
-    ``prompt``. Delivered as a glTF animation named exactly ``name``, in
-    request order."""
+    ``prompt``. Delivered as a glTF animation, in request order, named its
+    ``name``, or the name litegen gives a clip that leaves it out."""
 
-    name: str
-    """Unique within the request, 1–64 characters of ``[A-Za-z0-9_.-]``."""
+    name: NotRequired[str | None]
+    """The clip's name in the delivered file: unique within the request, 1–64
+    characters of ``[A-Za-z0-9_.-]``. Leave it out (or send ``None``) and
+    litegen names the clip: a preset clip after its canonical preset
+    (``walk``), else after its preset id with every other character as ``_``;
+    a prompt clip, or one whose preset leaves no name, ``clip-<n>``, its place
+    in the list; ``-2``, ``-3``, … on a name already taken. A name you send is
+    kept as sent; an empty one is refused."""
     preset: NotRequired[str | None]
     """A :data:`Model3dAnimationPreset` or one of the model's own preset ids."""
     prompt: NotRequired[str | None]
@@ -353,12 +396,14 @@ class Model3dGenerateParams(TypedDict, total=False):
 
     Each model supports its own subset of these fields, listed by
     ``GET /v1/models/{id}``. With ``strict`` on (the default), sending one it
-    does not support is a 400. With ``strict=False`` (lax mode) the server drops
-    it and carries on, and the job handle's ``dropped_params`` names what went.
+    does not support, or a field the request has no such name for, is a 400.
+    With ``strict=False`` (lax mode) the server drops it and carries on, and
+    the job handle's ``dropped_params`` names what went.
 
     ``n`` is deliberately absent. It exists on the request base shared with
-    images and video, but a 3D job always produces exactly one result and the
-    3D validator never reads it, so offering it would only suggest otherwise.
+    images and video, but a 3D job always makes exactly one mesh: the server
+    refuses ``n`` above 1 (``param_out_of_range``), and 0 or 1 is what leaving
+    it out already means, so offering it would only suggest otherwise.
     """
 
     model: Required[str]
@@ -374,11 +419,18 @@ class Model3dGenerateParams(TypedDict, total=False):
     """Input images. Their ``role`` picks image-to-3D or multiview-to-3D; see
     :class:`ReferenceImage`."""
     strict: bool
-    """``True`` by default: an unsupported param is a 400. ``False`` drops it
-    instead and reports it through the job's ``dropped_params``."""
+    """``True`` by default: a param the model does not take, or a field the
+    request has no such name for (one inside an object by its path, such as
+    ``animations[0].duration``), is a 400 ``param_unsupported``. ``False``
+    drops it instead and reports it through the job's ``dropped_params``. A
+    bad value for a param the model does take is refused either way."""
     extra: dict[str, Any]
-    """Vendor-specific fields passed through to the provider. Only keys on the
-    model's ``extra_allowlist`` are accepted."""
+    """Vendor-specific fields passed through to the provider: only keys on the
+    model's ``extra_allowlist``, each of the type its ``extra_params`` entry
+    gives when it has one (a wrong value is a 400 in either mode, with
+    ``param`` ``"extra.<key>"``). Strict mode refuses any other key
+    (``extra_key_unsupported``); ``strict=False`` drops it and names it in
+    ``dropped_params``."""
     metadata: dict[str, str]
     """Your own labels for the job (string values, at most 1 KB as JSON). Kept
     on the generation, echoed on every answer and webhook, and filters
@@ -410,15 +462,91 @@ class Model3dGenerateParams(TypedDict, total=False):
     """The joint names to deliver the rig with (rig models)."""
     height_m: float | None
     """The delivered mesh's height in metres: LiteGen scales any mesh to it,
-    and a rig model that takes a height gets it too."""
+    and a rig model that takes a height gets it too. Above 0; the model's
+    ``litegen_params`` (``GET /v1/models/{id}``) give the ceiling, or its
+    ``params`` for a rig model that declares its own ``height_m``."""
     ground: bool | None
-    """Put the mesh's lowest point at y = 0 (applied by LiteGen on delivery)."""
+    """Put the mesh's lowest point at y = 0 (applied by LiteGen on delivery;
+    listed in every 3D model's ``litegen_params``)."""
     center: bool | None
-    """Centre the mesh's bounds on x and z (applied by LiteGen on delivery)."""
+    """Centre the mesh's bounds on x and z (applied by LiteGen on delivery;
+    listed in every 3D model's ``litegen_params``)."""
+    output_packages: bool | None
+    """Also deliver a zip per requested container whose mesh has files to go
+    beside it (an OBJ's ``.mtl`` and textures): ``"package"`` assets. Refused
+    (``option_needs_keeping``) when nothing is kept."""
     animations: list[AnimationRequest] | None
-    """The clips an ``animate`` model makes, in order."""
+    """The clips an ``animate`` model makes, in order: one glTF animation per
+    entry, named its ``name``, or the name litegen gives a clip that leaves it
+    out."""
     fps: int | None
     """Frames per second of the delivered clips."""
+    fbx_color_space: Model3dFbxColorSpace | None
+    """How FBX material and light colours are stored, when LiteGen reads the
+    vendor's FBX or writes one for this request (a vendor FBX delivered as it
+    is keeps the vendor's): ``"srgb"`` (the default; three.js reads them so)
+    or ``"linear"`` (Blender, ufbx and assimp read both so, and Unity and
+    Unreal material colours). Vertex colours are sRGB either way."""
+    fbx_light_units: Model3dLightUnits | None
+    """The units FBX light strengths are stored in when LiteGen reads the
+    vendor's FBX or writes one for this request (a vendor FBX delivered as it
+    is keeps the vendor's units): ``"photometric"`` (the default; the scene's
+    own, as three.js's FBXLoader and ufbx read them: ``Intensity`` is 100 × the
+    candela or lux) or ``"blender"`` (100 × the ``energy`` Blender's own glTF
+    importer gives the same light, so the lights open in Blender as bright as
+    the glTF does, and a vendor FBX that Blender wrote reads as that light).
+    Colours are in ``fbx_color_space`` either way."""
+    usd_light_units: Model3dLightUnits | None
+    """The units USD light strengths are stored in when LiteGen reads the
+    vendor's ``usdz``, ``usda`` or ``usdc`` or writes one for this request (a vendor USD
+    delivered as it is keeps the vendor's units): ``"photometric"`` (the
+    default; UsdLux's own, by the schema) or ``"blender"`` (what
+    Blender's USD exporter writes for the same light, so the lights open in
+    Blender as bright as the glTF does). A file LiteGen wrote keeps its exact
+    strengths in ``customData``, which wins on read either way."""
+    dae_morphs: Model3dDaeMorphs | None
+    """How the Collada (``dae``) LiteGen writes stores a mesh's morph targets,
+    when LiteGen writes one for this request (a vendor Collada delivered as it
+    is keeps the vendor's): ``"bake"`` (the default) applies the targets at
+    each node's weights and drops their weight animation, which every Collada
+    reader opens; ``"keep"`` writes them as ``<morph>`` controllers with their
+    weight animation, which SceneKit (and so Xcode) and Godot read, while
+    three.js's ColladaLoader and assimp refuse the whole file. Refused
+    (``option_needs_keeping``) when nothing is kept."""
+    usdz_root: Model3dUsdzRoot | None
+    """What the root layer of a ``usdz`` LiteGen writes for this request is (a
+    vendor USDZ delivered as it is keeps the vendor's): ``"usda"`` (the
+    default) is text, which ``usdchecker --arkit`` accepts and which
+    ``<model-viewer>`` hands to AR Quick Look; ``"usdc"`` is the binary crate,
+    as Apple's own packagers write it. Either way the root is the package's
+    first entry, 64-byte aligned. ``"usdc"`` is refused
+    (``option_needs_keeping``) when nothing is kept."""
+    usd_clips: Model3dUsdClips | None
+    """Which animation clips the ``usda``, ``usdc`` or ``usdz`` LiteGen writes
+    for this request holds (a vendor USD delivered as it is keeps the
+    vendor's): ``"all"`` keeps every clip as an alternative (a SkelAnimation
+    prim for each, chosen by a variant set ``Animation``, as Apple's own
+    tooling lays them out), ``"first"`` keeps the first and names the rest in
+    the losses. Under ``"all"`` every clip's skeletal and blend-shape animation
+    is kept; rigid (node) motion is the first clip's only, the other clips' is
+    named in the losses, and a scene whose clips are all rigid writes as
+    ``"first"``. Unset is the container's default: all for ``usda`` and
+    ``usdc``, the first for ``usdz`` until AR Quick Look's behaviour with
+    variants is checked on a device. ``"all"`` is refused
+    (``option_needs_keeping``) when nothing is kept."""
+    ktx2_textures: Model3dKtx2Textures | None
+    """What delivery does with a KTX2 (Basis Universal) texture, such as the
+    images of a GLB that requires ``KHR_texture_basisu``. ``"png"`` (the
+    default) re-encodes it as PNG in every container, so no delivered file
+    needs an extension to read, and the vendor's own file is delivered beside
+    it as ``original``. ``"keep"`` leaves it as the vendor made it in the
+    ``glb`` and ``gltf`` containers, which then require ``KHR_texture_basisu``
+    (for viewers that upload KTX2 to the GPU); every other container still
+    gets PNG. Refused (``option_needs_keeping``) when nothing is kept."""
+    format_source: Model3dFormatSource | None
+    """Where a promised ``fbx`` or ``usdz`` comes from: ``"native"`` (the
+    default) asks the vendor for its own export; ``"glb"`` asks for the
+    vendor's GLB and LiteGen makes the rest from it. One vendor job either way."""
     texture_resolution: int | None
     """A ``texture`` model's map size in pixels, one of its
     ``texture_resolutions``."""
@@ -442,7 +570,9 @@ class ResponseMeta(TypedDict):
     """What :func:`litegen.response_meta` reads off a response's headers."""
 
     dropped_params: list[str]
-    """``X-Litegen-Dropped-Params``: what ``strict: false`` dropped instead of refusing."""
+    """``X-Litegen-Dropped-Params``: what ``strict: false`` dropped instead of
+    refusing, by name, and a last ``+N more`` when there were more than the
+    header lists."""
     rate_limit: RateLimit | None
     idempotent_replayed: bool
     """``Idempotent-Replayed: true``: the stored first answer to this ``Idempotency-Key``, billed nothing."""
@@ -581,6 +711,9 @@ class Model3dAsset(TypedDict):
     ``"png"`` or ``"jpg"`` for a texture or preview. Typed ``str`` because it
     covers both."""
     size_bytes: NotRequired[int | None]
+    expires_at: NotRequired[str | None]
+    """When a signed link stops working (RFC 3339); read the generation again
+    for a fresh one. Absent on every other URL."""
     polycount: NotRequired[int | None]
     """Meshes only."""
     width: NotRequired[int | None]
@@ -591,6 +724,8 @@ class Model3dAsset(TypedDict):
     """Lowercase hex SHA-256 of the stored file."""
     scene: NotRequired[SceneManifest | None]
     """Meshes only: what litegen's own reader found in this very file."""
+    kept: NotRequired[bool | None]
+    """``False`` when litegen kept no copy: the vendor's own, unconverted file."""
 
 
 class Model3dGenerationResponse(TypedDict):
@@ -629,6 +764,8 @@ class GenerationAsset(TypedDict):
     kind: str
     format: str
     url: str
+    expires_at: NotRequired[str | None]
+    """When a signed link stops working (RFC 3339); absent on every other URL."""
     size_bytes: NotRequired[int | None]
     sha256: NotRequired[str | None]
     width: NotRequired[int | None]
@@ -637,6 +774,9 @@ class GenerationAsset(TypedDict):
     fps: NotRequired[float | None]
     has_audio: NotRequired[bool | None]
     """Videos: whether the file carries an audio track (read from its bytes)."""
+    kept: NotRequired[bool | None]
+    """``False`` when litegen kept no copy (``keep_outputs: false``): ``url`` is
+    the vendor's own file, which the vendor deletes on its own schedule."""
 
 
 class GenerationAssetList(TypedDict):
@@ -672,6 +812,11 @@ class Generation(TypedDict):
     caller's own ``metadata``, as sent."""
     org_id: NotRequired[str | None]
     app_id: NotRequired[str | None]
+    files_deleted_at: NotRequired[str | None]
+    """When litegen deleted the kept files (RFC 3339): after the app's
+    retention, or on request. The record stays."""
+    files_deleted_reason: NotRequired[str | None]
+    """``retention`` or ``deleted``."""
 
 
 class CancelledGeneration(Generation):
@@ -716,9 +861,11 @@ class Model3dConversion(TypedDict):
     content: bytes
     """The converted file."""
     content_type: str
-    """Its media type, as the server sent it (e.g. ``"model/obj"``)."""
+    """Its media type, as the server sent it (e.g. ``"model/obj"``, or
+    ``"application/zip"`` with ``package="zip"``)."""
     filename: str
-    """A file name for it: the server's Content-Disposition (``model.<to>``)."""
+    """A file name for it: the server's Content-Disposition (``model.<to>``, or
+    ``model.<to>.zip`` with ``package="zip"``)."""
     format: Model3dFormat
     """The container it is in — the ``to_format`` that was asked for."""
     losses: list[str]
@@ -727,5 +874,11 @@ class Model3dConversion(TypedDict):
     Worked out from the input's content, not the format pair; ``[]`` when
     nothing was lost. Known kinds: animation, skins, morph_targets, normals,
     uvs, vertex_colors, textures, image_formats, materials, alpha, hierarchy,
-    meshes, texture_sampling, texture_transforms, geometry — a kind added later
-    passes through as-is."""
+    meshes, texture_sampling, texture_transforms, geometry, lights, cameras,
+    points, lines — a kind added later passes through as-is."""
+    warnings: list[str]
+    """What reading the input itself dropped or approximated, in prose, from the
+    ``X-Litegen-Conversion-Warnings`` header (split on ``"; "``): a material
+    library or texture the upload could not include, cubic and NURBS curves, an
+    FBX animation layer. Non-ASCII characters arrive as ``?``; ``[]`` when the
+    reader had nothing to say."""

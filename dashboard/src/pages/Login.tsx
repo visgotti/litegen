@@ -3,15 +3,11 @@ import { useNavigate, Link } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
 import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
 import { useTenant } from '../context/tenant';
+import { safeNext } from './safe-next';
 
-/** Read the post-login target from the `?next=` query param (default `/`). */
+/** The post-login target from the `?next=` query param: a path on this origin (default `/`). */
 function resolveNext(): string {
-  const raw = new URLSearchParams(window.location.search).get('next');
-  // Only allow same-site, relative paths; never an auth page (would loop).
-  if (raw && raw.startsWith('/') && !raw.startsWith('//') && raw !== '/login' && raw !== '/signup') {
-    return raw;
-  }
-  return '/';
+  return safeNext(new URLSearchParams(window.location.search).get('next'), window.location.origin);
 }
 
 /** Browser-navigate to the provider's OAuth start, preserving the post-login target. */

@@ -30,7 +30,294 @@ models:
         max_height: 2048
         multiple_of: 8
     extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-image.txt, fal-ai/flux-pro/v1.1).
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5", "6"], default: "2" }
     tags: [text-to-image]
+
+  # FLUX.1 Kontext [pro] and [max] on fal, carried as fal routes beside
+  # bfl/flux-kontext-* (the hub-route policy, 2026-11-04). The adapter picks
+  # the endpoint by image count:
+  # - none: …/kontext[/max]/text-to-image;
+  # - one: …/kontext[/max] (`image_url`);
+  # - two to four: …/kontext[/max]/multi (`image_urls`). BFL's own API takes
+  #   input_image … input_image_4, "*Experimental Multiref*".
+  # Each takes prompt, aspect_ratio (21:9 … 9:21), guidance_scale 1-20
+  # (default 3.5), seed, output_format jpeg | png (default jpeg),
+  # safety_tolerance "1"-"6" and enhance_prompt.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/kontext/text-to-image (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/kontext (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/kontext/multi (2026-11-04)
+  # @see https://api.bfl.ai/openapi.json (/v1/flux-kontext-pro, 2026-11-04)
+  - id: fal/flux-kontext-pro
+    provider: fal
+    media_type: image
+    display_name: FLUX.1 Kontext [pro] (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-pro/kontext/api
+    description: Black Forest Labs FLUX.1 Kontext pro on Fal — text-to-image, or edits from up to 4 images.
+    # "$0.04 per images" on all three endpoints.
+    # @see https://fal.ai/models/fal-ai/flux-pro/kontext/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 3.5 }
+      # Left out, text-to-image makes 1:1 and an edit follows its image.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"]
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    # safety_tolerance "1"-"6" (a string, default "2"); enhance_prompt.
+    extra_allowlist: [safety_tolerance, enhance_prompt]
+    extra_params:
+      # From the kontext comment above ("1"-"6", a string).
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5", "6"], default: "2" }
+      enhance_prompt: { kind: bool }
+    tags: [text-to-image, image-to-image]
+
+  - id: fal/flux-kontext-max
+    provider: fal
+    media_type: image
+    display_name: FLUX.1 Kontext [max] (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-pro/kontext/max/api
+    description: Black Forest Labs FLUX.1 Kontext max on Fal — text-to-image, or edits from up to 4 images.
+    # "$0.08 per images" on all three endpoints.
+    # @see https://fal.ai/models/fal-ai/flux-pro/kontext/max/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 3.5 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"]
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    extra_allowlist: [safety_tolerance, enhance_prompt]
+    extra_params:
+      # From the kontext comment above ("1"-"6", a string).
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5", "6"], default: "2" }
+      enhance_prompt: { kind: bool }
+    tags: [text-to-image, image-to-image]
+
+  # FLUX1.1 [pro] ultra on fal (fal-ai/flux-pro/v1.1-ultra): BFL's "4MP"
+  # images by aspect_ratio, with an optional image prompt (`image_url`; the
+  # role `redux`, as on bfl/flux-pro-1.1-ultra) blended by
+  # image_prompt_strength (0-1, default 0.1). Input: prompt, aspect_ratio
+  # (default 16:9), raw, seed, output_format jpeg | png, safety_tolerance,
+  # enhance_prompt.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1-ultra (2026-11-04)
+  - id: fal/flux-pro-1.1-ultra
+    provider: fal
+    media_type: image
+    display_name: FLUX1.1 [pro] Ultra (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/api
+    description: Black Forest Labs FLUX1.1 pro ultra on Fal — 4 MP images by aspect ratio, optionally guided by an image prompt.
+    # "$0.06 per images".
+    # @see https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.06 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 1
+      default_role: redux
+      provider_format: { form: url }
+      roles:
+        redux: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [raw, safety_tolerance, image_prompt_strength, enhance_prompt]
+    extra_params:
+      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
+      raw: { kind: bool }
+      safety_tolerance: { kind: string }
+      image_prompt_strength: { kind: float, min: 0, max: 1, default: 0.1 }
+      enhance_prompt: { kind: bool }
+    tags: [text-to-image]
+
+  # FLUX1.1 [pro] Redux on fal (fal-ai/flux-pro/v1.1/redux): variations of one
+  # image (`image_url`), steered by an optional prompt (default ""). Input:
+  # image_size, guidance_scale 1-20 (default 3.5), num_inference_steps 1-50
+  # (default 28), seed, output_format jpeg | png, safety_tolerance,
+  # enhance_prompt. Sizes as fal/flux-pro.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1/redux (2026-11-04)
+  - id: fal/flux-pro-1.1-redux
+    provider: fal
+    media_type: image
+    display_name: FLUX1.1 [pro] Redux (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-pro/v1.1/redux/api
+    description: Black Forest Labs FLUX1.1 pro Redux on Fal — variations of an image, optionally steered by a prompt.
+    # "$0.05 per megapixels": $0.05 for the default 1 MP, then by the asked
+    # size's megapixels, as on fal/flux-pro.
+    # @see https://fal.ai/models/fal-ai/flux-pro/v1.1/redux/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.05
+      variable_pricing:
+        - { per_megapixel_usd: 0.05 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false }
+    params:
+      output_format: { kind: string, enum_values: [png, jpeg], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 3.5 }
+      steps: { kind: int, min: 1, max: 50, default: 28 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 2048
+        min_height: 512
+        max_height: 2048
+        multiple_of: 8
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [safety_tolerance, enhance_prompt]
+    extra_params:
+      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
+      safety_tolerance: { kind: string }
+      enhance_prompt: { kind: bool }
+    tags: [image-to-image]
+
+  # FLUX1.1 [pro] ultra Redux on fal (fal-ai/flux-pro/v1.1-ultra/redux): 4 MP
+  # variations of one image by aspect_ratio, with an optional prompt,
+  # image_prompt_strength (0-1, default 0.1), raw, seed, output_format,
+  # safety_tolerance, enhance_prompt.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1-ultra/redux (2026-11-04)
+  - id: fal/flux-pro-1.1-ultra-redux
+    provider: fal
+    media_type: image
+    display_name: FLUX1.1 [pro] Ultra Redux (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/redux/api
+    description: Black Forest Labs FLUX1.1 pro ultra Redux on Fal — 4 MP variations of an image, optionally steered by a prompt.
+    # "$0.05 per megapixels" (fal) of ultra's output, which BFL sizes only as
+    # "Generate up to 4MP resolution images" and names no size per ratio. The
+    # 2752 × 1536 output size is litegen's own assumption, taken from the
+    # dimensions of the sample images on BFL's page (…-2752x1536.jpg):
+    # 4.227072 MP × $0.05 = $0.2113536.
+    # @see https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/redux/llms.txt (2026-11-09)
+    # @see https://docs.bfl.ml/flux_models/flux_1_1_pro_ultra_raw.md (2026-11-09)
+    pricing: { base_cost_usd: 0.2113536 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [raw, image_prompt_strength, safety_tolerance, enhance_prompt]
+    extra_params:
+      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
+      raw: { kind: bool }
+      safety_tolerance: { kind: string }
+      image_prompt_strength: { kind: float, min: 0, max: 1, default: 0.1 }
+      enhance_prompt: { kind: bool }
+    tags: [image-to-image]
+
+  # FLUX.1 [pro] Fill on fal (fal-ai/flux-pro/v1/fill): inpainting. Input:
+  # image_url, mask_url ("Needs to match the dimensions of the input image"),
+  # prompt, seed, output_format jpeg | png, safety_tolerance, enhance_prompt.
+  # fal names no mask convention; BFL's own fill says "Black areas (0%)
+  # indicate no modification, while white areas (100%) specify areas for
+  # inpainting".
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1/fill (2026-11-04)
+  # @see https://api.bfl.ai/openapi.json (/v1/flux-pro-1.0-fill, 2026-11-04)
+  - id: fal/flux-pro-fill
+    provider: fal
+    media_type: image
+    display_name: FLUX.1 [pro] Fill (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-pro/v1/fill/api
+    description: Black Forest Labs FLUX.1 pro Fill on Fal — repaints the masked part of an image from a prompt.
+    # "$0.05 per megapixels" of output, which is the input image's size: $0.05
+    # at 1 MP. A larger image bills more at fal than here, since its size
+    # isn't known at the quote.
+    # @see https://fal.ai/models/fal-ai/flux-pro/v1/fill/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.05 }
+    capabilities: { text_to_image: false, image_to_image: true, inpainting: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # A region is drawn as the mask (white edits), as on every mask-taking row.
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+    extra_allowlist: [safety_tolerance, enhance_prompt]
+    extra_params:
+      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
+      safety_tolerance: { kind: string }
+      enhance_prompt: { kind: bool }
+    tags: [image-to-image, inpainting]
+
+  # FLUX.1 [pro] Erase on fal (fal-ai/flux-pro/v1/erase): removes what the mask
+  # covers and fills in behind it. Input: image_url, mask_url ("white (255)
+  # marks pixels to erase and black (0) marks pixels to keep"), dilate_pixels
+  # (0-100, default 10), output_format jpeg | png. It takes no prompt.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1/erase (2026-11-04)
+  - id: fal/flux-pro-erase
+    provider: fal
+    media_type: image
+    display_name: FLUX.1 [pro] Erase (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-pro/v1/erase/api
+    description: Black Forest Labs FLUX.1 pro Erase on Fal — removes what a mask covers and fills in the background.
+    # "$0.03 for the first megapixel generated, then $0.004 for each subsequent
+    # megapixel. Each reference megapixel also costs $0.004 set at 3 MP
+    # minimum": $0.03 + 3 × $0.004 = $0.042 at least. A larger image bills
+    # more at fal than here.
+    # @see https://fal.ai/models/fal-ai/flux-pro/v1/erase/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.042 }
+    capabilities: { text_to_image: false, image_to_image: true, inpainting: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to erase, sent drawn as the mask." }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+    # dilate_pixels (0-100, default 10): how far the mask grows.
+    extra_allowlist: [dilate_pixels]
+    extra_params:
+      # From the comment above.
+      dilate_pixels: { kind: int, min: 0, max: 100, default: 10 }
+    tags: [image-to-image, inpainting]
 
   - id: fal/flux-dev
     provider: fal
@@ -69,22 +356,30 @@ models:
   # Input: prompt, guidance_scale 0-20 (default 2.5), seed, num_inference_steps
   # 4-50 (default 28), image_size (width and height 512-2048), num_images,
   # acceleration, enable_prompt_expansion, sync_mode, enable_safety_checker,
-  # output_format. No image input: editing is the separate fal-ai/flux-2/edit.
+  # output_format. With images the adapter calls the /edit twin, fal-ai/flux-2/edit
+  # (`image_urls`: "A maximum of 4 images are allowed"), since 2026-11-04.
   # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2 (re-read 2026-09-11)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/edit (2026-11-04)
   - id: fal/flux-2
     provider: fal
     media_type: image
     display_name: FLUX.2 [dev] (Fal)
     docs_url: https://fal.ai/models/fal-ai/flux-2/api
-    description: Black Forest Labs FLUX.2 dev text-to-image on Fal.
+    description: Black Forest Labs FLUX.2 dev on Fal — text-to-image, or edits from up to 4 images.
     # "$0.012 per megapixels": $0.012 for the default 1 MP request, then by
-    # the asked size's megapixels (re-read 2026-09-11).
+    # the asked size's megapixels (re-read 2026-09-11). Edits: "$0.012 per
+    # megapixel of input and output. Input images will be resized to 1MP".
     # @see https://fal.ai/models/fal-ai/flux-2/llms.txt
+    # @see https://fal.ai/models/fal-ai/flux-2/edit/llms.txt (2026-11-04)
     pricing:
       base_cost_usd: 0.012
       variable_pricing:
         - { per_megapixel_usd: 0.012 }
-    capabilities: { text_to_image: true }
+        - { when: { references: 1 }, add_usd: 0.012 }
+        - { when: { references: 2 }, add_usd: 0.024 }
+        - { when: { references: 3 }, add_usd: 0.036 }
+        - { when: { references: 4 }, add_usd: 0.048 }
+    capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
       # PixelGenie L9: output_format jpeg | png | webp, default png.
@@ -100,10 +395,508 @@ models:
         max_width: 2048
         min_height: 512
         max_height: 2048
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
     # acceleration none|regular|high; output_format jpeg|png|webp. Not
     # sync_mode: it returns a data URI instead of the URL the adapter fetches.
     extra_allowlist: [acceleration, enable_prompt_expansion]
-    tags: [text-to-image]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-image.txt, fal-ai/flux-2).
+      acceleration: { kind: string, enum_values: ["none", "regular", "high"], default: "regular" }
+      enable_prompt_expansion: { kind: bool }
+    tags: [text-to-image, image-to-image]
+
+  # FLUX.2 [dev] turbo and flash on fal: faster distillations of FLUX.2 [dev],
+  # each a text-to-image endpoint with an /edit twin that takes the images as
+  # `image_urls` ("A maximum of 4 images are allowed"). Input: prompt,
+  # guidance_scale 0-20 (default 2.5), seed, image_size, output_format jpeg |
+  # png | webp (default png), enable_prompt_expansion; no num_inference_steps.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/turbo (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/flash/edit (2026-11-04)
+  - id: fal/flux-2-turbo
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [dev] Turbo (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2/turbo/api
+    description: FLUX.2 dev turbo on Fal — fast text-to-image, or edits from up to 4 images.
+    # "$0.008 per megapixels"; edits "$0.008 per megapixel of input and
+    # output. Input images will be resized to 1MP".
+    # @see https://fal.ai/models/fal-ai/flux-2/turbo/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2/turbo/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.008
+      variable_pricing:
+        - { per_megapixel_usd: 0.008 }
+        - { when: { references: 1 }, add_usd: 0.008 }
+        - { when: { references: 2 }, add_usd: 0.016 }
+        - { when: { references: 3 }, add_usd: 0.024 }
+        - { when: { references: 4 }, add_usd: 0.032 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 2.5 }
+      # "The width and height must be between 512 and 2048 pixels."
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 2048
+        min_height: 512
+        max_height: 2048
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    extra_allowlist: [enable_prompt_expansion]
+    extra_params:
+      # From the FLUX.2 comment above.
+      enable_prompt_expansion: { kind: bool }
+    tags: [text-to-image, image-to-image, fast]
+
+  - id: fal/flux-2-flash
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [dev] Flash (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2/flash/api
+    description: FLUX.2 dev flash on Fal — fast text-to-image, or edits from up to 4 images.
+    # "$0.005 per megapixels"; edits "$0.005 per megapixel of input and
+    # output. Input images will be resized to 1MP".
+    # @see https://fal.ai/models/fal-ai/flux-2/flash/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2/flash/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.005
+      variable_pricing:
+        - { per_megapixel_usd: 0.005 }
+        - { when: { references: 1 }, add_usd: 0.005 }
+        - { when: { references: 2 }, add_usd: 0.01 }
+        - { when: { references: 3 }, add_usd: 0.015 }
+        - { when: { references: 4 }, add_usd: 0.02 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 2.5 }
+      # "The width and height must be between 512 and 2048 pixels."
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 2048
+        min_height: 512
+        max_height: 2048
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    extra_allowlist: [enable_prompt_expansion]
+    extra_params:
+      # From the FLUX.2 comment above.
+      enable_prompt_expansion: { kind: bool }
+    tags: [text-to-image, image-to-image, fast]
+
+  # FLUX.2 [pro], [max] and [flex] on fal, carried as fal routes beside
+  # bfl/flux-2-* (the hub-route policy, 2026-11-04), each with an /edit twin
+  # that takes the images as `image_urls`. Input: prompt, image_size, seed,
+  # output_format jpeg | png (default jpeg), safety_tolerance, and on [flex]
+  # guidance_scale and num_inference_steps. fal states no size limit beyond its
+  # ImageSize type, so the rows keep to BFL's FLUX.2 sides (256-2048) and its
+  # 8 references ("up to 8 via API").
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/edit (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-max/edit (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-flex/edit (2026-11-04)
+  # @see https://docs.bfl.ml/flux_2/flux2_image_editing.md (2026-11-03)
+  - id: fal/flux-2-pro
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [pro] (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2-pro/api
+    description: Black Forest Labs FLUX.2 pro on Fal — text-to-image, or edits from up to 8 images.
+    # "$0.03 for the first output megapixel, plus $0.015 per additional input
+    # or output megapixel, with megapixels rounded up … 1 megapixel is 1024 ×
+    # 1024 pixels": the output bands below, plus each input image at one megapixel
+    # or more ($0.015). An input above 1 MP bills more at fal than here,
+    # since its size isn't known at the quote.
+    # @see https://fal.ai/models/fal-ai/flux-2-pro/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2-pro/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.03
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.097152 } }, usd: 0.045 }
+        - { when: { size: '*', megapixels: { gt: 2.097152, lte: 3.145728 } }, usd: 0.06 }
+        - { when: { size: '*', megapixels: { gt: 3.145728, lte: 4.194304 } }, usd: 0.075 }
+        - { when: { references: 1 }, add_usd: 0.015 }
+        - { when: { references: 2 }, add_usd: 0.03 }
+        - { when: { references: 3 }, add_usd: 0.045 }
+        - { when: { references: 4 }, add_usd: 0.06 }
+        - { when: { references: 5 }, add_usd: 0.075 }
+        - { when: { references: 6 }, add_usd: 0.09 }
+        - { when: { references: 7 }, add_usd: 0.105 }
+        - { when: { references: 8 }, add_usd: 0.12 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+    ref_inputs:
+      max_total: 8
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 8 }
+    # safety_tolerance: "1" to "5" (a string, default "2").
+    extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From the comment above ("1" to "5", a string).
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5"], default: "2" }
+    tags: [text-to-image, image-to-image]
+
+  - id: fal/flux-2-max
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [max] (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2-max/api
+    description: Black Forest Labs FLUX.2 max on Fal — text-to-image, or edits from up to 8 images.
+    # "The first processed megapixel will cost $0.07. Each additional megapixel
+    # will cost $0.03. Input images counted as processed megapixel.": the output bands below, plus each input image at one megapixel
+    # or more ($0.03). An input above 1 MP bills more at fal than here,
+    # since its size isn't known at the quote.
+    # @see https://fal.ai/models/fal-ai/flux-2-max/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2-max/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.07
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.097152 } }, usd: 0.1 }
+        - { when: { size: '*', megapixels: { gt: 2.097152, lte: 3.145728 } }, usd: 0.13 }
+        - { when: { size: '*', megapixels: { gt: 3.145728, lte: 4.194304 } }, usd: 0.16 }
+        - { when: { references: 1 }, add_usd: 0.03 }
+        - { when: { references: 2 }, add_usd: 0.06 }
+        - { when: { references: 3 }, add_usd: 0.09 }
+        - { when: { references: 4 }, add_usd: 0.12 }
+        - { when: { references: 5 }, add_usd: 0.15 }
+        - { when: { references: 6 }, add_usd: 0.18 }
+        - { when: { references: 7 }, add_usd: 0.21 }
+        - { when: { references: 8 }, add_usd: 0.24 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+    ref_inputs:
+      max_total: 8
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 8 }
+    # safety_tolerance: "1" to "5" (a string, default "2").
+    extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From the comment above ("1" to "5", a string).
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5"], default: "2" }
+    tags: [text-to-image, image-to-image]
+
+  - id: fal/flux-2-flex
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [flex] (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2-flex/api
+    description: Black Forest Labs FLUX.2 flex on Fal — text-to-image, or edits from up to 8 images.
+    # "$0.05 per megapixel on both input and output side, rounded up to the
+    # nearest megapixel": the output bands below, plus each input image at one megapixel
+    # or more ($0.05). An input above 1 MP bills more at fal than here,
+    # since its size isn't known at the quote.
+    # @see https://fal.ai/models/fal-ai/flux-2-flex/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2-flex/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.05
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.097152 } }, usd: 0.1 }
+        - { when: { size: '*', megapixels: { gt: 2.097152, lte: 3.145728 } }, usd: 0.15 }
+        - { when: { size: '*', megapixels: { gt: 3.145728, lte: 4.194304 } }, usd: 0.2 }
+        - { when: { references: 1 }, add_usd: 0.05 }
+        - { when: { references: 2 }, add_usd: 0.1 }
+        - { when: { references: 3 }, add_usd: 0.15 }
+        - { when: { references: 4 }, add_usd: 0.2 }
+        - { when: { references: 5 }, add_usd: 0.25 }
+        - { when: { references: 6 }, add_usd: 0.3 }
+        - { when: { references: 7 }, add_usd: 0.35 }
+        - { when: { references: 8 }, add_usd: 0.4 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # guidance_scale 1.5-10 (default 3.5), num_inference_steps 2-50 (default 28).
+      guidance_scale: { kind: float, min: 1.5, max: 10.0, default: 3.5 }
+      steps: { kind: int, min: 2, max: 50, default: 28 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+    ref_inputs:
+      max_total: 8
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 8 }
+    # safety_tolerance: "1" to "5" (a string, default "2").
+    extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From the comment above ("1" to "5", a string).
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5"], default: "2" }
+    tags: [text-to-image, image-to-image]
+
+  # FLUX.2 [pro] outpaint on fal: grows the init image's canvas and fills the
+  # new space. Input: image_url (required), expand_left, expand_top,
+  # expand_right, expand_bottom ("Pixels to expand on the left of the image",
+  # 0-2048, default 0), mode (high | fast, default high), auto_crop (default
+  # false), output_format jpeg | png (default jpeg). It takes no prompt, and
+  # answers `images`.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/outpaint (2026-11-04)
+  - id: fal/flux-2-pro-outpaint
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [pro] Outpaint (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2-pro/outpaint/api
+    description: Black Forest Labs FLUX.2 pro outpainting on Fal — grows an image by up to 2,048 px a side and fills the new space.
+    # "$0.03 for the first megapixel of output, plus $0.015 per extra megapixel
+    # of input and output, rounded up to the nearest megapixel". The input is
+    # at least one megapixel, so $0.045 is the least an outpaint costs. A
+    # canvas past one megapixel bills more at fal than here, since the input's
+    # size isn't known at the quote.
+    # @see https://fal.ai/models/fal-ai/flux-2-pro/outpaint/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.045 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      expand:
+        kind: expand
+        max_px: 2048
+        label: Expand
+        description: Pixels to add to each side (fal's expand_left, expand_top, expand_right, expand_bottom).
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    # mode (high | fast), auto_crop.
+    extra_allowlist: [mode, auto_crop]
+    extra_params:
+      # From the comment above.
+      mode: { kind: string, enum_values: ["high", "fast"], default: "high" }
+      auto_crop: { kind: bool, default: false }
+    tags: [image-to-image, outpainting]
+
+  # FLUX.2 [klein] 4B and 9B on fal, and their undistilled base models, each
+  # with an /edit twin ("A maximum of 4 images are allowed"). The distilled
+  # models take num_inference_steps 4-8; the base ones guidance_scale,
+  # num_inference_steps 4-50, negative_prompt and acceleration. Sides keep to
+  # BFL's 256-2048, as on the others.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/9b/edit (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/9b/base/edit (2026-11-04)
+  - id: fal/flux-2-klein-4b
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [klein] 4B (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2/klein/4b/api
+    description: Black Forest Labs FLUX.2 klein 4B on Fal — text-to-image, or edits from up to 4 images.
+    # "$0.005 per megapixels"; edits "$0.01 per megapixels" (input and output, as on 9B).
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/4b/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/4b/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.005
+      variable_pricing:
+        - { per_megapixel_usd: 0.005 }
+        - { when: { references: { gte: 1 } }, per_megapixel_usd: 0.01 }
+        - { when: { references: 1 }, add_usd: 0.01 }
+        - { when: { references: 2 }, add_usd: 0.02 }
+        - { when: { references: 3 }, add_usd: 0.03 }
+        - { when: { references: 4 }, add_usd: 0.04 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # num_inference_steps 4-8 (default 4).
+      steps: { kind: int, min: 4, max: 8, default: 4 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image, fast]
+
+  - id: fal/flux-2-klein-9b
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [klein] 9B (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2/klein/9b/api
+    description: Black Forest Labs FLUX.2 klein 9B on Fal — text-to-image, or edits from up to 4 images.
+    # "$0.006 per megapixels"; edits "$0.011 per megapixel of input and output.
+    # Input images will be resized to 1MP".
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/9b/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/9b/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.006
+      variable_pricing:
+        - { per_megapixel_usd: 0.006 }
+        - { when: { references: { gte: 1 } }, per_megapixel_usd: 0.011 }
+        - { when: { references: 1 }, add_usd: 0.011 }
+        - { when: { references: 2 }, add_usd: 0.022 }
+        - { when: { references: 3 }, add_usd: 0.033 }
+        - { when: { references: 4 }, add_usd: 0.044 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # num_inference_steps 4-8 (default 4).
+      steps: { kind: int, min: 4, max: 8, default: 4 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image, fast]
+
+  - id: fal/flux-2-klein-4b-base
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [klein] 4B Base (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2/klein/4b/base/api
+    description: Black Forest Labs FLUX.2 klein 4B base on Fal — text-to-image, or edits from up to 4 images.
+    # "$0.009 per megapixels"; edits "$0.009 per megapixel of input and output.
+    # Input images will be resized to 1MP".
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/4b/base/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/4b/base/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.009
+      variable_pricing:
+        - { per_megapixel_usd: 0.009 }
+        - { when: { references: 1 }, add_usd: 0.009 }
+        - { when: { references: 2 }, add_usd: 0.018 }
+        - { when: { references: 3 }, add_usd: 0.027 }
+        - { when: { references: 4 }, add_usd: 0.036 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # guidance_scale 0-20 (default 5), num_inference_steps 4-50 (default 28).
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 5.0 }
+      steps: { kind: int, min: 4, max: 50, default: 28 }
+      negative_prompt: { kind: string }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    extra_allowlist: [acceleration]
+    extra_params:
+      # From the klein comment above (names it; values unstated).
+      acceleration: { kind: string }
+    tags: [text-to-image, image-to-image]
+
+  - id: fal/flux-2-klein-9b-base
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [klein] 9B Base (Fal)
+    docs_url: https://fal.ai/models/fal-ai/flux-2/klein/9b/base/api
+    description: Black Forest Labs FLUX.2 klein 9B base on Fal — text-to-image, or edits from up to 4 images.
+    # "$0.011 per megapixels"; edits "$0.011 per megapixel of input and output.
+    # Input images will be resized to 1MP".
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/9b/base/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/flux-2/klein/9b/base/edit/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.011
+      variable_pricing:
+        - { per_megapixel_usd: 0.011 }
+        - { when: { references: 1 }, add_usd: 0.011 }
+        - { when: { references: 2 }, add_usd: 0.022 }
+        - { when: { references: 3 }, add_usd: 0.033 }
+        - { when: { references: 4 }, add_usd: 0.044 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # guidance_scale 0-20 (default 5), num_inference_steps 4-50 (default 28).
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 5.0 }
+      steps: { kind: int, min: 4, max: 50, default: 28 }
+      negative_prompt: { kind: string }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 4 }
+    extra_allowlist: [acceleration]
+    extra_params:
+      # From the klein comment above (names it; values unstated).
+      acceleration: { kind: string }
+    tags: [text-to-image, image-to-image]
 
   - id: fal/flux-schnell
     provider: fal
@@ -152,6 +945,10 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 2000 }
     params:
+      # fast-sdxl's "format" ("enum": ["jpeg", "png"], default "jpeg"), sent as
+      # `format` (the endpoint has no output_format).
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/fast-sdxl (2026-11-03)
+      output_format: { kind: string, enum_values: [png, jpeg], default: jpeg }
       negative_prompt: { kind: string, max_length: 2000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       # num_inference_steps 1-50, default 25; guidance_scale 0-20, default 7.5
@@ -203,19 +1000,537 @@ models:
     # "Your request will cost $0.04 per image (or $0.08 if you are using a
     # vector style)." (read 2026-10-30)
     # @see https://fal.ai/models/fal-ai/recraft/v3/text-to-image/llms.txt
+    # With an image the adapter calls the /image-to-image twin (image_url,
+    # strength, negative_prompt; "$0.04 per image (or $0.08 if you are using a
+    # vector style)", the same price), since 2026-11-04.
+    # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/image-to-image (2026-11-04)
+    # @see https://fal.ai/models/fal-ai/recraft/v3/image-to-image/llms.txt (2026-11-04)
     pricing:
       base_cost_usd: 0.04
       variable_pricing:
         - { when: { style: vector_illustration }, multiply: 2 }
-    capabilities: { text_to_image: true }
+    capabilities: { text_to_image: true, image_to_image: true }
     # prompt maxLength 1000 (https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/text-to-image)
     prompt: { required: true, max_length: 1000 }
     params:
       style:
         kind: string
         enum_values: [realistic_image, digital_illustration, vector_illustration]
-    extra_allowlist: []
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      # Image-to-image only ("strength … 0-1, default 0.5"; negative_prompt
+      # maxLength 1000): text-to-image has neither field, and isn't sent them.
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.5 }
+      negative_prompt: { kind: string, max_length: 1000 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    # style_id: a Recraft style made from reference images.
+    extra_allowlist: [style_id]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-image.txt: a uuid4 string).
+      style_id: { kind: string }
+    tags: [text-to-image, image-to-image, styled]
+
+  # Recraft V2 on fal. The registry's active id is fal-ai/recraft-20b, whose page
+  # 308-redirects to fal-ai/recraft/v2/text-to-image. The two take the same
+  # input field for field (prompt maxLength 1000, style, image_size, colors,
+  # style_id), and the adapter calls the listed id.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft-20b (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v2/text-to-image (2026-11-04)
+  - id: fal/recraft-v2
+    provider: fal
+    media_type: image
+    display_name: Recraft V2 (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v2/text-to-image/api
+    description: Recraft V2 on Fal — affordable raster or vector-style images.
+    # "Your request will cost $0.022 per image (or $0.044 if you are using a
+    # vector style)."
+    # @see https://fal.ai/models/fal-ai/recraft/v2/text-to-image/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.022
+      variable_pricing:
+        - { when: { style: vector_illustration }, multiply: 2 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      style:
+        kind: string
+        enum_values: [realistic_image, digital_illustration, vector_illustration]
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+    # style_id: a Recraft style made from reference images.
+    extra_allowlist: [style_id]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-image.txt: a uuid4 string).
+      style_id: { kind: string }
     tags: [text-to-image, styled]
+
+  # Recraft V4 and V4.1 on fal, carried as fal routes beside recraft/* (the
+  # hub-route policy, 2026-11-04). Each endpoint takes prompt (maxLength
+  # 10000), image_size, colors ([{r, g, b}]), background_color and
+  # enable_safety_checker: no seed, no style. The sizes are Recraft's own
+  # tables: 1K for standard, vector, utility and flash, 2K for pro (the
+  # appendix, as on recraft/recraftv4_1 and _pro).
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v4/text-to-image (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v4.1/pro/text-to-vector (2026-11-04)
+  # @see https://www.recraft.ai/docs/api-reference/appendix.md (2026-11-03)
+  - id: fal/recraft-v4
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4/text-to-image/api
+    description: Recraft V4 raster images on Fal.
+    # fal: "Price: $0.04 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image]
+
+  - id: fal/recraft-v4-pro
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 Pro (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4/pro/text-to-image/api
+    description: Recraft V4 Pro raster images on Fal, at 2K.
+    # fal: "Price: $0.25 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4/pro/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.25 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image]
+
+  - id: fal/recraft-v4-vector
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 Vector (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4/text-to-vector/api
+    description: Recraft V4 vector (SVG) images on Fal.
+    # fal: "Price: $0.08 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4/text-to-vector/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image, vector]
+
+  - id: fal/recraft-v4-pro-vector
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 Pro Vector (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4/pro/text-to-vector/api
+    description: Recraft V4 Pro vector (SVG) images on Fal.
+    # fal: "Price: $0.3 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4/pro/text-to-vector/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.3 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image, vector]
+
+  - id: fal/recraft-v4.1
+    provider: fal
+    media_type: image
+    display_name: Recraft V4.1 (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api
+    description: Recraft V4.1 raster images on Fal.
+    # fal: "Price: $0.035 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.035 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image]
+
+  - id: fal/recraft-v4.1-pro
+    provider: fal
+    media_type: image
+    display_name: Recraft V4.1 Pro (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4.1/pro/text-to-image/api
+    description: Recraft V4.1 Pro raster images on Fal, at 2K.
+    # fal: "Price: $0.21 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4.1/pro/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.21 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image]
+
+  - id: fal/recraft-v4.1-vector
+    provider: fal
+    media_type: image
+    display_name: Recraft V4.1 Vector (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/api
+    description: Recraft V4.1 vector (SVG) images on Fal.
+    # fal: "Price: $0.08 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image, vector]
+
+  - id: fal/recraft-v4.1-pro-vector
+    provider: fal
+    media_type: image
+    display_name: Recraft V4.1 Pro Vector (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4.1/pro/text-to-vector/api
+    description: Recraft V4.1 Pro vector (SVG) images on Fal.
+    # fal: "Price: $0.3 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4.1/pro/text-to-vector/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.3 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image, vector]
+
+  - id: fal/recraft-v4.1-utility
+    provider: fal
+    media_type: image
+    display_name: Recraft V4.1 Utility (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4.1/utility/text-to-image/api
+    description: Recraft V4.1 Utility raster images on Fal.
+    # fal: "Price: $0.035 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4.1/utility/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.035 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image]
+
+  - id: fal/recraft-v4.1-utility-pro
+    provider: fal
+    media_type: image
+    display_name: Recraft V4.1 Utility Pro (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/v4.1/utility/pro/text-to-image/api
+    description: Recraft V4.1 Utility Pro raster images on Fal, at 2K.
+    # fal: "Price: $0.21 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/v4.1/utility/pro/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.21 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image]
+
+  - id: fal/recraft-v4.1-flash
+    provider: fal
+    media_type: image
+    display_name: Recraft V4.1 Flash (Fal)
+    docs_url: https://fal.ai/models/recraft/v4.1/flash/text-to-image/api
+    description: Recraft V4.1 Flash on Fal — fast, low-cost raster images.
+    # fal: "Billing is calculated per generated image at $0.007 per image".
+    # @see https://fal.ai/models/recraft/v4.1/flash/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.007 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # A hint, sent as fal's `colors` [{r, g, b}]; Recraft takes at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    # background_color: {r, g, b}.
+    extra_allowlist: [background_color]
+    tags: [text-to-image, fast]
+
+  # Recraft V4 style references on fal: recraft/v4/style/{,pro/}text-to-{image,
+  # vector}. Input: prompt (maxLength 10000), image_urls (1-10 style
+  # references, "a new one will be generated from the provided images") or
+  # style_id, style_match (precise | flexible), colors, background_color,
+  # image_size. The sizes are Recraft's 1K and 2K tables, as on the V4 rows.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=recraft/v4/style/text-to-image (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=recraft/v4/style/pro/text-to-vector (2026-11-04)
+  - id: fal/recraft-v4-style
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 Style (Fal)
+    docs_url: https://fal.ai/models/recraft/v4/style/text-to-image/api
+    description: Recraft V4 on Fal in a style made from up to 10 reference images, or a saved style_id.
+    # "Each image costs $0.035 when a style_id is provided. If no style_id is
+    # provided, a new one will be generated from the provided images and you
+    # will be charged $0.005 extra."
+    # @see https://fal.ai/models/recraft/v4/style/text-to-image/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.035
+      variable_pricing:
+        - { when: { references: { gte: 1 } }, add_usd: 0.005 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    ref_inputs:
+      max_total: 10
+      default_role: style
+      provider_format: { form: url }
+      roles:
+        style: { required: false, min_count: 0, max_count: 10 }
+    # style_id (a saved style), style_match (precise | flexible), background_color.
+    extra_allowlist: [style_id, style_match, background_color]
+    extra_params:
+      # From the comment above; background_color ({r, g, b}) stays untyped.
+      style_id: { kind: string }
+      style_match: { kind: string, enum_values: ["precise", "flexible"] }
+    tags: [text-to-image, styled]
+
+  - id: fal/recraft-v4-style-pro
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 Pro Style (Fal)
+    docs_url: https://fal.ai/models/recraft/v4/style/pro/text-to-image/api
+    description: Recraft V4 Pro on Fal at 2K, in a style made from up to 10 reference images, or a saved style_id.
+    # "$0.10 per generated image when a style_id is provided … $0.005 extra"
+    # when the style is made from the images.
+    # @see https://fal.ai/models/recraft/v4/style/pro/text-to-image/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.10
+      variable_pricing:
+        - { when: { references: { gte: 1 } }, add_usd: 0.005 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    ref_inputs:
+      max_total: 10
+      default_role: style
+      provider_format: { form: url }
+      roles:
+        style: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [style_id, style_match, background_color]
+    extra_params:
+      # From the comment above; background_color ({r, g, b}) stays untyped.
+      style_id: { kind: string }
+      style_match: { kind: string, enum_values: ["precise", "flexible"] }
+    tags: [text-to-image, styled]
+
+  - id: fal/recraft-v4-style-vector
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 Style Vector (Fal)
+    docs_url: https://fal.ai/models/recraft/v4/style/text-to-vector/api
+    description: Recraft V4 vector (SVG) on Fal, in a style made from up to 10 reference images, or a saved style_id.
+    # "$0.05 per generated image when a style_id is provided … $0.005 extra"
+    # when the style is made from the images.
+    # @see https://fal.ai/models/recraft/v4/style/text-to-vector/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.05
+      variable_pricing:
+        - { when: { references: { gte: 1 } }, add_usd: 0.005 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    ref_inputs:
+      max_total: 10
+      default_role: style
+      provider_format: { form: url }
+      roles:
+        style: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [style_id, style_match, background_color]
+    extra_params:
+      # From the comment above; background_color ({r, g, b}) stays untyped.
+      style_id: { kind: string }
+      style_match: { kind: string, enum_values: ["precise", "flexible"] }
+    tags: [text-to-image, styled, vector]
+
+  - id: fal/recraft-v4-style-pro-vector
+    provider: fal
+    media_type: image
+    display_name: Recraft V4 Pro Style Vector (Fal)
+    docs_url: https://fal.ai/models/recraft/v4/style/pro/text-to-vector/api
+    description: Recraft V4 Pro vector (SVG) on Fal, in a style made from up to 10 reference images, or a saved style_id.
+    # "$0.12 per generated image when a style_id is provided … $0.005 extra"
+    # when the style is made from the images.
+    # @see https://fal.ai/models/recraft/v4/style/pro/text-to-vector/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.12
+      variable_pricing:
+        - { when: { references: { gte: 1 } }, add_usd: 0.005 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (fal's colors)." }
+      size:
+        kind: size
+        mode: enum
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    ref_inputs:
+      max_total: 10
+      default_role: style
+      provider_format: { form: url }
+      roles:
+        style: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [style_id, style_match, background_color]
+    extra_params:
+      # From the comment above; background_color ({r, g, b}) stays untyped.
+      style_id: { kind: string }
+      style_match: { kind: string, enum_values: ["precise", "flexible"] }
+    tags: [text-to-image, styled, vector]
+
+  # Recraft's image operations on fal: one image_url in, one `image` out, no
+  # prompt. Vectorize answers SVG; the upscalers a larger raster ("crisp"
+  # keeps detail, "creative" adds it).
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/vectorize (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/upscale/crisp (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/upscale/creative (2026-11-04)
+  - id: fal/recraft-vectorize
+    provider: fal
+    media_type: image
+    display_name: Recraft Vectorize (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/vectorize/api
+    description: Recraft on Fal — turns a raster image into an SVG.
+    # "Price: $0.01 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/vectorize/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 0 }
+    params: {}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [image-to-image, vector]
+
+  - id: fal/recraft-upscale-crisp
+    provider: fal
+    media_type: image
+    display_name: Recraft Crisp Upscale (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/upscale/crisp/api
+    description: Recraft on Fal — upscales an image, keeping its detail crisp.
+    # "Price: $0.004 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/upscale/crisp/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.004 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 0 }
+    params: {}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [image-to-image, upscale]
+
+  - id: fal/recraft-upscale-creative
+    provider: fal
+    media_type: image
+    display_name: Recraft Creative Upscale (Fal)
+    docs_url: https://fal.ai/models/fal-ai/recraft/upscale/creative/api
+    description: Recraft on Fal — upscales an image, adding detail.
+    # "Price: $0.25 per images".
+    # @see https://fal.ai/models/fal-ai/recraft/upscale/creative/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.25 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 0 }
+    params: {}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [image-to-image, upscale]
 
   - id: fal/auraflow
     provider: fal
@@ -237,7 +1552,9 @@ models:
       seed: { kind: seed, min: 0, max: 4294967294 }
       # num_inference_steps is 20-50, default 50 (https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow)
       steps: { kind: int, min: 20, max: 50, default: 50 }
-      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
+      # AuraFlowInput.guidance_scale: "minimum": 0, "maximum": 20, "default": 3.5.
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow (2026-11-09)
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 3.5 }
     extra_allowlist: []
     tags: [text-to-image]
 
@@ -247,20 +1564,24 @@ models:
     display_name: Fal Video (generic)
     docs_url: https://fal.ai/models/fal-ai/ltx-video/api
     # "$0.02 per videos" on both LTX endpoints the adapter calls
-    # (fal-ai/ltx-video and fal-ai/ltx-video/image-to-video), re-read 2026-09-11.
-    # @see https://fal.ai/models/fal-ai/ltx-video/llms.txt
+    # (fal-ai/ltx-video and fal-ai/ltx-video/image-to-video).
+    # @see https://fal.ai/models/fal-ai/ltx-video/llms.txt (2026-11-09)
+    # @see https://fal.ai/models/fal-ai/ltx-video/image-to-video/llms.txt (2026-11-09)
     pricing: { base_cost_usd: 0.02 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
       # No duration_seconds: neither LTX endpoint takes a duration, and the
-      # adapter never forwards one (https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-video).
+      # adapter never forwards one (https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-video, 2026-11-09).
       seed: { kind: seed, min: 0, max: 4294967294 }
     ref_inputs:
       max_total: 1
-      default_role: init
+      default_role: first_frame
       provider_format: { form: url }
+      # The start frame, as first_frame or as init (the role this row took
+      # before first_frame).
       roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
@@ -271,8 +1592,8 @@ models:
   # take prompt, duration, resolution, aspect_ratio, fps and generate_audio; no
   # seed or negative prompt. Image-to-video also takes `end_image_url`, which
   # this row does not offer (the adapter sends one reference, as image_url).
-  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/text-to-video
-  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/image-to-video
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/text-to-video (2026-11-09)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/image-to-video (2026-11-09)
   - id: fal/ltx-2.3
     provider: fal
     media_type: video
@@ -281,9 +1602,9 @@ models:
     description: Lightricks LTX-2.3 Pro text- and image-to-video with native audio, 1080p to 4K.
     # "$0.08 per second for 1080p, $0.16 per second for 1440p or $0.32 per
     # second for 2160p" on both endpoints; the default request (1080p, 6 s) is
-    # $0.48, read 2026-09-11.
-    # @see https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/llms.txt
-    # @see https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/llms.txt
+    # $0.48.
+    # @see https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/llms.txt (2026-11-09)
+    # @see https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/llms.txt (2026-11-09)
     pricing:
       base_cost_usd: 0.48
       variable_pricing:
@@ -296,8 +1617,7 @@ models:
     params:
       # PixelGenie L10: audio is sent as generate_audio (default true, same price).
       audio: { kind: bool, default: true }
-      # duration is the integer enum [6, 8, 10], default 6. The schema has no
-      # discrete sets, so this is the 6-10 range and the adapter rejects 7 and 9.
+      # duration is the integer enum [6, 8, 10], default 6.
       duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0, values: [6.0, 8.0, 10.0] }
       resolution:
         kind: string
@@ -309,18 +1629,192 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16"]
-      # fps is the integer enum [24, 25, 48, 50], default 25; the adapter
-      # rejects 26-47 and 49.
-      fps: { kind: int, min: 24, max: 50, default: 25 }
+      # fps is the integer enum [24, 25, 48, 50], default 25.
+      fps: { kind: int, min: 24, max: 50, default: 25, values: [24, 25, 48, 50] }
     ref_inputs:
       max_total: 1
-      default_role: init
+      default_role: first_frame
       provider_format: { form: url }
+      # The start frame, as first_frame or as init (the role this row took
+      # before first_frame).
       roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
         init: { required: false, min_count: 0, max_count: 1 }
     # generate_audio: boolean, default true (same price either way).
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
+
+  # FLUX 3 video on fal: Black Forest Labs' model, carried as a fal route (the
+  # user, 2026-11-04: hub routes are carried the way LiteLLM carries
+  # OpenRouter's). The adapter (video/fal.rs `resolve_spec`) reaches each row
+  # four ways:
+  # - no frame: …/text-to-video;
+  # - a first frame: …/image-to-video (`image_url`);
+  # - a first and a last frame: …/first-last-frame-to-video (`start_image_url`,
+  #   `end_image_url`);
+  # - keyframes: …/keyframes-to-video (`keyframes` [{frame_index, image_url}],
+  #   at most 10; "`frame_index` is a position at 24 fps").
+  # Every endpoint takes prompt, duration ("auto" or 5-20 on text and image, an
+  # integer 5-20 on the rest; litegen sends a whole number), aspect_ratio (auto,
+  # 21:9, 2:1, 16:9, 4:3, 1:1, 3:4, 9:16), generate_audio (default true) and
+  # safety_tolerance (0-4, default 2). None takes a seed.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/text-to-video (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/image-to-video (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/first-last-frame-to-video (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/keyframes-to-video (2026-11-04)
+  # @see https://docs.bfl.ml/cookbook/video_start_from_images.md (2026-11-04)
+  - id: fal/flux-3-video
+    provider: fal
+    media_type: video
+    display_name: FLUX 3 Video (fal)
+    docs_url: https://fal.ai/models/blackforestlabs/flux-3/text-to-video/api
+    description: Black Forest Labs FLUX 3 video with native audio on fal — from text, a first frame, first and last frames, or up to 10 keyframes; 5 to 20 s, 720p to 4K.
+    # Text- and image-to-video: "$0.17 per second of generated video at 720p,
+    # $0.29 per second at 1080p, $0.32 per second at 2K (1440p), and $0.47 per
+    # second at 4K (2160p)". The first-last and keyframe endpoints price "$0.17
+    # per second … at 720p, and $0.29 per second at 1080p" only, so the adapter
+    # refuses 1440p and 2160p there. The default request (5 s, 720p) is 5 ×
+    # $0.17 = $0.85.
+    # @see https://fal.ai/models/blackforestlabs/flux-3/text-to-video/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/blackforestlabs/flux-3/first-last-frame-to-video/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/blackforestlabs/flux-3/keyframes-to-video/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.85
+      variable_pricing:
+        - { per_second_usd: 0.17 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.29 }
+        - { when: { resolution: 1440p }, per_second_usd: 0.32 }
+        - { when: { resolution: 2160p }, per_second_usd: 0.47 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    params:
+      # Sent as generate_audio (default true, the same price).
+      audio: { kind: bool, default: true }
+      duration_seconds: { kind: int, min: 5, max: 20, default: 5 }
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p, 1440p, 2160p]
+        default: 720p
+      # Left out, fal uses `auto`.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"]
+    ref_inputs:
+      max_total: 10
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # Each goes at time_s × 24, rounded to a frame, within the clip.
+        keyframe: { required: false, min_count: 0, max_count: 10, timing: any }
+    # safety_tolerance (0-4, default 2).
+    extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From the comment above (0-4, default 2; an integer).
+      safety_tolerance: { kind: int, min: 0, max: 4, default: 2 }
+    tags: [text-to-video, image-to-video, keyframes]
+
+  # FLUX 3 drafts: the four endpoints' /draft twins (…/text-to-video/draft and
+  # so on), with the same fields except `resolution` ("draft video (720p)"). A
+  # draft also returns `draft_cache`, which only blackforestlabs/flux-3/draft-
+  # enhance reads. litegen keeps the video alone, so that step isn't offered.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/text-to-video/draft (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/image-to-video/draft (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/first-last-frame-to-video/draft (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/keyframes-to-video/draft (2026-11-04)
+  - id: fal/flux-3-video-draft
+    provider: fal
+    media_type: video
+    display_name: FLUX 3 Video Draft (fal)
+    docs_url: https://fal.ai/models/blackforestlabs/flux-3/text-to-video/draft/api
+    description: FLUX 3 video drafts on fal — fast 720p previews with audio, from text, frames or up to 10 keyframes; 5 to 20 s.
+    # "$0.06 per second of generated draft video (720p)" on all four endpoints.
+    # The default request (5 s) is $0.30.
+    # @see https://fal.ai/models/blackforestlabs/flux-3/text-to-video/draft/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.30
+      variable_pricing:
+        - { per_second_usd: 0.06 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    params:
+      audio: { kind: bool, default: true }
+      duration_seconds: { kind: int, min: 5, max: 20, default: 5 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"]
+    ref_inputs:
+      max_total: 10
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        keyframe: { required: false, min_count: 0, max_count: 10, timing: any }
+    extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From the comment above (0-4, default 2; an integer).
+      safety_tolerance: { kind: int, min: 0, max: 4, default: 2 }
+    tags: [text-to-video, image-to-video, keyframes, fast]
+
+  # FLUX 3 Max on fal ("a post-trained variant of FLUX 3 Video, tuned for
+  # stronger prompt adherence and better visual quality"), at
+  # …/flux-3-max/{text,image,keyframes}-to-video. It has no first-last
+  # endpoint: image-to-video takes the last frame as `end_image_url`. Each
+  # endpoint takes prompt, duration (5-20, default 5), resolution (720p |
+  # 1080p | 2K | 4K; "`1080p`, `2K` (1440p) and `4K` (2160p) are upscaled from
+  # the 720p generation", and the llms.txt pages price only 720p and 1080p, so
+  # the row offers those two), aspect_ratio, generate_audio, seed and
+  # reasoning_level (low | high, default high: "the model expands your prompt").
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3-max/text-to-video (2026-11-09)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3-max/image-to-video (2026-11-09)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3-max/keyframes-to-video (2026-11-09)
+  - id: fal/flux-3-max-video
+    provider: fal
+    media_type: video
+    display_name: FLUX 3 Max Video (fal)
+    docs_url: https://fal.ai/models/blackforestlabs/flux-3-max/text-to-video/api
+    description: FLUX 3 Max video with native audio on fal — from text, start and end frames, or up to 10 keyframes; 5 to 20 s at 720p or 1080p.
+    # "From November 8 at 00:00 UTC through November 22, 2026, the promotion
+    # continues at 50% off: $0.085 per second at 720p and $0.145 per second at
+    # 1080p. … Regular rates of $0.17 per second at 720p and $0.29 per second
+    # at 1080p resume on November 23, 2026 at 00:00 UTC." (text-to-video and
+    # image-to-video pages; the keyframes page still carries the earlier
+    # "75% off" text, "from October 15 to November 7", with no later schedule.)
+    # The row bills the list price. The default request (5 s, 720p) is $0.85.
+    # @see https://fal.ai/models/blackforestlabs/flux-3-max/text-to-video/llms.txt (2026-11-09)
+    # @see https://fal.ai/models/blackforestlabs/flux-3-max/image-to-video/llms.txt (2026-11-09)
+    # @see https://fal.ai/models/blackforestlabs/flux-3-max/keyframes-to-video/llms.txt (2026-11-09)
+    pricing:
+      base_cost_usd: 0.85
+      variable_pricing:
+        - { per_second_usd: 0.17 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.29 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    params:
+      audio: { kind: bool, default: true }
+      duration_seconds: { kind: int, min: 5, max: 20, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"]
+      seed: { kind: seed, min: 0, max: 4294967295 }
+    ref_inputs:
+      max_total: 10
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        keyframe: { required: false, min_count: 0, max_count: 10, timing: any }
+    # reasoning_level (low | high, default high).
+    extra_allowlist: [reasoning_level]
+    extra_params:
+      # From the comment above.
+      reasoning_level: { kind: string, enum_values: ["low", "high"], default: "high" }
+    tags: [text-to-video, image-to-video, keyframes]
 
   # ─── Background removal (PixelGenie L8) ───────────────────────────────────
   # Input: image_url (required), prompt (optional: "Change what the cutout
@@ -381,6 +1875,11 @@ models:
       roles:
         init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [model, operating_resolution, refine_foreground]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-image-2.txt, fal-ai/birefnet/v2).
+      model: { kind: string, enum_values: ["General Use (Light)", "General Use (Light 2K)", "General Use (Heavy)", "Matting", "Portrait", "General Use (Dynamic)"], default: "General Use (Light)" }
+      operating_resolution: { kind: string, enum_values: ["1024x1024", "2048x2048", "2304x2304"], default: "1024x1024" }
+      refine_foreground: { kind: bool, default: true }
     tags: [background-removal]
 
   # ─── Promptable segmentation (PixelGenie L7) ──────────────────────────────
@@ -461,9 +1960,10 @@ models:
   # and a test there ties each row below to its arm of that adapter's table.
   #
   # `output_formats` declares only what the VENDOR emits. litegen derives
-  # obj/stl/ply locally from any glb (see litegen-core/src/mesh/), so the set a
-  # caller may request — what GET /v1/models/{id} serves — is wider than these
-  # enums, which is why a glb-only endpoint is still worth having.
+  # every container it converts (all ten, `model3d_convert::derivable_formats`)
+  # from any vendor mesh it can read (see litegen-core/src/mesh/), so the set
+  # a caller may request — what GET /v1/models/{id} serves — is wider than
+  # these enums, which is why a glb-only endpoint is still worth having.
 
   - id: fal/hyper3d-rodin
     provider: fal
@@ -492,8 +1992,10 @@ models:
       output_formats:
         kind: string_array
         # geometry_file_format is a SCALAR on fal's side, so max_items is 1:
-        # one container per vendor job. litegen still delivers four, deriving
-        # obj/stl/ply from the glb it asks for.
+        # one container per vendor job. litegen still delivers every container
+        # a request names, deriving the rest from the one it asks for: Rodin's
+        # own fbx or usdz when one is requested (`prefers_vendor_native`), else
+        # glb, or glb always with `format_source: glb`.
         enum_values: [glb, usdz, fbx, obj, stl]
         max_items: 1
         default: [glb]
@@ -529,13 +2031,22 @@ models:
     # condition_mode, bbox_condition, addons — no canonical param maps to any of
     # these without distorting it, so they stay explicit passthroughs.
     extra_allowlist: [quality, tier, use_hyper, TAPose, condition_mode, bbox_condition, addons]
+    extra_params:
+      # Hyper3dRodinInput.addons: anyOf [{const: "HighPack", type: string}, {type: null}] (fal's OpenAPI, above).
+      addons: { kind: string, enum_values: [HighPack] }
+      # From fal's OpenAPI (drift snapshot fal/carried-3d.txt); bbox_condition (an integer list) stays untyped.
+      quality: { kind: string, enum_values: ["high", "medium", "low", "extra-low"], default: "medium" }
+      tier: { kind: string, enum_values: ["Regular", "Sketch"], default: "Regular" }
+      use_hyper: { kind: bool, default: false }
+      TAPose: { kind: bool, default: false }
+      condition_mode: { kind: string, enum_values: ["fuse", "concat"], default: "concat" }
     tags: [3d, mesh, rodin]
 
   - id: fal/trellis
     provider: fal
     media_type: model3d
     display_name: TRELLIS (Fal)
-    description: Microsoft TRELLIS via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.
+    description: Microsoft TRELLIS via Fal. Image-to-3D only, GLB only — litegen derives the other containers from it.
     docs_url: https://fal.ai/models/fal-ai/trellis/api
     # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/trellis
     #   (TrellisInput / TrellisOutput, re-read 2026-10-12)
@@ -554,7 +2065,7 @@ models:
         max_items: 1
         default: [glb]
         label: Output formats
-        description: TRELLIS emits glb; obj, stl and ply are derived by litegen.
+        description: TRELLIS emits glb; litegen derives the other containers.
       # TrellisInput.seed is an unbounded integer; u32 is the range every other
       # fal endpoint documents.
       seed: { kind: seed, min: 0, max: 4294967295 }
@@ -566,13 +2077,21 @@ models:
         init: { required: true, min_count: 1, max_count: 1 }
     # texture_size is 512 | 1024 | 2048 (default 1024); mesh_simplify 0.9–0.98.
     extra_allowlist: [mesh_simplify, texture_size, ss_guidance_strength, ss_sampling_steps, slat_guidance_strength, slat_sampling_steps]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-3d.txt, fal-ai/trellis).
+      mesh_simplify: { kind: float, min: 0.9, max: 0.98, default: 0.95 }
+      texture_size: { kind: int, values: [512, 1024, 2048], default: 1024 }
+      ss_guidance_strength: { kind: float, min: 0, max: 10, default: 7.5 }
+      ss_sampling_steps: { kind: int, min: 1, max: 50, default: 12 }
+      slat_guidance_strength: { kind: float, min: 0, max: 10, default: 3 }
+      slat_sampling_steps: { kind: int, min: 1, max: 50, default: 12 }
     tags: [3d, mesh, trellis]
 
   - id: fal/hunyuan3d-v2
     provider: fal
     media_type: model3d
     display_name: Hunyuan3D v2 (Fal)
-    description: Tencent Hunyuan3D v2 via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.
+    description: Tencent Hunyuan3D v2 via Fal. Image-to-3D only, GLB only — litegen derives the other containers from it.
     docs_url: https://fal.ai/models/fal-ai/hunyuan3d/v2/api
     # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hunyuan3d/v2
     #   (Hunyuan3dV2Input / Hunyuan3dV2Output, re-read 2026-10-12)
@@ -593,7 +2112,7 @@ models:
         max_items: 1
         default: [glb]
         label: Output formats
-        description: Hunyuan3D emits glb; obj, stl and ply are derived by litegen.
+        description: Hunyuan3D emits glb; litegen derives the other containers.
       texture:
         kind: bool
         default: false
@@ -609,6 +2128,11 @@ models:
     # octree_resolution 1–1024 (default 256), num_inference_steps 1–50,
     # guidance_scale 0–20.
     extra_allowlist: [num_inference_steps, guidance_scale, octree_resolution]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-3d.txt, fal-ai/hunyuan3d/v2).
+      num_inference_steps: { kind: int, min: 1, max: 50, default: 50 }
+      guidance_scale: { kind: float, min: 0, max: 20, default: 7.5 }
+      octree_resolution: { kind: int, min: 1, max: 1024, default: 256 }
     tags: [3d, mesh, hunyuan]
 
   # ─── Multiview-to-3D (PixelGenie 3D doc §3E) ───────────────────────────────
@@ -678,6 +2202,12 @@ models:
     # texture_quality, geometry_quality and quad change the price (and quad
     # the container), so they wait for variable pricing (Task 17).
     extra_allowlist: [texture_alignment, texture_seed, orientation, auto_size]
+    extra_params:
+      # From fal's OpenAPI (drift snapshot fal/carried-3d.txt, tripo3d/h3.1/multiview-to-3d).
+      texture_alignment: { kind: string, enum_values: ["original_image", "geometry"], default: "original_image" }
+      texture_seed: { kind: int }
+      orientation: { kind: string, enum_values: ["default", "align_image"], default: "default" }
+      auto_size: { kind: bool, default: false }
     tags: [3d, mesh, tripo, multiview]
 
   - id: fal/hunyuan3d-v3.1-pro
@@ -711,7 +2241,9 @@ models:
       base_cost_usd: 0.375
       variable_pricing:
         - { when: { pbr: true }, add_usd: 0.15 }
-        - { when: { views: "*" }, add_usd: 0.15 }
+        # Any view besides the front: a lone front view is input_image_url,
+        # the plain image-to-3D input.
+        - { when: { added_views: "*" }, add_usd: 0.15 }
         - { when: { target_polycount: "*" }, add_usd: 0.15 }
     capabilities: { image_to_3d: true, multiview_to_3d: true }
     prompt: { required: false, max_length: 0 }
@@ -760,13 +2292,16 @@ models:
       defined limbs. litegen sends no animation, so none is billed.
     docs_url: https://fal.ai/models/fal-ai/meshy/rigging/api
     # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging
-    #   (MeshyRiggingInput / MeshyRiggingOutput, read 2026-10-30): model_url
+    #   (MeshyRiggingInput / MeshyRiggingOutput, read 2026-11-09): model_url
     #   (GLB), height_meters (default 1.7), enable_animation (default false).
-    # @see https://docs.meshy.ai/en/api/rigging (2026-10-30), the limits fal
-    #   forwards: "100 MB as a data URI"; "at most 320,000 faces";
-    #   "Rigging isn't suitable for these models: - Untextured meshes -
-    #   Non-humanoid assets".
-    # @see https://fal.ai/models/fal-ai/meshy/rigging (2026-10-30)
+    # @see https://docs.meshy.ai/en/api/rigging (2026-11-09), the limits fal
+    #   forwards: "100 MB as a data URI"; "The model can have at most 380,000
+    #   triangles (a quad counts as 2), and a model with more returns `400`."
+    #   (max_faces below stays at 320,000, the limit Meshy published before;
+    #   a test pins it); "Rigging isn't suitable for these models: -
+    #   Untextured meshes - Non-humanoid assets - Humanoid assets with an
+    #   unclear limb and body structure".
+    # @see https://fal.ai/models/fal-ai/meshy/rigging (2026-11-09)
     #   "$0.20 per request. +$0.12 when enable_animation=true".
     pricing: { base_cost_usd: 0.20 }
     capabilities: {}
@@ -811,3 +2346,151 @@ models:
         description: Meshy returns glb and fbx; litegen derives the rest.
     extra_allowlist: []
     tags: [3d, rig, meshy, 3d-operation]
+
+  # FLUX 3 on fal, carried as fal routes beside bfl/flux-3-* and
+  # replicate/flux-3-image (the user, 2026-11-04: "like how litellm can still
+  # use openrouter"). Each model is two endpoints: text-to-image, and its
+  # /edit-image twin, which the adapter calls when images are attached
+  # ("image_urls … maxItems 10").
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/text-to-image (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/edit-image (2026-11-04)
+  - id: fal/flux-3-image
+    provider: fal
+    media_type: image
+    display_name: FLUX 3 Image (fal)
+    description: Black Forest Labs FLUX 3 Image on fal — text-to-image, or edits from up to 10 images, at 1K.
+    docs_url: https://fal.ai/models/blackforestlabs/flux-3/text-to-image/api
+    # "Image pricing varies by resolution. A 1K (1 MP) image costs $0.048." — fal
+    # prices no other tier, so only 1K is offered.
+    # @see https://fal.ai/models/blackforestlabs/flux-3/text-to-image/llms.txt (2026-11-04)
+    pricing: { base_cost_usd: 0.048 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      # "resolution … 768sq, 1k, 1.5k, 2k, 4k (default 1k)": 1k, the priced one.
+      resolution: { kind: string, enum_values: ["1K"], default: "1K" }
+      # "aspect_ratio … auto, 21:9, 2:1, 16:9, 3:2, 7:5, 4:3, 5:4, 1:1, 4:5, 3:4, 5:7,
+      # 2:3, 9:16, 1:2" (unset is auto).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "2:1", "16:9", "3:2", "7:5", "4:3", "5:4", "1:1", "4:5", "3:4", "5:7", "2:3", "9:16", "1:2"]
+      # "output_format … jpeg, png (default jpeg)"
+      output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    # safety_tolerance (0-4, default 2), enable_prompt_expansion (default false).
+    extra_allowlist: [safety_tolerance, enable_prompt_expansion]
+    extra_params:
+      # From the comment above (safety_tolerance 0-4, an integer).
+      safety_tolerance: { kind: int, min: 0, max: 4, default: 2 }
+      enable_prompt_expansion: { kind: bool, default: false }
+    tags: [text-to-image, image-to-image]
+
+  # Klein on fal: image_size instead of a tier ("Each side can be 256 to 4096
+  # pixels (native 4K)", multiple_of 16, max_area 16777216; default square_hd,
+  # 1024²), seed, output_format jpeg | png | webp (default png).
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/text-to-image (2026-11-04)
+  - id: fal/flux-3-image-klein
+    provider: fal
+    media_type: image
+    display_name: FLUX 3 Image Klein (fal)
+    description: Black Forest Labs FLUX 3 Klein on fal — fast text-to-image, or edits from up to 10 images, 256 to 4096 px.
+    docs_url: https://fal.ai/models/blackforestlabs/flux-3/klein/text-to-image/api
+    # "Pricing per output image is $0.008 at 768 × 768, $0.009 at 1K, $0.011 at 1.5K,
+    # $0.014 at 2K, and $0.036 at 4K. The same planned rates apply to generation and
+    # editing" — by output pixels, the bands bfl/flux-3-image-klein uses; the
+    # default square_hd (1024²) is $0.009.
+    # @see https://fal.ai/models/blackforestlabs/flux-3/klein/text-to-image/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.009
+      variable_pricing:
+        - { when: { size: '*', megapixels: { lte: 0.589824 } }, usd: 0.008 }
+        - { when: { size: '*', megapixels: { gt: 0.589824, lte: 1.048576 } }, usd: 0.009 }
+        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 2.359296 } }, usd: 0.011 }
+        - { when: { size: '*', megapixels: { gt: 2.359296, lte: 4.194304 } }, usd: 0.014 }
+        - { when: { size: '*', megapixels: { gt: 4.194304 } }, usd: 0.036 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 4096
+        min_height: 256
+        max_height: 4096
+        multiple_of: 16
+        max_pixels: 16777216
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      output_format: { kind: string, enum_values: [png, jpeg, webp], default: png }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    # enable_prompt_expansion (default true). Not bounding_boxes (litegen's
+    # layout maps to BFL's in-prompt boxes, not this field) nor
+    # enable_safety_checker.
+    extra_allowlist: [enable_prompt_expansion]
+    extra_params:
+      # From the comment above.
+      enable_prompt_expansion: { kind: bool, default: true }
+    tags: [text-to-image, image-to-image, fast]
+
+  # Klein *base* on fal ("undistilled, CFG"), a model of its own. fal serves it
+  # only at …/klein/base/text-to-image/lora and …/klein/base/edit-image/lora,
+  # whose `loras` is optional ("Default: []"), and litegen sends none. "Same
+  # inputs as the text-to-image endpoint": image_size 256 to 4096 a side
+  # (multiple_of 16), seed, output_format jpeg | png | webp (default png),
+  # edits from at most 10 image_urls.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/text-to-image/lora (2026-11-04)
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/edit-image/lora (2026-11-04)
+  - id: fal/flux-3-image-klein-base
+    provider: fal
+    media_type: image
+    display_name: FLUX 3 Image Klein Base (fal)
+    description: Black Forest Labs FLUX 3 Klein base (undistilled) on fal — text-to-image, or edits from up to 10 images, up to 4.2 megapixels.
+    docs_url: https://fal.ai/models/blackforestlabs/flux-3/klein/base/text-to-image/lora/api
+    # "Your request will cost $0.035 per megapixel of output … Billed per output
+    # image by size: up to 1024x1024 counts as 1 megapixel, 2048x2048 as 1.56":
+    # $0.035 up to 1 MP (the default square_hd is 1024²), and 1.56 × $0.035 =
+    # $0.0546 above it. fal gives no price past 2048², so the row stops at
+    # 4,194,304 pixels.
+    # @see https://fal.ai/models/blackforestlabs/flux-3/klein/base/text-to-image/lora/llms.txt (2026-11-04)
+    # @see https://fal.ai/models/blackforestlabs/flux-3/klein/base/edit-image/lora/llms.txt (2026-11-04)
+    pricing:
+      base_cost_usd: 0.035
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 1.048576 } }, usd: 0.0546 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 4096
+        min_height: 256
+        max_height: 4096
+        multiple_of: 16
+        max_pixels: 4194304
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      output_format: { kind: string, enum_values: [png, jpeg, webp], default: png }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    # enable_prompt_expansion (default true), as on fal/flux-3-image-klein. Not
+    # loras: litegen takes no LoRA input.
+    extra_allowlist: [enable_prompt_expansion]
+    extra_params:
+      # From the comment above.
+      enable_prompt_expansion: { kind: bool, default: true }
+    tags: [text-to-image, image-to-image]

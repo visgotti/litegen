@@ -1,22 +1,27 @@
 import { test, expect } from '@playwright/test';
-import { createServer, Server } from 'http';
+import fs from 'fs';
+import { createServer, Server, type IncomingHttpHeaders } from 'http';
+import { feature, nextCall } from './support';
 
 const MASTER_KEY = process.env.PLAYWRIGHT_MASTER_KEY ?? 'test-master-key-please-rotate';
 // Direct-to-backend base for raw API calls (bypasses the dashboard proxy). Matches
 // the webServer port in playwright.config.ts; override with LITEGEN_API_BASE.
 const API_BASE = process.env.LITEGEN_API_BASE ?? 'http://127.0.0.1:5099';
 
-function startWebhookReceiver(port: number): Promise<{ server: Server; received: any[] }> {
+/** One POST the receiver got: its JSON body, or the raw text under `raw`. */
+type Delivery = { url?: string; headers: IncomingHttpHeaders; body: Record<string, unknown> };
+
+function startWebhookReceiver(port: number): Promise<{ server: Server; received: Delivery[] }> {
   return new Promise((resolve) => {
-    const received: any[] = [];
+    const received: Delivery[] = [];
     const server = createServer((req, res) => {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
         try {
-          received.push({ url: req.url, headers: req.headers, body: JSON.parse(body || '{}') });
+          received.push({ url: req.url, headers: req.headers, body: JSON.parse(body || '{}') as Record<string, unknown> });
         } catch {
-          received.push({ url: req.url, headers: req.headers, body });
+          received.push({ url: req.url, headers: req.headers, body: { raw: body } });
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -35,6 +40,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   const MEMBER_PW = 'another-strong-pw-456';
 
   // 1. Sign up as Owner
+  await feature('Sign-up — the first user is the owner');
   await page.goto('/signup');
   await page.locator('[data-testid="signup-email"]').fill(OWNER_EMAIL);
   await page.locator('[data-testid="signup-password"]').fill(OWNER_PW);
@@ -49,6 +55,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page.locator('[data-testid^="user-row-"]')).toHaveCount(1, { timeout: 10_000 });
 
   // 3. Invite member
+  await feature('Invite a member; accept the invitation');
   await page.locator('[data-testid="users-invite-btn"]').click();
   await page.locator('[data-testid="invite-email"]').fill(MEMBER_EMAIL);
   await page.locator('[data-testid="invite-role"]').selectOption('member');
@@ -79,6 +86,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page.locator('[data-testid="user-menu-email"]')).toContainText(MEMBER_EMAIL, { timeout: 10_000 });
 
   // 6. Member visits /users → forbidden
+  await feature('Role-based access — a member is forbidden /users');
   await page.goto('/users');
   await expect(page.locator('[data-testid="forbidden-403"]')).toBeVisible({ timeout: 10_000 });
 
@@ -92,6 +100,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.waitForURL('**/');
 
   // 8. Promote member to admin
+  await feature('Promote to admin; transfer ownership');
   await page.goto('/users');
   await page.locator(`[data-testid="user-edit-${MEMBER_EMAIL}"]`).click();
   await page.locator('[data-testid="user-edit-role"]').selectOption('admin');
@@ -103,6 +112,41 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.locator('[data-testid="confirm-transfer"]').click();
   await expect(page.locator(`[data-testid="user-role-${MEMBER_EMAIL}"]`)).toContainText(/owner/i, { timeout: 10_000 });
   await expect(page.locator(`[data-testid="user-role-${OWNER_EMAIL}"]`)).toContainText(/admin/i, { timeout: 10_000 });
+  // Read back from the server, not the page's own state.
+  await page.reload();
+  await expect(page.locator(`[data-testid="user-role-${MEMBER_EMAIL}"]`)).toContainText(/owner/i, { timeout: 10_000 });
+  await expect(page.locator(`[data-testid="user-role-${OWNER_EMAIL}"]`)).toContainText(/admin/i, { timeout: 10_000 });
+
+  // 9b. Providers: the org's model pool narrows what keys may use, never what
+  // the page lists, or a model left out of the pool could not be added back.
+  // In an org of its own: the specs running beside this one share the
+  // default org, and a pool there would refuse their models.
+  await feature('Providers — the org pool, edited on the page; a provider with no models says so');
+  const csrf = ((await (await page.request.get(`${API_BASE}/v1/auth/csrf`)).json()) as { csrf_token: string }).csrf_token;
+  const created = await page.request.post(`${API_BASE}/v1/orgs`, {
+    headers: { 'x-csrf-token': csrf },
+    data: { name: `Providers e2e ${Date.now()}` },
+  });
+  expect([200, 201], await created.text()).toContain(created.status());
+  const poolOrg = ((await created.json()) as { id: string }).id;
+  await page.goto('/providers');
+  const switcher = page.getByTestId('org-switcher');
+  const homeOrg = await switcher.inputValue();
+  await switcher.selectOption(poolOrg);
+  await page.getByTestId('provider-toggle-mock').click();
+  const pooled = page.getByTestId('provider-model-enable-mock/image-gen');
+  await expect(page.getByTestId('provider-model-enable-mock/video-gen')).toBeVisible({ timeout: 10_000 });
+  const poolSaved = nextCall(page, 'PUT', /^\/v1\/orgs\/[^/]+\/allowed-models$/);
+  await pooled.check();
+  expect((await poolSaved).status(), 'the pool is now just mock/image-gen').toBe(200);
+  await page.reload();
+  await page.getByTestId('provider-toggle-mock').click();
+  await expect(page.getByTestId('provider-model-enable-mock/image-gen')).toBeChecked({ timeout: 10_000 });
+  await expect(page.getByTestId('provider-model-enable-mock/video-gen'), 'a model outside the pool is still listed').not.toBeChecked();
+  // Another provider's models are outside this org's pool: listed, none enabled.
+  await page.getByTestId('provider-toggle-bedrock').click();
+  await expect(page.getByTestId('provider-toggle-bedrock')).toContainText(/(?<!\d)0\/[1-9]\d* enabled/);
+  await page.getByTestId('org-switcher').selectOption(homeOrg);
 
   // 10. Sign out (owner is now admin)
   await page.locator('[data-testid="user-menu-toggle"]').click();
@@ -117,6 +161,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // renders its authenticated state. This matches how the other e2e specs auth.
 
   // ─── Step 1: Auth setup ──────────────────────────────────────────────────────
+  await feature('Master-key authentication');
   // Seed once (not via addInitScript) so the later AuthBar sign-out can actually
   // clear it — we're on /login here, so localStorage is writable for this origin.
   await page.evaluate((key) => localStorage.setItem('litegen_api_key', key), MASTER_KEY);
@@ -127,10 +172,17 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page.getByTestId('auth-status')).toContainText('Authenticated ✓');
 
   // ─── Step 2: Overview page ───────────────────────────────────────────────────
+  await feature('Overview — the figures are the server\'s /v1/stats');
   // Navigate away and back to reload data with auth now set
   await page.getByRole('link', { name: 'Logs' }).click();
+  const statsCall = nextCall(page, 'GET', /^\/v1\/stats$/);
   await page.getByRole('link', { name: 'Overview' }).click();
+  const shownStats = (await (await statsCall).json()) as { total_requests: number; failed_requests: number };
   await expect(page.getByText('Total Requests')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.stat-card').filter({ hasText: 'Total Requests' }).locator('.value'))
+    .toHaveText(shownStats.total_requests.toLocaleString('en-US'));
+  await expect(page.locator('.stat-card').filter({ hasText: 'Failed Requests' }).locator('.value'))
+    .toHaveText(shownStats.failed_requests.toLocaleString('en-US'));
   await expect(page.getByText('Success Rate')).toBeVisible();
   await expect(page.getByText('Failed Requests')).toBeVisible();
   await expect(page.getByText('Total Cost')).toBeVisible();
@@ -143,24 +195,17 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page.getByTestId('overview-p99')).toBeVisible();
 
   // ─── Step 3: Logs page ───────────────────────────────────────────────────────
+  await feature('Logs — every log the server returned is a row');
+  const logsCall = nextCall(page, 'GET', /^\/v1\/logs$/);
   await page.getByRole('link', { name: 'Logs' }).click();
-  // Wait for logs table to load (may show "No logs yet")
+  const logsPage = (await (await logsCall).json()) as { data: Array<{ id: string }> };
   await expect(page.locator('table')).toBeVisible({ timeout: 10_000 });
-
-  // Try pagination if multiple pages exist
-  const nextBtn = page.getByRole('button', { name: 'Next' });
-  const prevBtn = page.getByRole('button', { name: 'Previous' });
-  if (await nextBtn.isVisible()) {
-    const isNextEnabled = !await nextBtn.isDisabled();
-    if (isNextEnabled) {
-      await nextBtn.click();
-      await expect(page.locator('table')).toBeVisible({ timeout: 5_000 });
-      await prevBtn.click();
-      await expect(page.locator('table')).toBeVisible({ timeout: 5_000 });
-    }
+  for (const entry of logsPage.data.slice(0, 10)) {
+    await expect(page.getByTestId(`logs-row-${entry.id}`)).toBeVisible();
   }
 
   // ─── Step 4: Models page ─────────────────────────────────────────────────────
+  await feature('Models page and its detail drawer');
   await page.getByRole('link', { name: 'Models' }).click();
 
   // Wait for at least 10 model rows to appear (may be more)
@@ -182,16 +227,23 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   const detailPanel = page.getByTestId('model-detail-panel');
   await expect(detailPanel).toBeVisible({ timeout: 5_000 });
 
-  // Assert the panel includes pricing content.
+  // Assert the panel includes pricing content, for the model the server describes.
   await expect(page.getByTestId('model-detail-panel')).toContainText('Pricing', { timeout: 10_000 });
+  const imageGen = await (await page.request.get(`${API_BASE}/v1/models/mock/image-gen`, { headers: { Authorization: `Bearer ${MASTER_KEY}` } })).json();
+  await expect(page.getByTestId('model-detail-panel')).toContainText(imageGen.display_name);
 
   // Close the panel
   await page.getByTestId('model-detail-close').click();
   await expect(detailPanel).not.toBeVisible({ timeout: 3_000 });
 
   // ─── Step 5: Health page ─────────────────────────────────────────────────────
+  await feature('Health — every provider /health reports, and a cache clear');
+  const healthCall = nextCall(page, 'GET', /^\/health$/);
   await page.getByRole('link', { name: 'Health' }).click();
+  const health = (await (await healthCall).json()) as { providers: Array<{ provider: string }> };
   await expect(page.locator('table')).toBeVisible({ timeout: 10_000 });
+  expect(health.providers.map(p => p.provider)).toContain('mock');
+  for (const p of health.providers) await expect(page.locator('table')).toContainText(p.provider);
 
   // Click Refresh
   const refreshBtn = page.getByRole('button', { name: 'Refresh' });
@@ -202,11 +254,14 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // Click Clear Cache — should not show error alert
   const clearCacheBtn = page.getByRole('button', { name: 'Clear Cache' });
   await expect(clearCacheBtn).toBeVisible();
+  const cleared = nextCall(page, 'DELETE', /^\/v1\/cache$/);
   await clearCacheBtn.click();
+  expect((await cleared).status(), 'the server cleared its cache').toBe(200);
   // Ensure no error appeared
   await expect(page.locator('.alert-error')).not.toBeVisible({ timeout: 3_000 });
 
   // ─── Step 6: Keys page — full CRUD ──────────────────────────────────────────
+  await feature('API keys — create, use, edit, persist, revoke');
   await page.getByRole('link', { name: 'API Keys' }).click();
   await expect(page.locator('table')).toBeVisible({ timeout: 10_000 });
 
@@ -234,6 +289,13 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   const keyText = await page.getByTestId('key-secret').textContent();
   expect(keyText).toBeTruthy();
   expect(keyText!.startsWith('sk_live_')).toBeTruthy();
+
+  // The secret works: the gateway serves a generation for it.
+  const withKey = (secret: string) => page.request.post(`${API_BASE}/v1/images/generations`, {
+    headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+    data: { model: 'mock/image-gen', prompt: 'a key at work' },
+  });
+  expect((await withKey(keyText!)).status(), 'a new key generates').toBe(200);
 
   // Wait for table row to appear — find the row with name "playwright-test-key"
   await expect(page.getByText('playwright-test-key')).toBeVisible({ timeout: 10_000 });
@@ -336,8 +398,11 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
 
   // Key still shows as revoked
   await expect(page.getByTestId(`key-status-${keyRowId}`)).toContainText('revoked', { timeout: 10_000 });
+  // …and the gateway refuses it.
+  expect((await withKey(keyText!)).status(), 'a revoked key is refused').toBe(401);
 
   // ─── NEW: Playground ──────────────────────────────────────────────────────────
+  await feature('Playground — generate, the Request/Response tabs, history and re-submit');
   await page.click('a[href="/playground"]');
   await page.waitForURL('**/playground');
 
@@ -359,26 +424,31 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // mock/visual-image-gen takes no negative prompt, so the field is off.
   await expect(page.locator('[data-testid="playground-negative-prompt"]')).toBeDisabled();
 
+  const firstRun = nextCall(page, 'POST', /^\/v1\/images\/generations$/);
   await page.locator('[data-testid="playground-generate"]').click();
+  const firstResponse = await firstRun;
+  expect(firstResponse.status()).toBe(200);
+  const firstWire = firstResponse.request().postDataJSON() as Record<string, unknown>;
+  const firstBody = (await firstResponse.json()) as { id: string; model: string; data: Array<{ b64_json: string }> };
+  expect(firstWire).toMatchObject({ model: 'mock/visual-image-gen', prompt: 'a playwright cat' });
+  expect(firstBody.model).toBe('mock/visual-image-gen');
+  const playgroundGenId = firstBody.id;
 
-  // Wait for the image to render
+  // The image shown is the one the server returned, and it decodes.
   const imgLocator = page.locator('[data-testid="playground-image"]');
   await expect(imgLocator).toBeVisible({ timeout: 15_000 });
-  const src = await imgLocator.getAttribute('src');
-  expect(src, 'image src must be populated').toBeTruthy();
-  // Real PNG base64 must be substantially longer than a 4-byte placeholder
-  expect(src!.length, 'image src must be a real PNG, not a placeholder').toBeGreaterThan(1000);
+  await expect(imgLocator).toHaveAttribute('src', `data:image/png;base64,${firstBody.data[0].b64_json}`);
+  expect(await imgLocator.evaluate((el: HTMLImageElement) => el.naturalWidth), 'the PNG decodes').toBeGreaterThan(0);
 
-  // Switch to Request JSON tab
+  // Switch to Request JSON tab: exactly the body that went over the wire.
   await page.locator('[data-testid="playground-tab-request"]').click();
   const reqText = await page.locator('[data-testid="playground-request-json"]').textContent();
-  expect(reqText).toContain('"model": "mock/visual-image-gen"');
-  expect(reqText).toContain('"prompt": "a playwright cat"');
+  expect(JSON.parse(reqText!)).toEqual(firstWire);
 
-  // Switch to Response JSON tab
+  // Switch to Response JSON tab: the server's answer.
   await page.locator('[data-testid="playground-tab-response"]').click();
   const resText = await page.locator('[data-testid="playground-response-json"]').textContent();
-  expect(resText).toMatch(/"id":/);
+  expect(JSON.parse(resText!).id).toBe(playgroundGenId);
 
   // History row appears
   const histRow0 = page.locator('[data-testid="playground-history-row-0"]');
@@ -396,9 +466,13 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(strictToggle).not.toBeChecked();
   await strictToggle.check(); // restore
 
-  // Re-submit history row 0
+  // Re-submit history row 0: the same body goes again, and a new generation comes back.
+  const rerun = nextCall(page, 'POST', /^\/v1\/images\/generations$/);
   await page.locator('[data-testid="playground-history-resubmit-0"]').click();
-  // Wait for second response
+  const rerunResponse = await rerun;
+  expect(rerunResponse.status()).toBe(200);
+  expect(rerunResponse.request().postDataJSON()).toEqual(firstWire);
+  expect(((await rerunResponse.json()) as { id: string }).id).not.toBe(playgroundGenId);
   await expect(page.locator('[data-testid="playground-history-row-1"]')).toBeVisible({ timeout: 10_000 });
 
   // Delete history row 1
@@ -408,19 +482,22 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(histRow0).toBeVisible();
 
   // ─── NEW: Generations ─────────────────────────────────────────────────────────
-  // First trigger a video generation via API directly
+  await feature('Generations — cancel a running job; the vendor takes it and the charge is refunded');
+  // First trigger a video generation via API directly. mock/held-video stays
+  // processing until it is cancelled, so the cancel is never a race.
   const masterKey = process.env.PLAYWRIGHT_MASTER_KEY ?? 'test-master-key-please-rotate';
   const videoResp = await page.request.post(`${API_BASE}/v1/videos/generations`, {
     headers: {
       Authorization: `Bearer ${masterKey}`,
       'Content-Type': 'application/json',
     },
-    data: { model: 'mock/video-gen', prompt: 'a playwright cat dancing' },
+    data: { model: 'mock/held-video', prompt: 'a playwright cat dancing' },
   });
   expect(videoResp.status()).toBe(200);
   const videoBody = await videoResp.json();
   const videoId = videoBody.id as string;
   expect(videoId).toBeTruthy();
+  expect(videoBody.usage.cost_usd, 'the held clip is billed at submit').toBe(0.25);
 
   // Navigate to Generations
   await page.click('a[href="/generations"]');
@@ -434,50 +511,33 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.locator(`[data-testid="gen-expand-${videoId}"]`).click();
   await expect(page.locator(`[data-testid="gen-detail-${videoId}"]`)).toBeVisible();
 
-  // Wait for status to be 'pending' or 'processing' so cancel is available
-  // (mock provider could already complete by now — be tolerant)
-  const genStatus = await page.locator(`[data-testid="gen-status-${videoId}"]`).textContent();
-  if (genStatus && (genStatus.includes('pending') || genStatus.includes('processing'))) {
-    // The status shown can be up to one 3s refresh old, and the mock video
-    // finishes quickly — so the cancel can arrive after the job already ended.
-    // Branch on what the server actually answered rather than on the cell.
-    const cancelResp = page.waitForResponse(
-      r => r.request().method() === 'PATCH' && r.url().includes(`/v1/generations/${videoId}`),
-    );
-    await page.locator(`[data-testid="gen-cancel-${videoId}"]`).click();
-    const cancelStatus = (await cancelResp).status();
-    if (cancelStatus === 200) {
-      await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText('cancelled', { timeout: 5_000 });
-    } else {
-      // 409: it finished first. The list must survive that (it used to be
-      // replaced by an error banner) and show the state the job really reached.
-      expect(cancelStatus).toBe(409);
-      await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText(/completed|failed/i, { timeout: 5_000 });
-    }
-  } else {
-    // The mock provider can complete before we reach the cancel button; don't
-    // silently skip — assert the generation reached a real terminal state instead.
-    await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText(/completed|cancelled|failed/i, { timeout: 5_000 });
-  }
+  // The job is in flight, so the cancel is always available.
+  await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText(/pending|processing/);
+  const cancelResp = page.waitForResponse(
+    r => r.request().method() === 'PATCH' && r.url().includes(`/v1/generations/${videoId}`),
+  );
+  await page.locator(`[data-testid="gen-cancel-${videoId}"]`).click();
+  const cancelled = await cancelResp;
+  expect(cancelled.status()).toBe(200);
+  const cancelBody = (await cancelled.json()) as { status: string; vendor_cancelled: boolean };
+  expect(cancelBody.status).toBe('cancelled');
+  expect(cancelBody.vendor_cancelled, 'the vendor accepted the cancel').toBe(true);
+  await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText('cancelled', { timeout: 5_000 });
 
-  // Pagination buttons — verify they render and are in correct enabled/disabled state
-  const genPrevBtn = page.getByRole('button', { name: 'Previous' });
-  const genNextBtn = page.getByRole('button', { name: 'Next' });
-  if (await genPrevBtn.isVisible()) {
-    // Just click to exercise the button (may be disabled, which is fine)
-    const isPrevDisabled = await genPrevBtn.isDisabled();
-    if (!isPrevDisabled) await genPrevBtn.click();
-  }
-  if (await genNextBtn.isVisible()) {
-    const isNextDisabled = await genNextBtn.isDisabled();
-    if (!isNextDisabled) await genNextBtn.click();
-  }
+  // L18: a cancelled job is refunded — its row now costs nothing.
+  const afterCancel = await (await page.request.get(`${API_BASE}/v1/generations/${videoId}`, {
+    headers: { Authorization: `Bearer ${masterKey}` },
+  })).json();
+  expect(afterCancel.status).toBe('cancelled');
+  expect(afterCancel.cost_usd, 'refunded').toBe(0);
 
-  // Reload and assert the row still exists (persistence)
+  // Reload and assert the row still exists, still cancelled (persistence)
   await page.reload();
   await expect(rowLocator).toBeVisible();
+  await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText('cancelled');
 
   // ─── NEW: Overview auto-refresh / cost chart / quota table ──────────────────
+  await feature('Overview auto-refresh re-asks /v1/stats');
   await page.click('a[href="/"]');
   // Home route — match by pathname so this isn't tied to the dev-server host/port.
   await page.waitForURL((url) => url.pathname === '/');
@@ -510,22 +570,30 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await refreshToggle.uncheck();
 
   // ─── NEW: Logs filters + trace panel drill-down ───────────────────────────────
+  await feature('Logs — a model filter, its CSV, and the trace of our own request');
   await page.click('a[href="/logs"]');
   await page.waitForURL('**/logs');
 
   // Apply a model filter — use mock/visual-image-gen (the model we just generated with)
   await page.locator('[data-testid="logs-filter-model"]').selectOption({ label: 'mock/visual-image-gen' });
+  const filtered = nextCall(page, 'GET', /^\/v1\/logs$/);
   await page.locator('[data-testid="logs-filter-apply"]').click();
   await expect(page).toHaveURL(/model=mock%2Fvisual-image-gen/);
+  const filteredLogs = (await (await filtered).json()) as { data: Array<{ id: string; model: string }> };
+  expect(new Set(filteredLogs.data.map(l => l.model)), 'the server filtered by model').toEqual(new Set(['mock/visual-image-gen']));
 
-  // Export CSV — intercept download
+  // Export CSV — intercept download, and read it: our request, and that model only.
   const downloadPromise = page.waitForEvent('download', { timeout: 10_000 });
   await page.locator('[data-testid="logs-export-csv"]').click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/logs-\d{8}\.csv/);
+  const csv = fs.readFileSync((await download.path())!, 'utf8').trim().split('\n');
+  expect(csv[0]).toMatch(/model/);
+  expect(csv.some(line => line.includes(playgroundGenId)), 'our request is in the export').toBe(true);
+  for (const line of csv.slice(1)) expect(line).toContain('mock/visual-image-gen');
 
-  // Click the first row to open trace panel
-  const firstRow = page.locator('[data-testid^="logs-row-"]').first();
+  // Open the trace of our own request (not whichever row happens to be first).
+  const firstRow = page.getByTestId(`logs-row-${playgroundGenId}`);
   await expect(firstRow).toBeVisible({ timeout: 10_000 });
   await firstRow.click();
 
@@ -542,13 +610,13 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   expect(traceSrc!.length, 'trace image must be a real PNG (>1000 chars), not a placeholder').toBeGreaterThan(1000);
 
   await page.locator('[data-testid="trace-tab-prompt"]').click();
-  await expect(page.locator('[data-testid="trace-prompt-text"]')).toBeVisible();
+  await expect(page.locator('[data-testid="trace-prompt-text"]')).toHaveText('a playwright cat');
 
   await page.locator('[data-testid="trace-tab-params"]').click();
   await expect(page.locator('[data-testid="trace-params-table"]')).toBeVisible();
 
   await page.locator('[data-testid="trace-tab-response"]').click();
-  await expect(page.locator('[data-testid="trace-response-json"]')).toBeVisible();
+  await expect(page.locator('[data-testid="trace-response-json"]')).toContainText(playgroundGenId);
 
   // Close panel via close button
   await page.locator('[data-testid="trace-panel-close"]').click();
@@ -559,7 +627,9 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page).not.toHaveURL(/model=/);
 
   // ─── NEW: Keys rotate + test-webhook ─────────────────────────────────────────
+  await feature('Webhook test delivery; key rotation in place');
   const webhookPort = 5180;
+  let rotatedWebhookSecret = '';
   const { server: webhookServer, received: webhookReceived } = await startWebhookReceiver(webhookPort);
 
   try {
@@ -571,6 +641,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
     await page.locator('[data-testid="new-key-scopes"]').fill('generate,read,admin');
     await page.locator('[data-testid="create-key-btn"]').click();
     await expect(page.locator('[data-testid="key-created-banner"]')).toBeVisible({ timeout: 10_000 });
+    const webhookKeySecret = (await page.getByTestId('key-secret').textContent())!.trim();
 
     // Find the new row by name cell
     const webhookKeyRows = page.locator('tbody tr');
@@ -638,6 +709,10 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
       .textContent())!.trim();
     expect(publicIdAfter.startsWith('pk_live_')).toBeTruthy();
     expect(publicIdAfter).not.toBe(publicIdBefore);
+    // The old secret no longer works; the new one does.
+    expect((await withKey(webhookKeySecret)).status(), 'the rotated-away secret is refused').toBe(401);
+    expect((await withKey(rotatedSecret)).status(), 'the new secret generates').toBe(200);
+    rotatedWebhookSecret = rotatedSecret;
 
     // Copy prefix check — grant clipboard permissions for the context first
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -646,13 +721,19 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
     const activeTestId = await anyActiveRow.getAttribute('data-testid');
     const activeId = activeTestId!.replace('key-row-', '');
     await page.locator(`[data-testid="key-copy-prefix-${activeId}"]`).click();
-    // Toast should appear
+    // Toast should appear, and the clipboard holds that key's prefix.
     await expect(page.locator('[data-testid^="toast-"]')).toBeVisible({ timeout: 3000 });
+    const keys = (await (await page.request.get(`${API_BASE}/v1/keys`, { headers: { Authorization: `Bearer ${MASTER_KEY}` } })).json()) as {
+      data: Array<{ id: string; prefix: string }>;
+    };
+    const copied = keys.data.find(k => k.id === activeId)!;
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(copied.prefix);
   } finally {
     await new Promise<void>((resolve) => webhookServer.close(() => resolve()));
   }
 
   // ─── NEW: Models filters + copy curl ─────────────────────────────────────────
+  await feature('Models — provider, media-type and capability filters; copy as curl');
   await page.click('a[href="/models"]');
   await page.waitForURL('**/models');
 
@@ -667,22 +748,29 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
     { timeout: 5_000 },
   ).toBeGreaterThanOrEqual(14);
 
-  // Exercise media-type radio buttons
-  const mediaTypeAll = page.locator('[data-testid="models-filter-media-type"] input[value=""]');
-  const mediaTypeImage = page.locator('[data-testid="models-filter-media-type"] input[value="image"]');
-  const mediaTypeVideo = page.locator('[data-testid="models-filter-media-type"] input[value="video"]');
-  if (await mediaTypeImage.isVisible()) {
-    await mediaTypeImage.click();
-    await mediaTypeVideo.click();
-    await mediaTypeAll.click(); // reset to All
-  }
+  // The catalog the filters must agree with.
+  const catalog = ((await (await page.request.get(`${API_BASE}/v1/models`, { headers: { Authorization: `Bearer ${MASTER_KEY}` } })).json()) as {
+    data: Array<{ id: string; provider: string; media_type: string; capabilities: Record<string, unknown> }>;
+  }).data.filter(m => m.provider === 'mock' && !m.id.startsWith('mock/e2e-runtime-'));
+  // The management spec adds and removes a runtime mock model as it runs, in
+  // parallel: neither side counts it.
+  const shownIds = async () => (await page.locator('[data-testid^="model-row-"]').evaluateAll(rows =>
+    rows.map(r => r.getAttribute('data-testid')!.replace('model-row-', ''))))
+    .filter(id => !id.startsWith('mock/e2e-runtime-'))
+    .sort();
 
-  // Click at least one capability checkbox (first available one)
-  const firstCapCheckbox = page.locator('[data-testid^="models-filter-capability-"]').first();
-  if (await firstCapCheckbox.isVisible()) {
-    await firstCapCheckbox.click(); // check it
-    await firstCapCheckbox.click(); // uncheck it (reset)
+  // Media type: each radio shows exactly the mock models of that type.
+  for (const media of ['image', 'video']) {
+    await page.locator(`[data-testid="models-filter-media-type"] input[value="${media}"]`).click();
+    await expect.poll(shownIds).toEqual(catalog.filter(m => m.media_type === media).map(m => m.id).sort());
   }
+  await page.locator('[data-testid="models-filter-media-type"] input[value=""]').click(); // reset to All
+
+  // Capability: rigging shows exactly the models that rig.
+  await page.getByTestId('models-filter-capability-supports_rig').check();
+  await expect.poll(shownIds).toEqual(catalog.filter(m => m.capabilities.supports_rig === true).map(m => m.id).sort());
+  await page.getByTestId('models-filter-capability-supports_rig').uncheck();
+  await expect.poll(shownIds).toEqual(catalog.map(m => m.id).sort());
 
   // Click on the mock/image-gen row to open detail
   await page.locator('[data-testid="model-row-mock/image-gen"]').click();
@@ -700,6 +788,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page.getByTestId('model-detail-panel')).not.toBeVisible({ timeout: 3_000 });
 
   // ─── Cluster 3a: Health probes ───────────────────────────────────────────────
+  await feature('Liveness and readiness probes');
   await page.getByRole('link', { name: 'Health' }).click();
   await expect(page.locator('table')).toBeVisible({ timeout: 10_000 });
 
@@ -712,6 +801,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page.getByTestId('health-readiness-badge')).toContainText('ready', { timeout: 10_000 });
 
   // ─── Cluster 3b: X-RateLimit headers ─────────────────────────────────────────
+  await feature('Rate limits — X-RateLimit headers on a 60 rpm key');
   // Navigate to keys and create a fresh key with rpm_limit=60
   await page.getByRole('link', { name: 'API Keys' }).click();
   await expect(page.locator('table')).toBeVisible({ timeout: 10_000 });
@@ -739,15 +829,13 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
     data: { model: 'mock/image-gen', prompt: 'ratelimit test' },
   });
   // Should succeed (first out of 60 RPM)
-  expect(rpmResp.status()).toBeLessThan(500);
-  // X-RateLimit-Limit should be present and equal to 60
-  const rateLimitHeader = rpmResp.headers()['x-ratelimit-limit'];
-  expect(rateLimitHeader).toBe('60');
-  const rateLimitRemaining = rpmResp.headers()['x-ratelimit-remaining'];
-  expect(rateLimitRemaining).toBeTruthy();
-  expect(Number(rateLimitRemaining)).toBeGreaterThanOrEqual(0);
+  expect(rpmResp.status()).toBe(200);
+  // X-RateLimit-Limit is the key's 60, and one of them is spent.
+  expect(rpmResp.headers()['x-ratelimit-limit']).toBe('60');
+  expect(rpmResp.headers()['x-ratelimit-remaining']).toBe('59');
 
   // ─── Cluster 3c: Audit page ───────────────────────────────────────────────────
+  await feature('Audit log — an action filter, a row\'s detail, the CSV');
   await page.goto('/audit');
   await page.waitForURL('**/audit');
   await expect(page.locator('[data-testid="audit-table"]')).toBeVisible({ timeout: 10_000 });
@@ -762,6 +850,9 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.locator('[data-testid="audit-filter-action"]').selectOption('key.create');
   await page.locator('[data-testid="audit-filter-apply"]').click();
   await expect(page).toHaveURL(/action=key\.create/, { timeout: 5_000 });
+  // Every row left is a key.create.
+  await expect.poll(async () => [...new Set(await page.locator('[data-testid^="audit-row-"] td:nth-child(3) code').allTextContents())])
+    .toEqual(['key.create']);
 
   // Click a row to expand detail
   const firstAuditRow = page.locator('[data-testid^="audit-row-"]').first();
@@ -778,12 +869,34 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.locator('[data-testid="audit-export-csv"]').click();
   const auditDownload = await auditDownloadPromise;
   expect(auditDownload.suggestedFilename()).toMatch(/audit-\d{8}\.csv/);
+  const auditCsv = fs.readFileSync((await auditDownload.path())!, 'utf8').trim().split('\n');
+  expect(auditCsv.length, 'a header and at least the keys this test created').toBeGreaterThan(3);
+  for (const line of auditCsv.slice(1)) expect(line).toContain('key.create');
 
   // Clear filter
   await page.locator('[data-testid="audit-filter-clear"]').click();
   await expect(page).not.toHaveURL(/action=key\.create/, { timeout: 5_000 });
 
   // ─── Cluster 3d: Webhook deliveries panel ────────────────────────────────────
+  await feature('Webhook on job completion — received, and listed in the deliveries panel');
+  // A job made with the webhook key: its completion is POSTed to the key's
+  // webhook URL, and recorded as a delivery.
+  const hook = await startWebhookReceiver(webhookPort);
+  let hookedId = '';
+  try {
+    const hooked = await page.request.post(`${API_BASE}/v1/videos/generations`, {
+      headers: { Authorization: `Bearer ${rotatedWebhookSecret}`, 'Content-Type': 'application/json' },
+      data: { model: 'mock/video-gen', prompt: 'a clip that reports back' },
+    });
+    expect(hooked.status()).toBe(200);
+    hookedId = ((await hooked.json()) as { id: string }).id;
+    await expect.poll(async () => ((await (await page.request.get(`${API_BASE}/v1/videos/${hookedId}`, {
+      headers: { Authorization: `Bearer ${rotatedWebhookSecret}` },
+    })).json()) as { status: string }).status, { timeout: 30_000 }).toBe('completed');
+    await expect.poll(() => hook.received.find(r => r.body?.id === hookedId)?.body?.status, { timeout: 30_000 }).toBe('completed');
+  } finally {
+    await new Promise<void>((resolve) => hook.server.close(() => resolve()));
+  }
   await page.getByRole('link', { name: 'API Keys' }).click();
   await page.waitForURL('**/keys');
   await expect(page.locator('table')).toBeVisible({ timeout: 10_000 });
@@ -808,17 +921,13 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // Panel should appear and show deliveries (or "No deliveries" if none stored yet)
   await expect(page.locator(`[data-testid="key-deliveries-panel-${deliveryKeyId}"]`)).toBeVisible({ timeout: 10_000 });
 
-  // The panel must be visible — delivery rows may be 0 if no generation-completion
-  // webhook fires were triggered (test-webhook does not log to webhook_deliveries).
-  // For a fuller assertion, trigger a completed video gen and check delivery rows.
-  // For now, verify the panel renders without error (the API call to /webhook-deliveries succeeded).
-  const panelText = await page.locator(`[data-testid="key-deliveries-panel-${deliveryKeyId}"]`).textContent();
-  expect(panelText).toBeTruthy();
-  // Panel should show either deliveries or an empty-state message, but NOT an error
-  expect(panelText).not.toContain('Network error');
-  expect(panelText).not.toContain('Unauthorized');
+  // The completion delivery above is listed, answered 200 by the receiver.
+  const deliveries = page.locator(`[data-testid="key-deliveries-panel-${deliveryKeyId}"] [data-testid^="delivery-row-"]`);
+  await expect(deliveries.first()).toBeVisible({ timeout: 10_000 });
+  await expect(deliveries.first()).toContainText('200');
 
   // ─── Cluster 3e: Backpressure sanity ping ────────────────────────────────────
+  await feature('The gateway still serves after everything above');
   // Lib tests cover backpressure logic; just verify the route is still healthy.
   const sanityResp = await page.request.post(`${API_BASE}/v1/images/generations`, {
     headers: {
@@ -827,9 +936,10 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
     },
     data: { model: 'mock/image-gen', prompt: 'sanity ping' },
   });
-  expect(sanityResp.status()).toBeLessThan(500);
+  expect(sanityResp.status()).toBe(200);
 
   // ─── Step 7: Sign out / re-auth round trip ───────────────────────────────────
+  await feature('Sign out, and back in');
   // AuthBar sign-out clears the key and reloads; with no key and no session the app
   // redirects to the clean /login page (the app shell / AuthBar is gone).
   await page.getByRole('button', { name: 'Sign out' }).click();

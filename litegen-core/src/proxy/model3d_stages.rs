@@ -128,6 +128,10 @@ enum HeldClaim {
 
 async fn held_claim(db: &Arc<dyn DatabaseStore>, gen_id: &str, stage: &str) -> HeldClaim {
     let Ok(Some(row)) = db.get_generation(gen_id).await else { return HeldClaim::Pending };
+    // A claim's age is judged on the database's clock, as it was stamped: a
+    // replica whose own clock runs fast must not fail another's fresh claim.
+    // Without the clock there is no judging it, so it waits.
+    let Ok(now) = db.clock_now().await else { return HeldClaim::Pending };
     let Some(meta) = row.metadata else { return HeldClaim::Pending };
     if let Some(ctx) = meta.get("stage_context") {
         if ctx.get("stage").and_then(|s| s.as_str()) == Some(stage) {
@@ -140,7 +144,7 @@ async fn held_claim(db: &Arc<dyn DatabaseStore>, gen_id: &str, stage: &str) -> H
         .and_then(|c| c.get("at"))
         .and_then(|a| a.as_str());
     match at.and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok().map(|t| (a, t))) {
-        Some((a, t)) if chrono::Utc::now() - t.with_timezone(&chrono::Utc) > STAGE_START_GRACE => {
+        Some((a, t)) if now - t.with_timezone(&chrono::Utc) > STAGE_START_GRACE => {
             HeldClaim::Interrupted(a.to_string())
         }
         _ => HeldClaim::Pending,

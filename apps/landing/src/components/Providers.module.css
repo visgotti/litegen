@@ -107,6 +107,11 @@
   border-color: color-mix(in srgb, var(--accent-2) 32%, transparent);
 }
 
+.tag3d {
+  background: color-mix(in srgb, #ffc46b 14%, transparent);
+  border-color: color-mix(in srgb, #ffc46b 34%, transparent);
+}
+
 .more {
   color: var(--muted);
   padding-left: 18px;

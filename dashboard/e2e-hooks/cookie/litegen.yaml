@@ -1,0 +1,4 @@
+# litegen for the browser hook tests: a session cookie, checked against
+# Origin by the cookie_auth example.
+hooks:
+  - path: ../../../examples/hooks/cookie_auth.py

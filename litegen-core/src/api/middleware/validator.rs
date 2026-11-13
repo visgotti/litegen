@@ -6,6 +6,10 @@ use std::sync::Arc;
 use crate::capabilities::*;
 use crate::types::*;
 
+// Catalog logic, now in capabilities (engine boundary, D5); kept at this path
+// for its callers.
+pub use crate::capabilities::resolve_duration_seconds;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidationError {
     pub code: String,
@@ -136,6 +140,7 @@ pub fn validate_image(
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
     check_metadata(&req.base.metadata)?;
+    check_n(&req.base, "image")?;
     check_image_edit(schema, &mut req, strict, &mut dropped)?;
     check_views(schema, &mut req, strict, &mut dropped)?;
     check_expand(schema, &mut req, strict, &mut dropped)?;
@@ -186,68 +191,54 @@ pub fn validate_image(
 
     check_param!(req.base.negative_prompt, "negative_prompt", ParamSpec::String(s) => {
         if let Some(m) = s.max_length {
-            let v = req.base.negative_prompt.as_deref().unwrap();
-            if v.len() > m {
+            let len = char_len(req.base.negative_prompt.as_deref().unwrap());
+            if len > m {
                 return Err(ValidationError::new(
                     "param_too_long",
-                    format!("negative_prompt length {} exceeds {}", v.len(), m),
+                    format!("negative_prompt length {len} exceeds {m}"),
                     Some("negative_prompt"),
                 ));
             }
         }
+        check_pattern(req.base.negative_prompt.as_deref().unwrap(), s, "negative_prompt")?;
     });
 
     check_param!(req.steps, "steps", ParamSpec::Int(s) => {
-        let v = req.steps.unwrap() as i64;
-        if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
-            return Err(ValidationError::new(
-                "param_out_of_range",
-                format!("steps {} out of range", v),
-                Some("steps"),
-            ));
-        }
+        check_int(req.steps.unwrap() as i64, s, "steps", &schema.id)?;
     });
 
     check_param!(req.guidance_scale, "guidance_scale", ParamSpec::Float(s) => {
-        let v = req.guidance_scale.unwrap();
-        if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
-            return Err(ValidationError::new(
-                "param_out_of_range",
-                format!("guidance_scale {} out of range", v),
-                Some("guidance_scale"),
-            ));
-        }
+        check_float(req.guidance_scale.unwrap(), s, "guidance_scale", &schema.id)?;
     });
 
     check_param!(req.strength, "strength", ParamSpec::Float(s) => {
-        let v = req.strength.unwrap();
-        if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
-            return Err(ValidationError::new(
-                "param_out_of_range",
-                format!("strength {} out of range", v),
-                Some("strength"),
-            ));
-        }
+        check_float(req.strength.unwrap(), s, "strength", &schema.id)?;
     });
 
     check_param!(req.quality, "quality", ParamSpec::String(s) => {
         let v = req.quality.as_deref().unwrap();
-        check_string(v, &s.enum_values, s.max_length, "quality")?;
+        check_string(v, s, "quality")?;
+    });
+
+    // The output tier, on one scale for every vendor (2026-11-03).
+    check_param!(req.resolution, "resolution", ParamSpec::String(s) => {
+        let v = req.resolution.as_deref().unwrap();
+        check_string(v, s, "resolution")?;
     });
 
     check_param!(req.style, "style", ParamSpec::String(s) => {
         let v = req.style.as_deref().unwrap();
-        check_string(v, &s.enum_values, s.max_length, "style")?;
+        check_string(v, s, "style")?;
     });
 
     // PixelGenie L9: the container and background a caller asks for.
     check_param!(req.output_format, "output_format", ParamSpec::String(s) => {
         let v = req.output_format.as_deref().unwrap();
-        check_string(v, &s.enum_values, s.max_length, "output_format")?;
+        check_string(v, s, "output_format")?;
     });
     check_param!(req.background, "background", ParamSpec::String(s) => {
         let v = req.background.as_deref().unwrap();
-        check_string(v, &s.enum_values, s.max_length, "background")?;
+        check_string(v, s, "background")?;
     });
     if req.background.as_deref() == Some("transparent") {
         let format = req.output_format.clone().or_else(|| match schema.params.get("output_format") {
@@ -286,21 +277,6 @@ pub fn validate_image(
     Ok(ImageValidationOutput { request: req, dropped })
 }
 
-/// The duration to send a provider: what the caller asked for, else the model's
-/// own declared default, else the legacy 5s for models that declare no duration
-/// param. An omitted duration must not become a fixed 5s — models whose minimum
-/// is higher (fal/ltx-2.3 and bedrock nova-reel at 6s) reject that.
-pub fn resolve_duration_seconds(schema: &ModelSchema, requested: Option<f64>) -> f64 {
-    if let Some(v) = requested {
-        return v;
-    }
-    match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(s)) => s.default.unwrap_or(5.0),
-        Some(ParamSpec::Int(s)) => s.default.map(|d| d as f64).unwrap_or(5.0),
-        _ => 5.0,
-    }
-}
-
 #[tracing::instrument(skip(schema, req), fields(model = %schema.id))]
 pub fn validate_video(
     schema: &ModelSchema,
@@ -311,6 +287,7 @@ pub fn validate_video(
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
     check_metadata(&req.base.metadata)?;
+    check_n(&req.base, "video")?;
 
     // seed, negative_prompt — same as image
     if req.base.seed.is_some() {
@@ -343,15 +320,16 @@ pub fn validate_video(
         match schema.params.get("negative_prompt") {
             Some(ParamSpec::String(s)) => {
                 if let Some(m) = s.max_length {
-                    let v = req.base.negative_prompt.as_deref().unwrap();
-                    if v.len() > m {
+                    let len = char_len(req.base.negative_prompt.as_deref().unwrap());
+                    if len > m {
                         return Err(ValidationError::new(
                             "param_too_long",
-                            format!("negative_prompt length {} > {}", v.len(), m),
+                            format!("negative_prompt length {len} > {m}"),
                             Some("negative_prompt"),
                         ));
                     }
                 }
+                check_pattern(req.base.negative_prompt.as_deref().unwrap(), s, "negative_prompt")?;
             }
             Some(_) | None => {
                 if strict {
@@ -367,11 +345,15 @@ pub fn validate_video(
         }
     }
 
-    // duration_seconds is special — float typically; an Int spec is also accepted.
-    if let Some(requested) = req.duration_seconds.filter(|v| *v > 0.0) {
+    // duration_seconds is special — float typically; an Int spec is also
+    // accepted. Every value sent is checked (E1): 0 and below once meant
+    // "unset" and skipped these checks, so they were priced at 0 s while the
+    // vendor made, and billed, its default clip.
+    if let Some(requested) = req.duration_seconds {
         match schema.params.get("duration_seconds") {
             Some(ParamSpec::Float(s)) => {
                 let v = requested;
+                check_clip_length(requested, v)?;
                 if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
                     return Err(ValidationError::new(
                         "param_out_of_range",
@@ -389,6 +371,8 @@ pub fn validate_video(
                 }
             }
             Some(ParamSpec::Int(s)) => {
+                // The whole seconds the vendor makes are the length checked.
+                check_clip_length(requested, requested.round())?;
                 let v = requested.round() as i64;
                 if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
                     return Err(ValidationError::new(
@@ -408,7 +392,20 @@ pub fn validate_video(
                 // adapter, see the length it makes (C5).
                 req.duration_seconds = Some(v as f64);
             }
-            _ => {} // no spec → accept default; provider may further constrain
+            // A model whose listing has no duration takes none (E6): its clip
+            // length is the vendor's, or its keyframes'. Refused when strict,
+            // dropped and named otherwise, like every other param it lacks.
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("'{}' takes no duration_seconds: its clip length is the vendor's (or its keyframes')", schema.id),
+                        Some("duration_seconds"),
+                    ));
+                }
+                dropped.push("duration_seconds".into());
+                req.duration_seconds = None;
+            }
         }
     }
 
@@ -440,16 +437,7 @@ pub fn validate_video(
 
     if req.fps.is_some() {
         match schema.params.get("fps") {
-            Some(ParamSpec::Int(s)) => {
-                let v = req.fps.unwrap() as i64;
-                if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
-                    return Err(ValidationError::new(
-                        "param_out_of_range",
-                        format!("fps {} out of range", v),
-                        Some("fps"),
-                    ));
-                }
-            }
+            Some(ParamSpec::Int(s)) => check_int(req.fps.unwrap() as i64, s, "fps", &schema.id)?,
             Some(_) | None => {
                 if strict {
                     return Err(ValidationError::new(
@@ -468,7 +456,7 @@ pub fn validate_video(
         match schema.params.get("resolution") {
             Some(ParamSpec::String(s)) => {
                 let v = req.resolution.as_deref().unwrap();
-                check_string(v, &s.enum_values, s.max_length, "resolution")?;
+                check_string(v, s, "resolution")?;
             }
             Some(_) | None => {
                 if strict {
@@ -487,11 +475,65 @@ pub fn validate_video(
     check_video_controls(schema, &mut req, strict, &mut dropped)?;
     check_video_operation(schema, &mut req, strict, &mut dropped)?;
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
+    check_frame_shape(schema, &mut req, strict, &mut dropped)?;
     check_video_request(schema, &req)?;
     check_keyframes(schema, &mut req)?;
     check_extra(schema, &mut req.base.extra, strict, &mut dropped)?;
 
     Ok(VideoValidationOutput { request: req, dropped })
+}
+
+/// A ratio the frame image overrides (E5): on a row whose `aspect_ratio`
+/// declares `frames_set_shape`, the vendor takes no ratio with a
+/// `first_frame`, `last_frame` or `init` image, so the ratio is refused when
+/// strict and dropped and named otherwise, where the adapter used to leave it
+/// out unreported. `without_references` lifts the rule when a `reference`
+/// image rides along. Runs after `check_refs`, so a role-less image counts
+/// under its `default_role`.
+fn check_frame_shape(
+    schema: &ModelSchema,
+    req: &mut VideoGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let Some(ParamSpec::AspectRatio(spec)) = schema.params.get("aspect_ratio") else { return Ok(()) };
+    let Some(shape) = spec.frames_set_shape else { return Ok(()) };
+    if req.aspect_ratio.is_none() {
+        return Ok(());
+    }
+    let has = |roles: &[&str]| req.base.reference_images.iter().any(|r| r.role.as_deref().is_some_and(|role| roles.contains(&role)));
+    let framed = has(&["first_frame", "last_frame", "init"]);
+    let lifted = shape == FramesSetShape::WithoutReferences && has(&["reference"]);
+    if !framed || lifted {
+        return Ok(());
+    }
+    if strict {
+        let unless = if shape == FramesSetShape::Always { "" } else { " unless a reference image goes with it" };
+        return Err(ValidationError::new(
+            "param_unsupported",
+            format!("'{}' takes the frame image's shape: aspect_ratio applies only without a first_frame, last_frame or init image{unless}", schema.id),
+            Some("aspect_ratio"),
+        ));
+    }
+    dropped.push("aspect_ratio".into());
+    req.aspect_ratio = None;
+    Ok(())
+}
+
+/// A clip lasts more than 0 s (E1), in either mode: a bad value, not a param
+/// the model lacks. `length` is what the vendor would make of `requested`
+/// (its whole seconds on an int spec), so 0.4 s on a whole-second model is
+/// refused too. A model without a `min` is held to this as well.
+fn check_clip_length(requested: f64, length: f64) -> Result<(), ValidationError> {
+    if length.is_finite() && length > 0.0 {
+        return Ok(());
+    }
+    let made = if length == requested { String::new() } else { format!(" (a clip of {length:?} s)") };
+    Err(ValidationError::new(
+        "param_out_of_range",
+        format!("duration_seconds {requested:?}{made}: a clip lasts more than 0 s"),
+        Some("duration_seconds"),
+    ))
 }
 
 #[derive(Debug)]
@@ -510,6 +552,7 @@ pub fn validate_model3d(
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
     check_metadata(&req.base.metadata)?;
+    check_n(&req.base, "mesh")?;
 
     // seed / negative_prompt — identical treatment to image and video.
     if req.base.seed.is_some() {
@@ -542,7 +585,7 @@ pub fn validate_model3d(
         match schema.params.get("negative_prompt") {
             Some(ParamSpec::String(s)) => {
                 let v = req.base.negative_prompt.as_deref().unwrap();
-                check_string(v, &s.enum_values, s.max_length, "negative_prompt")?;
+                check_string(v, s, "negative_prompt")?;
             }
             Some(_) | None => {
                 if strict {
@@ -571,7 +614,7 @@ pub fn validate_model3d(
                 match schema.params.get($key) {
                     Some(ParamSpec::String(s)) => {
                         let v = $field.as_deref().unwrap();
-                        check_string(v, &s.enum_values, s.max_length, $key)?;
+                        check_string(v, s, $key)?;
                     }
                     Some(_) | None => {
                         if strict {
@@ -732,14 +775,18 @@ pub fn validate_model3d(
     }
     if let Some(v) = req.height_m {
         match schema.params.get("height_m") {
+            // A model's own range; with no ceiling of its own, litegen's
+            // placement ceiling still applies (types `height_m`: "at most
+            // 10,000 m, or within a model's own range").
             Some(ParamSpec::Float(s)) => {
-                if !v.is_finite() || v <= 0.0 || s.min.is_some_and(|m| v < m) || s.max.is_some_and(|m| v > m) {
+                if !v.is_finite() || v <= 0.0 || s.min.is_some_and(|m| v < m) || s.max.unwrap_or(MAX_PLACEMENT_HEIGHT_M) < v {
                     return Err(ValidationError::new(
                         "param_out_of_range",
                         format!("height_m {} out of range", v),
                         Some("height_m"),
                     ));
                 }
+                check_float(v, s, "height_m", &schema.id)?;
             }
             // 3D doc §3D: placement — litegen scales any mesh it delivers.
             Some(_) | None => {
@@ -755,12 +802,7 @@ pub fn validate_model3d(
     }
     if let Some(v) = req.fps {
         match schema.params.get("fps") {
-            Some(ParamSpec::Int(s)) => {
-                let v = v as i64;
-                if s.min.is_some_and(|m| v < m) || s.max.is_some_and(|m| v > m) {
-                    return Err(ValidationError::new("param_out_of_range", format!("fps {} out of range", v), Some("fps")));
-                }
-            }
+            Some(ParamSpec::Int(s)) => check_int(v as i64, s, "fps", &schema.id)?,
             Some(_) | None => {
                 if strict {
                     return Err(ValidationError::new(
@@ -774,9 +816,23 @@ pub fn validate_model3d(
             }
         }
     }
+    // An animate model makes the clips the request names; with none named
+    // there is nothing for it to make (Meshy's adapter refuses at submit).
+    // (An explicitly empty list is `check_animations`' out-of-range case.)
+    if schema.task == crate::capabilities::ModelTask::Animate && req.animations.is_none() {
+        return Err(ValidationError::new(
+            "param_required",
+            format!("'{}' animates a rig: name at least one clip in `animations`", schema.id),
+            Some("animations"),
+        ));
+    }
     if req.animations.is_some() {
         match schema.params.get("animations") {
-            Some(ParamSpec::AnimationList(spec)) => check_animations(req.animations.as_deref().unwrap_or_default(), spec, &schema.id)?,
+            Some(ParamSpec::AnimationList(spec)) => {
+                let clips = req.animations.get_or_insert_with(Vec::new);
+                name_unnamed_clips(clips, spec);
+                check_animations(clips, spec, &schema.id)?
+            }
             Some(_) | None => {
                 if strict {
                     return Err(ValidationError::new(
@@ -826,16 +882,7 @@ pub fn validate_model3d(
 
     if req.target_polycount.is_some() {
         match schema.params.get("target_polycount") {
-            Some(ParamSpec::Int(s)) => {
-                let v = req.target_polycount.unwrap() as i64;
-                if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
-                    return Err(ValidationError::new(
-                        "param_out_of_range",
-                        format!("target_polycount {} out of range", v),
-                        Some("target_polycount"),
-                    ));
-                }
-            }
+            Some(ParamSpec::Int(s)) => check_int(req.target_polycount.unwrap() as i64, s, "target_polycount", &schema.id)?,
             Some(_) | None => {
                 if strict {
                     return Err(ValidationError::new(
@@ -1065,9 +1112,8 @@ fn check_image_edit(
             }
         }
     }
-    let takes_mask = schema.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
     if let Some(grow) = req.mask_grow_px {
-        if !(takes_mask || schema.params.contains_key("region")) {
+        if !schema.edits_part_of_an_image() {
             if strict {
                 return Err(ValidationError::new("param_unsupported", format!("mask_grow_px not supported by '{}'", schema.id), Some("mask_grow_px")));
             }
@@ -1206,7 +1252,7 @@ fn check_mask_prompt(
     if text.trim().is_empty() {
         return Err(ValidationError::new("param_required", "mask_prompt names nothing", Some("mask_prompt")));
     }
-    check_string(text, &spec.enum_values, spec.max_length, "mask_prompt")?;
+    check_string(text, spec, "mask_prompt")?;
     let refs = &req.base.reference_images;
     if !refs.iter().any(|r| r.role.as_deref() == Some("init") || r.role.is_none()) {
         return Err(ValidationError::new("init_required", "mask_prompt names an area of an init image; send one with role init", Some("reference_images")));
@@ -1335,10 +1381,84 @@ pub const MAX_PLACEMENT_HEIGHT_M: f64 = 10_000.0;
 /// The most a mask may grow: Stability's own `grow_mask` ceiling.
 pub const MAX_MASK_GROW_PX: u32 = 100;
 
+/// The request fields litegen applies to `schema`'s model itself (E11a), with
+/// the bounds this module keeps, as `GET /v1/models/{id}` serves them in
+/// `litegen_params`: placement on every 3D model (3D doc §3D), and mask
+/// growth and kept pixels on an image model that edits part of an image (§4).
+/// A name the model's own `params` declare stays there alone.
+pub(crate) fn litegen_params(schema: &ModelSchema) -> std::collections::BTreeMap<String, ParamSpec> {
+    let text = |s: &str| Some(s.to_string());
+    let flag = |label: &str, description: &str| {
+        ParamSpec::Bool(ParamSpecBool { default: Some(false), label: text(label), description: text(description) })
+    };
+    let pixels = |max: u32, label: &str, description: &str| {
+        ParamSpec::Int(ParamSpecInt { min: Some(0), max: Some(max.into()), label: text(label), description: text(description), ..Default::default() })
+    };
+    let mut fields = Vec::new();
+    if schema.media_type == crate::capabilities::MediaType::Model3d {
+        fields.push(("ground", flag("Ground", "Put the mesh's lowest point at y = 0.")));
+        fields.push(("center", flag("Center", "Centre the mesh's bounds on x and z.")));
+        fields.push(("height_m", ParamSpec::Float(ParamSpecFloat {
+            // Above 0, which no inclusive `min` can say.
+            max: Some(MAX_PLACEMENT_HEIGHT_M),
+            label: text("Height (m)"),
+            description: Some(format!("Scale the mesh to this height in metres: above 0, at most {MAX_PLACEMENT_HEIGHT_M}.")),
+            ..Default::default()
+        })));
+    }
+    if schema.edits_part_of_an_image() {
+        fields.push(("mask_grow_px", pixels(MAX_MASK_GROW_PX, "Mask grow (px)", "Widen the mask or region by this many pixels before the edit.")));
+        fields.push(("preserve_unmasked", flag(
+            "Keep unmasked pixels",
+            "Paste the init image's pixels back outside the mask or region, byte for byte (png or webp output).",
+        )));
+        fields.push(("feather_px", pixels(MAX_FEATHER_PX, "Feather (px)", "Soften the kept edge over this many pixels. Only with preserve_unmasked: true.")));
+    }
+    fields.into_iter().filter(|(name, _)| !schema.params.contains_key(*name)).map(|(name, spec)| (name.to_string(), spec)).collect()
+}
+
+/// Names each clip a request leaves unnamed (E11c), before the clips are
+/// checked: a preset clip after the model's canonical name for that preset
+/// (`walk`), else its preset id with every character outside
+/// `[A-Za-z0-9_.-]` as `_`, cut to 64; a prompt clip, or one whose preset
+/// leaves no name, `clip-<n>` by its place; `-2`, `-3`, … on a name already
+/// taken. Typed names are taken first and never changed: `check_animations`
+/// judges them. A list over the model's limit is left alone, since it is
+/// refused before any name is read.
+fn name_unnamed_clips(clips: &mut [AnimationRequest], spec: &crate::capabilities::ParamSpecAnimationList) {
+    if clips.len() > spec.max_items {
+        return;
+    }
+    let legal = |ch: char| if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-') { ch } else { '_' };
+    let mut taken: std::collections::HashSet<String> = clips.iter().filter_map(|c| c.name.clone()).collect();
+    for (i, c) in clips.iter_mut().enumerate() {
+        if c.name.is_some() {
+            continue;
+        }
+        let from_preset = c.preset.as_deref().map(|p| {
+            spec.presets
+                .iter()
+                .find(|s| s.id == p)
+                .and_then(|s| s.canonical.clone())
+                .unwrap_or_else(|| p.chars().map(legal).take(64).collect())
+        });
+        let base = from_preset.filter(|b| !b.is_empty()).unwrap_or_else(|| format!("clip-{}", i + 1));
+        let (mut name, mut n) = (base.clone(), 2);
+        while taken.contains(&name) {
+            let suffix = format!("-{n}");
+            name = base.chars().take(64 - suffix.len()).chain(suffix.chars()).collect();
+            n += 1;
+        }
+        taken.insert(name.clone());
+        c.name = Some(name);
+    }
+}
+
 /// A clip list against the model's `animation_list` spec (3D doc §3C): every
 /// name unique and 1–64 of `[A-Za-z0-9_.-]`; each clip exactly one of a
 /// preset the model plays (canonical or its own id) and a prompt (where it
-/// makes motion from text, for a length within its range).
+/// makes motion from text, for a length within its range). A refusal names
+/// the clip by its place in the list.
 fn check_animations(
     clips: &[AnimationRequest],
     spec: &crate::capabilities::ParamSpecAnimationList,
@@ -1352,20 +1472,21 @@ fn check_animations(
         return fail("param_too_many", format!("'{model}' makes at most {} clips per request; {} asked", spec.max_items, clips.len()));
     }
     let mut names: Vec<&str> = Vec::new();
-    for c in clips {
-        let well_formed = (1..=64).contains(&c.name.chars().count())
-            && c.name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'));
+    for (i, c) in clips.iter().enumerate() {
+        let (at, name) = (i + 1, c.name());
+        let well_formed = (1..=64).contains(&name.chars().count())
+            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'));
         if !well_formed {
-            return fail("animation_name_invalid", format!("clip name '{}' must be 1–64 characters of A–Z, a–z, 0–9, _ . -", c.name));
+            return fail("animation_name_invalid", format!("clip {at}: name '{name}' must be 1–64 characters of A–Z, a–z, 0–9, _ . -"));
         }
-        if names.contains(&c.name.as_str()) {
-            return fail("animation_name_invalid", format!("clip name '{}' is used twice; names must be unique", c.name));
+        if names.contains(&name) {
+            return fail("animation_name_invalid", format!("clip {at}: name '{name}' is used twice; names must be unique"));
         }
-        names.push(&c.name);
+        names.push(name);
         match (c.preset.as_deref(), c.prompt.as_deref()) {
             (Some(p), None) => {
                 if c.duration_s.is_some() {
-                    return fail("animation_clip_invalid", format!("clip '{}': duration_s is for prompt clips; a preset lasts as long as it lasts", c.name));
+                    return fail("animation_clip_invalid", format!("clip {at} '{name}': duration_s is for prompt clips; a preset lasts as long as it lasts"));
                 }
                 let known = spec.presets.iter().any(|s| s.id == p || s.canonical.as_deref() == Some(p));
                 if !known {
@@ -1374,50 +1495,67 @@ fn check_animations(
                         .iter()
                         .flat_map(|s| s.canonical.as_deref().into_iter().chain(std::iter::once(s.id.as_str())))
                         .collect();
-                    return fail("param_enum_mismatch", format!("clip '{}': '{model}' has no preset '{p}'; it plays {offered:?}", c.name));
+                    return fail("param_enum_mismatch", format!("clip {at} '{name}': '{model}' has no preset '{p}'; it plays {offered:?}"));
                 }
             }
             (None, Some(_)) => {
                 let Some(t) = &spec.text_to_motion else {
-                    return fail("param_unsupported", format!("clip '{}': '{model}' makes no motion from a prompt", c.name));
+                    return fail("param_unsupported", format!("clip {at} '{name}': '{model}' makes no motion from a prompt"));
                 };
                 if let Some(d) = c.duration_s {
                     if !(d.is_finite() && d >= t.min_duration_s && d <= t.max_duration_s) {
                         return fail("param_out_of_range", format!(
-                            "clip '{}': duration_s {d} is outside {}–{} s", c.name, t.min_duration_s, t.max_duration_s
+                            "clip {at} '{name}': duration_s {d} is outside {}–{} s", t.min_duration_s, t.max_duration_s
                         ));
                     }
                 }
             }
-            _ => return fail("animation_clip_invalid", format!("clip '{}' needs exactly one of preset and prompt", c.name)),
+            _ => return fail("animation_clip_invalid", format!("clip {at} '{name}' needs exactly one of preset and prompt")),
         }
     }
     Ok(())
 }
 
-fn check_string(
-    v: &str,
-    enum_values: &[String],
-    max_length: Option<usize>,
-    param: &str,
-) -> Result<(), ValidationError> {
-    if let Some(m) = max_length {
-        if v.len() > m {
+/// A string's length as a `max_length` counts it: in characters, as the
+/// prompt's, a typed extra's and JSON Schema's `maxLength` do, never in
+/// bytes, which refused a non-ASCII value the vendor takes (passthrough
+/// review #6).
+fn char_len(v: &str) -> usize {
+    v.chars().count()
+}
+
+fn check_string(v: &str, spec: &crate::capabilities::ParamSpecString, param: &str) -> Result<(), ValidationError> {
+    if let Some(m) = spec.max_length {
+        let len = char_len(v);
+        if len > m {
             return Err(ValidationError::new(
                 "param_too_long",
-                format!("{} length {} > {}", param, v.len(), m),
+                format!("{param} length {len} > {m}"),
                 Some(param),
             ));
         }
     }
-    if !enum_values.is_empty() && !enum_values.iter().any(|e| e == v) {
+    if !spec.enum_values.is_empty() && !spec.enum_values.iter().any(|e| e == v) {
         return Err(ValidationError::new(
             "param_enum_mismatch",
-            format!("{} '{}' not in {:?}", param, v, enum_values),
+            format!("{} '{}' not in {:?}", param, v, spec.enum_values),
             Some(param),
         ));
     }
-    Ok(())
+    check_pattern(v, spec, param)
+}
+
+/// N4: a string param's `pattern`, matched anywhere in the value as JSON
+/// Schema's `pattern` is (`^…$` anchors it), in either mode.
+fn check_pattern(v: &str, spec: &crate::capabilities::ParamSpecString, param: &str) -> Result<(), ValidationError> {
+    match spec.pattern.as_deref() {
+        Some(p) if !spec.matches_pattern(v) => Err(ValidationError::new(
+            "param_invalid",
+            format!("{param} '{}' does not match the pattern {p}", shown(v)),
+            Some(param),
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn check_size(v: &str, spec: &SizeSpec, param: &str) -> Result<(), ValidationError> {
@@ -1483,18 +1621,24 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
-/// L13: what an image model cannot do is refused here, not at the vendor —
-/// text alone on a model that only edits, an init image on one that takes
-/// none — and so is `n` above one: litegen returns one image per request,
-/// and a vendor asked for more bills them all.
-fn check_image_request(schema: &ModelSchema, req: &ImageGenerationRequest) -> Result<(), ValidationError> {
-    if req.base.n > 1 {
+/// `n` (L13, E3): litegen makes one output per request, and a vendor asked
+/// for more bills them all. Refused in both modes, since it is a bad value;
+/// 0 is the same as 1. `one` names the output: "image", "video" or "mesh".
+fn check_n(base: &BaseGenerationRequest, one: &str) -> Result<(), ValidationError> {
+    if base.n > 1 {
         return Err(ValidationError::new(
             "param_out_of_range",
-            format!("n {} > 1: litegen returns one image per request; send n: 1 or leave it out", req.base.n),
+            format!("n {} > 1: litegen makes one {one} per request; send n: 1 or leave it out", base.n),
             Some("n"),
         ));
     }
+    Ok(())
+}
+
+/// L13: what an image model cannot do is refused here, not at the vendor —
+/// text alone on a model that only edits, an init image on one that takes
+/// none. (`n` above one is `check_n`'s, for every family.)
+fn check_image_request(schema: &ModelSchema, req: &ImageGenerationRequest) -> Result<(), ValidationError> {
     if schema.task != crate::capabilities::ModelTask::Generate {
         return Ok(());
     }
@@ -1561,7 +1705,7 @@ fn check_video_operation(
     for (field, name) in [(&mut req.direction, "direction"), (&mut req.replace, "replace")] {
         let Some(v) = field.as_deref() else { continue };
         match schema.params.get(name) {
-            Some(ParamSpec::String(s)) => check_string(v, &s.enum_values, s.max_length, name)?,
+            Some(ParamSpec::String(s)) => check_string(v, s, name)?,
             _ if strict => return Err(undeclared(name)),
             _ => {
                 dropped.push(name.into());
@@ -1608,7 +1752,7 @@ fn check_video_controls(
     let undeclared = |name: &str| ValidationError::new("param_unsupported", format!("'{}' does not take {name}", schema.id), Some(name));
     if let Some(camera) = req.camera.as_deref() {
         match schema.params.get("camera") {
-            Some(ParamSpec::String(s)) => check_string(camera, &s.enum_values, s.max_length, "camera")?,
+            Some(ParamSpec::String(s)) => check_string(camera, s, "camera")?,
             _ if strict => return Err(undeclared("camera")),
             _ => {
                 dropped.push("camera".into());
@@ -1649,6 +1793,18 @@ fn check_video_request(schema: &ModelSchema, req: &VideoGenerationRequest) -> Re
             "capability_unsupported",
             format!("'{}' makes video from text only; it takes no frame image", schema.id),
             Some("reference_images"),
+        ));
+    }
+    // N3: without a frame to start from the request is text-to-video, which
+    // this model's vendor makes only from a prompt. Refused here, before
+    // anything is quoted or reserved, not by the adapter after. Runs after
+    // `check_refs`, so a role-less image counts under its `default_role`.
+    let starts_from_a_frame = refs.iter().any(|r| matches!(r.role.as_deref(), Some("first_frame" | "init")));
+    if schema.prompt.required_for_text_to_video && !starts_from_a_frame && req.base.prompt.trim().is_empty() {
+        return Err(ValidationError::new(
+            "prompt_required",
+            format!("'{}' makes text-to-video from a prompt; send one, or a first_frame image to animate", schema.id),
+            Some("prompt"),
         ));
     }
     Ok(())
@@ -1880,6 +2036,215 @@ fn check_refs(
     Ok(())
 }
 
+/// An int param's range, then the values the row lists when the vendor takes
+/// a list rather than a range (PixelGenie L10): out of range is
+/// `param_out_of_range`, off the list `param_enum_mismatch` naming the values.
+fn check_int(v: i64, s: &crate::capabilities::ParamSpecInt, key: &str, model: &str) -> Result<(), ValidationError> {
+    if s.min.is_some_and(|m| v < m) || s.max.is_some_and(|m| v > m) {
+        return Err(ValidationError::new("param_out_of_range", format!("{key} {v} out of range"), Some(key)));
+    }
+    if !s.values.is_empty() && !s.values.contains(&v) {
+        return Err(ValidationError::new("param_enum_mismatch", format!("'{model}' takes {key} {:?}; got {v}", s.values), Some(key)));
+    }
+    Ok(())
+}
+
+/// [`check_int`] for a float param.
+fn check_float(v: f64, s: &crate::capabilities::ParamSpecFloat, key: &str, model: &str) -> Result<(), ValidationError> {
+    if s.min.is_some_and(|m| v < m) || s.max.is_some_and(|m| v > m) {
+        return Err(ValidationError::new("param_out_of_range", format!("{key} {v} out of range"), Some(key)));
+    }
+    if !s.values.is_empty() && !s.values.iter().any(|a| (a - v).abs() < 1e-9) {
+        return Err(ValidationError::new("param_enum_mismatch", format!("'{model}' takes {key} {:?}; got {v}", s.values), Some(key)));
+    }
+    Ok(())
+}
+
+/// `extra` keys that became a param under another name, so a caller from
+/// before is told where it goes: Google's `imageSize` is `resolution` since
+/// 2026-11-03.
+const RENAMED_EXTRAS: &[(&str, &str)] = &[("imageSize", "resolution")];
+
+/// Fields a body sent that its request type has no name for (E2), judged
+/// once the model is known. `top` holds the unknown top-level keys with their
+/// values, `nested` the unknown keys inside the request's objects (dotted
+/// paths); `request` names the request schema (`openapi::REQUEST_SCHEMAS`).
+///
+/// A top-level key the model passes through (its `extra_allowlist`) is moved
+/// into `extra`, as if sent there, in either mode: the OpenAI SDK sends
+/// `user` and `moderation` at the top level. `check_extra` then judges it
+/// like any `extra` key. Sent both ways with different values, it is refused
+/// when strict (`param_invalid`), and `extra`'s value is kept otherwise.
+/// Every other key is refused when strict (`param_unsupported`, naming at
+/// most [`MAX_NAMED_FIELDS`]) and returned to be named as dropped otherwise.
+pub fn check_unknown_fields(
+    schema: &ModelSchema,
+    request: &str,
+    top: Vec<(String, Value)>,
+    nested: Vec<String>,
+    extra: &mut Option<Value>,
+    strict: bool,
+) -> Result<Vec<String>, ValidationError> {
+    // A request with no `extra` (segmentation) has nowhere to forward to.
+    let forwards = crate::api::openapi::request_fields(request).contains("extra");
+    let mut names = Vec::new();
+    for (key, value) in top {
+        if !(forwards && schema.extra_allowlist.contains(&key)) {
+            names.push(key);
+            continue;
+        }
+        // The value the vendor will get, when it is this one: a typed field
+        // is judged here, by the name the caller sent (passthrough review
+        // #6). `check_extra` judges it again, as `extra.<key>`.
+        let forwarded = match extra {
+            None => true,
+            Some(Value::Object(map)) => map.get(&key).is_none_or(|sent| *sent == value),
+            Some(_) => false,
+        };
+        if let Some(why) = schema.extra_params.get(&key).filter(|_| forwarded).and_then(|spec| spec.extra_misfit(&value)) {
+            return Err(extra_misfit_error(&shown(&key), &value, why, schema));
+        }
+        match extra {
+            None => *extra = Some(Value::Object(serde_json::Map::from_iter([(key, value)]))),
+            Some(Value::Object(map)) => match map.get(&key) {
+                None => {
+                    map.insert(key, value);
+                }
+                Some(sent) if *sent == value => {}
+                Some(_) if strict => {
+                    return Err(ValidationError::new(
+                        "param_invalid",
+                        format!("`{}` and `extra.{}` were both sent, with different values: send one", shown(&key), shown(&key)),
+                        Some(&shown(&key)),
+                    ));
+                }
+                // `extra`'s value goes to the vendor; the top-level one is dropped.
+                Some(_) => names.push(key),
+            },
+            // No object: `check_extra` refuses it, in either mode.
+            Some(_) => {}
+        }
+    }
+    let at_top = names.len();
+    names.extend(nested);
+    if names.is_empty() || !strict {
+        return Ok(names);
+    }
+    let listed: Vec<String> = names
+        .iter()
+        .take(MAX_NAMED_FIELDS)
+        .enumerate()
+        .map(|(i, name)| {
+            let hint = if i < at_top { field_hint(request, name) } else { None };
+            format!("`{}`{}", shown(name), hint.map(|h| format!(" ({h})")).unwrap_or_default())
+        })
+        .collect();
+    let more = names.len().saturating_sub(MAX_NAMED_FIELDS);
+    let (fields, it, more) = match (names.len(), more) {
+        (1, _) => ("field", "it", String::new()),
+        (_, 0) => ("fields", "them", String::new()),
+        (_, n) => ("fields", "them", format!(", and {n} more")),
+    };
+    Err(ValidationError::new(
+        "param_unsupported",
+        format!(
+            "no such {fields} on {} request: {}{more}. Leave {it} out, or send `strict: false` to have {it} dropped and named in X-Litegen-Dropped-Params",
+            request_family(request),
+            listed.join(", "),
+        ),
+        Some(&shown(&names[0])),
+    ))
+}
+
+/// How many unknown fields a refusal names; the rest are counted. A 25 MiB
+/// body of tiny keys would otherwise make a megabyte error, which `post_call`
+/// hooks receive too.
+pub const MAX_NAMED_FIELDS: usize = 20;
+
+/// A caller's field name as a message shows it: at most 64 characters.
+fn shown(name: &str) -> String {
+    match name.char_indices().nth(64) {
+        Some((cut, _)) => format!("{}...", &name[..cut]),
+        None => name.to_string(),
+    }
+}
+
+/// `request`'s family, with its article: "an image", "a video".
+fn request_family(request: &str) -> &'static str {
+    match request {
+        "ImageGenerationRequest" => "an image",
+        "VideoGenerationRequest" => "a video",
+        "Model3dGenerationRequest" => "a 3D",
+        "ImageSegmentationRequest" => "a segmentation",
+        _ => "this",
+    }
+}
+
+/// Where an unknown top-level field probably belongs: its snake_case form
+/// (`durationSeconds`), a field it begins or is begun by (`duration`,
+/// `prompt` for `prompts`), or another family's request.
+fn field_hint(request: &str, key: &str) -> Option<String> {
+    use crate::api::openapi::{request_fields, REQUEST_SCHEMAS};
+    let known = request_fields(request);
+    let snake = snake_case(key);
+    if snake != key && known.contains(&snake) {
+        return Some(format!("did you mean `{snake}`?"));
+    }
+    let begun = known.iter().find(|f| key.len() >= 3 && f.starts_with(key));
+    let begins = known.iter().filter(|f| f.len() >= 3 && key.starts_with(f.as_str())).max_by_key(|f| f.len());
+    if let Some(f) = begun.or(begins) {
+        return Some(format!("did you mean `{f}`?"));
+    }
+    let families: Vec<&str> = REQUEST_SCHEMAS
+        .iter()
+        .filter(|r| **r != request && request_fields(r).contains(key))
+        .map(|r| request_family(r))
+        .collect();
+    let (first, rest) = families.split_first()?;
+    let rest: String = rest.iter().map(|f| format!(" or {}", f.split_once(' ').map_or(*f, |(_, noun)| noun))).collect();
+    Some(format!("{first}{rest} request field"))
+}
+
+/// `durationSeconds`, `duration-seconds` and `Duration_Seconds` as
+/// `duration_seconds`.
+fn snake_case(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 4);
+    let mut after_lower = false;
+    for c in key.chars() {
+        if c == '-' || c == ' ' {
+            out.push('_');
+            after_lower = false;
+        } else if c.is_uppercase() {
+            if after_lower {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+            after_lower = false;
+        } else {
+            out.push(c);
+            after_lower = c.is_lowercase() || c.is_ascii_digit();
+        }
+    }
+    out
+}
+
+/// The unknown fields of a request body (E2): the top-level ones taken out of
+/// `json` with their values (serde ignores them anyway, and one the model
+/// passes through goes on to `extra`), and the nested ones by path.
+fn take_unknown_fields(request: &str, json: &mut Value) -> (Vec<(String, Value)>, Vec<String>) {
+    let mut top = Vec::new();
+    let mut nested = Vec::new();
+    for field in crate::api::openapi::unknown_fields(request, json) {
+        if field.top_level {
+            let value = json.as_object_mut().and_then(|o| o.remove(&field.path)).unwrap_or(Value::Null);
+            top.push((field.path, value));
+        } else {
+            nested.push(field.path);
+        }
+    }
+    (top, nested)
+}
+
 fn check_extra(
     schema: &ModelSchema,
     extra: &mut Option<Value>,
@@ -1903,17 +2268,57 @@ fn check_extra(
         if schema.extra_allowlist.iter().any(|a| a == k) {
             filtered.insert(k.clone(), val.clone());
         } else if strict {
+            // A key that is one of the model's own params (`background` and
+            // `output_format` were extra keys once) is told where it goes.
+            let param = if schema.params.contains_key(k) {
+                Some(k.as_str())
+            } else {
+                RENAMED_EXTRAS.iter().find(|(old, new)| old == k && schema.params.contains_key(*new)).map(|(_, new)| *new)
+            };
+            let hint = param
+                .map(|p| format!("; it is a param of this model: send it as `{p}`"))
+                // E4a: a field no row may allowlist says why.
+                .or_else(|| crate::capabilities::gateway_owned_extra(k).map(|why| format!("; it is litegen's to set: {why}")))
+                .unwrap_or_default();
             return Err(ValidationError::new(
                 "extra_key_unsupported",
-                format!("extra key '{}' not in allowlist for model '{}'", k, schema.id),
+                format!("extra key '{}' not in allowlist for model '{}'{hint}", k, schema.id),
                 Some(&format!("extra.{}", k)),
             ));
         } else {
             dropped.push(format!("extra.{k}"));
         }
     }
+    // E4b: a typed extra is checked like a param, in either mode, as an
+    // out-of-range param is; `null` and untyped keys pass as sent.
+    for (k, val) in &filtered {
+        let Some(why) = schema.extra_params.get(k).and_then(|spec| spec.extra_misfit(val)) else { continue };
+        return Err(extra_misfit_error(&format!("extra.{k}"), val, why, schema));
+    }
+    // An `int` extra sent as `2.0` goes to the vendor as `2` (passthrough
+    // review #6).
+    for (k, val) in filtered.iter_mut() {
+        if let Some(spec) = schema.extra_params.get(k) {
+            spec.normalize_extra(val);
+        }
+    }
     *extra = Some(Value::Object(filtered));
     Ok(())
+}
+
+/// The refusal of a typed extra's value (E4b), under the name the caller
+/// sent it by: `extra.<key>`, or the key itself for a field sent at the top
+/// level (passthrough review #6).
+fn extra_misfit_error(param: &str, val: &Value, why: crate::capabilities::ExtraMisfit, schema: &ModelSchema) -> ValidationError {
+    let code = match why {
+        crate::capabilities::ExtraMisfit::Type(_) => "param_invalid",
+        crate::capabilities::ExtraMisfit::Range(_) => "param_out_of_range",
+        crate::capabilities::ExtraMisfit::NotListed(_) => "param_enum_mismatch",
+        crate::capabilities::ExtraMisfit::TooLong(_) => "param_too_long",
+        crate::capabilities::ExtraMisfit::TooMany(_) => "param_too_many",
+        crate::capabilities::ExtraMisfit::Pattern(_) => "param_invalid",
+    };
+    ValidationError::new(code, format!("{param} is {} for model '{}': {why}", shown(&val.to_string()), schema.id), Some(param))
 }
 
 // ─── Axum extractor implementations ─────────────────────────────────────────
@@ -1923,6 +2328,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
+use crate::api::middleware::body::{BodyError, Buffered, MAX_GENERATION_BODY};
 use crate::api::middleware::AppState;
 // Named explicitly: the `crate::types` glob above exports a `MediaType` too.
 use crate::capabilities::MediaType;
@@ -1933,9 +2339,12 @@ pub struct ValidatedImage {
     pub request: ImageGenerationRequest,
     pub dropped: Vec<String>,
     pub ctx: MaterializeContext,
-    /// In-flight slot, acquired before the body was buffered and held until the
+    /// In-flight slot, taken once the body had arrived and held until the
     /// handler returns. Never read; exists only so the permit lives that long.
     pub _permit: tokio::sync::OwnedSemaphorePermit,
+    /// The body, holding its share of the body budget until the handler
+    /// returns (the request's parts, such as multipart files, live that long).
+    pub _body: Buffered,
 }
 
 pub struct ValidatedVideo {
@@ -1944,6 +2353,7 @@ pub struct ValidatedVideo {
     pub dropped: Vec<String>,
     pub ctx: MaterializeContext,
     pub _permit: tokio::sync::OwnedSemaphorePermit,
+    pub _body: Buffered,
 }
 
 #[derive(Debug)]
@@ -1961,17 +2371,63 @@ impl IntoResponse for ValidationRejection {
     }
 }
 
-/// Acquire an in-flight slot before buffering the request body. Returns a 503
-/// rejection (with `Retry-After: 1`) when the server is at capacity.
+/// 503 `server_at_capacity` (with `Retry-After: 1`).
+fn at_capacity() -> ValidationRejection {
+    ValidationRejection(
+        StatusCode::SERVICE_UNAVAILABLE,
+        err_body("server_at_capacity", "server at capacity, retry shortly", None, ""),
+    )
+}
+
+/// Acquire an in-flight slot. Returns a 503 rejection (with `Retry-After: 1`)
+/// when the server is at capacity.
 fn acquire_in_flight(
     state: &Arc<AppState>,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, ValidationRejection> {
-    state.in_flight.try_acquire_owned().ok_or_else(|| {
-        ValidationRejection(
-            StatusCode::SERVICE_UNAVAILABLE,
-            err_body("server_at_capacity", "server at capacity, retry shortly", None, ""),
-        )
-    })
+    state.in_flight.try_acquire_owned().ok_or_else(at_capacity)
+}
+
+/// A body that was not read, in the API's error shape: 413, 408, 503 or 400.
+fn body_rejection(e: BodyError) -> ValidationRejection {
+    ValidationRejection(e.status(), err_body(e.code(), &e.message(), None, ""))
+}
+
+/// The body of a generation, quote or segmentation request, then its
+/// in-flight slot. A server with every slot taken refuses before reading.
+/// Otherwise the body is read first, each byte charged to the body budget as
+/// it arrives (`body.rs`), so a client that sends slowly holds only what it
+/// sent, never a slot; then, once it is all there, the slot is taken.
+async fn body_then_slot(
+    req: Request,
+    state: &Arc<AppState>,
+) -> Result<(axum::http::request::Parts, Buffered, tokio::sync::OwnedSemaphorePermit), ValidationRejection> {
+    if state.in_flight.is_full() {
+        return Err(at_capacity());
+    }
+    let (parts, body) = state.in_flight.body().read_request(req, MAX_GENERATION_BODY).await.map_err(body_rejection)?;
+    let permit = acquire_in_flight(state)?;
+    Ok((parts, body, permit))
+}
+
+/// The answer for a model id nothing serves: 410 `model_retired` for a row
+/// past its retirement, naming its replacement (`replaced_by`), else 404
+/// `model_not_found`.
+pub(crate) fn unserved_model(state: &AppState, id: &str) -> ValidationRejection {
+    match state.registry.retired(id) {
+        Some(m) => ValidationRejection(StatusCode::GONE, retired_body(&m)),
+        None => ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{id}' not found"), None, id)),
+    }
+}
+
+/// `model_retired`'s body: when the model retired, and what replaces it.
+pub(crate) fn retired_body(m: &ModelSchema) -> serde_json::Value {
+    let on = m.retires_at.as_deref().map(|d| format!(" after {d}")).unwrap_or_default();
+    let instead = m.replaced_by.as_deref().map(|r| format!("; use '{r}' instead")).unwrap_or_default();
+    let mut body = err_body("model_retired", &format!("model '{}' was retired{on}{instead}", m.id), None, &m.id);
+    if let Some(r) = &m.replaced_by {
+        body["error"]["replaced_by"] = serde_json::Value::from(r.clone());
+    }
+    body
 }
 
 pub fn err_body(code: &str, msg: &str, param: Option<&str>, model: &str) -> serde_json::Value {
@@ -2062,60 +2518,60 @@ async fn parse_request_and_context(
 impl FromRequest<Arc<AppState>> for ValidatedImage {
     type Rejection = ValidationRejection;
     async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
-        // Acquire the in-flight slot BEFORE buffering the body, so concurrent
-        // body buffering is bounded by the semaphore rather than unbounded.
-        let permit = acquire_in_flight(state)?;
-        let (parts, body) = req.into_parts();
+        // The body first, within the body budget and its deadline; the
+        // in-flight slot once it is all there (`body_then_slot`).
+        let (parts, body, permit) = body_then_slot(req, state).await?;
         let headers = parts.headers;
-        let bytes = axum::body::to_bytes(body, 25 * 1024 * 1024).await.map_err(|e| {
-            ValidationRejection(StatusCode::PAYLOAD_TOO_LARGE, err_body("body_too_large", &e.to_string(), None, ""))
-        })?;
-        let (json, ctx) = parse_request_and_context(&headers, bytes).await?;
-        let req: ImageGenerationRequest = serde_json::from_value(json).map_err(|e| {
+        let (mut json, ctx) = parse_request_and_context(&headers, body.bytes.clone()).await?;
+        let (top, nested) = take_unknown_fields(IMAGE_REQUEST, &mut json);
+        let mut req: ImageGenerationRequest = serde_json::from_value(json).map_err(|e| {
             ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
         })?;
         let schema = state.registry.resolve(&req.base.model)
-            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?;
+            .ok_or_else(|| unserved_model(state, &req.base.model))?;
         let schema = Arc::new(schema);
         require_media_type(&schema, MediaType::Image)?;
-        require_task(&schema, ModelTask::Generate).map_err(|e| {
-            ValidationRejection(StatusCode::BAD_REQUEST, err_body(&e.code, &e.message, e.param.as_deref(), &schema.id))
-        })?;
-        match validate_image(&schema, req) {
-            Ok(out) => Ok(ValidatedImage { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
-            Err(e) => Err(ValidationRejection(
-                StatusCode::BAD_REQUEST,
-                err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
-            )),
-        }
+        let refuse = |e: ValidationError| ValidationRejection(StatusCode::BAD_REQUEST, err_body(&e.code, &e.message, e.param.as_deref(), &schema.id));
+        require_task(&schema, ModelTask::Generate).map_err(refuse)?;
+        // Unknown fields after the model, family and task checks, so those
+        // mistakes are named first, and before the params, so a field that
+        // does not exist is named before anything about its value.
+        let strict = req.base.strict;
+        let mut dropped = check_unknown_fields(&schema, IMAGE_REQUEST, top, nested, &mut req.base.extra, strict).map_err(refuse)?;
+        let out = validate_image(&schema, req).map_err(refuse)?;
+        dropped.extend(out.dropped);
+        Ok(ValidatedImage { schema, request: out.request, dropped, ctx, _permit: permit, _body: body })
     }
 }
+
+/// The request schemas' names, as `openapi::REQUEST_SCHEMAS` has them.
+const IMAGE_REQUEST: &str = "ImageGenerationRequest";
+const VIDEO_REQUEST: &str = "VideoGenerationRequest";
+const MODEL3D_REQUEST: &str = "Model3dGenerationRequest";
+const SEGMENTATION_REQUEST: &str = "ImageSegmentationRequest";
 
 impl FromRequest<Arc<AppState>> for ValidatedVideo {
     type Rejection = ValidationRejection;
     async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
-        // Acquire the in-flight slot BEFORE buffering the body (see ValidatedImage).
-        let permit = acquire_in_flight(state)?;
-        let (parts, body) = req.into_parts();
+        // The body, then the slot (see ValidatedImage).
+        let (parts, body, permit) = body_then_slot(req, state).await?;
         let headers = parts.headers;
-        let bytes = axum::body::to_bytes(body, 25 * 1024 * 1024).await.map_err(|e| {
-            ValidationRejection(StatusCode::PAYLOAD_TOO_LARGE, err_body("body_too_large", &e.to_string(), None, ""))
-        })?;
-        let (json, ctx) = parse_request_and_context(&headers, bytes).await?;
-        let req: VideoGenerationRequest = serde_json::from_value(json).map_err(|e| {
+        let (mut json, ctx) = parse_request_and_context(&headers, body.bytes.clone()).await?;
+        let (top, nested) = take_unknown_fields(VIDEO_REQUEST, &mut json);
+        let mut req: VideoGenerationRequest = serde_json::from_value(json).map_err(|e| {
             ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
         })?;
         let schema = state.registry.resolve(&req.base.model)
-            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?;
+            .ok_or_else(|| unserved_model(state, &req.base.model))?;
         let schema = Arc::new(schema);
         require_media_type(&schema, MediaType::Video)?;
-        match validate_video(&schema, req) {
-            Ok(out) => Ok(ValidatedVideo { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
-            Err(e) => Err(ValidationRejection(
-                StatusCode::BAD_REQUEST,
-                err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
-            )),
-        }
+        let refuse = |e: ValidationError| ValidationRejection(StatusCode::BAD_REQUEST, err_body(&e.code, &e.message, e.param.as_deref(), &schema.id));
+        // Unknown fields between the model checks and the params (see ValidatedImage).
+        let strict = req.base.strict;
+        let mut dropped = check_unknown_fields(&schema, VIDEO_REQUEST, top, nested, &mut req.base.extra, strict).map_err(refuse)?;
+        let out = validate_video(&schema, req).map_err(refuse)?;
+        dropped.extend(out.dropped);
+        Ok(ValidatedVideo { schema, request: out.request, dropped, ctx, _permit: permit, _body: body })
     }
 }
 
@@ -2125,33 +2581,31 @@ pub struct ValidatedModel3d {
     pub dropped: Vec<String>,
     pub ctx: MaterializeContext,
     pub _permit: tokio::sync::OwnedSemaphorePermit,
+    pub _body: Buffered,
 }
 
 impl FromRequest<Arc<AppState>> for ValidatedModel3d {
     type Rejection = ValidationRejection;
     async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
-        // Acquire the in-flight slot BEFORE buffering the body (see ValidatedImage).
-        let permit = acquire_in_flight(state)?;
-        let (parts, body) = req.into_parts();
+        // The body, then the slot (see ValidatedImage).
+        let (parts, body, permit) = body_then_slot(req, state).await?;
         let headers = parts.headers;
-        let bytes = axum::body::to_bytes(body, 25 * 1024 * 1024).await.map_err(|e| {
-            ValidationRejection(StatusCode::PAYLOAD_TOO_LARGE, err_body("body_too_large", &e.to_string(), None, ""))
-        })?;
-        let (json, ctx) = parse_request_and_context(&headers, bytes).await?;
-        let req: Model3dGenerationRequest = serde_json::from_value(json).map_err(|e| {
+        let (mut json, ctx) = parse_request_and_context(&headers, body.bytes.clone()).await?;
+        let (top, nested) = take_unknown_fields(MODEL3D_REQUEST, &mut json);
+        let mut req: Model3dGenerationRequest = serde_json::from_value(json).map_err(|e| {
             ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
         })?;
         let schema = state.registry.resolve(&req.base.model)
-            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?;
+            .ok_or_else(|| unserved_model(state, &req.base.model))?;
         let schema = Arc::new(schema);
         require_media_type(&schema, MediaType::Model3d)?;
-        match validate_model3d(&schema, req) {
-            Ok(out) => Ok(ValidatedModel3d { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
-            Err(e) => Err(ValidationRejection(
-                StatusCode::BAD_REQUEST,
-                err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
-            )),
-        }
+        let refuse = |e: ValidationError| ValidationRejection(StatusCode::BAD_REQUEST, err_body(&e.code, &e.message, e.param.as_deref(), &schema.id));
+        // Unknown fields between the model checks and the params (see ValidatedImage).
+        let strict = req.base.strict;
+        let mut dropped = check_unknown_fields(&schema, MODEL3D_REQUEST, top, nested, &mut req.base.extra, strict).map_err(refuse)?;
+        let out = validate_model3d(&schema, req).map_err(refuse)?;
+        dropped.extend(out.dropped);
+        Ok(ValidatedModel3d { schema, request: out.request, dropped, ctx, _permit: permit, _body: body })
     }
 }
 
@@ -2162,31 +2616,40 @@ pub struct ValidatedSegmentation {
     pub input: crate::providers::SegmentationInput,
     /// The caller's `metadata`, validated.
     pub metadata: Option<serde_json::Value>,
+    /// Fields dropped because `strict` was false (E2), for
+    /// `X-Litegen-Dropped-Params`.
+    pub dropped: Vec<String>,
     pub _permit: tokio::sync::OwnedSemaphorePermit,
+    pub _body: Buffered,
 }
 
 impl FromRequest<Arc<AppState>> for ValidatedSegmentation {
     type Rejection = ValidationRejection;
     async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
-        // Acquire the in-flight slot BEFORE buffering the body (see ValidatedImage).
-        let permit = acquire_in_flight(state)?;
-        let bytes = axum::body::to_bytes(req.into_body(), 25 * 1024 * 1024).await.map_err(|e| {
-            ValidationRejection(StatusCode::PAYLOAD_TOO_LARGE, err_body("body_too_large", &e.to_string(), None, ""))
-        })?;
-        let req: ImageSegmentationRequest = serde_json::from_slice(&bytes).map_err(|e| {
-            ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
-        })?;
+        // The body, then the slot (see ValidatedImage).
+        let (_, body, permit) = body_then_slot(req, state).await?;
+        let malformed = |e: serde_json::Error| ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""));
+        let mut json: Value = serde_json::from_slice(&body.bytes).map_err(malformed)?;
+        let (top, nested) = take_unknown_fields(SEGMENTATION_REQUEST, &mut json);
+        let req: ImageSegmentationRequest = serde_json::from_value(json).map_err(malformed)?;
         let schema = state.registry.resolve(&req.model)
-            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.model), None, &req.model)))?;
+            .ok_or_else(|| unserved_model(state, &req.model))?;
         let schema = Arc::new(schema);
         require_media_type(&schema, MediaType::Image)?;
         let refuse = |e: ValidationError| ValidationRejection(StatusCode::BAD_REQUEST, err_body(&e.code, &e.message, e.param.as_deref(), &schema.id));
         require_task(&schema, ModelTask::Segment).map_err(refuse)?;
+        // Unknown fields between the model checks and the prompts (see
+        // ValidatedImage). A segmentation request has no `extra` to forward to.
+        let dropped = check_unknown_fields(&schema, SEGMENTATION_REQUEST, top, nested, &mut None, req.strict).map_err(refuse)?;
         validate_segmentation(&schema, &req).map_err(refuse)?;
         let image = req.image;
         let (image, content_type, width, height) = tokio::task::spawn_blocking(move || crate::proxy::segmentation::read_image(&image))
             .await
-            .map_err(|e| ValidationRejection(StatusCode::INTERNAL_SERVER_ERROR, err_body("internal_error", &e.to_string(), None, &schema.id)))?
+            .map_err(|e| {
+                // A panic's text names code: the log has it, not the caller (SEC-DBERR).
+                tracing::error!(error = %e, "reading a segmentation image failed");
+                ValidationRejection(StatusCode::INTERNAL_SERVER_ERROR, err_body("internal_error", "internal server error", None, &schema.id))
+            })?
             .map_err(|msg| refuse(ValidationError::new("image_unreadable", msg, Some("image"))))?;
         check_segmentation_bounds(&req.prompts, width, height).map_err(refuse)?;
         let max_masks = match schema.params.get("prompts") {
@@ -2201,12 +2664,35 @@ impl FromRequest<Arc<AppState>> for ValidatedSegmentation {
             prompts: req.prompts,
             max_masks,
         };
-        Ok(ValidatedSegmentation { schema, input, metadata: req.metadata.filter(|m| !m.is_null()), _permit: permit })
+        Ok(ValidatedSegmentation { schema, input, metadata: req.metadata.filter(|m| !m.is_null()), dropped, _permit: permit, _body: body })
     }
 }
 
+/// How many names `X-Litegen-Dropped-Params` lists; the rest are counted.
+pub const MAX_DROPPED_NAMES: usize = 32;
+
+/// `X-Litegen-Dropped-Params`: the dropped names, comma-separated, `None`
+/// when nothing was dropped. The value stays visible ASCII, which the MCP
+/// note and the SDKs need (`to_str()`): a name is listed only when it is 1–64
+/// visible ASCII characters with no comma, at most [`MAX_DROPPED_NAMES`] of
+/// them, and every other name is counted in a last `+N more` (N2). One
+/// unsafe name used to delete the whole header.
 pub fn dropped_header(values: &[String]) -> Option<(axum::http::HeaderName, HeaderValue)> {
-    if values.is_empty() { return None; }
-    let s = values.join(",");
-    Some((axum::http::HeaderName::from_static("x-litegen-dropped-params"), HeaderValue::from_str(&s).ok()?))
+    if values.is_empty() {
+        return None;
+    }
+    let safe = |name: &str| (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_graphic() && b != b',');
+    let mut listed: Vec<&str> = Vec::new();
+    let mut more = 0usize;
+    for name in values {
+        if listed.len() < MAX_DROPPED_NAMES && safe(name) {
+            listed.push(name);
+        } else {
+            more += 1;
+        }
+    }
+    let counted = (more > 0).then(|| format!("+{more} more"));
+    let value = listed.into_iter().map(str::to_string).chain(counted).collect::<Vec<_>>().join(",");
+    let value = HeaderValue::from_str(&value).expect("visible ASCII names and a count make a header value");
+    Some((axum::http::HeaderName::from_static("x-litegen-dropped-params"), value))
 }

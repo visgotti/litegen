@@ -19,9 +19,12 @@ pub const VRM_JOINTS: [&str; 7] = ["hips", "spine", "head", "leftUpperArm", "rig
 /// How tall the humanoid stands, in metres.
 const HEIGHT_M: f64 = 1.75;
 
-/// (parent joint, world position of the joint, box min, box max), per joint in
-/// skin order. Positions in metres; the boxes together stand 1.75 m tall.
-const BONES: [(Option<usize>, [f64; 3], [f32; 3], [f32; 3]); 7] = [
+/// (parent joint, world position of the joint, box min, box max).
+type Bone = (Option<usize>, [f64; 3], [f32; 3], [f32; 3]);
+
+/// Every joint in skin order. Positions in metres; the boxes together stand
+/// 1.75 m tall.
+const BONES: [Bone; 7] = [
     (None, [0.0, 0.95, 0.0], [-0.15, 0.85, -0.10], [0.15, 1.00, 0.10]),   // hips
     (Some(0), [0.0, 1.00, 0.0], [-0.17, 1.00, -0.10], [0.17, 1.45, 0.10]), // torso
     (Some(1), [0.0, 1.45, 0.0], [-0.11, 1.45, -0.11], [0.11, 1.75, 0.11]), // head

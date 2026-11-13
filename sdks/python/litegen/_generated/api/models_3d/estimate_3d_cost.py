@@ -42,6 +42,18 @@ def _parse_response(
         response_400 = ErrorResponse.from_dict(response.json())
 
         return response_400
+    if response.status_code == 408:
+        response_408 = ErrorResponse.from_dict(response.json())
+
+        return response_408
+    if response.status_code == 413:
+        response_413 = ErrorResponse.from_dict(response.json())
+
+        return response_413
+    if response.status_code == 503:
+        response_503 = ErrorResponse.from_dict(response.json())
+
+        return response_503
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -65,6 +77,9 @@ def sync_detailed(
     body: Model3DGenerationRequest,
 ) -> Response[Union[CostEstimate, ErrorResponse]]:
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
+
+     Runs the same validation as the matching generation route and calls no
+    vendor: a body this refuses, the generation refuses too.
 
     Args:
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
@@ -105,6 +120,9 @@ def sync(
 ) -> Optional[Union[CostEstimate, ErrorResponse]]:
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
+     Runs the same validation as the matching generation route and calls no
+    vendor: a body this refuses, the generation refuses too.
+
     Args:
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
             `POST /v1/models3d/cost`.
@@ -138,6 +156,9 @@ async def asyncio_detailed(
     body: Model3DGenerationRequest,
 ) -> Response[Union[CostEstimate, ErrorResponse]]:
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
+
+     Runs the same validation as the matching generation route and calls no
+    vendor: a body this refuses, the generation refuses too.
 
     Args:
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
@@ -175,6 +196,9 @@ async def asyncio(
     body: Model3DGenerationRequest,
 ) -> Optional[Union[CostEstimate, ErrorResponse]]:
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
+
+     Runs the same validation as the matching generation route and calls no
+    vendor: a body this refuses, the generation refuses too.
 
     Args:
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and

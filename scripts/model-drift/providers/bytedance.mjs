@@ -232,8 +232,8 @@ function paramDigest(md, heading, ours) {
   return out;
 }
 
-function requestDigest(md, ours) {
-  const out = paramDigest(md, '### Request body', ours);
+function requestDigest(md, heading, ours) {
+  const out = paramDigest(md, heading, ours);
   if (!out.some((o) => /^model\b/.test(o))) throw new Error('no `model` parameter in the request body — the page was restructured');
   return out.join('\n') + '\n';
 }
@@ -294,11 +294,15 @@ function subsection(lines, heading) {
 const paramNames = (md, heading) => section(md, heading).flatMap((l) => l.replace(/<mark>.*?<\/mark>/g, '').match(/^\*\*([\w.[\]]+)\*\*\s+`/)?.[1] ?? []);
 
 const docPage = (key, code) => ({ key, url: `${DOC_API}${code}`, headers: HEADERS, expect: 'json' });
-const apiPage = (key, code) => ({
+// `heading`: the request body's `###` heading, which the two API pages name
+// differently (2026-11-09: the image page renamed its "### Request body" to
+// "### Body parameters" under "## Request parameters"; the video page kept
+// "### Request body" under the same "## Request parameters").
+const apiPage = (key, code, heading) => ({
   ...docPage(key, code),
   index: true,
-  extract: (json) => paramNames(pageMarkdown(json), '### Request body'),
-  snapshot: (json, _body, { ours }) => requestDigest(pageMarkdown(json), ours),
+  extract: (json) => paramNames(pageMarkdown(json), heading),
+  snapshot: (json, _body, { ours }) => requestDigest(pageMarkdown(json), heading, ours),
 });
 
 // The model list's media and the price page's: a `##` section each.
@@ -318,6 +322,8 @@ export default {
     'bytedance/seedream-5-0-lite-260128': 'seedream-5-0-lite-260128',
     'bytedance/seedream-4-5-251128': 'seedream-4-5-251128',
     'bytedance/seedream-4-0-250828': 'seedream-4-0-250828',
+    'bytedance/dola-seedream-5-0-pro-260628': 'dola-seedream-5-0-pro-260628',
+    'bytedance/dola-seedream-5-0-flash-260915': 'dola-seedream-5-0-flash-260915',
     'bytedance/doubao-seedance-1-0-pro-250528': 'seedance-1-0-pro-250528',
     'bytedance/seedance-1-0-pro-fast-251015': 'seedance-1-0-pro-fast-251015',
     'bytedance/dreamina-seedance-2-0-mini-260615': 'dreamina-seedance-2-0-mini-260615',
@@ -349,7 +355,7 @@ export default {
         return out.join('\n');
       },
     },
-    apiPage('video-api', 'create-video-generation-task-api'),
+    apiPage('video-api', 'create-video-generation-task-api', '### Request body'),
     {
       ...docPage('task-api', 'get-video-generation-task-api'),
       index: true,
@@ -360,7 +366,7 @@ export default {
         return out.join('\n') + '\n';
       },
     },
-    apiPage('image-api', 'image-generation-api'),
+    apiPage('image-api', 'image-generation-api', '### Body parameters'),
     {
       ...docPage('pricing', 'model-pricing'),
       index: true,
@@ -473,10 +479,6 @@ export default {
     {
       id: 'dreamina-seedance-2-5-260628',
       reason: 'skipped 2026-09-11: image-to-video only accepts ratio `adaptive`; skip for now',
-    },
-    {
-      id: 'dola-seedream-5-0-pro-260628',
-      reason: 'skipped 2026-09-11: non-lite Seedream 5.0 (pro) is optional; seedream-5-0-lite-260128 is carried',
     },
     {
       id: 'seedream-5-0-260128',

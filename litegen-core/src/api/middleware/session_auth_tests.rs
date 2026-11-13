@@ -93,6 +93,9 @@ mod tests {
             is_active: true,
         };
         db.create_user(&user).await.expect("create user");
+        // Every account joins the default org at signup or invitation; the role
+        // it holds there is the one its permissions come from.
+        db.add_org_member(crate::api::middleware::DEFAULT_ORG_ID, &user.id, role).await.expect("join the default org");
 
         let session_token = generate_session_token();
         let csrf_token = generate_csrf_token();
@@ -817,5 +820,33 @@ mod tests {
             StatusCode::OK,
             "/v1/auth/config must be reachable with no auth"
         );
+    }
+
+    /// Review of security fix 4: a membership lookup that fails answers 5xx,
+    /// not a session with no org. That would read as "removed" (403), and
+    /// before the generate guard such a session ran outside every limit.
+    #[tokio::test]
+    async fn a_failed_membership_lookup_is_a_server_error() {
+        let db = build_test_db().await;
+        let (_user, sess) = seed_user_and_session(&db, Role::Owner).await;
+        sqlx::query("DROP TABLE organization_members").execute(db.pool()).await.expect("break the lookup");
+        let state = build_state_with_db(db).await;
+        let app = Router::new()
+            .route("/test", get(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn(move |req: Request, next: Next| {
+                let s = state.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, s, req, next).await
+                }
+            }));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

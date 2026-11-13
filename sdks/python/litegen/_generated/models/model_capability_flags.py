@@ -1,7 +1,6 @@
-from typing import Any, Dict, List, Type, TypeVar, Union
+from typing import Any, Dict, Type, TypeVar, Union
 
 from attrs import define as _attrs_define
-from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
@@ -36,7 +35,6 @@ class ModelCapabilityFlags:
     text_to_3d: Union[Unset, bool] = UNSET
     text_to_image: Union[Unset, bool] = UNSET
     text_to_video: Union[Unset, bool] = UNSET
-    additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         background_removal = self.background_removal
@@ -60,7 +58,6 @@ class ModelCapabilityFlags:
         text_to_video = self.text_to_video
 
         field_dict: Dict[str, Any] = {}
-        field_dict.update(self.additional_properties)
         field_dict.update({})
         if background_removal is not UNSET:
             field_dict["background_removal"] = background_removal
@@ -121,21 +118,4 @@ class ModelCapabilityFlags:
             text_to_video=text_to_video,
         )
 
-        model_capability_flags.additional_properties = d
         return model_capability_flags
-
-    @property
-    def additional_keys(self) -> List[str]:
-        return list(self.additional_properties.keys())
-
-    def __getitem__(self, key: str) -> Any:
-        return self.additional_properties[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.additional_properties[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self.additional_properties[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.additional_properties

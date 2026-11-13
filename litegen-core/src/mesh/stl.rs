@@ -22,9 +22,10 @@
 //!
 //! # What STL cannot carry
 //!
-//! No indices, no uvs, no colour, and one normal per FACET rather than per
-//! vertex — which is why the lossiness table in `super` lists STL as keeping
-//! only positions and facet normals. See [`read`] for what that costs on the way
+//! No indices, no uvs, no colour (but Materialise's facet colours are read,
+//! see [`read_scene`]), and one normal per FACET rather than per vertex —
+//! which is why the lossiness table in `super` lists STL as keeping only
+//! positions and facet normals. See [`read`] for what that costs on the way
 //! in and [`write`] for what it costs on the way out.
 //!
 //! # Why the writer emits binary only
@@ -47,6 +48,8 @@
 //! reader declines to guess at: a facet loop with more than three vertices.
 
 use super::ir::Mesh;
+use super::math::srgb_to_linear;
+use super::scene::Scene;
 use super::MeshError;
 
 const HEADER_LEN: usize = 80;
@@ -99,7 +102,7 @@ fn detect(bytes: &[u8]) -> Result<Variant, MeshError> {
         }
     }
 
-    let has_solid = starts_with_solid_keyword(bytes);
+    let has_solid = starts_with_solid_keyword(without_bom(bytes));
     // A NUL byte never appears in a text STL. Its presence means the `solid` we
     // are looking at is the first word of a binary header rather than the ASCII
     // keyword, which is the case the length check above would have caught had
@@ -127,6 +130,13 @@ fn detect(bytes: &[u8]) -> Result<Variant, MeshError> {
         detail.push_str(", and it does not open with the ASCII keyword `solid`");
     }
     Err(not_stl(detail))
+}
+
+/// A text STL saved with a UTF-8 byte-order mark (Windows editors write one)
+/// without it. Only ever applied once the length has ruled out binary, whose
+/// 80-byte header may begin with those three bytes.
+fn without_bom(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(bytes)
 }
 
 fn starts_with_solid_keyword(bytes: &[u8]) -> bool {
@@ -182,7 +192,7 @@ fn check_finite(tri: &[[f32; 3]; 3], which: usize) -> Result<(), MeshError> {
 pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
     match detect(bytes)? {
         Variant::Binary(count) => read_binary(bytes, count),
-        Variant::Ascii => read_ascii(bytes),
+        Variant::Ascii => read_ascii(without_bom(bytes)),
     }
 }
 
@@ -219,12 +229,10 @@ fn read_binary(bytes: &[u8], count: usize) -> Result<Mesh, MeshError> {
                 })?;
             }
         }
-        // Bytes 48..50 are the "attribute byte count", ignored on purpose. Its
-        // only real use is Materialise's per-facet colour extension, which the
-        // IR has nowhere to put (its colour is one flat value for the whole
-        // mesh) and which the lossiness table already declares dropped. It is
-        // junk in most files besides, so refusing files with a non-zero value
-        // would reject working meshes for no gain.
+        // Bytes 48..50 are the "attribute byte count", ignored here: the flat
+        // mesh has one colour for the whole model. Materialise's per-facet
+        // colour reaches the scene through `read_scene`; it is junk in most
+        // other files, so a non-zero value is never a reason to refuse one.
         check_finite(&tri, i)?;
         tris.push(tri);
     }
@@ -232,6 +240,56 @@ fn read_binary(bytes: &[u8], count: usize) -> Result<Mesh, MeshError> {
     let mut mesh = Mesh::from_soup(&tris);
     mesh.name = header_name(bytes);
     Ok(mesh)
+}
+
+/// Read an STL as a scene: [`read`], plus facet colours. Behind a
+/// `COLOR=rgba` header in a binary file — Materialise's convention, which
+/// three.js r170 STLLoader.js:172-225 reads — a facet's attribute word is its
+/// colour: RGB5 with R in the low bits when bit 15 is clear, the header's
+/// default when it is set, decoded as sRGB (STLLoader.js:245). Corners weld
+/// only where position and colour agree. Without the header the word is junk
+/// in most files and is ignored.
+pub fn read_scene(bytes: &[u8]) -> Result<(Scene, Vec<String>), MeshError> {
+    let mesh = read(bytes)?;
+    let (Variant::Binary(count), Some(default)) = (detect(bytes)?, header_color(bytes)) else {
+        return Ok((super::pose::from_flat(&mesh), Vec::new()));
+    };
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::with_capacity(count * 3);
+    let mut seen: std::collections::HashMap<([u32; 3], [u32; 3]), u32> = std::collections::HashMap::new();
+    let bits = |v: f32| (if v == 0.0 { 0.0f32 } else { v }).to_bits();
+    for i in 0..count {
+        let at = BINARY_PREFIX_LEN + i * TRI_RECORD_LEN;
+        let rec = bytes.get(at..at + TRI_RECORD_LEN).ok_or_else(|| MeshError::Malformed(format!("triangle {i} record is truncated")))?;
+        let word = u16::from_le_bytes([rec[48], rec[49]]);
+        let rgb = if word & 0x8000 == 0 {
+            [word & 0x1F, (word >> 5) & 0x1F, (word >> 10) & 0x1F].map(|c| srgb_to_linear(f32::from(c) / 31.0))
+        } else {
+            default
+        };
+        for v in 0..3 {
+            let p = [0, 1, 2].map(|c| le_f32(rec, 12 + v * 12 + c * 4).unwrap_or(0.0));
+            let key = (p.map(bits), rgb.map(f32::to_bits));
+            let idx = *seen.entry(key).or_insert_with(|| {
+                positions.push(p);
+                colors.push([rgb[0], rgb[1], rgb[2], 1.0]);
+                (positions.len() - 1) as u32
+            });
+            indices.push(idx);
+        }
+    }
+    let mut scene = super::pose::from_flat(&Mesh { positions, indices, name: mesh.name, ..Default::default() });
+    scene.meshes[0].primitives[0].colors = Some(colors);
+    Ok((scene, Vec::new()))
+}
+
+/// The default colour of a `COLOR=rgba` header, linear.
+fn header_color(bytes: &[u8]) -> Option<[f32; 3]> {
+    let h = bytes.get(..HEADER_LEN)?;
+    (0..HEADER_LEN - 10)
+        .find(|&i| &h[i..i + 6] == b"COLOR=")
+        .map(|i| [h[i + 6], h[i + 7], h[i + 8]].map(|c| srgb_to_linear(f32::from(c) / 255.0)))
 }
 
 /// The mesh name we stamped into the header, if this file is one of ours.
@@ -730,6 +788,29 @@ mod tests {
         assert!(mesh.base_color.is_none());
     }
 
+    /// 2026-10-12 review, finding 24.13: behind a `COLOR=rgba` header (the
+    /// Materialise convention three.js r170 STLLoader.js:172-225 reads), a
+    /// facet's attribute word is its colour — RGB5 with R in the low bits when
+    /// bit 15 is clear, the header's default when set — decoded as sRGB.
+    #[test]
+    fn facet_colours_behind_a_color_header_are_read() {
+        let tris = soup();
+        let mut header = b"COLOR=".to_vec();
+        header.extend_from_slice(&[0, 255, 0, 255]);
+        let mut bytes = binary(&header, 2, &tris, [0.0, 0.0, 1.0], 0x001F);
+        // The second facet takes the default.
+        let second_attr = 84 + 50 + 48;
+        bytes[second_attr..second_attr + 2].copy_from_slice(&0x8000u16.to_le_bytes());
+        let (scene, _) = read_scene(&bytes).unwrap();
+        let p = &scene.meshes[0].primitives[0];
+        let colors = p.colors.as_ref().expect("facet colours");
+        let facet = |f: usize| colors[p.indices[f * 3] as usize];
+        assert_eq!((facet(0), facet(1)), ([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]));
+        // Without the header the word is junk in most files, and ignored.
+        let (scene, _) = read_scene(&binary(b"x", 2, &tris, [0.0, 0.0, 1.0], 0x001F)).unwrap();
+        assert!(scene.meshes[0].primitives[0].colors.is_none());
+    }
+
     #[test]
     fn write_stores_the_winding_normal_rather_than_zero() {
         let mesh = Mesh {
@@ -1023,5 +1104,21 @@ mod tests {
                 let _ = read(&zeroed);
             }
         }
+    }
+
+    /// 2026-10-12 review, finding 24: an ASCII STL saved with a UTF-8
+    /// byte-order mark was refused as "not an STL"; three.js's STLLoader
+    /// reads it. A binary STL's header may begin with those bytes too, and is
+    /// still told apart by its length.
+    #[test]
+    fn an_ascii_stl_behind_a_byte_order_mark_is_read() {
+        let tris = [[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]];
+        let text = ascii("t", &tris);
+        let plain = read(text.as_bytes()).unwrap();
+        let bom = read(format!("\u{feff}{text}").as_bytes()).unwrap();
+        assert_eq!(bom, plain);
+        let header = [&[0xEF, 0xBB, 0xBF][..], b"solid binary"].concat();
+        let bin = binary(&header, 1, &tris, [0.0, 0.0, 1.0], 0);
+        assert_eq!(read(&bin).unwrap().triangle_count(), 1);
     }
 }

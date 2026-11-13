@@ -131,3 +131,36 @@ test('parseYaml refuses flow collections and anchors instead of guessing', () =>
   assert.throws(() => parseYaml('enum: [a, b]'), /unsupported YAML syntax/);
   assert.throws(() => parseYaml('base: &anchor\n  a: 1'), /unsupported YAML syntax/);
 });
+
+// PyYAML writes a map key of 128+ characters as an explicit key ("? key", then
+// ": value"); openai-python's transformed spec has one such path (2026-11).
+test('parseYaml reads an explicit "? key" / ": value" map entry like an implicit one', () => {
+  const long = '/organization/workload_identity_providers/{workload_identity_provider_id}/federation_rules/{workload_identity_federation_rule_id}';
+  const yaml = [
+    'paths:',
+    '  /short:',
+    '    get:',
+    '      operationId: a',
+    `  ? ${long}`,
+    '  : get:',
+    '      operationId: b',
+    '      tags:',
+    '      - admin',
+    '  ? plain',
+    '  : scalar value',
+    '  ? "quoted key"',
+    '  :',
+    '    nested: 1',
+    '  after: 2',
+  ].join('\n');
+  assert.deepEqual(parseYaml(yaml), {
+    paths: {
+      '/short': { get: { operationId: 'a' } },
+      [long]: { get: { operationId: 'b', tags: ['admin'] } },
+      plain: 'scalar value',
+      'quoted key': { nested: 1 },
+      after: 2,
+    },
+  });
+  assert.throws(() => parseYaml('? first line\n  second line\n: v'), /unsupported YAML syntax/);
+});

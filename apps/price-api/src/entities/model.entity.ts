@@ -14,13 +14,13 @@ import { ModelPriceEntity } from './model-price.entity';
 import { ProviderEntity } from './provider.entity';
 
 /**
- * A single model offered by a provider (e.g. `openai/dall-e-3`). Carries the
+ * A single model offered by a provider (e.g. `openai/gpt-image-2`). Carries the
  * effective refresh mode (provider default unless `modeOverride` is set) and
  * owns one or more {@link ModelPriceEntity} components.
  */
 @Entity('models')
 export class ModelEntity {
-  /** Fully-qualified id, matches litegen model id (e.g. `openai/dall-e-3`). */
+  /** Fully-qualified id, matches litegen model id (e.g. `openai/gpt-image-2`). */
   @PrimaryColumn({ type: 'varchar', length: 128 })
   id!: string;
 

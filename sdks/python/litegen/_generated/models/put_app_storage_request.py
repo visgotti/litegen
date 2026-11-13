@@ -16,20 +16,30 @@ class PutAppStorageRequest:
         access_key_id (Union[None, Unset, str]): Write-only. Provide WITH `secret_access_key` to set/rotate; omit BOTH
             to keep existing.
         backend (Union[None, Unset, str]):
+        credential_mode (Union[None, Unset, str]): `access_key` (default: the key pair above) or `assume_role` (a
+            cross-account IAM role, `role_arn`, trusting litegen with the app's
+            `external_id`).
         custom_public_url (Union[None, Unset, str]):
         endpoint_url (Union[None, Unset, str]):
+        fallback_to_litegen_store (Union[None, Unset, bool]): Whether litegen's own store keeps the app's files while
+            its bucket
+            can't be reached (default true). With false, they wait for the bucket.
         path_prefix (Union[None, Unset, str]):
         region (Union[None, Unset, str]):
+        role_arn (Union[None, Unset, str]): `arn:aws:iam::{account}:role/{name}`, with `credential_mode: assume_role`.
         secret_access_key (Union[None, Unset, str]): Write-only.
     """
 
     bucket_name: str
     access_key_id: Union[None, Unset, str] = UNSET
     backend: Union[None, Unset, str] = UNSET
+    credential_mode: Union[None, Unset, str] = UNSET
     custom_public_url: Union[None, Unset, str] = UNSET
     endpoint_url: Union[None, Unset, str] = UNSET
+    fallback_to_litegen_store: Union[None, Unset, bool] = UNSET
     path_prefix: Union[None, Unset, str] = UNSET
     region: Union[None, Unset, str] = UNSET
+    role_arn: Union[None, Unset, str] = UNSET
     secret_access_key: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -48,6 +58,12 @@ class PutAppStorageRequest:
         else:
             backend = self.backend
 
+        credential_mode: Union[None, Unset, str]
+        if isinstance(self.credential_mode, Unset):
+            credential_mode = UNSET
+        else:
+            credential_mode = self.credential_mode
+
         custom_public_url: Union[None, Unset, str]
         if isinstance(self.custom_public_url, Unset):
             custom_public_url = UNSET
@@ -60,6 +76,12 @@ class PutAppStorageRequest:
         else:
             endpoint_url = self.endpoint_url
 
+        fallback_to_litegen_store: Union[None, Unset, bool]
+        if isinstance(self.fallback_to_litegen_store, Unset):
+            fallback_to_litegen_store = UNSET
+        else:
+            fallback_to_litegen_store = self.fallback_to_litegen_store
+
         path_prefix: Union[None, Unset, str]
         if isinstance(self.path_prefix, Unset):
             path_prefix = UNSET
@@ -71,6 +93,12 @@ class PutAppStorageRequest:
             region = UNSET
         else:
             region = self.region
+
+        role_arn: Union[None, Unset, str]
+        if isinstance(self.role_arn, Unset):
+            role_arn = UNSET
+        else:
+            role_arn = self.role_arn
 
         secret_access_key: Union[None, Unset, str]
         if isinstance(self.secret_access_key, Unset):
@@ -89,14 +117,20 @@ class PutAppStorageRequest:
             field_dict["access_key_id"] = access_key_id
         if backend is not UNSET:
             field_dict["backend"] = backend
+        if credential_mode is not UNSET:
+            field_dict["credential_mode"] = credential_mode
         if custom_public_url is not UNSET:
             field_dict["custom_public_url"] = custom_public_url
         if endpoint_url is not UNSET:
             field_dict["endpoint_url"] = endpoint_url
+        if fallback_to_litegen_store is not UNSET:
+            field_dict["fallback_to_litegen_store"] = fallback_to_litegen_store
         if path_prefix is not UNSET:
             field_dict["path_prefix"] = path_prefix
         if region is not UNSET:
             field_dict["region"] = region
+        if role_arn is not UNSET:
+            field_dict["role_arn"] = role_arn
         if secret_access_key is not UNSET:
             field_dict["secret_access_key"] = secret_access_key
 
@@ -125,6 +159,15 @@ class PutAppStorageRequest:
 
         backend = _parse_backend(d.pop("backend", UNSET))
 
+        def _parse_credential_mode(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        credential_mode = _parse_credential_mode(d.pop("credential_mode", UNSET))
+
         def _parse_custom_public_url(data: object) -> Union[None, Unset, str]:
             if data is None:
                 return data
@@ -142,6 +185,17 @@ class PutAppStorageRequest:
             return cast(Union[None, Unset, str], data)
 
         endpoint_url = _parse_endpoint_url(d.pop("endpoint_url", UNSET))
+
+        def _parse_fallback_to_litegen_store(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        fallback_to_litegen_store = _parse_fallback_to_litegen_store(
+            d.pop("fallback_to_litegen_store", UNSET)
+        )
 
         def _parse_path_prefix(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -161,6 +215,15 @@ class PutAppStorageRequest:
 
         region = _parse_region(d.pop("region", UNSET))
 
+        def _parse_role_arn(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        role_arn = _parse_role_arn(d.pop("role_arn", UNSET))
+
         def _parse_secret_access_key(data: object) -> Union[None, Unset, str]:
             if data is None:
                 return data
@@ -174,10 +237,13 @@ class PutAppStorageRequest:
             bucket_name=bucket_name,
             access_key_id=access_key_id,
             backend=backend,
+            credential_mode=credential_mode,
             custom_public_url=custom_public_url,
             endpoint_url=endpoint_url,
+            fallback_to_litegen_store=fallback_to_litegen_store,
             path_prefix=path_prefix,
             region=region,
+            role_arn=role_arn,
             secret_access_key=secret_access_key,
         )
 

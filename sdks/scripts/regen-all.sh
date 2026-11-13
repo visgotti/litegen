@@ -32,10 +32,17 @@ trap 'rm -rf "${PYGEN_TMP}"' EXIT
 # which fails at startup with "Secondary flag is not valid for non-boolean
 # flag" — that, not the Python version, is what used to break this script on a
 # current toolchain. With click 8.1.8 the same output comes out byte-identical
-# under Python 3.11 and 3.14 (checked 2026-10-12). `ruff` is installed for the
-# post_hooks in codegen.yml.
+# under Python 3.11 and 3.14 (checked 2026-10-12).
+#
+# `ruff` runs the post_hooks in codegen.yml, which format the output, so it is
+# pinned too: a release that formats differently would rewrite the generated
+# files, and CI's drift check (.github/workflows/ci.yml, the core job) fails
+# on any difference. 0.21.7 requires ruff >=0.2,<0.8, and pip takes the newest
+# in that range: 0.7.4, the last 0.7 release, which is what produced the
+# committed output (checked 2026-11-08).
 export PYGEN_VERSION="${PYGEN_VERSION:-0.21.7}"
 PYGEN_SPEC="openapi-python-client==${PYGEN_VERSION}"
+export RUFF_VERSION="${RUFF_VERSION:-0.7.4}"
 
 # Use --meta none so the tool only emits the package directory (no pyproject.toml,
 # README, or .gitignore) and writes it to a throwaway temp location. We then move
@@ -49,7 +56,7 @@ PYGEN_SPEC="openapi-python-client==${PYGEN_VERSION}"
 # Python SDK then drifted silently behind the spec. No `|| true` anywhere here:
 # if generation fails, this script fails.
 python3 -m venv "${PYGEN_TMP}/venv"
-"${PYGEN_TMP}/venv/bin/pip" install --quiet "${PYGEN_SPEC}" "click==8.1.8" ruff
+"${PYGEN_TMP}/venv/bin/pip" install --quiet "${PYGEN_SPEC}" "click==8.1.8" "ruff==${RUFF_VERSION}"
 # The venv's bin goes first on PATH so the codegen.yml post_hooks find its ruff.
 PATH="${PYGEN_TMP}/venv/bin:${PATH}" "${PYGEN_TMP}/venv/bin/openapi-python-client" generate \
   --path "${SDKS_DIR}/openapi.json" \

@@ -7,7 +7,7 @@ mod trait_def;
 pub use postgres::PostgresDatabase;
 pub use sqlite::SqliteDatabase;
 pub use trait_def::{
-    merge_metadata, stage_claim_record, DatabaseStore, GenerationWrite, IdempotencyBegin, RequestLogFilter,
+    key_owner_by_lookups, lease_is_free, leases_patch, merge_metadata, stage_claim_record, DatabaseStore, GenerationWrite, IdempotencyBegin, KeyOwner, RequestLogFilter,
     StoredResponse, TenantAuditFilter, IDEMPOTENCY_IN_PROGRESS_STALE, IDEMPOTENCY_TTL,
 };
 

@@ -25,6 +25,7 @@ import EndUsers from './pages/EndUsers';
 import Gateway from './pages/Gateway';
 import UserMenu from './components/UserMenu';
 import RequirePermission from './components/RequirePermission';
+import { useCan } from './components/useCan';
 import RequireAuth from './components/RequireAuth';
 import ToastContainer from './components/Toast';
 import { TenantProvider } from './context/TenantContext';
@@ -81,6 +82,7 @@ function useMe() {
 /** The authenticated application shell: sidebar + header + the app routes. */
 function AppShell() {
   const { role, hosted } = useMe();
+  const can = useCan();
 
   // The global Users page operates on the platform-wide users table and is
   // restricted to single-tenant deployments (the backend rejects tenant
@@ -88,7 +90,8 @@ function AppShell() {
   const canSeeUsers = (role === 'owner' || role === 'admin') && hosted === false;
 
   const navItems = [
-    ...BASE_NAV_ITEMS,
+    // A Viewer makes no generations: no Playground (its page says so if visited).
+    ...BASE_NAV_ITEMS.filter(item => item.to !== '/playground' || can('generation:create')),
     ...(canSeeUsers ? [{ to: '/users', icon: UsersIcon, label: 'Users', testid: undefined }] : []),
   ];
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { client } from '../sdk-client';
 import type { AuditLogEntry } from '@litegen/sdk';
@@ -40,15 +40,20 @@ export default function Audit() {
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  // How the list's fetch and the last CSV export ended, each for the query it
+  // ran with: the page is loading until the current query's fetch settles,
+  // and a new query starts with no error shown.
+  const query = JSON.stringify([pageParam, actorParam, actionParam, fromParam, toParam]);
+  const [fetched, setFetched] = useState<{ query: string; error: string } | null>(null);
+  const [exportFailed, setExportFailed] = useState<{ query: string; error: string } | null>(null);
+  const loading = fetched?.query !== query;
+  const error = (exportFailed?.query === query && exportFailed.error) || (fetched?.query === query ? fetched.error : '');
 
   // Expanded rows map: id -> open
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setError('');
+  useEffect(() => {
+    let current = true;
     client.audit.list({
       page: pageParam,
       per_page: 50,
@@ -58,15 +63,15 @@ export default function Audit() {
       to: toParam || undefined,
     })
       .then(r => {
+        if (!current) return;
         setEntries(r.data);
         setTotal(r.total);
         setTotalPages(r.total_pages);
+        setFetched({ query, error: '' });
       })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [pageParam, actorParam, actionParam, fromParam, toParam]);
-
-  useEffect(() => { load(); }, [load]);
+      .catch(e => { if (current) setFetched({ query, error: e.message }); });
+    return () => { current = false; };
+  }, [query, pageParam, actorParam, actionParam, fromParam, toParam]);
 
   const applyFilters = () => {
     const p: Record<string, string> = { page: '1' };
@@ -105,7 +110,7 @@ export default function Audit() {
       });
       downloadBlob(blob, `audit-${today}.csv`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'CSV export failed');
+      setExportFailed({ query, error: e instanceof Error ? e.message : 'CSV export failed' });
     }
   };
 

@@ -16,10 +16,17 @@ const MODELS_DIR = path.resolve(__dirname, '../models');
 export default defineConfig({
   testDir: './e2e',
   timeout: 240_000,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  reporter: [
+    ['list'],
+    ['html', { open: 'never' }],
+    // LITEGEN_E2E_TIMELINE=<file>: every step's time beside each video, for
+    // an annotated cut of the run.
+    ...(process.env.LITEGEN_E2E_TIMELINE ? [['./e2e/timeline-reporter.ts'] as [string]] : []),
+  ],
   use: {
     baseURL: 'http://127.0.0.1:5174/',
-    video: 'on',
+    viewport: { width: 1280, height: 720 },
+    video: { mode: 'on', size: { width: 1280, height: 720 } },
     trace: 'on',
     launchOptions: {
       slowMo: 250,

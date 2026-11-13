@@ -19,12 +19,12 @@ use crate::types::*;
 /// `state == "success"`, then read `creations[0].url`. Auth: the custom
 /// `Authorization: Token <key>` header. Video-only.
 ///
-/// @see <https://platform.vidu.com/docs/text-to-video>
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-09)
 ///   Verbatim: "POST https://api.vidu.com/ent/v2/text2video"
-///   Verbatim: "Authorization: Token {your api key}"
-/// @see <https://platform.vidu.com/docs/get-generation>
-///   Verbatim: "https://api.vidu.com/ent/v2/tasks/{id}/creations"
-///   (state ∈ created|queueing|processing|success|failed; result at creations[].url)
+///   Verbatim: "`Authorization` | `string` | Required | Replace {your api key} with your token；Example: `Token {your api key}`"
+/// @see <https://platform.vidu.com/docs/api-reference/task-management/task-detail.md> (2026-11-09)
+///   Verbatim: "GET /ent/v2/tasks/{id}/creations"
+///   (state "Possible values: `created` … `queueing` … `processing` … `success` … `failed`"; result at creations[].url)
 pub struct ViduProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
@@ -33,15 +33,18 @@ pub struct ViduProvider {
 }
 
 impl ViduProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::Header { name: "Authorization".to_string(), value_prefix: "Token ".to_string() },
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -81,24 +84,64 @@ impl ViduProvider {
         role == "last_frame" || role == "end_frame"
     }
 
-    /// The `duration` to send. vidu2.0 renders 4s or 8s clips only (4s only on
-    /// reference2video), while the gateway defaults an omitted duration to 5s,
-    /// so snap to the nearest length the endpoint accepts (ties go to the
-    /// shorter clip, like the OpenAI adapter's `resolve_seconds`) rather than
-    /// forward a value Vidu rejects. Other models pass through; the catalog's
-    /// `duration_seconds` bounds already hold them to what Vidu accepts.
-    /// @see <https://platform.vidu.com/docs/image-to-video.md>
-    ///   Verbatim: "vidu2.0: default 4s, available: 4, 8"
-    /// @see <https://platform.vidu.com/docs/reference-to-video.md>
-    ///   Verbatim: "vidu2.0: Default is 4 seconds, available option: 4"
-    fn resolve_duration(native: &str, endpoint: &str, requested: f64) -> i64 {
-        if native != "vidu2.0" {
-            return requested as i64;
+    /// Whether the endpoint's body has an `audio` switch for this model:
+    /// viduq1 text2video ("Default: true"; its reference2video `images` form
+    /// has none, only the subjects form litegen does not send), viduq2-pro
+    /// img2video ("Default: false"), every Q3 endpoint.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-09)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md> (2026-11-09)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md> (2026-11-03)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/start-end-to-video.md> (2026-11-03)
+    /// Q4 Preview: img2video and reference2video, "Default: `true`" on both.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video.md> (2026-11-03)
+    fn takes_audio(native: &str, endpoint: &str) -> bool {
+        match native {
+            "viduq3-turbo" | "viduq3-pro" => true,
+            "viduq4-preview" => matches!(endpoint, "img2video" | "reference2video"),
+            // Each from its own operation (2026-11-03): viduq3 reference2video
+            // ("Default is true"), viduq3-pro-fast / viduq2-turbo /
+            // viduq1-classic img2video, viduq2 text2video ("Default: true");
+            // viduq3-mix's operation has no `audio`.
+            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md> (2026-11-03)
+            "viduq3" => endpoint == "reference2video",
+            "viduq3-pro-fast" | "viduq2-turbo" | "viduq1-classic" => endpoint == "img2video",
+            "viduq2" => endpoint == "text2video",
+            "viduq1" => endpoint == "text2video",
+            "viduq2-pro" => endpoint == "img2video",
+            _ => false,
         }
-        if endpoint == "reference2video" || requested <= 6.0 {
-            4
+    }
+
+    /// An allowlisted `extra` field the endpoint's body lacks for this model,
+    /// left out rather than sent (rule 10): viduq1's text2video has neither
+    /// `movement_amplitude` nor `bgm`, which its start-end2video and its
+    /// reference2video `images` form take.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-09)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md> (2026-11-09)
+    fn endpoint_lacks(native: &str, endpoint: &str, field: &str) -> bool {
+        native == "viduq1" && endpoint == "text2video" && matches!(field, "movement_amplitude" | "bgm")
+    }
+
+    /// vidu2.0 makes only what Vidu prices: image-to-video and first-last
+    /// frame "4S" at 360p, 720p or 1080p and "8S" at 720p; reference-to-video
+    /// "4S" at 360p or 720p. Anything else is refused, never snapped (L13).
+    /// Other models pass: their rows' bounds already hold them.
+    /// @see <https://platform.vidu.com/docs/pricing.md> (2026-11-03)
+    ///   Verbatim: "| Image-to-video | vidu2.0 | 8S | 720p | General | 100 | 50 |",
+    ///   "| Reference-to-video | vidu2.0 | 4S | 720p | General | 80 | 40 |"
+    fn vidu2_makes(native: &str, endpoint: &str, secs: i64, resolution: Option<&str>) -> Result<(), String> {
+        if native != "vidu2.0" {
+            return Ok(());
+        }
+        let res = resolution.unwrap_or("720p");
+        let priced = match endpoint {
+            "reference2video" => secs == 4 && matches!(res, "360p" | "720p"),
+            _ => (secs == 4 && matches!(res, "360p" | "720p" | "1080p")) || (secs == 8 && res == "720p"),
+        };
+        if priced {
+            Ok(())
         } else {
-            8
+            Err(format!("vidu2.0 makes no {secs} s {res} clip on {endpoint} (4 s at 360p/720p/1080p, 8 s at 720p; references 4 s at 360p/720p)"))
         }
     }
 }
@@ -119,6 +162,7 @@ impl VideoProvider for ViduProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -144,9 +188,19 @@ impl VideoProvider for ViduProvider {
         // img2video uses its one image as the FIRST frame: "The model will use
         // the image provided via this parameter as the first frame", so a last
         // frame alone is refused rather than sent as a start.
-        // @see <https://platform.vidu.com/docs/q3-image-to-video.md>
+        // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md> (2026-11-09)
         if has_last && !has_reference && !materialized.refs.iter().any(|r| r.role == "first_frame" || r.role == "init") {
             return Err(ProviderError::InvalidRequest(format!("{} needs a first_frame to go with a last_frame", model.id)));
+        }
+        // On reference2video Vidu documents viduq3-turbo only as
+        // "Subjects-Reference to Video" (`subjects` "Required"); the `images`
+        // form below names `viduq3` alone ("Accepted values: `viduq3`").
+        // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md> (2026-11-09)
+        if has_reference && native == "viduq3-turbo" {
+            return Err(ProviderError::InvalidRequest(format!(
+                "{} takes no reference images: Vidu documents only a subjects form for it on reference2video",
+                model.id
+            )));
         }
         // start-end2video reads `images` positionally (start frame, then end
         // frame), so order last-frame refs after the rest instead of trusting
@@ -165,11 +219,14 @@ impl VideoProvider for ViduProvider {
             "text2video"
         } else {
             // text2video only accepts the models the catalog marks
-            // `text_to_video` (viduq1 among ours), and nothing before the
-            // adapter checks capability flags — refuse instead of sending a
-            // request Vidu rejects.
-            // @see <https://platform.vidu.com/docs/text-to-video.md>
-            //   Verbatim: "Accepted values:`viduq3-turbo`, `viduq3-pro` , `viduq2` , `viduq1`"
+            // `text_to_video`: each Q3/Q2/Q1 text2video operation names its
+            // own ("Accepted values: `viduq3-turbo`", "optional value:
+            // `viduq3-pro`", "Accepted values: `viduq2`", "Accepted values:
+            // `viduq1`"), and nothing before the adapter checks capability
+            // flags — refuse instead of sending a request Vidu rejects.
+            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-09)
+            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video.md> (2026-11-09)
+            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-09)
             return Err(ProviderError::InvalidRequest(format!(
                 "{} has no text-to-video mode; attach a first_frame or reference image",
                 model.id
@@ -177,15 +234,24 @@ impl VideoProvider for ViduProvider {
         };
         let url = format!("{}/ent/v2/{endpoint}", self.api_base());
 
-        let mut body = json!({ "model": native, "prompt": base.prompt });
+        let mut body = json!({ "model": crate::providers::wire_model(self.config.as_ref(), &model.id, native), "prompt": base.prompt });
         if !images.is_empty() {
             body["images"] = Value::Array(images.into_iter().map(Value::String).collect());
         }
+        // The row's default when none is named: the clip runs at what it was
+        // priced at, never at a default Vidu picks by model and duration.
+        let row_default = match model.params.get("resolution") {
+            Some(crate::capabilities::ParamSpec::String(s)) => s.default.clone(),
+            _ => None,
+        };
+        let resolution = extras.resolution.as_deref().or(row_default.as_deref());
         if extras.duration_seconds > 0.0 {
-            let duration = Self::resolve_duration(native, endpoint, extras.duration_seconds);
+            // Whole seconds: every Vidu row's duration is `kind: int` (C5).
+            let duration = extras.duration_seconds as i64;
+            Self::vidu2_makes(native, endpoint, duration, resolution).map_err(ProviderError::InvalidRequest)?;
             body["duration"] = Value::Number(duration.into());
         }
-        if let Some(res) = extras.resolution.as_deref() {
+        if let Some(res) = resolution {
             body["resolution"] = Value::String(res.to_string());
         }
         // Only text2video and reference2video take an aspect ratio; img2video
@@ -200,14 +266,25 @@ impl VideoProvider for ViduProvider {
         }
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11).
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "prompt" | "images" | "duration" | "resolution" | "aspect_ratio" | "seed")) {
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| {
+                matches!(k, "model" | "prompt" | "images" | "duration" | "resolution" | "aspect_ratio" | "seed")
+                    || Self::endpoint_lacks(native, endpoint, k)
+            };
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
                 obj.insert(k.clone(), v.clone());
             }
         }
-        // PixelGenie L10: audio on or off (Vidu's own `audio`).
+        // PixelGenie L10: audio on or off (Vidu's own `audio`), only where the
+        // endpoint's body has the switch (rule 10).
         if let Some(audio) = extras.audio {
-            body["audio"] = Value::Bool(audio);
+            if Self::takes_audio(native, endpoint) {
+                body["audio"] = Value::Bool(audio);
+            } else if audio {
+                return Err(ProviderError::InvalidRequest(format!(
+                    "{} has no audio switch on {endpoint}: ask without audio, or use a mode that has one", model.id
+                )));
+            }
         }
 
         let builder = crate::providers::auth::apply(
@@ -264,7 +341,12 @@ impl VideoProvider for ViduProvider {
         let status = match data["state"].as_str() {
             Some("success") => GenerationStatus::Completed,
             Some("failed") => GenerationStatus::Failed,
-            _ => GenerationStatus::Processing,
+            // state: "Possible values: `created` Created successfully `queueing`
+            // Task queued `processing` Task processing `success` Task succeeded
+            // `failed` Task failed".
+            // @see <https://platform.vidu.com/docs/api-reference/task-management/task-detail.md> (2026-11-09)
+            Some("created") | Some("queueing") | Some("processing") => GenerationStatus::Processing,
+            other => return Ok(super::unknown_state("vidu", other)),
         };
         let video_url = data["creations"][0]["url"].as_str().map(String::from);
         // A success with no creation to fetch is a failure: nothing can be
@@ -397,10 +479,13 @@ mod tests {
             .await;
     }
 
-    /// text2video accepts viduq3-turbo, viduq3-pro, viduq2 and viduq1 only, and
-    /// nothing upstream of the adapter checks `capabilities.text_to_video`, so a
-    /// prompt-only request for an image-only model must never reach text2video.
-    /// @see <https://platform.vidu.com/docs/text-to-video.md>
+    /// text2video accepts viduq3-turbo, viduq3-pro, viduq2 and viduq1 only (each
+    /// Q3/Q2/Q1 text2video operation names its own model), and nothing upstream
+    /// of the adapter checks `capabilities.text_to_video`, so a prompt-only
+    /// request for an image-only model must never reach text2video.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-09)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video.md> (2026-11-09)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-09)
     #[tokio::test]
     async fn refuses_prompt_only_requests_for_image_only_models() {
         let server = MockServer::start().await;
@@ -420,9 +505,10 @@ mod tests {
         );
     }
 
-    /// start-end2video reads `images` as [start frame, end frame]; the order the
-    /// caller listed its refs in must not swap them.
-    /// @see <https://platform.vidu.com/docs/start-end-to-video.md>
+    /// start-end2video reads `images` as [start frame, end frame] ("The first
+    /// uploaded image is treated as the start frame and the second as the end
+    /// frame"); the order the caller listed its refs in must not swap them.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md> (2026-11-09)
     #[tokio::test]
     async fn start_end_images_are_ordered_by_role() {
         let server = MockServer::start().await;
@@ -445,38 +531,181 @@ mod tests {
         assert_eq!(body["images"], json!(["https://img.test/start.png", "https://img.test/end.png"]));
     }
 
-    /// vidu2.0 takes 4s or 8s (4s only on reference2video); the gateway's
-    /// default duration of 5s is not one of them.
-    /// @see <https://platform.vidu.com/docs/image-to-video.md>
-    /// @see <https://platform.vidu.com/docs/reference-to-video.md>
+    /// vidu2.0 makes only what Vidu prices: image-to-video and first-last
+    /// frame "4S" at 360p, 720p or 1080p and "8S" at 720p; reference-to-video
+    /// "4S" at 360p or 720p. Anything else is refused before anything is sent,
+    /// never snapped to a length the caller did not ask for (L13).
+    /// @see <https://platform.vidu.com/docs/pricing.md> (2026-11-03)
     #[tokio::test]
-    async fn vidu2_duration_snaps_to_a_length_the_endpoint_accepts() {
+    async fn vidu2_makes_only_the_lengths_and_sizes_vidu_prices() {
         let server = MockServer::start().await;
         mount_submit(&server, "img2video").await;
         mount_submit(&server, "reference2video").await;
-
         let provider = make_provider(&server.uri());
         let schema = ref_schema("vidu/vidu2.0");
         let base = make_base("a hummingbird in slow motion", "vidu/vidu2.0");
-        // (ref role → endpoint, requested seconds, seconds Vidu must receive)
-        let cases: [(&str, f64, i64); 3] = [("first_frame", 5.0, 4), ("first_frame", 7.0, 8), ("reference", 8.0, 4)];
-        for &(role, requested, _) in &cases {
+        let ask = |role: &str, secs: f64, res: &str| {
             let mut extras = make_extras();
-            extras.duration_seconds = requested;
-            let materialized = MaterializedRequest {
-                refs: vec![url_ref(role, "https://img.test/a.png")],
-                cleanup: Cleanup::empty(),
-            };
-            provider.generate(&schema, &base, &extras, &materialized).await.expect("generate");
+            extras.duration_seconds = secs;
+            extras.resolution = Some(res.to_string());
+            (extras, MaterializedRequest { refs: vec![url_ref(role, "https://img.test/a.png")], cleanup: Cleanup::empty() })
+        };
+        for (role, secs, res) in [("first_frame", 8.0, "1080p"), ("first_frame", 5.0, "720p"), ("reference", 8.0, "720p"), ("reference", 4.0, "1080p")] {
+            let (extras, refs) = ask(role, secs, res);
+            let err = provider.generate(&schema, &base, &extras, &refs).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{role} {secs} s {res}: {err:?}");
         }
-
-        let received = server.received_requests().await.unwrap();
-        let sent: Vec<i64> = received
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+        for (role, secs, res) in [("first_frame", 8.0, "720p"), ("first_frame", 4.0, "1080p"), ("reference", 4.0, "720p")] {
+            let (extras, refs) = ask(role, secs, res);
+            provider.generate(&schema, &base, &extras, &refs).await.unwrap_or_else(|e| panic!("{role} {secs} s {res}: {e:?}"));
+        }
+        let sent: Vec<i64> = server
+            .received_requests()
+            .await
+            .unwrap()
             .iter()
             .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["duration"].as_i64().unwrap())
             .collect();
-        let expected: Vec<i64> = cases.iter().map(|c| c.2).collect();
-        assert_eq!(sent, expected);
+        assert_eq!(sent, [8, 4, 4], "the length asked for, unchanged");
+    }
+
+    /// `audio` goes only to an endpoint whose body has the switch: viduq1's
+    /// text2video, viduq2-pro's img2video, every Q3 endpoint. Asking for sound where there is no switch is refused before
+    /// anything is sent; `audio: false` there sends nothing.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md> (2026-11-03)
+    #[tokio::test]
+    async fn audio_goes_only_where_the_endpoint_has_a_switch() {
+        let server = MockServer::start().await;
+        for e in ["text2video", "start-end2video", "img2video", "reference2video"] {
+            mount_submit(&server, e).await;
+        }
+        let p = make_provider(&server.uri());
+        let none: Vec<&str> = vec![];
+        let ask = |audio: bool, roles: &[&str]| {
+            let mut extras = make_extras();
+            extras.audio = Some(audio);
+            let refs = roles.iter().map(|r| url_ref(r, "https://img.test/a.png")).collect();
+            (extras, MaterializedRequest { refs, cleanup: Cleanup::empty() })
+        };
+        for (id, audio, roles) in [("vidu/viduq1", true, &["first_frame", "last_frame"][..]), ("vidu/viduq2-pro", true, &["reference"][..])] {
+            let (extras, refs) = ask(audio, roles);
+            let err = p.generate(&ref_schema(id), &make_base("x", id), &extras, &refs).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{id} {roles:?}: {err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+        for (id, audio, roles) in [
+            ("vidu/viduq1", false, &none[..]),
+            ("vidu/viduq1", false, &["first_frame", "last_frame"][..]),
+            ("vidu/viduq2-pro", true, &["first_frame"][..]),
+            ("vidu/viduq3-turbo", true, &["first_frame", "last_frame"][..]),
+        ] {
+            let (extras, refs) = ask(audio, roles);
+            p.generate(&ref_schema(id), &make_base("x", id), &extras, &refs).await.unwrap_or_else(|e| panic!("{id} {roles:?}: {e:?}"));
+        }
+        let sent: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["audio"].clone())
+            .collect();
+        assert_eq!(sent, [json!(false), Value::Null, json!(true), json!(true)]);
+    }
+
+    /// The models carried since 2026-11-03 send `audio` only where their own
+    /// operation has the switch: viduq3 reference2video, viduq3-pro-fast,
+    /// viduq2-turbo and viduq1-classic img2video, viduq2 text2video; viduq3-mix
+    /// has none, nor does start-end2video for viduq2-turbo or viduq1-classic.
+    #[tokio::test]
+    async fn the_newly_carried_models_send_audio_only_where_their_endpoint_has_it() {
+        let server = MockServer::start().await;
+        for e in ["text2video", "start-end2video", "img2video", "reference2video"] {
+            mount_submit(&server, e).await;
+        }
+        let p = make_provider(&server.uri());
+        let ask = |audio: bool, roles: &[&str]| {
+            let mut extras = make_extras();
+            extras.audio = Some(audio);
+            let refs = roles.iter().map(|r| url_ref(r, "https://img.test/a.png")).collect();
+            (extras, MaterializedRequest { refs, cleanup: Cleanup::empty() })
+        };
+        for (id, roles) in [
+            ("vidu/viduq3-mix", &["reference"][..]),
+            ("vidu/viduq2-turbo", &["first_frame", "last_frame"][..]),
+            ("vidu/viduq1-classic", &["first_frame", "last_frame"][..]),
+        ] {
+            let (extras, refs) = ask(true, roles);
+            let err = p.generate(&ref_schema(id), &make_base("x", id), &extras, &refs).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{id} {roles:?}: {err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+        for (id, roles, endpoint) in [
+            ("vidu/viduq3", &["reference"][..], "/ent/v2/reference2video"),
+            ("vidu/viduq3-pro-fast", &["first_frame"][..], "/ent/v2/img2video"),
+            ("vidu/viduq2", &[][..], "/ent/v2/text2video"),
+            ("vidu/viduq2-turbo", &["first_frame"][..], "/ent/v2/img2video"),
+            ("vidu/viduq1-classic", &["first_frame"][..], "/ent/v2/img2video"),
+        ] {
+            let (extras, refs) = ask(true, roles);
+            p.generate(&ref_schema(id), &make_base("x", id), &extras, &refs).await.unwrap_or_else(|e| panic!("{id}: {e:?}"));
+            let last = server.received_requests().await.unwrap().pop().unwrap();
+            let body: Value = serde_json::from_slice(&last.body).unwrap();
+            assert_eq!((last.url.path(), body["audio"].as_bool()), (endpoint, Some(true)), "{id}: {body}");
+        }
+    }
+
+    /// Q4 Preview: "audio … Default: `true`" on img2video and reference2video
+    /// alike, so the switch goes on both; only reference2video takes an aspect
+    /// ratio ("Only 1 image is accepted" on img2video, which follows it).
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video.md> (2026-11-03)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/reference-to-video.md> (2026-11-03)
+    #[tokio::test]
+    async fn q4_preview_sends_its_audio_switch_on_both_endpoints() {
+        let server = MockServer::start().await;
+        for e in ["img2video", "reference2video"] {
+            mount_submit(&server, e).await;
+        }
+        let p = make_provider(&server.uri());
+        let id = "vidu/viduq4-preview";
+        for roles in [&["first_frame"][..], &["reference", "reference"][..]] {
+            let mut extras = make_extras();
+            extras.audio = Some(false);
+            let refs = MaterializedRequest { refs: roles.iter().map(|r| url_ref(r, "https://img.test/a.png")).collect(), cleanup: Cleanup::empty() };
+            p.generate(&ref_schema(id), &make_base("x", id), &extras, &refs).await.unwrap_or_else(|e| panic!("{roles:?}: {e:?}"));
+        }
+        let sent: Vec<(String, Value)> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.url.path().to_string(), serde_json::from_slice::<Value>(&r.body).unwrap()))
+            .collect();
+        assert_eq!((sent[0].0.as_str(), sent[1].0.as_str()), ("/ent/v2/img2video", "/ent/v2/reference2video"));
+        for (path, body) in &sent {
+            assert_eq!((body["audio"].as_bool(), body["model"].as_str()), (Some(false), Some("viduq4-preview")), "{path}: {body}");
+        }
+        assert!(sent[0].1.get("aspect_ratio").is_none(), "img2video follows its image");
+        assert_eq!(sent[1].1["aspect_ratio"], "16:9");
+    }
+
+    /// "seed … Manual setting uses the specified seed": the canonical seed goes
+    /// as Vidu's own `seed`, and `extra` cannot replace it.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-03)
+    #[tokio::test]
+    async fn a_seed_goes_as_vidus_seed() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "text2video").await;
+        let mut base = make_base("a lighthouse", "vidu/viduq3-turbo");
+        base.seed = Some(1234);
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "seed": 1 }));
+        make_provider(&server.uri())
+            .generate(&ref_schema("vidu/viduq3-turbo"), &base, &extras, &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() })
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["seed"], 1234, "{body}");
     }
 
     // ─── ByteDance/MiniMax/Vidu audit, 2026-10-30: W3, W9, W10, W13, W15 ────
@@ -509,7 +738,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_submit(&server, "img2video").await;
         let mut extras = make_extras();
-        extras.extra = Some(json!({ "model": "viduq3-turbo", "callback_url": "https://cb.example" }));
+        extras.extra = Some(json!({ "model": "viduq3-turbo", "callback_url": "https://cb.example", "payload": "p1" }));
         let materialized = MaterializedRequest { refs: vec![b64_ref("first_frame", &JPEG)], cleanup: Cleanup::empty() };
         make_provider(&server.uri())
             .generate(&ref_schema("vidu/viduq3-pro"), &make_base("x", "vidu/viduq3-pro"), &extras, &materialized)
@@ -518,7 +747,10 @@ mod tests {
         let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert!(body.get("aspect_ratio").is_none(), "{body}");
         assert!(body["images"][0].as_str().unwrap().starts_with("data:image/jpeg;base64,"), "{body}");
-        assert_eq!((body["model"].as_str(), body["callback_url"].as_str()), (Some("viduq3-pro"), Some("https://cb.example")), "{body}");
+        assert_eq!((body["model"].as_str(), body["payload"].as_str()), (Some("viduq3-pro"), Some("p1")), "{body}");
+        // E4a: where the result goes is litegen's (it polls, then fires the
+        // key's webhook), so Vidu's `callback_url` is never sent.
+        assert!(body.get("callback_url").is_none(), "{body}");
     }
 
     /// W15: a finished job reads 100, and a success with no URL is a failure.
@@ -566,5 +798,112 @@ mod tests {
                 .unwrap_err();
             assert!(err.is_retryable(), "{status}: {err:?}");
         }
+    }
+
+    /// A request that names no resolution runs at the row's default (720p),
+    /// which is what it was priced at — never at a default Vidu picks.
+    #[tokio::test]
+    async fn an_unnamed_resolution_is_sent_as_the_rows_default() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "task_id": "t1", "state": "created" })))
+            .mount(&server)
+            .await;
+        let mut extras = make_extras();
+        extras.resolution = None;
+        let materialized = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "first_frame".into(),
+                form: MaterializedRefForm::Url("https://x/cat.png".into()),
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        make_provider(&server.uri())
+            .generate(&ref_schema("vidu/viduq2-pro"), &make_base("a cat", "vidu/viduq2-pro"), &extras, &materialized)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["resolution"], "720p", "{body}");
+    }
+
+    /// On reference2video Vidu documents viduq3-turbo only as "Subjects-Reference
+    /// to Video" (`subjects` "Required"); the `images` form this adapter sends
+    /// names `viduq3` alone ("Accepted values: `viduq3`"). A viduq3-turbo
+    /// reference is refused before anything is sent.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md> (2026-11-09)
+    #[tokio::test]
+    async fn viduq3_turbo_refuses_reference_images_before_any_call() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "reference2video").await;
+        let refs = MaterializedRequest { refs: vec![url_ref("reference", "https://img.test/a.png")], cleanup: Cleanup::empty() };
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("vidu/viduq3-turbo"), &make_base("x", "vidu/viduq3-turbo"), &make_extras(), &refs)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+    }
+
+    /// viduq1's reference2video `images` form has no `audio` row (only the
+    /// subjects form does), so `audio: true` there is refused before anything
+    /// is sent and `audio: false` sends nothing.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md> (2026-11-09)
+    #[tokio::test]
+    async fn viduq1_reference_images_send_no_audio_switch() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "reference2video").await;
+        let p = make_provider(&server.uri());
+        let ask = |audio: bool| {
+            let mut extras = make_extras();
+            extras.audio = Some(audio);
+            (extras, MaterializedRequest { refs: vec![url_ref("reference", "https://img.test/a.png")], cleanup: Cleanup::empty() })
+        };
+        let (extras, refs) = ask(true);
+        let err = p.generate(&ref_schema("vidu/viduq1"), &make_base("x", "vidu/viduq1"), &extras, &refs).await.unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+        let (extras, refs) = ask(false);
+        p.generate(&ref_schema("vidu/viduq1"), &make_base("x", "vidu/viduq1"), &extras, &refs).await.expect("generate");
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("audio").is_none(), "{body}");
+        assert_eq!(body["images"], json!(["https://img.test/a.png"]), "{body}");
+    }
+
+    /// viduq1's text2video body has neither `movement_amplitude` nor `bgm`;
+    /// its start-end2video and reference2video bodies have both. The row
+    /// allowlists them, so text2video drops them and the others keep them.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-09)
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/start-end-to-video.md> (2026-11-09)
+    #[tokio::test]
+    async fn viduq1_text2video_sends_no_movement_amplitude_or_bgm() {
+        let server = MockServer::start().await;
+        for e in ["text2video", "start-end2video"] {
+            mount_submit(&server, e).await;
+        }
+        let p = make_provider(&server.uri());
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "movement_amplitude": "large", "bgm": true, "payload": "p", "callback_url": "https://hooks.test/v" }));
+        let none = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        let frames = MaterializedRequest {
+            refs: vec![url_ref("first_frame", "https://img.test/s.png"), url_ref("last_frame", "https://img.test/e.png")],
+            cleanup: Cleanup::empty(),
+        };
+        let schema = ref_schema("vidu/viduq1");
+        let base = make_base("x", "vidu/viduq1");
+        p.generate(&schema, &base, &extras, &none).await.expect("text2video");
+        p.generate(&schema, &base, &extras, &frames).await.expect("start-end2video");
+        let bodies: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap())
+            .collect();
+        assert!(bodies[0].get("movement_amplitude").is_none() && bodies[0].get("bgm").is_none(), "text2video: {}", bodies[0]);
+        assert_eq!(bodies[0]["payload"], "p", "text2video keeps payload");
+        // E4a: neither endpoint sends Vidu's `callback_url`.
+        assert!(bodies.iter().all(|b| b.get("callback_url").is_none()), "{bodies:?}");
+        assert_eq!((bodies[1]["movement_amplitude"].as_str(), bodies[1]["bgm"].as_bool()), (Some("large"), Some(true)), "start-end2video: {}", bodies[1]);
     }
 }

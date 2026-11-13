@@ -15,7 +15,9 @@ from .client import (
     _OCTET_STREAM,
     _clean,
     _conversion,
+    _convert_params,
     _idempotency,
+    _prefer_async,
     _drop_none,
     _metadata_params,
     _parse_dropped_params,
@@ -28,6 +30,7 @@ from .polling import (
     MODEL3D_DEFAULT_TIMEOUT,
     apoll_model3d,
     apoll_video,
+    async_wait_for_job,
     async_wait_for_model3d_completion,
     async_wait_for_video_completion,
 )
@@ -96,6 +99,7 @@ class AsyncLiteGenClient:
         self.keys = _AsyncKeys(self)
         self.cache = _AsyncCache(self)
         self.limits = _AsyncLimits(self)
+        self.file_access = _AsyncFileAccess(self)
         self.end_users = _AsyncEndUsers(self)
         self.spend = _AsyncSpend(self)
         self.admin = _AsyncAdmin(self)
@@ -122,13 +126,20 @@ class AsyncLiteGenClient:
         params: Any = None,
         content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
+        follow_redirects: bool = False,
     ) -> tuple[Any, httpx.Headers]:
         """:meth:`_request`, plus the response headers (the job submits read the
         dropped-params header, see :func:`litegen.client._parse_dropped_params`;
         mesh conversion sends raw ``content`` and reads its losses header)."""
         try:
             resp = await self._http.request(
-                method, path, json=json, params=params, content=content, headers=headers
+                method,
+                path,
+                json=json,
+                params=params,
+                content=content,
+                headers=headers,
+                follow_redirects=follow_redirects,
             )
         except httpx.TimeoutException as e:
             raise LiteGenTimeoutError(str(e)) from e
@@ -144,21 +155,37 @@ class _AsyncImages:
     def __init__(self, c: AsyncLiteGenClient) -> None:
         self._c = c
 
-    async def generate(self, *, idempotency_key: str | None = None, **req: Any) -> Any:
+    async def generate(self, *, idempotency_key: str | None = None, keep_outputs: bool | None = None, **req: Any) -> Any:
         """Generate images (``POST /v1/images/generations``). ``idempotency_key``
         is sent as the ``Idempotency-Key`` header, never in the body."""
         return (
             await self._c._request_with_headers(
-                "POST", "/v1/images/generations", json=_clean(req), headers=_idempotency(idempotency_key)
+                "POST", "/v1/images/generations", json=_clean(req), headers=_idempotency(idempotency_key, keep_outputs)
             )
         )[0]
 
+    async def submit(
+        self,
+        *,
+        wait_seconds: float | None = None,
+        idempotency_key: str | None = None,
+        keep_outputs: bool | None = None,
+        **req: Any,
+    ) -> Any:
+        """Async version of :meth:`litegen.client._ImagesNamespace.submit`."""
+        headers = _idempotency(idempotency_key, keep_outputs) or {}
+        headers["Prefer"] = _prefer_async(wait_seconds)
+        return (await self._c._request_with_headers("POST", "/v1/images/generations", json=_clean(req), headers=headers))[0]
+
     async def estimate_cost(self, **req: Any) -> Any:
+        """Price an image request without running it (``POST
+        /v1/images/cost``); see :meth:`litegen.client._ImagesNamespace.estimate_cost`."""
         return await self._c._request("POST", "/v1/images/cost", json=_clean(req))
 
     async def segment(self, *, idempotency_key: str | None = None, **req: Any) -> ImageSegmentationResponse:
         """Masks for what ``prompts`` select in ``image`` (``POST
-        /v1/images/segmentations``); see :meth:`litegen.client._ImagesNamespace.segment`."""
+        /v1/images/segmentations``), ``strict`` as on a generation; see
+        :meth:`litegen.client._ImagesNamespace.segment`."""
         return (
             await self._c._request_with_headers(
                 "POST", "/v1/images/segmentations", json=_clean(req), headers=_idempotency(idempotency_key)
@@ -231,9 +258,12 @@ class AsyncVideoJob:
         return self._ensure_submitted()
 
     async def dropped_params(self) -> list[str]:
-        """Params the server dropped rather than rejected, because the request set
-        ``strict=False``; ``[]`` when nothing was dropped. A method, not a
-        property, because it submits the job first if it hasn't been yet."""
+        """What the server dropped rather than refused, because the request set
+        ``strict=False``: params the model does not take and fields the request
+        has no such name for (one inside an object by its path); ``[]`` when
+        nothing was dropped. A last ``+N more`` counts names past the 32 the
+        header lists. A method, not a property, because it submits the job
+        first if it hasn't been yet."""
         await self._ensure_submitted()
         return list(self._dropped_params)
 
@@ -270,7 +300,7 @@ class _AsyncVideos:
         """
         interval = req.pop("interval", 2.0)
         timeout = req.pop("timeout", JOB_DEFAULT_TIMEOUT)
-        headers = _idempotency(req.pop("idempotency_key", None))
+        headers = _idempotency(req.pop("idempotency_key", None), req.pop("keep_outputs", None))
         body = _clean(req)
 
         async def _submit() -> tuple[dict[str, Any], httpx.Headers]:
@@ -283,6 +313,8 @@ class _AsyncVideos:
         )
 
     async def estimate_cost(self, **req: Any) -> Any:
+        """Price a video request without running it (``POST
+        /v1/videos/cost``); see :meth:`litegen.client._VideosNamespace.estimate_cost`."""
         return await self._c._request("POST", "/v1/videos/cost", json=_clean(req))
 
     async def get_status(self, video_id: str) -> Any:
@@ -378,9 +410,12 @@ class AsyncModel3dJob:
         return (await self._ensure_submitted())["id"]
 
     async def dropped_params(self) -> list[str]:
-        """Params the server dropped rather than rejected, because the request set
-        ``strict=False``; ``[]`` when nothing was dropped. Submits the job first if
-        it hasn't been yet."""
+        """What the server dropped rather than refused, because the request set
+        ``strict=False``: params the model does not take and fields the request
+        has no such name for (one inside an object by its path,
+        ``animations[0].duration``); ``[]`` when nothing was dropped. A last
+        ``+N more`` counts names past the 32 the header lists. Submits the job
+        first if it hasn't been yet."""
         await self._ensure_submitted()
         return list(self._dropped_params)
 
@@ -414,6 +449,7 @@ class _AsyncModels3d:
         interval: float = 2.0,
         timeout: float = MODEL3D_DEFAULT_TIMEOUT,
         idempotency_key: str | None = None,
+        keep_outputs: bool | None = None,
         **req: Unpack[Model3dGenerateParams],
     ) -> AsyncModel3dJob:
         """Submit a 3D job (``POST /v1/models3d/generations``), returning an
@@ -425,7 +461,7 @@ class _AsyncModels3d:
         polling, not the job.
         """
         body = _clean(req)
-        headers = _idempotency(idempotency_key)
+        headers = _idempotency(idempotency_key, keep_outputs)
 
         async def _submit() -> tuple[Model3dGenerationResponse, httpx.Headers]:
             return await self._c._request_with_headers(
@@ -437,7 +473,8 @@ class _AsyncModels3d:
         )
 
     async def estimate_cost(self, **req: Unpack[Model3dGenerateParams]) -> CostEstimate:
-        """Price a 3D request without running it (``POST /v1/models3d/cost``)."""
+        """Price a 3D request without running it (``POST /v1/models3d/cost``);
+        see :meth:`litegen.client._Models3dNamespace.estimate_cost`."""
         return await self._c._request("POST", "/v1/models3d/cost", json=_clean(req))
 
     async def get_status(self, generation_id: str) -> Model3dGenerationResponse:
@@ -475,18 +512,37 @@ class _AsyncModels3d:
         )
 
     async def convert(
-        self, data: bytes, *, from_format: Model3dFormat, to_format: Model3dFormat
+        self,
+        data: bytes,
+        *,
+        from_format: Model3dFormat,
+        to_format: Model3dFormat,
+        units: str | None = None,
+        up: str | None = None,
+        from_units: str | None = None,
+        from_up: str | None = None,
+        fbx_color_space: str | None = None,
+        package: str | None = None,
+        ktx2_textures: str | None = None,
+        fbx_light_units: str | None = None,
+        usd_light_units: str | None = None,
+        dae_morphs: str | None = None,
+        usdz_root: str | None = None,
+        usd_clips: str | None = None,
     ) -> Model3dConversion:
         """Convert a mesh file to another container
         (``POST /v1/utils/models3d/convert``); see
         :meth:`litegen.client._Models3dNamespace.convert`."""
         body, headers = await self._c._request_with_headers(
             "POST", "/v1/utils/models3d/convert",
-            params={"from": from_format, "to": to_format},
+            params=_convert_params(
+                from_format, to_format, units, up, from_units, from_up, fbx_color_space, package, ktx2_textures,
+                fbx_light_units, usd_light_units, dae_morphs, usdz_root, usd_clips,
+            ),
             content=bytes(data),
             headers=_OCTET_STREAM,
         )
-        return _conversion(body, headers, to_format)
+        return _conversion(body, headers, to_format, package)
 
     async def convert_formats(self) -> Model3dConvertFormats:
         """What the converter accepts (``GET /v1/utils/models3d/formats``)."""
@@ -511,6 +567,12 @@ class _AsyncGenerations:
             "GET", f"/v1/generations/{quote(generation_id, safe='')}"
         )
 
+    async def wait_for_completion(
+        self, generation_id: str, *, interval: float = 2.0, timeout: float = JOB_DEFAULT_TIMEOUT
+    ) -> Generation:
+        """Async version of :meth:`litegen.client._GenerationsNamespace.wait_for_completion`."""
+        return await async_wait_for_job(generation_id, self.get, interval=interval, timeout=timeout, kind="generation")
+
     async def assets(self, generation_id: str) -> GenerationAssetList:
         """Every file litegen kept for a generation (``GET /v1/generations/{id}/assets``):
         its images, video, meshes, textures and previews, each with its URL, size
@@ -519,8 +581,14 @@ class _AsyncGenerations:
 
     async def download_asset(self, generation_id: str, index: int) -> bytes:
         """The bytes of one kept file (``GET /v1/generations/{id}/assets/{index}``),
-        with only a litegen key. ``index`` is the asset's ``index`` in :meth:`assets`."""
-        return await self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}")
+        with only a litegen key. ``index`` is the asset's ``index`` in :meth:`assets`.
+        A signed-mode app answers with a redirect to its bucket, which is followed;
+        httpx drops the litegen key on the way to another host."""
+        return (
+            await self._c._request_with_headers(
+                "GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}", follow_redirects=True
+            )
+        )[0]
 
     async def cancel(self, generation_id: str) -> CancelledGeneration:
         """Cancel a pending or processing job (``PATCH /v1/generations/{id}``).
@@ -539,18 +607,43 @@ class _AsyncGenerations:
             json={"status": "cancelled"},
         )
 
+    async def delete(self, generation_id: str) -> Generation:
+        """Delete a finished generation's kept files and its request (prompt and
+        params), keeping its billing record (``DELETE /v1/generations/{id}``)."""
+        return await self._c._request("DELETE", f"/v1/generations/{quote(generation_id, safe='')}")
+
+    async def revoke_links(self, generation_id: str) -> Any:
+        """End every link litegen signed to this generation's files
+        (``POST /v1/generations/{id}/revoke-links``)."""
+        return await self._c._request("POST", f"/v1/generations/{quote(generation_id, safe='')}/revoke-links")
+
+    async def download_signed(self, generation_id: str, index: int, query: str) -> bytes:
+        """The bytes behind a link litegen signed, which needs no credentials."""
+        return await self._c._request(
+            "GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}/signed?{query.lstrip('?')}"
+        )
+
 
 class _AsyncModels:
     def __init__(self, c: AsyncLiteGenClient) -> None:
         self._c = c
 
-    async def list(self, *, media_type: MediaType | None = None) -> Any:
-        """Models in the catalog (``GET /v1/models``), optionally of one ``media_type``."""
-        params = {"media_type": media_type} if media_type is not None else None
-        resp = await self._c._request("GET", "/v1/models", params=params)
+    async def list(self, *, media_type: MediaType | None = None, all: bool = False) -> Any:
+        """The models the caller may use (``GET /v1/models``), optionally of one
+        ``media_type``. ``all=True`` lists every model the gateway serves, not
+        only the ones the org pool and app access allow (generations still
+        enforce both)."""
+        params: dict[str, str] = {}
+        if media_type is not None:
+            params["media_type"] = media_type
+        if all:
+            params["all"] = "true"
+        resp = await self._c._request("GET", "/v1/models", params=params or None)
         return resp["data"] if isinstance(resp, dict) and "data" in resp else resp
 
     async def get(self, model_id: str) -> Any:
+        """One model's full schema, ``litegen_params`` and ``extra_params``
+        included; see :meth:`litegen.client._ModelsNamespace.get`."""
         return await self._c._request("GET", f"/v1/models/{model_id}")
 
 
@@ -559,6 +652,9 @@ class _AsyncHealth:
         self._c = c
 
     async def check(self) -> Any:
+        """Each provider set up with the gateway's own keys, one entry per
+        provider and ``modality``; the deployment's own, so other credentials
+        get a 403. See :meth:`litegen.client._HealthNamespace.check`."""
         return await self._c._request("GET", "/health")
 
     async def live(self) -> Any:
@@ -617,6 +713,8 @@ class _AsyncCache:
         self._c = c
 
     async def clear(self) -> Any:
+        """Empty the response cache; a 503 ``cache_clear_incomplete`` means only
+        this replica's was. See :meth:`litegen.client._CacheNamespace.clear`."""
         return await self._c._request("DELETE", "/v1/cache")
 
 
@@ -694,6 +792,52 @@ class _AsyncLimits:
 
     async def reset_member(self, org_id: str, user_id: str) -> Any:
         return await self._c._request("POST", f"/v1/orgs/{_q(org_id)}/members/{_q(user_id)}/limits/reset")
+
+
+class _AsyncFileAccess:
+    """Who may open an app's stored files (``/v1/apps/{id}/access``; see
+    ``docs/storage-access.md``).
+
+    ``set_app`` replaces the app's own settings: ``mode`` (``"public"``,
+    ``"signed"`` or ``"private"``), ``owner_scope`` (``"key"``, ``"app"`` or
+    ``"org"``) and ``signed_url_ttl_seconds`` (60 to 604800). One left out uses
+    the gateway's value; ``set_app(app_id)`` clears them all. Both answer the
+    app's own settings and the ones its files follow (``effective``).
+    """
+
+    def __init__(self, client: AsyncLiteGenClient) -> None:
+        self._c = client
+
+    async def get_app(self, app_id: str) -> Any:
+        return await self._c._request("GET", f"/v1/apps/{_q(app_id)}/access")
+
+    async def set_app(
+        self,
+        app_id: str,
+        *,
+        mode: str | None = None,
+        owner_scope: str | None = None,
+        signed_url_ttl_seconds: int | None = None,
+        keep_outputs: bool | None = None,
+        retention_days: int | None = None,
+        signed_links: str | None = None,
+    ) -> Any:
+        body = {
+            "mode": mode,
+            "owner_scope": owner_scope,
+            "signed_url_ttl_seconds": signed_url_ttl_seconds,
+            "keep_outputs": keep_outputs,
+            "retention_days": retention_days,
+            "signed_links": signed_links,
+        }
+        return await self._c._request(
+            "PUT", f"/v1/apps/{_q(app_id)}/access", json={k: v for k, v in body.items() if v is not None}
+        )
+
+    async def revoke_app_links(self, app_id: str) -> Any:
+        """End every link litegen signed to the app's files. A bucket's own
+        presigned links work until they expire."""
+        return await self._c._request("POST", f"/v1/apps/{_q(app_id)}/access/revoke-links")
 
 
 class _AsyncEndUsers:
@@ -820,10 +964,13 @@ class _AsyncAdminModels:
         return await self._c._request("GET", f"/v1/admin/models/{model_id}")
 
     async def create(self, schema: Mapping[str, Any]) -> Any:
-        """Add a model at runtime; ``schema`` is a ``models/*.yaml`` row as JSON."""
+        """Add a model at runtime; ``schema`` is a ``models/*.yaml`` row as JSON,
+        or a schema ``models.get`` served, sent back as it came (its
+        ``litegen_params`` and ``status`` are read and ignored)."""
         return await self._c._request("POST", "/v1/admin/models", json=dict(schema))
 
     async def replace(self, model_id: str, schema: Mapping[str, Any]) -> Any:
+        """Replace a runtime model's schema, taken as :meth:`create` takes it."""
         return await self._c._request("PUT", f"/v1/admin/models/{model_id}", json=dict(schema))
 
     async def set_disabled(self, model_id: str, disabled: bool) -> Any:
@@ -884,10 +1031,15 @@ class _AsyncAdmin:
     """Gateway admin: runtime models, provider configs, routes and settings."""
 
     def __init__(self, client: AsyncLiteGenClient) -> None:
+        self._c = client
         self.models = _AsyncAdminModels(client)
         self.providers = _AsyncAdminProviders(client)
         self.routes = _AsyncAdminRoutes(client)
         self.settings = _AsyncAdminSettings(client)
+
+    async def revoke_links(self) -> Any:
+        """End every link litegen signed, gateway-wide (``POST /v1/admin/revoke-links``)."""
+        return await self._c._request("POST", "/v1/admin/revoke-links")
 
 
 class _AsyncOAuth:

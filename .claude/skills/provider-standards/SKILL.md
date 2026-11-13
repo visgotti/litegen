@@ -20,7 +20,8 @@ The family skills add the specifics: `image-provider`, `video-provider` and
 ```text
 POST /v1/{images|videos|models3d}/generations
   → Validated{Image,Video,Model3d} extractor          api/middleware/validator.rs
-      prompt spec, each param vs the row's ParamSpec, ref roles, extra_allowlist
+      unknown fields, prompt spec, each param vs the row's ParamSpec,
+      ref roles, extra_allowlist
       strict=true → 4xx param_unsupported · strict=false → drop + X-Litegen-Dropped-Params
   → materializer: refs → url | base64 | multipart    proxy/materializer.rs
   → {Image,Video,Model3d}Extras                       api/handlers/mod.rs
@@ -29,8 +30,9 @@ POST /v1/{images|videos|models3d}/generations
       bills pricing.base_cost_usd (images: × images delivered;
       video and 3D: once, at submit)
   → YOUR ADAPTER: generate()                          providers/{image,video,model3d}/<p>.rs
-  → video and 3D only: poll_status(), from client polls and from the
-    background poller (proxy/poller.rs); 3D files are re-hosted in that tick
+  → video and 3D only: poll_status_gated() (by default poll_status()), from
+    client polls and from the background poller (proxy/poller.rs); its
+    delivery gate lets one observer download; 3D files are re-hosted in that tick
 ```
 
 Three facts about this path shape every adapter:
@@ -88,13 +90,18 @@ explain each one in more depth.
 
 1. **The catalog is a promise.** Advertise only what the adapter implements
    and what the vendor's schema accepts. That covers model ids, params, enums,
-   bounds, prompt limits and ref roles. For image and video, the validator
-   doesn't gate on the `capabilities` flags; they only feed `GET /v1/models`.
-   (A 3D gate for text-only requests is landing as this is written.) So when
-   a model *requires* a mode, such as image-to-video only, express it as a
-   ref role with `required: true, min_count: 1`. The adapter also refuses an
+   bounds, prompt limits and ref roles. The validator enforces the
+   `capabilities` flags too: a request whose refs ask for a mode the row
+   doesn't advertise (text alone on an edit-only image model, a frame image
+   on a text-only video model, text alone on an image-only 3D model) is
+   refused with 400 `capability_unsupported` before any vendor call
+   (`check_image_request`, `check_video_request` and the 3D text-only check in
+   `api/middleware/validator.rs`). So set them truthfully. When a model
+   *requires* a mode, such as image-to-video only, also express it as a ref
+   role with `required: true, min_count: 1`. The adapter also refuses an
    unsupported mode with `ProviderError::InvalidRequest` before it calls the
-   vendor. Details are in `references/catalog-yaml.md`.
+   vendor; the caller gets 400 `request_unsupported`, and nothing is billed
+   (rule 13). Details are in `references/catalog-yaml.md`.
 2. **Cite the vendor where the next person will look.** Citations go in
    three places:
    - `docs_url:` on every new model row. It is the vendor's human-readable
@@ -142,7 +149,10 @@ explain each one in more depth.
    key works for it with no new setup. Never add a name like `<vendor>-video`.
 5. **Declare auth instead of hand-writing headers.** Give the adapter an
    `auth: AuthSpec` field set in `new()`. Apply it with
-   `crate::providers::auth::apply(&self.auth, &creds, builder)`. For signing
+   `crate::providers::auth::apply(&self.auth, &creds, builder)`, or, where the
+   adapter picked a key from its own pool, the `.authorized(&self.auth,
+   &key)?` step (`auth::Authorize`). Never write an `Authorization` header by
+   hand: `no_adapter_writes_its_own_auth_header` fails the build. For signing
    schemes, call `sigv4::sign` or `tc3::sign` with the final body bytes
    instead. Every adapter for a vendor uses the same scheme and credential
    fields. Only a signing `service` may differ by product, as Tencent's
@@ -195,13 +205,19 @@ explain each one in more depth.
     A derived value (size → ratio, resolution → preset) must come from a
     named table of the vendor's enum, with a test proving the function can't
     return anything else.
-11. **Don't let `extra` override fields you own.** `extra_allowlist` is
-    enforced only in strict mode. With `strict: false`, `extra` reaches the
-    adapter unfiltered. Merge `extra` before you write the fields you own, or
-    skip those keys. The fields you own are the model or endpoint id, the
-    output count, the output format that sets `content_type`, and the prompt.
-    Otherwise a caller's `extra.model` could run a different vendor model from
-    the one litegen bills.
+11. **Don't let `extra` override fields you own.** Only `extra_allowlist`
+    keys reach the adapter, in either mode: strict refuses the rest, lax
+    drops and reports them. So never allowlist a field you own: the model or
+    endpoint id, the output count, the output format that sets
+    `content_type`, and the prompt. Nor one litegen owns (a vendor callback,
+    where the vendor stores a result, whether it publishes one): the loader
+    refuses those. Merge `extra` through
+    `crate::providers::extra_fields(extras.extra.as_ref(), owned)`, the one
+    filter every adapter uses: it drops your `owned` fields and litegen's
+    (`capabilities::gateway_owned_extra`). Still merge it before you write
+    your fields, so no allowlisted key can replace one. Otherwise a caller's
+    `extra.model` could run a different vendor model from the one litegen
+    bills.
 12. **Don't forward `n`.** An adapter returns one output, the router bills
     one, and nothing caps `n`. Forwarding it as `n`, `num_images` or
     `candidateCount` makes the vendor generate and bill N. Send the vendor's
@@ -211,6 +227,16 @@ explain each one in more depth.
 
 13. **Retry only what is safe to repeat.** What `retryable` means depends on
     where the error comes from.
+    - **Before any vendor call**, refuse with `InvalidRequest` (a request the
+      vendor can't take), `ModelNotSupported`, `PricingUnavailable` or
+      `NotConfigured` (no credential you can use). These four mean nothing
+      was sent (`ProviderError::before_any_call`): the caller gets 400
+      `validation_error` with code `request_unsupported` (`NotConfigured`:
+      400 `provider_not_configured`, with your message as the advice), no
+      `Idempotency-Key` is spent, and the provider's circuit breaker counts
+      nothing. So never return one once the vendor has been called: an
+      answer you can't read is `RequestFailed`, as in Leonardo's init-image
+      upload.
     - In `generate()`, the router calls `generate()` again after a
       retryable error or a 120 s attempt timeout, which submits a new
       vendor job. Mark errors retryable only when you know the vendor didn't
@@ -231,7 +257,8 @@ explain each one in more depth.
         connection errors); the poller retries next tick.
       - Make it non-retryable only when the job's state can never be learned
         (a 401 or 404 on the status call, a malformed handle). The poller
-        then *reaps* the row as failed **without firing a webhook**.
+        then *reaps* the row: failed, refunded and webhooked, with the poll
+        error as its only reason.
 
     Any other 4xx is non-retryable. Note that `ProviderError::Timeout` and
     `RateLimited` are retryable *by type*. So once the vendor has accepted a
@@ -244,13 +271,15 @@ explain each one in more depth.
 14. **Map every documented status.** List the vendor's status enum and map
     each terminal state explicitly. Cancelled, expired, moderated and
     content-filtered all map to `Failed` with the vendor's reason, never to
-    `Pending`. Report honest `progress`: the vendor's percentage if it gives
+    `Pending`. A state the docs don't list fails the job at once, naming it
+    (`video::unknown_state`, `image::unknown_state`); a poll that fails on the
+    way (a dropped connection, a 5xx, 408 or 429) is asked again inside the
+    poll budget, never the end of a job the vendor accepted. Report honest `progress`: the vendor's percentage if it gives
     one, otherwise a fixed mid value, and 100 once terminal.
 15. **Keep polling stateless.** `poll_status` receives only its handle, and
     may run on a different instance from the submit, possibly after a
-    restart. Video client polls use the platform instance, 3D client polls
-    reuse the submitting instance, and the poller builds a fresh BYO
-    instance. Put everything polling needs into the handle:
+    restart. Video and 3D client polls reuse the submitting instance, and
+    the poller builds a fresh BYO instance. Put everything polling needs into the handle:
     `provider_job_id` for video, `stage_context` for 3D.
 16. **Return output the caller can use.** That means image bytes with an
     accurate `content_type`, a video URL a client can fetch without vendor
@@ -259,9 +288,11 @@ explain each one in more depth.
     download size. A URL that came from a response is untrusted input, so
     pass it through `crate::util::ssrf::validate_public_url` before you
     fetch it server-side, as the fal 3D downloads do.
-17. **Fit the time budget.** On direct dispatch, `generate()` gets 120 s per
-    attempt. Video and 3D adapters only submit inside `generate()`. Image
-    adapters that poll internally must finish well inside the 120 s.
+17. **Fit the time budget.** On direct dispatch, `generate()` gets the
+    vendor timeout per attempt (120 s by default; `vendor_timeout_seconds`,
+    `docs/gateway-settings.md`). Video and 3D adapters only submit inside
+    `generate()`. Image adapters that poll internally poll with `PollBudget`,
+    which ends at that deadline.
 18. **Propagate traces.** Wrap every outbound request builder in
     `crate::providers::inject_trace_headers(...)`.
 
@@ -306,15 +337,26 @@ catches what you hook up. Details are in `references/drift-and-pricing.md`.
   request schema of the endpoints the adapter calls. Where the same page
   publishes prices, keep the price lines in the snapshot so a price change
   shows up as `changed`. Replicate's definition does this.
-- For an announced shutdown, add the model to `SCHEDULED_SHUTDOWNS` in
-  `catalog_conformance.rs` and prefix its description with `DEPRECATED:` and
-  the date. Vendor models you skip go in `acknowledged`, with a dated reason.
+  - A source whose snapshot is a lineup table or an id list says
+    `typings: false`: it shows a model exists, not what it accepts.
+  - A model whose schema never names its vendor id (a free-form model field)
+    or whose id another model sends to a different endpoint is pinned with
+    `typingsFrom: { '<litegen id>': ['<source key>'] }`. A pin is covered once
+    its sources succeed; it needs no id match.
+- For an announced shutdown, set the row's `retires_at` to the date, add the
+  model to `SCHEDULED_SHUTDOWNS` in `catalog_conformance.rs` with the same
+  date (`every_scheduled_shutdown_is_its_rows_retires_at` holds the two
+  together), and prefix its description with `DEPRECATED:` and the date. A
+  deprecation with no date sets the row's `deprecated_at`. Vendor models you
+  skip go in `acknowledged`, with a dated reason.
 - Verify a definition by running the check twice against the *same* temp
   directory: `D=$(mktemp -d)`, then
   `node scripts/model-drift/check.mjs --provider <p> --snapshots "$D"` twice.
-  The second run must show nothing `changed`. Two fresh directories can
-  never show `changed`, so they prove nothing. Leave `snapshots/` alone: the
-  weekly run commits reviewed snapshots.
+  The first run exits 1 and lists every source under `no baseline`, since
+  the folder starts empty; it must show no `FAILED`. The second run must
+  show nothing `changed` and nothing under `no baseline`. Two fresh
+  directories can never show `changed`, so they prove nothing. Leave
+  `snapshots/` alone: the weekly run commits reviewed snapshots.
 - Write each id in the definition as a quoted string literal. A Rust test
   checks that every catalog id is mapped by reading the `.mjs` text, so an id
   built with a template string fails it.

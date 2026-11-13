@@ -82,14 +82,20 @@ pub fn error_result(reply: &HttpReply, parsed: Option<Value>) -> CallToolResult 
         .and_then(Value::as_str)
         .unwrap_or_else(|| reply.status.canonical_reason().unwrap_or("error"));
     let message = error.get("message").and_then(Value::as_str).unwrap_or("");
-    let text = format!("HTTP {} {}: {}", reply.status.as_u16(), code, message);
+    let mut text = format!("HTTP {} {}: {}", reply.status.as_u16(), code, message);
+    // A 504 `vendor_timeout` whose job can still be delivered names the
+    // generation it goes to, still `processing`.
+    let processing = error.get("status").and_then(Value::as_str) == Some("processing");
+    if let Some(id) = error.get("generation_id").and_then(Value::as_str).filter(|id| processing && !id.is_empty()) {
+        text.push_str(&format!(" The job is still running as generation {id}: call wait_for_generation with id \"{id}\" for its result."));
+    }
     let mut result = CallToolResult::error(vec![ContentBlock::text(text)]);
     result.structured_content = Some(json!({ "status": reply.status.as_u16(), "error": error }));
     result
 }
 
 /// What the API said in headers rather than the body.
-fn notes(reply: &HttpReply) -> Vec<String> {
+pub(crate) fn notes(reply: &HttpReply) -> Vec<String> {
     let mut notes = Vec::new();
     if let Some(dropped) = reply.headers.get("x-litegen-dropped-params").and_then(|v| v.to_str().ok()) {
         let list = dropped.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
@@ -99,6 +105,9 @@ fn notes(reply: &HttpReply) -> Vec<String> {
     }
     if reply.headers.get("idempotent-replayed").and_then(|v| v.to_str().ok()) == Some("true") {
         notes.push("Note: replayed from an earlier call with the same idempotency_key; nothing new was billed.".to_string());
+    }
+    if reply.headers.get("x-litegen-cache").and_then(|v| v.to_str().ok()) == Some("hit") {
+        notes.push("Note: answered from LiteGen's cache: the output of an earlier identical request, not a new generation.".to_string());
     }
     notes
 }
@@ -369,6 +378,11 @@ async fn file_result(shared: &McpShared, caller: &Caller, spec: &ToolSpec, args:
                     "The converted file is {} MiB, over MCP's 8 MiB limit; call POST {base}/v1/utils/models3d/convert directly.",
                     size.div_ceil(1024 * 1024)
                 ))]);
+            }
+            // `package: "zip"`: the file and its sidecars, as one zip.
+            if mime == "application/zip" {
+                let uri = format!("litegen://convert/{}.{format}.zip", uuid::Uuid::new_v4());
+                return embedded(&uri, &mime, &reply.body, format!("Converted to {format}, zipped with its sidecars: {size} bytes."));
             }
             let uri = format!("litegen://convert/{}.{format}", uuid::Uuid::new_v4());
             embedded(&uri, &mime_for(&format, "mesh"), &reply.body, format!("Converted to {format}: {size} bytes."))

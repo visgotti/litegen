@@ -1,13 +1,12 @@
-version: "3.9"
 services:
   litegen:
     build: .
     image: litegen:latest
     ports:
       - "4000:4000"
+    # Each variable here beats the same setting in a mounted config file
+    # (docs/configuration.md): to take a setting from the file, leave it out.
     environment:
-      LITEGEN__SERVER__HOST: "0.0.0.0"
-      LITEGEN__SERVER__PORT: "4000"
       # Origin clients reach this container on; 3D asset URLs are minted
       # absolute from it and are unreachable if it is left at the container's
       # own bind address. Required behind a proxy or on a remote host.
@@ -16,6 +15,8 @@ services:
       LITEGEN__MASTER_KEY: "${LITEGEN_MASTER_KEY:?LITEGEN_MASTER_KEY must be set}"
       LITEGEN_CORS_ORIGINS: "${LITEGEN_CORS_ORIGINS:-}"
       RUST_LOG: "info"
+      # Provider keys come in the same way (an empty one counts as unset):
+      # OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     depends_on:
       db:
         condition: service_healthy
@@ -26,10 +27,19 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
+    # A stop gives open requests and the poller's current rows litegen's
+    # shutdown grace (server.shutdown_grace_secs; unset, the vendor timeout +
+    # 30 s = 150 s), then gives back its poll claims. Docker's own default is
+    # 10 s, after which it kills litegen: keep this the grace + 15 s.
+    stop_grace_period: 165s
     # Kept results (meshes, videos, images, published references) outlive
     # the container; litegen refuses to start if it cannot write here.
     volumes:
       - litegen_assets:/app/data
+      # A config file: copy litegen.example.yaml to litegen.yaml first (for a
+      # missing file Docker mounts an empty directory, and litegen refuses to
+      # start). The variables above beat what it sets.
+      # - ./litegen.yaml:/app/litegen.yaml:ro
 
   db:
     image: postgres:16-alpine

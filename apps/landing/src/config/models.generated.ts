@@ -3,11 +3,85 @@
 export interface ModelParam {
   name: string;
   kind: string;
+  /** The choices: enum values, a segmentation's prompt types, a layout's box kinds. */
   enum?: string[];
   /** An array for a set-valued param (`output_formats`). */
   default?: string | number | boolean | string[];
   min?: number;
   max?: number;
+  /** The only values a number param takes; shown instead of the range. */
+  values?: number[];
+  label?: string;
+  description?: string;
+  /** The longest string, in characters. */
+  maxLength?: number;
+  /** The most entries one request may send (layout boxes, segmentation prompts, clips). */
+  maxItems?: number;
+  /** A source mesh: the containers the vendor takes, its size and triangle limits, what it must have. */
+  formats?: string[];
+  maxBytes?: number;
+  /** The most triangles (`max_faces`; litegen counts a quad as two). */
+  maxFaces?: number;
+  requiresSkin?: boolean;
+  requiresTexture?: boolean;
+  /** An animate model's clips, named by the vendor's id or the canonical preset each plays. */
+  presets?: { id: string; label?: string; canonical?: string }[];
+  /** A palette: the most colours, and whether every pixel must be one of them. */
+  maxColors?: number;
+  forced?: boolean;
+  /** A segmentation: the most masks one answer holds. */
+  maxMasks?: number;
+  /** An expand: the most pixels added to one side. */
+  maxPx?: number;
+  /** A layout: each text box holds one word. */
+  singleWordText?: boolean;
+}
+
+/** A freeform size's bounds, in pixels. */
+export interface SizeRange {
+  minWidth: number;
+  maxWidth: number;
+  minHeight: number;
+  maxHeight: number;
+  multipleOf?: number;
+  minPixels?: number;
+  maxPixels?: number;
+  /** The widest long-to-short side ratio. */
+  maxAspect?: number;
+}
+
+/** A badge that says what a model does. */
+export type ModalityKey =
+  | 'textToImage'
+  | 'imageToImage'
+  | 'inpainting'
+  | 'textToVideo'
+  | 'imageToVideo'
+  | 'textTo3d'
+  | 'imageTo3d'
+  | 'multiviewTo3d'
+  | 'backgroundRemoval'
+  | 'pixelArt';
+
+/**
+ * A video whose frame image sets its shape (the aspect ratio's
+ * `frames_set_shape`): a ratio applies only without an image in one of these
+ * roles, or, when `unlessReference`, with a `reference` image beside it.
+ */
+export interface AspectRatioFrames {
+  /** The row's frame roles (first_frame, last_frame, init). */
+  roles: string[];
+  /** A `reference` image beside the frame lifts the rule. */
+  unlessReference: boolean;
+  /** The role an image sent without one takes, when it is a frame role. */
+  defaultRole?: string;
+}
+
+/** The vendor's lifecycle dates (YYYY-MM-DD) and the catalog model to move to. */
+export interface ModelLifecycle {
+  deprecatedAt?: string;
+  retiresAt?: string;
+  replacedBy?: string;
 }
 
 export interface ModelRefRole {
@@ -15,6 +89,35 @@ export interface ModelRefRole {
   required: boolean;
   min: number;
   max: number;
+}
+
+/**
+ * One condition of a price rule: a fact as the request sends it (else its
+ * default) equal to a value, sent at all (`"*"`), or inside a range.
+ */
+export type PriceCondition =
+  | { fact: string; is: 'eq'; value: string | number | boolean }
+  | { fact: string; is: 'sent' }
+  | { fact: string; is: 'range'; gt?: number; gte?: number; lt?: number; lte?: number };
+
+/** A rule's one effect: a price or a rate replaces the price so far; the rest adjust it. */
+export type PriceEffect =
+  | { kind: 'usd' | 'perSecond' | 'perMegapixel' | 'multiply' | 'multiplyPerMegapixelAbove' | 'addUsd'; value: number }
+  | { kind: 'perItem'; value: number; list: string };
+
+export interface PriceRuleEntry {
+  /** Every condition must hold; none means the rule always applies. */
+  when: PriceCondition[];
+  effect: PriceEffect;
+}
+
+export interface ModelPricing {
+  /** The vendor's price for the default request, exactly as the catalog gives it. */
+  baseCostUsd: number;
+  /** What one charge buys. */
+  unit: 'image' | 'video' | 'model3d' | 'request';
+  /** Applied in order over baseCostUsd for the request at hand; the result never goes below 0. */
+  rules: PriceRuleEntry[];
 }
 
 export interface ModelEntry {
@@ -35,14 +138,29 @@ export interface ModelEntry {
     textTo3d: boolean;
     imageTo3d: boolean;
     multiviewTo3d: boolean;
+    backgroundRemoval: boolean;
+    nativePixelArt: boolean;
   };
+  /** The badges that say what the model does (messages `reference.modality.*`). */
+  modalities: ModalityKey[];
+  /** What it works on in place of a prompt: a source mesh or clip, or the image it segments. */
+  worksOn?: 'sourceModel' | 'sourceVideo' | 'segmentation';
+  lifecycle?: ModelLifecycle;
   sizes: string[];
+  /** A freeform size: any width and height inside these bounds. */
+  sizeRange?: SizeRange;
+  sizeLabel?: string;
+  sizeDescription?: string;
   aspectRatios: string[];
+  aspectRatioLabel?: string;
+  aspectRatioDescription?: string;
+  /** Set when a frame image sets the shape instead of a ratio. */
+  aspectRatioFrames?: AspectRatioFrames;
   maxRefImages: number;
   refRoles: ModelRefRole[];
   promptLimits: { required: boolean; minLength?: number; maxLength?: number };
   params: ModelParam[];
-  pricing?: { baseCostUsd: number };
+  pricing?: ModelPricing;
   tags: string[];
   /** Most-applicable provider documentation URL. */
   referenceUrl?: string;
@@ -50,29 +168,49 @@ export interface ModelEntry {
 
 export const MODELS: ModelEntry[] = [
   {
-    "id": "bfl/flux-2-klein-9b",
-    "provider": "bfl",
-    "displayName": "FLUX.2 [klein] 9B",
-    "description": "Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled",
-    "mediaType": "image",
-    "output": "image",
+    "id": "bedrock/luma.ray-v2:0",
+    "provider": "bedrock",
+    "displayName": "Luma Ray 2 (Bedrock)",
+    "description": "Luma's Ray 2 through Amazon Bedrock on your AWS account (us-west-2) — text-to-video or first/last-frame image-to-video, 5 or 9 s, 540p or 720p; the MP4 lands in your S3 bucket and litegen reads it back.",
+    "mediaType": "video",
+    "output": "video",
     "task": "generate",
     "capabilities": {
-      "textToImage": true,
-      "imageToImage": true,
+      "textToImage": false,
+      "imageToImage": false,
       "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false,
+      "textToVideo": true,
+      "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 1,
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "9:16",
+      "4:3",
+      "3:4",
+      "21:9",
+      "9:21"
+    ],
+    "maxRefImages": 2,
     "refRoles": [
       {
-        "name": "init",
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
         "required": false,
         "min": 0,
         "max": 1
@@ -80,102 +218,73 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 10000
+      "maxLength": 5000
     },
     "params": [
       {
-        "name": "output_format",
-        "kind": "string",
-        "enum": [
-          "png",
-          "webp",
-          "jpeg"
-        ],
-        "default": "png"
+        "name": "loop",
+        "kind": "bool",
+        "default": false
       },
       {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 9,
+        "values": [
+          5,
+          9
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p"
+        ],
+        "default": "720p"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.015
+      "baseCostUsd": 7.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 1.5
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.75
+          }
+        }
+      ]
     },
     "tags": [
-      "text-to-image",
-      "image-to-image",
-      "fast"
-    ],
-    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bklein%5D-9b FLUX.2 generation and editing, balancing quality and speed."
-  },
-  {
-    "id": "bfl/flux-2-max",
-    "provider": "bfl",
-    "displayName": "FLUX.2 [max]",
-    "description": "Black Forest Labs FLUX.2 max — the highest-quality FLUX.2",
-    "mediaType": "image",
-    "output": "image",
-    "task": "generate",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": true,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false
-    },
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 10000
-    },
-    "params": [
-      {
-        "name": "output_format",
-        "kind": "string",
-        "enum": [
-          "png",
-          "webp",
-          "jpeg"
-        ],
-        "default": "png"
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.07
-    },
-    "tags": [
-      "text-to-image",
-      "image-to-image",
+      "text-to-video",
+      "image-to-video",
       "premium"
     ],
-    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bmax%5D model for image generation and editing, with the strongest editing consistency and prompt following, and grounding search."
+    "referenceUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-luma.html"
   },
   {
-    "id": "bfl/flux-2-pro",
-    "provider": "bfl",
-    "displayName": "FLUX.2 [pro]",
-    "description": "Black Forest Labs FLUX.2 pro — recommended default for image",
+    "id": "bedrock/stability.sd3-5-large-v1:0",
+    "provider": "bedrock",
+    "displayName": "Stable Diffusion 3.5 Large (Bedrock)",
+    "description": "Stability AI's SD3.5 Large on Amazon Bedrock (us-west-2) — text-to-image and image-to-image, 1 MP.",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
@@ -187,10 +296,26 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "21:9",
+      "2:3",
+      "3:2",
+      "4:5",
+      "5:4",
+      "9:16",
+      "9:21"
+    ],
     "maxRefImages": 1,
     "refRoles": [
       {
@@ -206,36 +331,49 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
-        "name": "output_format",
+        "name": "negative_prompt",
         "kind": "string",
-        "enum": [
-          "png",
-          "webp",
-          "jpeg"
-        ],
-        "default": "png"
+        "maxLength": 10000
       },
       {
         "name": "seed",
         "kind": "seed",
         "min": 0,
         "max": 4294967294
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "min": 0,
+        "max": 1
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.03
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bpro%5D generation and multi-reference editing."
+    "referenceUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-3-5-large.html"
   },
   {
-    "id": "bfl/flux-dev",
-    "provider": "bfl",
-    "displayName": "FLUX.1 [dev]",
-    "description": "Black Forest Labs FLUX.1 dev (hosted) text-to-image.",
+    "id": "bedrock/stability.stable-image-core-v1:1",
+    "provider": "bedrock",
+    "displayName": "Stable Image Core (Bedrock)",
+    "description": "Stability AI's Stable Image Core on Amazon Bedrock (us-west-2) — fast, affordable text-to-image.",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
@@ -247,12 +385,342 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "21:9",
+      "2:3",
+      "3:2",
+      "4:5",
+      "5:4",
+      "9:16",
+      "9:21"
+    ],
     "maxRefImages": 0,
     "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 10000
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-stable-image-core-text-image-request-response.html"
+  },
+  {
+    "id": "bedrock/stability.stable-image-ultra-v1:1",
+    "provider": "bedrock",
+    "displayName": "Stable Image Ultra (Bedrock)",
+    "description": "Stability AI's Stable Image Ultra on Amazon Bedrock (us-west-2) — photorealistic text-to-image and image-to-image.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "21:9",
+      "2:3",
+      "3:2",
+      "4:5",
+      "5:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 10000
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "default": 0.35,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.14,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "premium",
+      "photorealistic"
+    ],
+    "referenceUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-diffusion-stable-ultra-text-image-request-response.html"
+  },
+  {
+    "id": "bfl/flux-2-flex",
+    "provider": "bfl",
+    "displayName": "FLUX.2 [flex]",
+    "description": "Black Forest Labs FLUX.2 flex — generation and multi-reference editing tuned for typography, text rendering and small details, with adjustable steps and guidance.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048,
+      "multipleOf": 32
+    },
+    "aspectRatios": [],
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 8
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 50,
+        "min": 1,
+        "max": 50
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 5,
+        "min": 1.5,
+        "max": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.097152
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.097152,
+              "lte": 3.145728
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 3.145728,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "typography"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bflex%5D"
+  },
+  {
+    "id": "bfl/flux-2-klein-9b",
+    "provider": "bfl",
+    "displayName": "FLUX.2 [klein] 9B",
+    "description": "Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled FLUX.2 generation and editing, balancing quality and speed.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048,
+      "multipleOf": 32
+    },
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
     "promptLimits": {
       "required": true,
       "maxLength": 10000
@@ -276,7 +744,931 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.025
+      "baseCostUsd": 0.015,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.097152
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.017
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.097152,
+              "lte": 3.145728
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.019
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 3.145728,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.021
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bklein%5D-9b"
+  },
+  {
+    "id": "bfl/flux-2-max",
+    "provider": "bfl",
+    "displayName": "FLUX.2 [max]",
+    "description": "Black Forest Labs FLUX.2 max — the highest-quality FLUX.2 model for image generation and editing, with the strongest editing consistency and prompt following, and grounding search.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048,
+      "multipleOf": 32
+    },
+    "aspectRatios": [],
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 8
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.07,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.097152
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.097152,
+              "lte": 3.145728
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 3.145728,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "premium"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bmax%5D"
+  },
+  {
+    "id": "bfl/flux-2-pro",
+    "provider": "bfl",
+    "displayName": "FLUX.2 [pro]",
+    "description": "Black Forest Labs FLUX.2 pro — recommended default for image generation and multi-reference editing.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048,
+      "multipleOf": 32
+    },
+    "aspectRatios": [],
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 8
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.097152
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.097152,
+              "lte": 3.145728
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 3.145728,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.075
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bpro%5D"
+  },
+  {
+    "id": "bfl/flux-3-image",
+    "provider": "bfl",
+    "displayName": "FLUX 3 Image",
+    "description": "Black Forest Labs FLUX 3 Image — generation and editing with up to ten references, bounding boxes in the prompt and web-grounded prompts.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 6256,
+      "minHeight": 256,
+      "maxHeight": 6256,
+      "maxPixels": 16822272,
+      "maxAspect": 8
+    },
+    "aspectRatios": [
+      "21:9",
+      "2:1",
+      "16:9",
+      "3:2",
+      "7:5",
+      "4:3",
+      "5:4",
+      "1:1",
+      "4:5",
+      "3:4",
+      "5:7",
+      "2:3",
+      "9:16",
+      "1:2",
+      "9:21"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "0.75K",
+          "1K",
+          "1.5K",
+          "2K",
+          "4K",
+          "match_input"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "layout",
+        "kind": "layout",
+        "enum": [
+          "object",
+          "text"
+        ],
+        "label": "Layout",
+        "description": "Objects and lines of text to place, as fractions of the canvas.",
+        "maxItems": 32
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.048,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "0.75K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.041
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1.5K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.607
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "match_input"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "lte": 0.589824
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.041
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 0.589824,
+              "lte": 1.048576
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.048
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.359296
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.359296,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.607
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "premium"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3"
+  },
+  {
+    "id": "bfl/flux-3-image-klein",
+    "provider": "bfl",
+    "displayName": "FLUX 3 Image Klein",
+    "description": "Black Forest Labs FLUX 3 Image Klein — the fast 5.6B open-weights FLUX 3 Image, for generation and editing with up to ten references.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 64,
+      "maxWidth": 6256,
+      "minHeight": 64,
+      "maxHeight": 6256,
+      "maxPixels": 16822272,
+      "maxAspect": 8
+    },
+    "aspectRatios": [
+      "21:9",
+      "2:1",
+      "16:9",
+      "3:2",
+      "7:5",
+      "4:3",
+      "5:4",
+      "1:1",
+      "4:5",
+      "3:4",
+      "5:7",
+      "2:3",
+      "9:16",
+      "1:2",
+      "9:21"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 16,
+        "min": 1,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "0.75K",
+          "1K",
+          "1.5K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "layout",
+        "kind": "layout",
+        "enum": [
+          "object",
+          "text"
+        ],
+        "label": "Layout",
+        "description": "Objects and lines of text to place, as fractions of the canvas.",
+        "maxItems": 32
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.009,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "0.75K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.008
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1.5K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.011
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.014
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.036
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "lte": 0.589824
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.008
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 0.589824,
+              "lte": 1.048576
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.009
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.359296
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.011
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.359296,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.014
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.036
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3-klein"
+  },
+  {
+    "id": "bfl/flux-dev",
+    "provider": "bfl",
+    "displayName": "FLUX.1 [dev]",
+    "description": "Black Forest Labs FLUX.1 dev (hosted) text-to-image (Redux image_prompt ref).",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 1440,
+      "minHeight": 256,
+      "maxHeight": 1440,
+      "multipleOf": 32
+    },
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "redux",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 28,
+        "min": 1,
+        "max": 50
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 3,
+        "min": 1.5,
+        "max": 5
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.025,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -299,8 +1691,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "21:9",
@@ -343,7 +1741,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.08
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -368,8 +1768,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "21:9",
@@ -412,7 +1818,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -437,9 +1845,22 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 1440,
+      "minHeight": 256,
+      "maxHeight": 1440,
+      "multipleOf": 32
+    },
     "aspectRatios": [],
     "maxRefImages": 1,
     "refRoles": [
@@ -473,7 +1894,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -484,20 +1907,26 @@ export const MODELS: ModelEntry[] = [
     "id": "bfl/flux-pro-1.1-ultra",
     "provider": "bfl",
     "displayName": "FLUX 1.1 [pro] Ultra",
-    "description": "FLUX 1.1 pro Ultra — high-resolution, aspect-ratio based.",
+    "description": "FLUX 1.1 pro Ultra — high-resolution, aspect-ratio based (Redux image_prompt ref).",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
     "capabilities": {
       "textToImage": true,
-      "imageToImage": false,
+      "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "21:9",
@@ -508,8 +1937,15 @@ export const MODELS: ModelEntry[] = [
       "9:16",
       "9:21"
     ],
-    "maxRefImages": 0,
-    "refRoles": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "redux",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
     "promptLimits": {
       "required": true,
       "maxLength": 10000
@@ -533,12 +1969,290 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.06
+      "baseCostUsd": 0.06,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
     ],
     "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D-ultra-mode"
+  },
+  {
+    "id": "bytedance/dola-seedream-5-0-flash-260915",
+    "provider": "bytedance",
+    "displayName": "Seedream 5.0 Flash",
+    "description": "ByteDance Seedream 5.0 flash — fast text-to-image + up to 10-reference edit.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 240,
+      "maxWidth": 8601,
+      "minHeight": 240,
+      "maxHeight": 8601,
+      "minPixels": 921600,
+      "maxPixels": 4624220,
+      "maxAspect": 16
+    },
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 3000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.018,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/image-generation-api"
+  },
+  {
+    "id": "bytedance/dola-seedream-5-0-pro-260628",
+    "provider": "bytedance",
+    "displayName": "Seedream 5.0 Pro",
+    "description": "ByteDance Seedream 5.0 pro text-to-image + up to 10-reference edit.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 240,
+      "maxWidth": 8601,
+      "minHeight": 240,
+      "maxHeight": 8601,
+      "minPixels": 921600,
+      "maxPixels": 4624220,
+      "maxAspect": 16
+    },
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 3000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.09,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "lte": 2.61
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.003
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.006
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.009
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.012
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.015
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.018
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.021
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.024
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.027
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/image-generation-api"
   },
   {
     "id": "bytedance/doubao-seedance-1-0-pro-250528",
@@ -556,8 +2270,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -598,7 +2318,7 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 2,
         "max": 12
@@ -621,7 +2341,43 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.61
+      "baseCostUsd": 0.612,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1224
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05148
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0243
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -645,8 +2401,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -683,7 +2445,7 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 4,
         "max": 15
@@ -699,7 +2461,30 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.38
+      "baseCostUsd": 0.378,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0756
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.035154
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -724,8 +2509,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -760,7 +2551,7 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 2,
         "max": 12
@@ -783,7 +2574,43 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.24
+      "baseCostUsd": 0.2448,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.04896
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.020592
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.00972
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -808,9 +2635,24 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 240,
+      "maxWidth": 16384,
+      "minHeight": 240,
+      "maxHeight": 16384,
+      "minPixels": 921600,
+      "maxPixels": 16777216,
+      "maxAspect": 16
+    },
     "aspectRatios": [],
     "maxRefImages": 14,
     "refRoles": [
@@ -827,7 +2669,9 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.03
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -851,9 +2695,24 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 480,
+      "maxWidth": 16384,
+      "minHeight": 480,
+      "maxHeight": 16384,
+      "minPixels": 3686400,
+      "maxPixels": 16777216,
+      "maxAspect": 16
+    },
     "aspectRatios": [],
     "maxRefImages": 14,
     "refRoles": [
@@ -870,7 +2729,9 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -894,9 +2755,24 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 480,
+      "maxWidth": 16384,
+      "minHeight": 480,
+      "maxHeight": 16384,
+      "minPixels": 3686400,
+      "maxPixels": 16777216,
+      "maxAspect": 16
+    },
     "aspectRatios": [],
     "maxRefImages": 14,
     "refRoles": [
@@ -911,9 +2787,21 @@ export const MODELS: ModelEntry[] = [
       "required": true,
       "maxLength": 3000
     },
-    "params": [],
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      }
+    ],
     "pricing": {
-      "baseCostUsd": 0.035
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -937,7 +2825,15 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "lifecycle": {
+      "deprecatedAt": "2026-10-27"
     },
     "sizes": [],
     "aspectRatios": [],
@@ -966,11 +2862,13 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 3.5,
         "min": 0,
-        "max": 10
+        "max": 20
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.02,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -993,8 +2891,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": true,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "backgroundRemoval"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -1022,7 +2925,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0
+      "baseCostUsd": 0,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "background-removal"
@@ -1045,8 +2950,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": true,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "backgroundRemoval"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -1064,7 +2974,9 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.018
+      "baseCostUsd": 0.018,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "background-removal"
@@ -1075,24 +2987,43 @@ export const MODELS: ModelEntry[] = [
     "id": "fal/flux-2",
     "provider": "fal",
     "displayName": "FLUX.2 [dev] (Fal)",
-    "description": "Black Forest Labs FLUX.2 dev text-to-image on Fal.",
+    "description": "Black Forest Labs FLUX.2 dev on Fal — text-to-image, or edits from up to 4 images.",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
     "capabilities": {
       "textToImage": true,
-      "imageToImage": false,
+      "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 2048,
+      "minHeight": 512,
+      "maxHeight": 2048
+    },
     "aspectRatios": [],
-    "maxRefImages": 0,
-    "refRoles": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
     "promptLimits": {
       "required": true,
       "maxLength": 5000
@@ -1130,12 +3061,2437 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.012
+      "baseCostUsd": 0.012,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.012
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.012
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.024
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.036
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.048
+          }
+        }
+      ]
     },
     "tags": [
-      "text-to-image"
+      "text-to-image",
+      "image-to-image"
     ],
     "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/api"
+  },
+  {
+    "id": "fal/flux-2-flash",
+    "provider": "fal",
+    "displayName": "FLUX.2 [dev] Flash (Fal)",
+    "description": "FLUX.2 dev flash on Fal — fast text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 2048,
+      "minHeight": 512,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 2.5,
+        "min": 0,
+        "max": 20
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.005,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.005
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.005
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.015
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/flash/api"
+  },
+  {
+    "id": "fal/flux-2-flex",
+    "provider": "fal",
+    "displayName": "FLUX.2 [flex] (Fal)",
+    "description": "Black Forest Labs FLUX.2 flex on Fal — text-to-image, or edits from up to 8 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 8
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 3.5,
+        "min": 1.5,
+        "max": 10
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 28,
+        "min": 2,
+        "max": 50
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.097152
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.097152,
+              "lte": 3.145728
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 3.145728,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.25
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.3
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.35
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.4
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2-flex/api"
+  },
+  {
+    "id": "fal/flux-2-klein-4b",
+    "provider": "fal",
+    "displayName": "FLUX.2 [klein] 4B (Fal)",
+    "description": "Black Forest Labs FLUX.2 klein 4B on Fal — text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 4,
+        "min": 4,
+        "max": 8
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.005,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.005
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/klein/4b/api"
+  },
+  {
+    "id": "fal/flux-2-klein-4b-base",
+    "provider": "fal",
+    "displayName": "FLUX.2 [klein] 4B Base (Fal)",
+    "description": "Black Forest Labs FLUX.2 klein 4B base on Fal — text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 5,
+        "min": 0,
+        "max": 20
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 28,
+        "min": 4,
+        "max": 50
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.009,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.009
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.009
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.018
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.027
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.036
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/klein/4b/base/api"
+  },
+  {
+    "id": "fal/flux-2-klein-9b",
+    "provider": "fal",
+    "displayName": "FLUX.2 [klein] 9B (Fal)",
+    "description": "Black Forest Labs FLUX.2 klein 9B on Fal — text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 4,
+        "min": 4,
+        "max": 8
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.006,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.006
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.011
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.011
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.022
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.033
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.044
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/klein/9b/api"
+  },
+  {
+    "id": "fal/flux-2-klein-9b-base",
+    "provider": "fal",
+    "displayName": "FLUX.2 [klein] 9B Base (Fal)",
+    "description": "Black Forest Labs FLUX.2 klein 9B base on Fal — text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 5,
+        "min": 0,
+        "max": 20
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 28,
+        "min": 4,
+        "max": 50
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.011,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.011
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.011
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.022
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.033
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.044
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/klein/9b/base/api"
+  },
+  {
+    "id": "fal/flux-2-max",
+    "provider": "fal",
+    "displayName": "FLUX.2 [max] (Fal)",
+    "description": "Black Forest Labs FLUX.2 max on Fal — text-to-image, or edits from up to 8 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 8
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.07,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.097152
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.097152,
+              "lte": 3.145728
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 3.145728,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.18
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.21
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.24
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2-max/api"
+  },
+  {
+    "id": "fal/flux-2-pro",
+    "provider": "fal",
+    "displayName": "FLUX.2 [pro] (Fal)",
+    "description": "Black Forest Labs FLUX.2 pro on Fal — text-to-image, or edits from up to 8 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 2048,
+      "minHeight": 256,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 8
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.097152
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.097152,
+              "lte": 3.145728
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 3.145728,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.075
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.015
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.075
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.105
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2-pro/api"
+  },
+  {
+    "id": "fal/flux-2-pro-outpaint",
+    "provider": "fal",
+    "displayName": "FLUX.2 [pro] Outpaint (Fal)",
+    "description": "Black Forest Labs FLUX.2 pro outpainting on Fal — grows an image by up to 2,048 px a side and fills the new space.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "expand",
+        "kind": "expand",
+        "label": "Expand",
+        "description": "Pixels to add to each side (fal's expand_left, expand_top, expand_right, expand_bottom).",
+        "maxPx": 2048
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.045,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image",
+      "outpainting"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2-pro/outpaint/api"
+  },
+  {
+    "id": "fal/flux-2-turbo",
+    "provider": "fal",
+    "displayName": "FLUX.2 [dev] Turbo (Fal)",
+    "description": "FLUX.2 dev turbo on Fal — fast text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 2048,
+      "minHeight": 512,
+      "maxHeight": 2048
+    },
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 2.5,
+        "min": 0,
+        "max": 20
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.008,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.008
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.008
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.016
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.024
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.032
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/turbo/api"
+  },
+  {
+    "id": "fal/flux-3-image",
+    "provider": "fal",
+    "displayName": "FLUX 3 Image (fal)",
+    "description": "Black Forest Labs FLUX 3 Image on fal — text-to-image, or edits from up to 10 images, at 1K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "2:1",
+      "16:9",
+      "3:2",
+      "7:5",
+      "4:3",
+      "5:4",
+      "1:1",
+      "4:5",
+      "3:4",
+      "5:7",
+      "2:3",
+      "9:16",
+      "1:2"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.048,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/blackforestlabs/flux-3/text-to-image/api"
+  },
+  {
+    "id": "fal/flux-3-image-klein",
+    "provider": "fal",
+    "displayName": "FLUX 3 Image Klein (fal)",
+    "description": "Black Forest Labs FLUX 3 Klein on fal — fast text-to-image, or edits from up to 10 images, 256 to 4096 px.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 4096,
+      "minHeight": 256,
+      "maxHeight": 4096,
+      "multipleOf": 16,
+      "maxPixels": 16777216
+    },
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.009,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "lte": 0.589824
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.008
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 0.589824,
+              "lte": 1.048576
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.009
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576,
+              "lte": 2.359296
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.011
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.359296,
+              "lte": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.014
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.036
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://fal.ai/models/blackforestlabs/flux-3/klein/text-to-image/api"
+  },
+  {
+    "id": "fal/flux-3-image-klein-base",
+    "provider": "fal",
+    "displayName": "FLUX 3 Image Klein Base (fal)",
+    "description": "Black Forest Labs FLUX 3 Klein base (undistilled) on fal — text-to-image, or edits from up to 10 images, up to 4.2 megapixels.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 4096,
+      "minHeight": 256,
+      "maxHeight": 4096,
+      "multipleOf": 16,
+      "maxPixels": 4194304
+    },
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 1.048576
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0546
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/blackforestlabs/flux-3/klein/base/text-to-image/lora/api"
+  },
+  {
+    "id": "fal/flux-3-max-video",
+    "provider": "fal",
+    "displayName": "FLUX 3 Max Video (fal)",
+    "description": "FLUX 3 Max video with native audio on fal — from text, start and end frames, or up to 10 keyframes; 5 to 20 s at 720p or 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "2:1",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "keyframe",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 20
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.85,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.29
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "keyframes"
+    ],
+    "referenceUrl": "https://fal.ai/models/blackforestlabs/flux-3-max/text-to-video/api"
+  },
+  {
+    "id": "fal/flux-3-video",
+    "provider": "fal",
+    "displayName": "FLUX 3 Video (fal)",
+    "description": "Black Forest Labs FLUX 3 video with native audio on fal — from text, a first frame, first and last frames, or up to 10 keyframes; 5 to 20 s, 720p to 4K.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "2:1",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "keyframe",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 20
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p",
+          "1440p",
+          "2160p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.85,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.29
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1440p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.32
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2160p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.47
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "keyframes"
+    ],
+    "referenceUrl": "https://fal.ai/models/blackforestlabs/flux-3/text-to-video/api"
+  },
+  {
+    "id": "fal/flux-3-video-draft",
+    "provider": "fal",
+    "displayName": "FLUX 3 Video Draft (fal)",
+    "description": "FLUX 3 video drafts on fal — fast 720p previews with audio, from text, frames or up to 10 keyframes; 5 to 20 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "2:1",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "keyframe",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 20
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.06
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "keyframes",
+      "fast"
+    ],
+    "referenceUrl": "https://fal.ai/models/blackforestlabs/flux-3/text-to-video/draft/api"
   },
   {
     "id": "fal/flux-dev",
@@ -1153,9 +5509,21 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 2048,
+      "minHeight": 512,
+      "maxHeight": 2048,
+      "multipleOf": 8
+    },
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -1195,12 +5563,188 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.025
+      "baseCostUsd": 0.025,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.025
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image"
     ],
     "referenceUrl": "https://fal.ai/models/fal-ai/flux/dev/api"
+  },
+  {
+    "id": "fal/flux-kontext-max",
+    "provider": "fal",
+    "displayName": "FLUX.1 Kontext [max] (Fal)",
+    "description": "Black Forest Labs FLUX.1 Kontext max on Fal — text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "3:2",
+      "1:1",
+      "2:3",
+      "3:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 3.5,
+        "min": 1,
+        "max": 20
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/kontext/max/api"
+  },
+  {
+    "id": "fal/flux-kontext-pro",
+    "provider": "fal",
+    "displayName": "FLUX.1 Kontext [pro] (Fal)",
+    "description": "Black Forest Labs FLUX.1 Kontext pro on Fal — text-to-image, or edits from up to 4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "3:2",
+      "1:1",
+      "2:3",
+      "3:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 3.5,
+        "min": 1,
+        "max": 20
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/kontext/api"
   },
   {
     "id": "fal/flux-pro",
@@ -1218,9 +5762,21 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 2048,
+      "minHeight": 512,
+      "maxHeight": 2048,
+      "multipleOf": 8
+    },
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -1246,12 +5802,414 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.04
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image"
     ],
     "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/v1.1/api"
+  },
+  {
+    "id": "fal/flux-pro-1.1-redux",
+    "provider": "fal",
+    "displayName": "FLUX1.1 [pro] Redux (Fal)",
+    "description": "Black Forest Labs FLUX1.1 pro Redux on Fal — variations of an image, optionally steered by a prompt.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 2048,
+      "minHeight": 512,
+      "maxHeight": 2048,
+      "multipleOf": 8
+    },
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 3.5,
+        "min": 1,
+        "max": 20
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 28,
+        "min": 1,
+        "max": 50
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.05
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/v1.1/redux/api"
+  },
+  {
+    "id": "fal/flux-pro-1.1-ultra",
+    "provider": "fal",
+    "displayName": "FLUX1.1 [pro] Ultra (Fal)",
+    "description": "Black Forest Labs FLUX1.1 pro ultra on Fal — 4 MP images by aspect ratio, optionally guided by an image prompt.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "3:2",
+      "1:1",
+      "2:3",
+      "3:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "redux",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.06,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/api"
+  },
+  {
+    "id": "fal/flux-pro-1.1-ultra-redux",
+    "provider": "fal",
+    "displayName": "FLUX1.1 [pro] Ultra Redux (Fal)",
+    "description": "Black Forest Labs FLUX1.1 pro ultra Redux on Fal — 4 MP variations of an image, optionally steered by a prompt.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "3:2",
+      "1:1",
+      "2:3",
+      "3:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2113536,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/redux/api"
+  },
+  {
+    "id": "fal/flux-pro-erase",
+    "provider": "fal",
+    "displayName": "FLUX.1 [pro] Erase (Fal)",
+    "description": "Black Forest Labs FLUX.1 pro Erase on Fal — removes what a mask covers and fills in the background.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage",
+      "inpainting"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "region",
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to erase, sent drawn as the mask."
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.042,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image",
+      "inpainting"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/v1/erase/api"
+  },
+  {
+    "id": "fal/flux-pro-fill",
+    "provider": "fal",
+    "displayName": "FLUX.1 [pro] Fill (Fal)",
+    "description": "Black Forest Labs FLUX.1 pro Fill on Fal — repaints the masked part of an image from a prompt.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage",
+      "inpainting"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "default": "jpeg"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "region",
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image",
+      "inpainting"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/v1/fill/api"
   },
   {
     "id": "fal/flux-schnell",
@@ -1269,9 +6227,21 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 1536,
+      "minHeight": 512,
+      "maxHeight": 1536,
+      "multipleOf": 8
+    },
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -1311,7 +6281,17 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.003
+      "baseCostUsd": 0.003,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.003
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -1323,7 +6303,7 @@ export const MODELS: ModelEntry[] = [
     "id": "fal/hunyuan3d-v2",
     "provider": "fal",
     "displayName": "Hunyuan3D v2 (Fal)",
-    "description": "Tencent Hunyuan3D v2 via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.",
+    "description": "Tencent Hunyuan3D v2 via Fal. Image-to-3D only, GLB only — litegen derives the other containers from it.",
     "mediaType": "model3d",
     "output": "model3d",
     "task": "generate",
@@ -1335,8 +6315,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": true,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageTo3d"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -1361,12 +6346,16 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Hunyuan3D emits glb; litegen derives the other containers."
       },
       {
         "name": "texture",
         "kind": "bool",
-        "default": false
+        "default": false,
+        "label": "Textured mesh",
+        "description": "Sends `textured_mesh`. fal charges 3x for a textured mesh."
       },
       {
         "name": "seed",
@@ -1376,7 +6365,23 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.16
+      "baseCostUsd": 0.16,
+      "unit": "model3d",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "texture",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 3
+          }
+        }
+      ]
     },
     "tags": [
       "3d",
@@ -1401,8 +6406,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": true,
-      "multiviewTo3d": true
+      "multiviewTo3d": true,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageTo3d",
+      "multiviewTo3d"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 8,
@@ -1475,27 +6486,75 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Hunyuan3D emits glb; litegen derives the other containers."
       },
       {
         "name": "texture",
         "kind": "bool",
-        "default": true
+        "default": true,
+        "label": "Textures",
+        "description": "Sends generate_type: Normal (textured) or Geometry (white model)."
       },
       {
         "name": "pbr",
         "kind": "bool",
-        "default": false
+        "default": false,
+        "label": "PBR materials",
+        "description": "Sends `enable_pbr`. fal adds $0.15."
       },
       {
         "name": "target_polycount",
         "kind": "int",
         "min": 40000,
-        "max": 1500000
+        "max": 1500000,
+        "label": "Target polycount",
+        "description": "Sends `face_count` (Hunyuan's default is 500,000). fal adds $0.15."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.375
+      "baseCostUsd": 0.375,
+      "unit": "model3d",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "pbr",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "added_views",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "target_polycount",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        }
+      ]
     },
     "tags": [
       "3d",
@@ -1521,8 +6580,15 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": true,
       "imageTo3d": true,
-      "multiviewTo3d": true
+      "multiviewTo3d": true,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textTo3d",
+      "imageTo3d",
+      "multiviewTo3d"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 5,
@@ -1611,12 +6677,15 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats"
       },
       {
         "name": "pbr",
         "kind": "bool",
-        "default": true
+        "default": true,
+        "label": "PBR materials",
+        "description": "Off sends Rodin's `material=Shaded` — flat shading, not \"no material\"."
       },
       {
         "name": "seed",
@@ -1626,7 +6695,23 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.4
+      "baseCostUsd": 0.4,
+      "unit": "model3d",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "extra.addons",
+              "is": "eq",
+              "value": "HighPack"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 3
+          }
+        }
+      ]
     },
     "tags": [
       "3d",
@@ -1651,8 +6736,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -1660,6 +6751,12 @@ export const MODELS: ModelEntry[] = [
     ],
     "maxRefImages": 1,
     "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
       {
         "name": "init",
         "required": false,
@@ -1682,7 +6779,12 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 6,
         "min": 6,
-        "max": 10
+        "max": 10,
+        "values": [
+          6,
+          8,
+          10
+        ]
       },
       {
         "name": "resolution",
@@ -1699,11 +6801,53 @@ export const MODELS: ModelEntry[] = [
         "kind": "int",
         "default": 25,
         "min": 24,
-        "max": 50
+        "max": 50,
+        "values": [
+          24,
+          25,
+          48,
+          50
+        ]
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.48
+      "baseCostUsd": 0.48,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1440p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2160p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.32
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -1727,8 +6871,12 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [],
+    "worksOn": "sourceModel",
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -1740,7 +6888,15 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "source_model",
-        "kind": "source_model"
+        "kind": "source_model",
+        "label": "Source mesh",
+        "description": "A textured humanoid facing +Z, sent to fal inline (at most 100 MB, 320,000 faces).",
+        "formats": [
+          "glb"
+        ],
+        "maxBytes": 100000000,
+        "maxFaces": 320000,
+        "requiresTexture": true
       },
       {
         "name": "skeleton",
@@ -1748,12 +6904,16 @@ export const MODELS: ModelEntry[] = [
         "enum": [
           "humanoid"
         ],
-        "default": "humanoid"
+        "default": "humanoid",
+        "label": "Skeleton",
+        "description": "What it rigs. Meshy on fal rigs humanoids only."
       },
       {
         "name": "height_m",
         "kind": "float",
-        "default": 1.7
+        "default": 1.7,
+        "label": "Height (m)",
+        "description": "The character's height in metres (Meshy's height_meters; any positive value)."
       },
       {
         "name": "joint_naming",
@@ -1764,7 +6924,9 @@ export const MODELS: ModelEntry[] = [
           "unity",
           "mixamo"
         ],
-        "default": "vendor"
+        "default": "vendor",
+        "label": "Joint naming",
+        "description": "`vendor` keeps Meshy's own joint names; `vrm`, `unity` and `mixamo` are litegen's renames of them, from the humanoid table it reads Meshy's rigs with (3D doc §3B). Humanoids only."
       },
       {
         "name": "output_formats",
@@ -1775,11 +6937,15 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Meshy returns glb and fbx; litegen derives the rest."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.2,
+      "unit": "model3d",
+      "rules": []
     },
     "tags": [
       "3d",
@@ -1790,10 +6956,110 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://fal.ai/models/fal-ai/meshy/rigging/api"
   },
   {
-    "id": "fal/recraft-v3",
+    "id": "fal/recraft-upscale-creative",
     "provider": "fal",
-    "displayName": "Recraft V3 (Fal)",
-    "description": "",
+    "displayName": "Recraft Creative Upscale (Fal)",
+    "description": "Recraft on Fal — upscales an image, adding detail.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.25,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image",
+      "upscale"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/upscale/creative/api"
+  },
+  {
+    "id": "fal/recraft-upscale-crisp",
+    "provider": "fal",
+    "displayName": "Recraft Crisp Upscale (Fal)",
+    "description": "Recraft on Fal — upscales an image, keeping its detail crisp.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.004,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image",
+      "upscale"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/upscale/crisp/api"
+  },
+  {
+    "id": "fal/recraft-v2",
+    "provider": "fal",
+    "displayName": "Recraft V2 (Fal)",
+    "description": "Recraft V2 on Fal — affordable raster or vector-style images.",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
@@ -1805,8 +7071,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -1824,16 +7095,1254 @@ export const MODELS: ModelEntry[] = [
           "digital_illustration",
           "vector_illustration"
         ]
+      },
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.022,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "style",
+              "is": "eq",
+              "value": "vector_illustration"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 2
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
       "styled"
     ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v2/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v3",
+    "provider": "fal",
+    "displayName": "Recraft V3 (Fal)",
+    "description": "",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 1000
+    },
+    "params": [
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "realistic_image",
+          "digital_illustration",
+          "vector_illustration"
+        ]
+      },
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "default": 0.5,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 1000
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "style",
+              "is": "eq",
+              "value": "vector_illustration"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 2
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "styled"
+    ],
     "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v3/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4",
+    "provider": "fal",
+    "displayName": "Recraft V4 (Fal)",
+    "description": "Recraft V4 raster images on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4-pro",
+    "provider": "fal",
+    "displayName": "Recraft V4 Pro (Fal)",
+    "description": "Recraft V4 Pro raster images on Fal, at 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.25,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4/pro/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4-pro-vector",
+    "provider": "fal",
+    "displayName": "Recraft V4 Pro Vector (Fal)",
+    "description": "Recraft V4 Pro vector (SVG) images on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4/pro/text-to-vector/api"
+  },
+  {
+    "id": "fal/recraft-v4-style",
+    "provider": "fal",
+    "displayName": "Recraft V4 Style (Fal)",
+    "description": "Recraft V4 on Fal in a style made from up to 10 reference images, or a saved style_id.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "style",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.005
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "styled"
+    ],
+    "referenceUrl": "https://fal.ai/models/recraft/v4/style/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4-style-pro",
+    "provider": "fal",
+    "displayName": "Recraft V4 Pro Style (Fal)",
+    "description": "Recraft V4 Pro on Fal at 2K, in a style made from up to 10 reference images, or a saved style_id.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "style",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.1,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.005
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "styled"
+    ],
+    "referenceUrl": "https://fal.ai/models/recraft/v4/style/pro/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4-style-pro-vector",
+    "provider": "fal",
+    "displayName": "Recraft V4 Pro Style Vector (Fal)",
+    "description": "Recraft V4 Pro vector (SVG) on Fal, in a style made from up to 10 reference images, or a saved style_id.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "style",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.12,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.005
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "styled",
+      "vector"
+    ],
+    "referenceUrl": "https://fal.ai/models/recraft/v4/style/pro/text-to-vector/api"
+  },
+  {
+    "id": "fal/recraft-v4-style-vector",
+    "provider": "fal",
+    "displayName": "Recraft V4 Style Vector (Fal)",
+    "description": "Recraft V4 vector (SVG) on Fal, in a style made from up to 10 reference images, or a saved style_id.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "style",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.005
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "styled",
+      "vector"
+    ],
+    "referenceUrl": "https://fal.ai/models/recraft/v4/style/text-to-vector/api"
+  },
+  {
+    "id": "fal/recraft-v4-vector",
+    "provider": "fal",
+    "displayName": "Recraft V4 Vector (Fal)",
+    "description": "Recraft V4 vector (SVG) images on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4/text-to-vector/api"
+  },
+  {
+    "id": "fal/recraft-v4.1",
+    "provider": "fal",
+    "displayName": "Recraft V4.1 (Fal)",
+    "description": "Recraft V4.1 raster images on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4.1-flash",
+    "provider": "fal",
+    "displayName": "Recraft V4.1 Flash (Fal)",
+    "description": "Recraft V4.1 Flash on Fal — fast, low-cost raster images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.007,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://fal.ai/models/recraft/v4.1/flash/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4.1-pro",
+    "provider": "fal",
+    "displayName": "Recraft V4.1 Pro (Fal)",
+    "description": "Recraft V4.1 Pro raster images on Fal, at 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.21,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4.1/pro/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4.1-pro-vector",
+    "provider": "fal",
+    "displayName": "Recraft V4.1 Pro Vector (Fal)",
+    "description": "Recraft V4.1 Pro vector (SVG) images on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4.1/pro/text-to-vector/api"
+  },
+  {
+    "id": "fal/recraft-v4.1-utility",
+    "provider": "fal",
+    "displayName": "Recraft V4.1 Utility (Fal)",
+    "description": "Recraft V4.1 Utility raster images on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4.1/utility/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4.1-utility-pro",
+    "provider": "fal",
+    "displayName": "Recraft V4.1 Utility Pro (Fal)",
+    "description": "Recraft V4.1 Utility Pro raster images on Fal, at 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.21,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4.1/utility/pro/text-to-image/api"
+  },
+  {
+    "id": "fal/recraft-v4.1-vector",
+    "provider": "fal",
+    "displayName": "Recraft V4.1 Vector (Fal)",
+    "description": "Recraft V4.1 vector (SVG) images on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (fal's colors).",
+        "maxColors": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/api"
+  },
+  {
+    "id": "fal/recraft-vectorize",
+    "provider": "fal",
+    "displayName": "Recraft Vectorize (Fal)",
+    "description": "Recraft on Fal — turns a raster image into an SVG.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.01,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/vectorize/api"
   },
   {
     "id": "fal/sam-3",
@@ -1851,8 +8360,12 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [],
+    "worksOn": "segmentation",
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -1864,11 +8377,22 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "prompts",
-        "kind": "segmentation_prompts"
+        "kind": "segmentation_prompts",
+        "enum": [
+          "point",
+          "box",
+          "text"
+        ],
+        "label": "Prompts",
+        "description": "What to select. Points and boxes together select one object; a text prompt selects every instance of what it names, up to 32.",
+        "maxItems": 64,
+        "maxMasks": 32
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.005
+      "baseCostUsd": 0.005,
+      "unit": "request",
+      "rules": []
     },
     "tags": [
       "segmentation"
@@ -1891,8 +8415,12 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [],
+    "worksOn": "segmentation",
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -1904,11 +8432,22 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "prompts",
-        "kind": "segmentation_prompts"
+        "kind": "segmentation_prompts",
+        "enum": [
+          "point",
+          "box",
+          "text"
+        ],
+        "label": "Prompts",
+        "description": "What to select. Points and boxes together select one object; a text prompt selects every instance of what it names, up to 32.",
+        "maxItems": 64,
+        "maxMasks": 32
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.01
+      "baseCostUsd": 0.01,
+      "unit": "request",
+      "rules": []
     },
     "tags": [
       "segmentation"
@@ -1931,8 +8470,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -1953,7 +8497,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 5000
       },
       {
         "name": "seed",
@@ -1977,7 +8522,17 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.02,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perMegapixel",
+            "value": 0.02
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image"
@@ -2000,9 +8555,21 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 1536,
+      "minHeight": 512,
+      "maxHeight": 1536,
+      "multipleOf": 8
+    },
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -2012,8 +8579,18 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      },
+      {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 2000
       },
       {
         "name": "seed",
@@ -2037,7 +8614,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.015
+      "baseCostUsd": 0.015,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -2048,7 +8627,7 @@ export const MODELS: ModelEntry[] = [
     "id": "fal/trellis",
     "provider": "fal",
     "displayName": "TRELLIS (Fal)",
-    "description": "Microsoft TRELLIS via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.",
+    "description": "Microsoft TRELLIS via Fal. Image-to-3D only, GLB only — litegen derives the other containers from it.",
     "mediaType": "model3d",
     "output": "model3d",
     "task": "generate",
@@ -2060,8 +8639,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": true,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageTo3d"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -2086,7 +8670,9 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "TRELLIS emits glb; litegen derives the other containers."
       },
       {
         "name": "seed",
@@ -2096,7 +8682,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.02,
+      "unit": "model3d",
+      "rules": []
     },
     "tags": [
       "3d",
@@ -2121,8 +8709,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": true
+      "multiviewTo3d": true,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "multiviewTo3d"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 4,
@@ -2165,23 +8758,31 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Tripo emits glb here; litegen derives the other containers."
       },
       {
         "name": "texture",
         "kind": "bool",
-        "default": true
+        "default": true,
+        "label": "Textures",
+        "description": "Sends `texture`. An untextured mesh costs $0.20 at fal."
       },
       {
         "name": "pbr",
         "kind": "bool",
-        "default": true
+        "default": true,
+        "label": "PBR materials",
+        "description": "Sends `pbr`; PBR also turns textures on."
       },
       {
         "name": "target_polycount",
         "kind": "int",
         "min": 1000,
-        "max": 2000000
+        "max": 2000000,
+        "label": "Target polycount",
+        "description": "Sends `face_limit`. Left out, Tripo picks the count."
       },
       {
         "name": "seed",
@@ -2191,7 +8792,28 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.3
+      "baseCostUsd": 0.3,
+      "unit": "model3d",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "texture",
+              "is": "eq",
+              "value": false
+            },
+            {
+              "fact": "pbr",
+              "is": "eq",
+              "value": false
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2
+          }
+        }
+      ]
     },
     "tags": [
       "3d",
@@ -2217,12 +8839,24 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
     "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
       {
         "name": "init",
         "required": false,
@@ -2243,7 +8877,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.02,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video",
@@ -2267,7 +8903,17 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "lifecycle": {
+      "retiresAt": "2027-03-15",
+      "replacedBy": "google/gemini-3.1-flash-lite-image"
     },
     "sizes": [],
     "aspectRatios": [
@@ -2282,13 +8928,13 @@ export const MODELS: ModelEntry[] = [
       "16:9",
       "21:9"
     ],
-    "maxRefImages": 1,
+    "maxRefImages": 3,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 3
       }
     ],
     "promptLimits": {
@@ -2297,13 +8943,15 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.039,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
+    "referenceUrl": "https://aistudio.google.com/docs/image-generation?generate-content=true"
   },
   {
     "id": "google/gemini-3-pro-image",
@@ -2321,8 +8969,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -2349,16 +9003,43 @@ export const MODELS: ModelEntry[] = [
       "required": true,
       "maxLength": 8000
     },
-    "params": [],
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
     "pricing": {
-      "baseCostUsd": 0.134
+      "baseCostUsd": 0.134,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.24
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
       "image-to-image",
       "multi-ref"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
+    "referenceUrl": "https://aistudio.google.com/docs/image-generation?generate-content=true"
   },
   {
     "id": "google/gemini-3.1-flash-image",
@@ -2376,7 +9057,17 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "lifecycle": {
+      "deprecatedAt": "2026-10-06",
+      "replacedBy": "google/gemini-nano-banana-2.1"
     },
     "sizes": [],
     "aspectRatios": [
@@ -2408,15 +9099,69 @@ export const MODELS: ModelEntry[] = [
       "required": true,
       "maxLength": 8000
     },
-    "params": [],
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "0.5K",
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
     "pricing": {
-      "baseCostUsd": 0.067
+      "baseCostUsd": 0.067,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "0.5K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.101
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.151
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
+    "referenceUrl": "https://aistudio.google.com/docs/image-generation?generate-content=true"
   },
   {
     "id": "google/gemini-3.1-flash-lite-image",
@@ -2434,8 +9179,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -2468,14 +9219,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.034
+      "baseCostUsd": 0.0336,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
       "image-to-image",
       "fast"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
+    "referenceUrl": "https://aistudio.google.com/docs/image-generation?generate-content=true"
   },
   {
     "id": "google/gemini-nano-banana-2.1",
@@ -2493,8 +9246,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -2525,15 +9284,55 @@ export const MODELS: ModelEntry[] = [
       "required": true,
       "maxLength": 8000
     },
-    "params": [],
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
     "pricing": {
-      "baseCostUsd": 0.0336
+      "baseCostUsd": 0.0336,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0504
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.113
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
+    "referenceUrl": "https://aistudio.google.com/docs/image-generation?generate-content=true"
   },
   {
     "id": "hunyuan/hunyuan-image",
@@ -2551,8 +9350,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [
       "768x768",
       "768x1024",
@@ -2580,7 +9385,8 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 1024
       },
       {
         "name": "seed",
@@ -2590,7 +9396,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.0745
+      "baseCostUsd": 0.0745,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -2614,8 +9422,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -2649,7 +9463,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.268
+      "baseCostUsd": 0.268,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video",
@@ -2673,8 +9489,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -2713,11 +9534,32 @@ export const MODELS: ModelEntry[] = [
         "kind": "int",
         "default": 30,
         "min": 16,
-        "max": 30
+        "max": 30,
+        "values": [
+          16,
+          24,
+          30
+        ]
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.894
+      "baseCostUsd": 0.894,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.358
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-video"
@@ -2725,32 +9567,78 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://cloud.tencent.com/document/api/1616/124465"
   },
   {
-    "id": "ideogram/ideogram-4-5-precise-edit",
+    "id": "ideogram/ideogram-4-5",
     "provider": "ideogram",
-    "displayName": "Ideogram 4.5 Precise Edit",
-    "description": "Edits part of an image, keeping its size: a region becomes Ideogram's own box (`context_window`, at least 256 px a side within 1:6–6:1 — litegen enlarges a smaller one and sends the exact area as the mask), and a mask goes in Ideogram's black-edits convention. Pixels the edit did not meaningfully change come back exactly.",
+    "displayName": "Ideogram 4.5",
+    "description": "Ideogram 4.5 — text-to-image and editing with up to five source images and an optional mask.",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
     "capabilities": {
-      "textToImage": false,
+      "textToImage": true,
       "imageToImage": true,
       "inpainting": true,
       "textToVideo": false,
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
-    "sizes": [],
+    "modalities": [
+      "textToImage",
+      "imageToImage",
+      "inpainting"
+    ],
+    "sizes": [
+      "2048x2048",
+      "1440x2880",
+      "2880x1440",
+      "1664x2496",
+      "2496x1664",
+      "1792x2240",
+      "2240x1792",
+      "1440x2560",
+      "2560x1440",
+      "1600x2560",
+      "2560x1600",
+      "1728x2304",
+      "2304x1728",
+      "1152x2944",
+      "2944x1152",
+      "1248x3328",
+      "3328x1248",
+      "1280x3072",
+      "3072x1280",
+      "1024x3072",
+      "3072x1024",
+      "1024x1024",
+      "896x1120",
+      "1120x896",
+      "864x1152",
+      "1152x864",
+      "832x1248",
+      "1248x832",
+      "800x1280",
+      "1280x800",
+      "512x1536",
+      "1536x512"
+    ],
     "aspectRatios": [],
-    "maxRefImages": 2,
+    "maxRefImages": 6,
     "refRoles": [
       {
         "name": "init",
-        "required": true,
-        "min": 1,
+        "required": false,
+        "min": 0,
         "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 4
       },
       {
         "name": "mask",
@@ -2773,7 +9661,16 @@ export const MODELS: ModelEntry[] = [
           "medium",
           "high"
         ],
-        "default": "medium"
+        "label": "Quality",
+        "description": "Rendering quality, the setting that changes Ideogram's price; very_low needs a source image."
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
       },
       {
         "name": "seed",
@@ -2783,11 +9680,227 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "region",
-        "kind": "region"
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.06
+      "baseCostUsd": 0.1,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "references",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.22
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "very_low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.008
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "inpainting"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5"
+  },
+  {
+    "id": "ideogram/ideogram-4-5-precise-edit",
+    "provider": "ideogram",
+    "displayName": "Ideogram 4.5 Precise Edit",
+    "description": "Edits part of an image, keeping its size: a region becomes Ideogram's own box (`context_window`, at least 256 px a side within 1:6–6:1 — litegen enlarges a smaller one and sends the exact area as the mask), and a mask goes in Ideogram's black-edits convention. Pixels the edit did not meaningfully change come back exactly.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage",
+      "inpainting"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 5,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "very_low",
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "medium",
+        "label": "Quality",
+        "description": "The only setting that changes Ideogram's price."
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      },
+      {
+        "name": "region",
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, as Ideogram's context_window."
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.06,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "very_low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.008
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.22
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-image",
@@ -2812,9 +9925,85 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
-    "sizes": [],
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [
+      "512x1536",
+      "576x1408",
+      "576x1472",
+      "576x1536",
+      "640x1344",
+      "640x1408",
+      "640x1472",
+      "640x1536",
+      "704x1152",
+      "704x1216",
+      "704x1280",
+      "704x1344",
+      "704x1408",
+      "704x1472",
+      "736x1312",
+      "768x1088",
+      "768x1216",
+      "768x1280",
+      "768x1344",
+      "800x1280",
+      "832x960",
+      "832x1024",
+      "832x1088",
+      "832x1152",
+      "832x1216",
+      "832x1248",
+      "864x1152",
+      "896x960",
+      "896x1024",
+      "896x1088",
+      "896x1120",
+      "896x1152",
+      "960x832",
+      "960x896",
+      "960x1024",
+      "960x1088",
+      "1024x832",
+      "1024x896",
+      "1024x960",
+      "1024x1024",
+      "1088x768",
+      "1088x832",
+      "1088x896",
+      "1088x960",
+      "1120x896",
+      "1152x704",
+      "1152x832",
+      "1152x864",
+      "1152x896",
+      "1216x704",
+      "1216x768",
+      "1216x832",
+      "1248x832",
+      "1280x704",
+      "1280x768",
+      "1280x800",
+      "1312x736",
+      "1344x640",
+      "1344x704",
+      "1344x768",
+      "1408x576",
+      "1408x640",
+      "1408x704",
+      "1472x576",
+      "1472x640",
+      "1472x704",
+      "1536x512",
+      "1536x576",
+      "1536x640"
+    ],
     "aspectRatios": [
       "1:1",
       "16:9",
@@ -2854,7 +10043,8 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
@@ -2875,7 +10065,22 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.06
+      "baseCostUsd": 0.06,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references.character",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -2899,9 +10104,85 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
-    "sizes": [],
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [
+      "512x1536",
+      "576x1408",
+      "576x1472",
+      "576x1536",
+      "640x1344",
+      "640x1408",
+      "640x1472",
+      "640x1536",
+      "704x1152",
+      "704x1216",
+      "704x1280",
+      "704x1344",
+      "704x1408",
+      "704x1472",
+      "736x1312",
+      "768x1088",
+      "768x1216",
+      "768x1280",
+      "768x1344",
+      "800x1280",
+      "832x960",
+      "832x1024",
+      "832x1088",
+      "832x1152",
+      "832x1216",
+      "832x1248",
+      "864x1152",
+      "896x960",
+      "896x1024",
+      "896x1088",
+      "896x1120",
+      "896x1152",
+      "960x832",
+      "960x896",
+      "960x1024",
+      "960x1088",
+      "1024x832",
+      "1024x896",
+      "1024x960",
+      "1024x1024",
+      "1088x768",
+      "1088x832",
+      "1088x896",
+      "1088x960",
+      "1120x896",
+      "1152x704",
+      "1152x832",
+      "1152x864",
+      "1152x896",
+      "1216x704",
+      "1216x768",
+      "1216x832",
+      "1248x832",
+      "1280x704",
+      "1280x768",
+      "1280x800",
+      "1312x736",
+      "1344x640",
+      "1344x704",
+      "1344x768",
+      "1408x576",
+      "1408x640",
+      "1408x704",
+      "1472x576",
+      "1472x640",
+      "1472x704",
+      "1536x512",
+      "1536x576",
+      "1536x640"
+    ],
     "aspectRatios": [
       "1:1",
       "16:9",
@@ -2941,7 +10222,8 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
@@ -2962,7 +10244,22 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.09
+      "baseCostUsd": 0.09,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references.character",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -2986,9 +10283,85 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
-    "sizes": [],
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [
+      "512x1536",
+      "576x1408",
+      "576x1472",
+      "576x1536",
+      "640x1344",
+      "640x1408",
+      "640x1472",
+      "640x1536",
+      "704x1152",
+      "704x1216",
+      "704x1280",
+      "704x1344",
+      "704x1408",
+      "704x1472",
+      "736x1312",
+      "768x1088",
+      "768x1216",
+      "768x1280",
+      "768x1344",
+      "800x1280",
+      "832x960",
+      "832x1024",
+      "832x1088",
+      "832x1152",
+      "832x1216",
+      "832x1248",
+      "864x1152",
+      "896x960",
+      "896x1024",
+      "896x1088",
+      "896x1120",
+      "896x1152",
+      "960x832",
+      "960x896",
+      "960x1024",
+      "960x1088",
+      "1024x832",
+      "1024x896",
+      "1024x960",
+      "1024x1024",
+      "1088x768",
+      "1088x832",
+      "1088x896",
+      "1088x960",
+      "1120x896",
+      "1152x704",
+      "1152x832",
+      "1152x864",
+      "1152x896",
+      "1216x704",
+      "1216x768",
+      "1216x832",
+      "1248x832",
+      "1280x704",
+      "1280x768",
+      "1280x800",
+      "1312x736",
+      "1344x640",
+      "1344x704",
+      "1344x768",
+      "1408x576",
+      "1408x640",
+      "1408x704",
+      "1472x576",
+      "1472x640",
+      "1472x704",
+      "1536x512",
+      "1536x576",
+      "1536x640"
+    ],
     "aspectRatios": [
       "1:1",
       "16:9",
@@ -3028,7 +10401,8 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
@@ -3049,7 +10423,22 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.03
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references.character",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -3073,8 +10462,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [
       "2048x2048",
       "1440x2880",
@@ -3123,7 +10517,9 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.06
+      "baseCostUsd": 0.06,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -3146,8 +10542,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [
       "2048x2048",
       "1440x2880",
@@ -3196,7 +10597,9 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.1
+      "baseCostUsd": 0.1,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -3220,8 +10623,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [
       "2048x2048",
       "1440x2880",
@@ -3270,13 +10678,1015 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.03
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
       "fast"
     ],
     "referenceUrl": "https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4"
+  },
+  {
+    "id": "ideogram/kling-3-standard",
+    "provider": "ideogram",
+    "displayName": "Kling 3.0 Standard (Ideogram)",
+    "description": "Kling's 3.0 Standard through Ideogram — text-to-video or first/last-frame image-to-video, 3–15 s at 1080p, with optional audio.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 2000
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.42,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.084
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.126
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/video/generate/kling-3-standard-text-to-video"
+  },
+  {
+    "id": "ideogram/minimax-h3",
+    "provider": "ideogram",
+    "displayName": "MiniMax H3 (Ideogram)",
+    "description": "MiniMax's Hailuo 3 (H3) through Ideogram — text-to-video, first/last-frame image-to-video, or up to 9 reference images; 5–15 s, 480P to 4K, with audio.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480P",
+          "768P",
+          "2K",
+          "4K"
+        ],
+        "default": "2K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.65,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "768P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/video/generate/minimax-h3-text-to-video"
+  },
+  {
+    "id": "ideogram/nano-banana-2",
+    "provider": "ideogram",
+    "displayName": "Nano Banana 2 (Ideogram)",
+    "description": "Google's Nano Banana 2 (Gemini) through Ideogram — text-to-image and edits from up to 10 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "16:9",
+      "9:16",
+      "21:9",
+      "4:1",
+      "1:4",
+      "8:1",
+      "1:8"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 8000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0672,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1008
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1512
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/images/generate/nano-banana-2"
+  },
+  {
+    "id": "ideogram/nano-banana-pro",
+    "provider": "ideogram",
+    "displayName": "Nano Banana Pro (Ideogram)",
+    "description": "Google's Nano Banana Pro (Gemini 3 Pro Image) through Ideogram — text-to-image and edits from up to 10 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "16:9",
+      "9:16",
+      "21:9"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 8000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.1344,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.24
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/images/generate/nano-banana-pro"
+  },
+  {
+    "id": "ideogram/p-image-ideogram",
+    "provider": "ideogram",
+    "displayName": "P-Image Ideogram",
+    "description": "Ideogram's fast, low-cost P-Image text-to-image, priced by quality and resolution.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:3",
+      "3:1",
+      "1:2",
+      "2:1",
+      "9:16",
+      "16:9",
+      "10:16",
+      "16:10",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "1:1"
+    ],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "very_low",
+          "low",
+          "medium",
+          "high",
+          "very_high"
+        ],
+        "default": "medium"
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.01,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "very_low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.003
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "very_low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.006
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0075
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.015
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.015
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "very_high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.033
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "very_high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.066
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/images/generate/p-image-ideogram"
+  },
+  {
+    "id": "ideogram/seedance-2",
+    "provider": "ideogram",
+    "displayName": "Seedance 2.0 (Ideogram)",
+    "description": "ByteDance's Seedance 2.0 through Ideogram — text-to-video, first/last-frame image-to-video, or up to 9 reference images; 4–15 s, 480p or 720p, with optional audio.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.8,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.07
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/video/generate/seedance-2-text-to-video"
+  },
+  {
+    "id": "ideogram/seedance-2-5",
+    "provider": "ideogram",
+    "displayName": "Seedance 2.5 (Ideogram)",
+    "description": "ByteDance's Seedance 2.5 through Ideogram — text-to-video, first/last-frame image-to-video, or up to 9 reference images; 4–30 s, 480p to 1080p, with optional audio.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 30000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 30
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 1.155,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.231
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.103
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.614
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/video/generate/seedance-2-5-text-to-video"
   },
   {
     "id": "kling/kling-v2-1",
@@ -3294,8 +11704,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -3323,11 +11739,36 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 2500
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.014
+      "baseCostUsd": 0.014,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.028
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -3351,8 +11792,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -3380,11 +11827,23 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 2500
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.028
+      "baseCostUsd": 0.028,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -3396,7 +11855,7 @@ export const MODELS: ModelEntry[] = [
     "id": "kling/video-kling-v2-5-turbo",
     "provider": "kling",
     "displayName": "Kling Video v2.5 Turbo",
-    "description": "Kling 2.5 Turbo text/image-to-video (first frame + image_tail last frame).",
+    "description": "Kling 2.5 Turbo text/image-to-video (first frame, or first and last frame at 1080p).",
     "mediaType": "video",
     "output": "video",
     "task": "generate",
@@ -3408,14 +11867,28 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
       "9:16",
       "1:1"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 2,
     "refRoles": [
       {
@@ -3437,19 +11910,51 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
         "min": 5,
-        "max": 10
+        "max": 10,
+        "values": [
+          5,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.21
+      "baseCostUsd": 0.21,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.042
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.07
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -3473,14 +11978,28 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
       "9:16",
       "1:1"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 2,
     "refRoles": [
       {
@@ -3507,19 +12026,69 @@ export const MODELS: ModelEntry[] = [
         "default": false
       },
       {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
         "min": 5,
-        "max": 10
+        "max": 10,
+        "values": [
+          5,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.21
+      "baseCostUsd": 0.21,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.042
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.14
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -3543,14 +12112,28 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
       "9:16",
       "1:1"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 2,
     "refRoles": [
       {
@@ -3577,25 +12160,306 @@ export const MODELS: ModelEntry[] = [
         "default": false
       },
       {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
         "min": 3,
         "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default": "720p"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.42
+      "baseCostUsd": 0.42,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.084
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.126
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.112
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.168
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.42
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
       "image-to-video"
     ],
     "referenceUrl": "https://kling.ai/document-api/api/video/3-0-omni/text-to-video"
+  },
+  {
+    "id": "kling/video-kling-v3-turbo",
+    "provider": "kling",
+    "displayName": "Kling Video v3 Turbo",
+    "description": "Kling 3.0 Turbo text/image-to-video (first frame), 3-15 s, always with native audio.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.56,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.112
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.14
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://kling.ai/document-api/api/video/3-0-turbo/text-to-video"
+  },
+  {
+    "id": "kling/video-kling-v4",
+    "provider": "kling",
+    "displayName": "Kling Video v4",
+    "description": "Kling 4.0 text/image-to-video (first and last frame), 3-30 s, up to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 11000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 10,
+        "min": 3,
+        "max": 30
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "1080p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 2.35,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.235
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.157
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://kling.ai/document-api/api/video/4-0/text-to-video"
   },
   {
     "id": "leonardo/diffusion-xl",
@@ -3613,9 +12477,22 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 32,
+      "maxWidth": 1536,
+      "minHeight": 32,
+      "maxHeight": 1536,
+      "multipleOf": 8
+    },
     "aspectRatios": [],
     "maxRefImages": 1,
     "refRoles": [
@@ -3632,8 +12509,23 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 7,
+        "min": 1,
+        "max": 20
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 15,
+        "min": 10,
+        "max": 60
+      },
+      {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 4000
       },
       {
         "name": "seed",
@@ -3649,7 +12541,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.02,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -3673,8 +12567,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -3696,7 +12595,11 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 5,
         "min": 5,
-        "max": 10
+        "max": 10,
+        "values": [
+          5,
+          10
+        ]
       },
       {
         "name": "resolution",
@@ -3707,7 +12610,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 1
+      "baseCostUsd": 1,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "image-to-video"
@@ -3730,8 +12635,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -3749,6 +12659,17 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483637
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 1000
+      },
+      {
         "name": "resolution",
         "kind": "string",
         "enum": [
@@ -3759,7 +12680,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.3
+      "baseCostUsd": 0.3,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "image-to-video"
@@ -3782,8 +12705,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -3805,7 +12733,12 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 8,
         "min": 4,
-        "max": 8
+        "max": 8,
+        "values": [
+          4,
+          6,
+          8
+        ]
       },
       {
         "name": "resolution",
@@ -3817,7 +12750,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 2.5
+      "baseCostUsd": 2.5,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "image-to-video",
@@ -3841,8 +12776,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -3864,7 +12804,12 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 8,
         "min": 4,
-        "max": 8
+        "max": 8,
+        "values": [
+          4,
+          6,
+          8
+        ]
       },
       {
         "name": "resolution",
@@ -3876,7 +12821,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 2.5
+      "baseCostUsd": 2.5,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "image-to-video",
@@ -3900,8 +12847,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -3942,7 +12895,11 @@ export const MODELS: ModelEntry[] = [
         "name": "duration_seconds",
         "kind": "float",
         "min": 5,
-        "max": 9
+        "max": 9,
+        "values": [
+          5,
+          9
+        ]
       },
       {
         "name": "resolution",
@@ -3956,7 +12913,36 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.35
+      "baseCostUsd": 0.35,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.95
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.05
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -3980,8 +12966,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -4028,13 +13020,16 @@ export const MODELS: ModelEntry[] = [
         "name": "output_format",
         "kind": "string",
         "enum": [
-          "jpeg"
+          "jpeg",
+          "png"
         ],
         "default": "jpeg"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.015
+      "baseCostUsd": 0.015,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -4058,8 +13053,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -4106,13 +13107,16 @@ export const MODELS: ModelEntry[] = [
         "name": "output_format",
         "kind": "string",
         "enum": [
-          "jpeg"
+          "jpeg",
+          "png"
         ],
         "default": "jpeg"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.002
+      "baseCostUsd": 0.002,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -4137,8 +13141,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -4179,7 +13189,11 @@ export const MODELS: ModelEntry[] = [
         "name": "duration_seconds",
         "kind": "float",
         "min": 5,
-        "max": 9
+        "max": 9,
+        "values": [
+          5,
+          9
+        ]
       },
       {
         "name": "resolution",
@@ -4193,7 +13207,36 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.4
+      "baseCostUsd": 0.4,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.95
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.05
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -4217,8 +13260,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -4259,7 +13308,11 @@ export const MODELS: ModelEntry[] = [
         "name": "duration_seconds",
         "kind": "float",
         "min": 5,
-        "max": 9
+        "max": 9,
+        "values": [
+          5,
+          9
+        ]
       },
       {
         "name": "resolution",
@@ -4273,7 +13326,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video",
@@ -4298,8 +13353,12 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [],
+    "worksOn": "sourceModel",
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -4311,17 +13370,2754 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "source_model",
-        "kind": "source_model"
+        "kind": "source_model",
+        "label": "Source rig",
+        "description": "A meshy/rig generation made on the same Meshy account (Meshy animates only its own rig task).",
+        "formats": [
+          "glb"
+        ],
+        "requiresSkin": true
       },
       {
         "name": "animations",
-        "kind": "animation_list"
+        "kind": "animation_list",
+        "label": "Animations",
+        "description": "Up to ten library clips, in order, each named as given.",
+        "maxItems": 10,
+        "presets": [
+          {
+            "id": "0",
+            "label": "Idle",
+            "canonical": "idle"
+          },
+          {
+            "id": "1",
+            "label": "Walking Woman"
+          },
+          {
+            "id": "2",
+            "label": "Alert"
+          },
+          {
+            "id": "3",
+            "label": "Arise"
+          },
+          {
+            "id": "4",
+            "label": "Attack",
+            "canonical": "attack_melee"
+          },
+          {
+            "id": "5",
+            "label": "BackLeft Run"
+          },
+          {
+            "id": "6",
+            "label": "BackRight Run"
+          },
+          {
+            "id": "7",
+            "label": "BeHit FlyUp"
+          },
+          {
+            "id": "8",
+            "label": "Dead",
+            "canonical": "death"
+          },
+          {
+            "id": "9",
+            "label": "ForwardLeft Run Fight"
+          },
+          {
+            "id": "10",
+            "label": "ForwardRight Run Fight"
+          },
+          {
+            "id": "11",
+            "label": "Idle 1"
+          },
+          {
+            "id": "12",
+            "label": "Idle 2"
+          },
+          {
+            "id": "13",
+            "label": "Jump Run"
+          },
+          {
+            "id": "14",
+            "label": "Run 2"
+          },
+          {
+            "id": "15",
+            "label": "Run 3"
+          },
+          {
+            "id": "16",
+            "label": "Run Fast",
+            "canonical": "run"
+          },
+          {
+            "id": "17",
+            "label": "Skill 1"
+          },
+          {
+            "id": "18",
+            "label": "Skill 2"
+          },
+          {
+            "id": "19",
+            "label": "Skill 3"
+          },
+          {
+            "id": "20",
+            "label": "Walk Fight Back"
+          },
+          {
+            "id": "21",
+            "label": "Walk Fight Forward"
+          },
+          {
+            "id": "22",
+            "label": "Funny Dancing 1"
+          },
+          {
+            "id": "23",
+            "label": "Funny Dancing 2"
+          },
+          {
+            "id": "24",
+            "label": "Funny Dancing 3"
+          },
+          {
+            "id": "25",
+            "label": "Agree Gesture"
+          },
+          {
+            "id": "26",
+            "label": "Angry Stomp"
+          },
+          {
+            "id": "27",
+            "label": "Big Heart Gesture"
+          },
+          {
+            "id": "28",
+            "label": "Big Wave Hello"
+          },
+          {
+            "id": "29",
+            "label": "Call Gesture"
+          },
+          {
+            "id": "30",
+            "label": "Casual Walk",
+            "canonical": "walk"
+          },
+          {
+            "id": "31",
+            "label": "Catching Breath"
+          },
+          {
+            "id": "32",
+            "label": "Chair Sit Idle Female"
+          },
+          {
+            "id": "33",
+            "label": "Chair Sit Idle Male"
+          },
+          {
+            "id": "34",
+            "label": "Checkout Gesture"
+          },
+          {
+            "id": "35",
+            "label": "Clapping Run"
+          },
+          {
+            "id": "36",
+            "label": "Confused Scratch"
+          },
+          {
+            "id": "37",
+            "label": "Discuss While Moving"
+          },
+          {
+            "id": "38",
+            "label": "Dozing Elderly"
+          },
+          {
+            "id": "39",
+            "label": "Excited Walk Female"
+          },
+          {
+            "id": "40",
+            "label": "Excited Walk Male"
+          },
+          {
+            "id": "41",
+            "label": "Formal Bow"
+          },
+          {
+            "id": "42",
+            "label": "Gentlemans Bow"
+          },
+          {
+            "id": "43",
+            "label": "Handbag Walk"
+          },
+          {
+            "id": "44",
+            "label": "Happy Jump Female"
+          },
+          {
+            "id": "45",
+            "label": "Indoor Play"
+          },
+          {
+            "id": "46",
+            "label": "Jump Rope"
+          },
+          {
+            "id": "47",
+            "label": "Listening Gesture"
+          },
+          {
+            "id": "48",
+            "label": "Mirror Viewing"
+          },
+          {
+            "id": "49",
+            "label": "Motivational Cheer"
+          },
+          {
+            "id": "50",
+            "label": "Phone Call Gesture"
+          },
+          {
+            "id": "51",
+            "label": "Shouting Angrily"
+          },
+          {
+            "id": "52",
+            "label": "Sit to Stand Transition Female"
+          },
+          {
+            "id": "53",
+            "label": "Sit to Stand Transition Male"
+          },
+          {
+            "id": "54",
+            "label": "Squat Stance"
+          },
+          {
+            "id": "55",
+            "label": "Stage Walk"
+          },
+          {
+            "id": "56",
+            "label": "Stand and Chat"
+          },
+          {
+            "id": "57",
+            "label": "Stand to Sit Transition Male"
+          },
+          {
+            "id": "58",
+            "label": "Step to Sit Transition"
+          },
+          {
+            "id": "59",
+            "label": "Victory Cheer"
+          },
+          {
+            "id": "60",
+            "label": "Walk to Sit"
+          },
+          {
+            "id": "61",
+            "label": "Happy Jump Male"
+          },
+          {
+            "id": "62",
+            "label": "Penguin Walk"
+          },
+          {
+            "id": "63",
+            "label": "Arm Circle Shuffle"
+          },
+          {
+            "id": "64",
+            "label": "All Night Dance"
+          },
+          {
+            "id": "65",
+            "label": "Bass Beats"
+          },
+          {
+            "id": "66",
+            "label": "Boom Dance"
+          },
+          {
+            "id": "67",
+            "label": "Bubble Dance"
+          },
+          {
+            "id": "68",
+            "label": "Cherish Pop Dance"
+          },
+          {
+            "id": "69",
+            "label": "Crystal Beads"
+          },
+          {
+            "id": "70",
+            "label": "Cardio Dance"
+          },
+          {
+            "id": "71",
+            "label": "Denim Pop Dance"
+          },
+          {
+            "id": "72",
+            "label": "Dont You Dare"
+          },
+          {
+            "id": "73",
+            "label": "Fast Lightning"
+          },
+          {
+            "id": "74",
+            "label": "Gangnam Groove"
+          },
+          {
+            "id": "75",
+            "label": "Indoor Swing"
+          },
+          {
+            "id": "76",
+            "label": "Love You Pop Dance"
+          },
+          {
+            "id": "77",
+            "label": "Magic Genie"
+          },
+          {
+            "id": "78",
+            "label": "Rhythmic Dance"
+          },
+          {
+            "id": "79",
+            "label": "OMG Groove"
+          },
+          {
+            "id": "80",
+            "label": "Pop Dance LSA2"
+          },
+          {
+            "id": "81",
+            "label": "Pod Baby Groove"
+          },
+          {
+            "id": "82",
+            "label": "Shake It Off Dance"
+          },
+          {
+            "id": "83",
+            "label": "Superlove Pop Dance"
+          },
+          {
+            "id": "84",
+            "label": "You Groove"
+          },
+          {
+            "id": "85",
+            "label": "Axe Stance"
+          },
+          {
+            "id": "86",
+            "label": "Jump Attack",
+            "canonical": "jump"
+          },
+          {
+            "id": "87",
+            "label": "Boxing Practice"
+          },
+          {
+            "id": "88",
+            "label": "Chest Pound Taunt"
+          },
+          {
+            "id": "89",
+            "label": "Combat Idel"
+          },
+          {
+            "id": "90",
+            "label": "Counterstrike"
+          },
+          {
+            "id": "91",
+            "label": "Double Blade Spin"
+          },
+          {
+            "id": "92",
+            "label": "Double Combo Attack"
+          },
+          {
+            "id": "93",
+            "label": "Dodge and Counter"
+          },
+          {
+            "id": "94",
+            "label": "Flying Fist Kick"
+          },
+          {
+            "id": "95",
+            "label": "Gun Hold Left Turn"
+          },
+          {
+            "id": "96",
+            "label": "Kung Fu Punch"
+          },
+          {
+            "id": "97",
+            "label": "Left Slash"
+          },
+          {
+            "id": "98",
+            "label": "Run and Shoot"
+          },
+          {
+            "id": "99",
+            "label": "Reaping Swing"
+          },
+          {
+            "id": "100",
+            "label": "Spin Down and Stand Up"
+          },
+          {
+            "id": "101",
+            "label": "Sword Shout"
+          },
+          {
+            "id": "102",
+            "label": "Sword Judgment"
+          },
+          {
+            "id": "103",
+            "label": "Simple Kick"
+          },
+          {
+            "id": "104",
+            "label": "Side Shot"
+          },
+          {
+            "id": "105",
+            "label": "Triple Combo Attack"
+          },
+          {
+            "id": "106",
+            "label": "Hot walk"
+          },
+          {
+            "id": "107",
+            "label": "Confident Strut"
+          },
+          {
+            "id": "108",
+            "label": "Flirty Strut"
+          },
+          {
+            "id": "109",
+            "label": "Groovy Walk"
+          },
+          {
+            "id": "110",
+            "label": "Hello Run"
+          },
+          {
+            "id": "111",
+            "label": "Injured Walk"
+          },
+          {
+            "id": "112",
+            "label": "Frankenstein Walk"
+          },
+          {
+            "id": "113",
+            "label": "Mummy Stagger"
+          },
+          {
+            "id": "114",
+            "label": "Proud Strut"
+          },
+          {
+            "id": "115",
+            "label": "Quick Walk"
+          },
+          {
+            "id": "116",
+            "label": "Run to Walk Transition"
+          },
+          {
+            "id": "117",
+            "label": "Red Carpet Walk"
+          },
+          {
+            "id": "118",
+            "label": "Skip Forward"
+          },
+          {
+            "id": "119",
+            "label": "Slow Orc Walk"
+          },
+          {
+            "id": "120",
+            "label": "Touch and Run"
+          },
+          {
+            "id": "121",
+            "label": "Thoughtful Walk"
+          },
+          {
+            "id": "122",
+            "label": "Texting Walk"
+          },
+          {
+            "id": "123",
+            "label": "Unsteady Walk"
+          },
+          {
+            "id": "124",
+            "label": "Walking with Phone"
+          },
+          {
+            "id": "125",
+            "label": "Charged Spell Cast",
+            "canonical": "cast"
+          },
+          {
+            "id": "126",
+            "label": "Charged Spell Cast 1"
+          },
+          {
+            "id": "127",
+            "label": "Charged Ground Slam"
+          },
+          {
+            "id": "128",
+            "label": "Heavy Hammer Swing"
+          },
+          {
+            "id": "129",
+            "label": "Mage Soell Cast"
+          },
+          {
+            "id": "130",
+            "label": "Mage Soell Cast 1"
+          },
+          {
+            "id": "131",
+            "label": "Mage Soell Cast 2"
+          },
+          {
+            "id": "132",
+            "label": "Mage Soell Cast 3"
+          },
+          {
+            "id": "133",
+            "label": "Mage Soell Cast 4"
+          },
+          {
+            "id": "134",
+            "label": "Mage Soell Cast 5"
+          },
+          {
+            "id": "135",
+            "label": "Mage Soell Cast 6"
+          },
+          {
+            "id": "136",
+            "label": "Mage Soell Cast 7"
+          },
+          {
+            "id": "137",
+            "label": "Mage Soell Cast 8"
+          },
+          {
+            "id": "138",
+            "label": "Block1"
+          },
+          {
+            "id": "139",
+            "label": "Block2"
+          },
+          {
+            "id": "140",
+            "label": "Block3"
+          },
+          {
+            "id": "141",
+            "label": "Block4"
+          },
+          {
+            "id": "142",
+            "label": "Block5"
+          },
+          {
+            "id": "143",
+            "label": "Block6"
+          },
+          {
+            "id": "144",
+            "label": "Block8"
+          },
+          {
+            "id": "145",
+            "label": "Block9"
+          },
+          {
+            "id": "146",
+            "label": "Block10"
+          },
+          {
+            "id": "147",
+            "label": "Sword Parry"
+          },
+          {
+            "id": "148",
+            "label": "Sword Parry Backward"
+          },
+          {
+            "id": "149",
+            "label": "Two-handed Parry"
+          },
+          {
+            "id": "150",
+            "label": "Hit Reaction with Bow"
+          },
+          {
+            "id": "151",
+            "label": "Sword Parry Backward 1"
+          },
+          {
+            "id": "152",
+            "label": "Sword Parry Backward 2"
+          },
+          {
+            "id": "153",
+            "label": "Sword Parry Backward 3"
+          },
+          {
+            "id": "154",
+            "label": "Sword Parry Backward 4"
+          },
+          {
+            "id": "155",
+            "label": "Sword Parry Backward 5"
+          },
+          {
+            "id": "156",
+            "label": "Stand Dodge"
+          },
+          {
+            "id": "157",
+            "label": "Stand Dodge 1"
+          },
+          {
+            "id": "158",
+            "label": "Roll Dodge"
+          },
+          {
+            "id": "159",
+            "label": "Roll Dodge 1"
+          },
+          {
+            "id": "160",
+            "label": "Roll Dodge 2"
+          },
+          {
+            "id": "161",
+            "label": "Roll Dodge 3"
+          },
+          {
+            "id": "162",
+            "label": "Stand Dodge 2"
+          },
+          {
+            "id": "163",
+            "label": "Roll Dodge 4"
+          },
+          {
+            "id": "164",
+            "label": "Stand Dodge 3"
+          },
+          {
+            "id": "165",
+            "label": "Kneeling Reload"
+          },
+          {
+            "id": "166",
+            "label": "Running Reload"
+          },
+          {
+            "id": "167",
+            "label": "Slow Walk Reload"
+          },
+          {
+            "id": "168",
+            "label": "Prone Reload"
+          },
+          {
+            "id": "169",
+            "label": "Forward Reload (subtle)"
+          },
+          {
+            "id": "170",
+            "label": "Standing Reload"
+          },
+          {
+            "id": "171",
+            "label": "Hit Reaction to Waist"
+          },
+          {
+            "id": "172",
+            "label": "Electrocution Reaction"
+          },
+          {
+            "id": "173",
+            "label": "Slap Reaction"
+          },
+          {
+            "id": "174",
+            "label": "Face Punch Reaction"
+          },
+          {
+            "id": "175",
+            "label": "Face Punch Reaction 1"
+          },
+          {
+            "id": "176",
+            "label": "Face Punch Reaction 2"
+          },
+          {
+            "id": "177",
+            "label": "Gunshot Reaction"
+          },
+          {
+            "id": "178",
+            "label": "Hit Reaction",
+            "canonical": "hurt"
+          },
+          {
+            "id": "179",
+            "label": "Hit Reaction 1"
+          },
+          {
+            "id": "180",
+            "label": "Shot in the Back and Fall"
+          },
+          {
+            "id": "181",
+            "label": "Electrocuted Fall"
+          },
+          {
+            "id": "182",
+            "label": "Shot and Blown Back"
+          },
+          {
+            "id": "183",
+            "label": "Shot and Fall Backward"
+          },
+          {
+            "id": "184",
+            "label": "Shot and Fall Forward"
+          },
+          {
+            "id": "185",
+            "label": "Shot and Slow Fall Backward"
+          },
+          {
+            "id": "186",
+            "label": "Strangled and Fall Forward"
+          },
+          {
+            "id": "187",
+            "label": "Knock Down"
+          },
+          {
+            "id": "188",
+            "label": "Fall Dead from Abdominal Injury"
+          },
+          {
+            "id": "189",
+            "label": "Dying Backwards"
+          },
+          {
+            "id": "190",
+            "label": "Knock Down 1"
+          },
+          {
+            "id": "191",
+            "label": "Left Jab from Guard"
+          },
+          {
+            "id": "192",
+            "label": "Right Jab from Guard"
+          },
+          {
+            "id": "193",
+            "label": "Left Hook from Guard"
+          },
+          {
+            "id": "194",
+            "label": "Right Uppercut from Guard"
+          },
+          {
+            "id": "195",
+            "label": "Right Upper Hook from Guard"
+          },
+          {
+            "id": "196",
+            "label": "Left Uppercut from Guard"
+          },
+          {
+            "id": "197",
+            "label": "Left Short Hook from Guard"
+          },
+          {
+            "id": "198",
+            "label": "Punch Combo"
+          },
+          {
+            "id": "199",
+            "label": "Weapon Combo"
+          },
+          {
+            "id": "200",
+            "label": "Punch Combo 1"
+          },
+          {
+            "id": "201",
+            "label": "Punch Combo 2"
+          },
+          {
+            "id": "202",
+            "label": "Weapon Combo 1"
+          },
+          {
+            "id": "203",
+            "label": "Punch Combo 3"
+          },
+          {
+            "id": "204",
+            "label": "Punch Combo 4"
+          },
+          {
+            "id": "205",
+            "label": "Punch Combo 5"
+          },
+          {
+            "id": "206",
+            "label": "Spartan Kick"
+          },
+          {
+            "id": "207",
+            "label": "Roundhouse Kick"
+          },
+          {
+            "id": "208",
+            "label": "Lunge Roundhouse Kick"
+          },
+          {
+            "id": "209",
+            "label": "Boxing Guard, Right Straight Kick"
+          },
+          {
+            "id": "210",
+            "label": "Boxing Guard, Prep Straight Punch"
+          },
+          {
+            "id": "211",
+            "label": "Boxing Guard, Step Knee Strike"
+          },
+          {
+            "id": "212",
+            "label": "Elbow Strike"
+          },
+          {
+            "id": "213",
+            "label": "Leg Sweep"
+          },
+          {
+            "id": "214",
+            "label": "Punch Forward with Both Fists"
+          },
+          {
+            "id": "215",
+            "label": "High Kick"
+          },
+          {
+            "id": "216",
+            "label": "Lunge Spin Kick"
+          },
+          {
+            "id": "217",
+            "label": "Sweeping Kick"
+          },
+          {
+            "id": "218",
+            "label": "Step-in High Kick"
+          },
+          {
+            "id": "219",
+            "label": "Right-hand Sword Slash"
+          },
+          {
+            "id": "220",
+            "label": "Shield Push Left"
+          },
+          {
+            "id": "221",
+            "label": "Charged Upward Slash"
+          },
+          {
+            "id": "222",
+            "label": "Draw and Shoot from Back"
+          },
+          {
+            "id": "223",
+            "label": "Draw and Shoot from Back 1"
+          },
+          {
+            "id": "224",
+            "label": "Archery Shot",
+            "canonical": "attack_ranged"
+          },
+          {
+            "id": "225",
+            "label": "Archery Shot 1"
+          },
+          {
+            "id": "226",
+            "label": "Archery Shot 2"
+          },
+          {
+            "id": "227",
+            "label": "Archery Shot 3"
+          },
+          {
+            "id": "228",
+            "label": "Walk Forward with Bow Aimed"
+          },
+          {
+            "id": "229",
+            "label": "Draw and Shoot from Back 2"
+          },
+          {
+            "id": "230",
+            "label": "Walk Backward with Bow Aimed"
+          },
+          {
+            "id": "231",
+            "label": "Archery Aim with Lateral Scan"
+          },
+          {
+            "id": "232",
+            "label": "Cowboy Quick Draw Shooting"
+          },
+          {
+            "id": "233",
+            "label": "Walk Backward While Shooting"
+          },
+          {
+            "id": "234",
+            "label": "Walk Forward While Shooting"
+          },
+          {
+            "id": "235",
+            "label": "Forward Roll and Fire"
+          },
+          {
+            "id": "236",
+            "label": "Draw and Shoot Left"
+          },
+          {
+            "id": "237",
+            "label": "Charged Axe Chop"
+          },
+          {
+            "id": "238",
+            "label": "Axe Spin Attack"
+          },
+          {
+            "id": "239",
+            "label": "Crouch Pull and Throw"
+          },
+          {
+            "id": "240",
+            "label": "Thrust Slash"
+          },
+          {
+            "id": "241",
+            "label": "Weapon Combo 2"
+          },
+          {
+            "id": "242",
+            "label": "Charged Slash"
+          },
+          {
+            "id": "243",
+            "label": "Idle 3"
+          },
+          {
+            "id": "244",
+            "label": "Idle 4"
+          },
+          {
+            "id": "245",
+            "label": "Idle 5"
+          },
+          {
+            "id": "246",
+            "label": "Idle 6"
+          },
+          {
+            "id": "247",
+            "label": "Idle 7"
+          },
+          {
+            "id": "248",
+            "label": "Idle 8"
+          },
+          {
+            "id": "249",
+            "label": "Idle 9"
+          },
+          {
+            "id": "250",
+            "label": "Idle 10"
+          },
+          {
+            "id": "251",
+            "label": "Idle 11"
+          },
+          {
+            "id": "252",
+            "label": "Idle 12"
+          },
+          {
+            "id": "253",
+            "label": "Idle 13"
+          },
+          {
+            "id": "254",
+            "label": "Idle 14"
+          },
+          {
+            "id": "255",
+            "label": "Angry Ground Stomp"
+          },
+          {
+            "id": "256",
+            "label": "Angry Ground Stomp 1"
+          },
+          {
+            "id": "257",
+            "label": "Angry Ground Stomp 2"
+          },
+          {
+            "id": "258",
+            "label": "Crouchlookaroundbow"
+          },
+          {
+            "id": "259",
+            "label": "Step Forward and Push"
+          },
+          {
+            "id": "260",
+            "label": "Push Forward and Stop"
+          },
+          {
+            "id": "261",
+            "label": "Push and Walk Forward"
+          },
+          {
+            "id": "262",
+            "label": "Crouch and Push Forward"
+          },
+          {
+            "id": "263",
+            "label": "Sleep on Desk"
+          },
+          {
+            "id": "264",
+            "label": "Cough While Sleeping"
+          },
+          {
+            "id": "265",
+            "label": "Groan Holding Stomach in Sleep"
+          },
+          {
+            "id": "266",
+            "label": "Lie Down, Hands Spread"
+          },
+          {
+            "id": "267",
+            "label": "Sleep Normally"
+          },
+          {
+            "id": "268",
+            "label": "Sit and Doze Off"
+          },
+          {
+            "id": "269",
+            "label": "Sleep"
+          },
+          {
+            "id": "270",
+            "label": "Toss and Turn"
+          },
+          {
+            "id": "271",
+            "label": "Wake Up and Look Up"
+          },
+          {
+            "id": "272",
+            "label": "Lie on Chair, Sunbathe and Sleep"
+          },
+          {
+            "id": "273",
+            "label": "Male Run Forward Pick Up Left"
+          },
+          {
+            "id": "274",
+            "label": "Female Crouch Pick Up Place Side"
+          },
+          {
+            "id": "275",
+            "label": "Female Run Forward Pick Up Right"
+          },
+          {
+            "id": "276",
+            "label": "Male Bend Over Pick Up"
+          },
+          {
+            "id": "277",
+            "label": "Female Crouch Pick Fruit Basket Stand"
+          },
+          {
+            "id": "278",
+            "label": "Female Stand Pick Fruit Basket"
+          },
+          {
+            "id": "279",
+            "label": "Female Crouch Pick Gun Point Forward"
+          },
+          {
+            "id": "280",
+            "label": "Female Crouch Pick Throw Forward"
+          },
+          {
+            "id": "281",
+            "label": "Female Bend Over Pick Up Inspect"
+          },
+          {
+            "id": "282",
+            "label": "Female Walk Pick Put in Pocket"
+          },
+          {
+            "id": "283",
+            "label": "Pull Radish"
+          },
+          {
+            "id": "284",
+            "label": "Collect Object"
+          },
+          {
+            "id": "285",
+            "label": "Open Door"
+          },
+          {
+            "id": "286",
+            "label": "Open Door 1"
+          },
+          {
+            "id": "287",
+            "label": "Open Door 2"
+          },
+          {
+            "id": "288",
+            "label": "Open Door 3"
+          },
+          {
+            "id": "289",
+            "label": "Open Door 4"
+          },
+          {
+            "id": "290",
+            "label": "Wave One Hand"
+          },
+          {
+            "id": "291",
+            "label": "Wave for Help"
+          },
+          {
+            "id": "292",
+            "label": "Gesture with Hand on Gun"
+          },
+          {
+            "id": "293",
+            "label": "Wave for Help 1"
+          },
+          {
+            "id": "294",
+            "label": "Wave for Help 2"
+          },
+          {
+            "id": "295",
+            "label": "Wave for Help 3"
+          },
+          {
+            "id": "296",
+            "label": "Wave for Help 4"
+          },
+          {
+            "id": "297",
+            "label": "Personalized Gesture"
+          },
+          {
+            "id": "298",
+            "label": "Cheer with Both Hands Up"
+          },
+          {
+            "id": "299",
+            "label": "Stand Clap and Sit Down"
+          },
+          {
+            "id": "300",
+            "label": "Sit Cheer with Left Hand"
+          },
+          {
+            "id": "301",
+            "label": "Cheer with Both Hands 1"
+          },
+          {
+            "id": "302",
+            "label": "Stand Wave and Sit Down"
+          },
+          {
+            "id": "303",
+            "label": "Cheer with Both Hands"
+          },
+          {
+            "id": "304",
+            "label": "Seated Fist Pump"
+          },
+          {
+            "id": "305",
+            "label": "Stand Cheer and Sit Down"
+          },
+          {
+            "id": "306",
+            "label": "Cheer with One Hand Up"
+          },
+          {
+            "id": "307",
+            "label": "Sitting Answering Questions"
+          },
+          {
+            "id": "308",
+            "label": "Talk Passionately"
+          },
+          {
+            "id": "309",
+            "label": "Talk with Left Hand on Hip"
+          },
+          {
+            "id": "310",
+            "label": "Talk with Left Hand Raised"
+          },
+          {
+            "id": "311",
+            "label": "Stand Talking Angry"
+          },
+          {
+            "id": "312",
+            "label": "Phone Conversation"
+          },
+          {
+            "id": "313",
+            "label": "Talk with Hands Open"
+          },
+          {
+            "id": "314",
+            "label": "Talk with Right Hand Open"
+          },
+          {
+            "id": "315",
+            "label": "Hand on Hip Gesture"
+          },
+          {
+            "id": "316",
+            "label": "Headache Relief"
+          },
+          {
+            "id": "317",
+            "label": "Shrug"
+          },
+          {
+            "id": "318",
+            "label": "Scheming Hand Rub"
+          },
+          {
+            "id": "319",
+            "label": "Air Squat"
+          },
+          {
+            "id": "320",
+            "label": "Bicep Curl"
+          },
+          {
+            "id": "321",
+            "label": "Bicycle Crunch"
+          },
+          {
+            "id": "322",
+            "label": "Circle Crunch"
+          },
+          {
+            "id": "323",
+            "label": "Golf Drive"
+          },
+          {
+            "id": "324",
+            "label": "Idle to Push Up"
+          },
+          {
+            "id": "325",
+            "label": "Jump Push Up"
+          },
+          {
+            "id": "326",
+            "label": "Jumping Jacks"
+          },
+          {
+            "id": "327",
+            "label": "Kettlebell Swing"
+          },
+          {
+            "id": "328",
+            "label": "Push Up to Idle"
+          },
+          {
+            "id": "329",
+            "label": "Push Up"
+          },
+          {
+            "id": "330",
+            "label": "Situps"
+          },
+          {
+            "id": "331",
+            "label": "Sumo High Pull"
+          },
+          {
+            "id": "333",
+            "label": "Look Around Dumbfounded"
+          },
+          {
+            "id": "334",
+            "label": "Lower Weapon, Look, Raise"
+          },
+          {
+            "id": "335",
+            "label": "Axe Breathe and Look Around"
+          },
+          {
+            "id": "336",
+            "label": "Long Breathe and Look Around"
+          },
+          {
+            "id": "337",
+            "label": "Torch Look Around"
+          },
+          {
+            "id": "338",
+            "label": "Short Breathe and Look Around"
+          },
+          {
+            "id": "339",
+            "label": "Walking Scan with Sudden Look Back"
+          },
+          {
+            "id": "340",
+            "label": "Crawl and Look Back"
+          },
+          {
+            "id": "341",
+            "label": "Walk Slowly and Look Around"
+          },
+          {
+            "id": "342",
+            "label": "Stand and Drink"
+          },
+          {
+            "id": "343",
+            "label": "Sit and Drink"
+          },
+          {
+            "id": "344",
+            "label": "Stand Up 1"
+          },
+          {
+            "id": "345",
+            "label": "Stand Up 2"
+          },
+          {
+            "id": "346",
+            "label": "Stand Up 3"
+          },
+          {
+            "id": "347",
+            "label": "Stand Up 4"
+          },
+          {
+            "id": "348",
+            "label": "Stand Up 5"
+          },
+          {
+            "id": "349",
+            "label": "Stand Up 6"
+          },
+          {
+            "id": "350",
+            "label": "Stand Up 7"
+          },
+          {
+            "id": "351",
+            "label": "Stand Up 8"
+          },
+          {
+            "id": "352",
+            "label": "Stand Up 9"
+          },
+          {
+            "id": "353",
+            "label": "Stand Up 10"
+          },
+          {
+            "id": "354",
+            "label": "Sitting Clap"
+          },
+          {
+            "id": "355",
+            "label": "Sit Finger Wag No"
+          },
+          {
+            "id": "356",
+            "label": "Sit Hands on Head Lean Back"
+          },
+          {
+            "id": "357",
+            "label": "Sit Thumbs Up Right"
+          },
+          {
+            "id": "358",
+            "label": "Sit Shout Hands on Mouth"
+          },
+          {
+            "id": "359",
+            "label": "Look Back and Sit"
+          },
+          {
+            "id": "360",
+            "label": "Sit to Standtransition Female 2"
+          },
+          {
+            "id": "361",
+            "label": "Sit Dodge"
+          },
+          {
+            "id": "362",
+            "label": "Sit Cross-legged"
+          },
+          {
+            "id": "363",
+            "label": "Sit Cross-legged on Floor"
+          },
+          {
+            "id": "364",
+            "label": "Sit on Chair Arms Crossed"
+          },
+          {
+            "id": "365",
+            "label": "Kneel on One Knee and Stand"
+          },
+          {
+            "id": "366",
+            "label": "Falling Down",
+            "canonical": "fall"
+          },
+          {
+            "id": "367",
+            "label": "Sidelying Reach Help"
+          },
+          {
+            "id": "368",
+            "label": "Angry to Tantrum Sit"
+          },
+          {
+            "id": "369",
+            "label": "Lie Back Leg Swing"
+          },
+          {
+            "id": "370",
+            "label": "Stand to Side Lying"
+          },
+          {
+            "id": "371",
+            "label": "Sit Lie Bed"
+          },
+          {
+            "id": "372",
+            "label": "Prone Reach Help"
+          },
+          {
+            "id": "375",
+            "label": "Handstand Flip"
+          },
+          {
+            "id": "376",
+            "label": "Punch Pose"
+          },
+          {
+            "id": "377",
+            "label": "Relax Arms, Then Strike Battle Pose"
+          },
+          {
+            "id": "378",
+            "label": "Large Step, Then High Kick"
+          },
+          {
+            "id": "379",
+            "label": "Side Jumps in Horse Stance."
+          },
+          {
+            "id": "381",
+            "label": "Step Right for Exercise"
+          },
+          {
+            "id": "382",
+            "label": "Jump and Slam Back Down"
+          },
+          {
+            "id": "384",
+            "label": "Quick Step and Spin Dodge"
+          },
+          {
+            "id": "385",
+            "label": "Boxing Warm-up"
+          },
+          {
+            "id": "386",
+            "label": "Zombie Scream"
+          },
+          {
+            "id": "387",
+            "label": "Half Squat with Thumb Up"
+          },
+          {
+            "id": "388",
+            "label": "Show Both Arm Muscles"
+          },
+          {
+            "id": "389",
+            "label": "Grip and Throw Down"
+          },
+          {
+            "id": "390",
+            "label": "Stand on Pole and Balance"
+          },
+          {
+            "id": "391",
+            "label": "Head Hold in Pain"
+          },
+          {
+            "id": "392",
+            "label": "Ground Flip and Sweep Up"
+          },
+          {
+            "id": "393",
+            "label": "Baseball Pitching"
+          },
+          {
+            "id": "394",
+            "label": "Backflip and Hooks"
+          },
+          {
+            "id": "395",
+            "label": "Breakdance 1990"
+          },
+          {
+            "id": "396",
+            "label": "Burpee Exercise"
+          },
+          {
+            "id": "397",
+            "label": "360 Power Spin Jump"
+          },
+          {
+            "id": "398",
+            "label": "Crouch Charge and Throw"
+          },
+          {
+            "id": "399",
+            "label": "Step Step Turn Kick"
+          },
+          {
+            "id": "401",
+            "label": "Sprint, Roll, and Flip"
+          },
+          {
+            "id": "402",
+            "label": "Run and Leap"
+          },
+          {
+            "id": "403",
+            "label": "Victory Fist Pump"
+          },
+          {
+            "id": "404",
+            "label": "Crouch and Step Back"
+          },
+          {
+            "id": "405",
+            "label": "Joyful Dance with Hand Sway"
+          },
+          {
+            "id": "406",
+            "label": "Thomas Flair to Jump Up"
+          },
+          {
+            "id": "407",
+            "label": "Wall Push Jump and Flip"
+          },
+          {
+            "id": "408",
+            "label": "Jazz Hands"
+          },
+          {
+            "id": "409",
+            "label": "Finger Wag No"
+          },
+          {
+            "id": "410",
+            "label": "Kick a Soccer Ball"
+          },
+          {
+            "id": "411",
+            "label": "Neck Slashing Gesture"
+          },
+          {
+            "id": "412",
+            "label": "Victory"
+          },
+          {
+            "id": "413",
+            "label": "Backflip and Rise"
+          },
+          {
+            "id": "414",
+            "label": "Double Kick Forward."
+          },
+          {
+            "id": "415",
+            "label": "Happy Sway Standing"
+          },
+          {
+            "id": "416",
+            "label": "Hit in Back While Running"
+          },
+          {
+            "id": "417",
+            "label": "Hop with Arms Raised"
+          },
+          {
+            "id": "419",
+            "label": "Jump to Catch and Fall"
+          },
+          {
+            "id": "420",
+            "label": "Left Hand Bitten, Step Back"
+          },
+          {
+            "id": "421",
+            "label": "Over Shoulder Throw"
+          },
+          {
+            "id": "422",
+            "label": "Rising Flying Kick"
+          },
+          {
+            "id": "425",
+            "label": "Vault with Rifle"
+          },
+          {
+            "id": "426",
+            "label": "Roll Behind Cover"
+          },
+          {
+            "id": "427",
+            "label": "Vault and Land"
+          },
+          {
+            "id": "428",
+            "label": "Unarmed Vault"
+          },
+          {
+            "id": "429",
+            "label": "Parkour Vault"
+          },
+          {
+            "id": "430",
+            "label": "Parkour Vault with Roll"
+          },
+          {
+            "id": "431",
+            "label": "Parkour Vault 1"
+          },
+          {
+            "id": "432",
+            "label": "Parkour Vault 2"
+          },
+          {
+            "id": "433",
+            "label": "Parkour Vault 3"
+          },
+          {
+            "id": "434",
+            "label": "Fast Ladder Climb"
+          },
+          {
+            "id": "435",
+            "label": "Ladder Climb Finish"
+          },
+          {
+            "id": "436",
+            "label": "Ladder Mount Start"
+          },
+          {
+            "id": "437",
+            "label": "Slow Ladder Climb"
+          },
+          {
+            "id": "438",
+            "label": "Ladder Climb Loop",
+            "canonical": "climb"
+          },
+          {
+            "id": "439",
+            "label": "Climb Left with Both Limbs"
+          },
+          {
+            "id": "440",
+            "label": "Climb Right with Both Limbs"
+          },
+          {
+            "id": "441",
+            "label": "Climb Stairs"
+          },
+          {
+            "id": "442",
+            "label": "Fast Stair Climb"
+          },
+          {
+            "id": "444",
+            "label": "Climbing Up Wall"
+          },
+          {
+            "id": "445",
+            "label": "Diagonal Wall Run"
+          },
+          {
+            "id": "446",
+            "label": "Hang and Climb Left"
+          },
+          {
+            "id": "447",
+            "label": "Hang and Climb Rght"
+          },
+          {
+            "id": "448",
+            "label": "Jump and Grab Wall"
+          },
+          {
+            "id": "449",
+            "label": "Climb Up Rope"
+          },
+          {
+            "id": "450",
+            "label": "Wall Flip"
+          },
+          {
+            "id": "451",
+            "label": "One-arm Handstand"
+          },
+          {
+            "id": "452",
+            "label": "Backflip"
+          },
+          {
+            "id": "453",
+            "label": "Backflip Sweep Kick"
+          },
+          {
+            "id": "455",
+            "label": "Sweep Kick"
+          },
+          {
+            "id": "456",
+            "label": "Jumping Head Scissor Takedown"
+          },
+          {
+            "id": "457",
+            "label": "Jumping Punch"
+          },
+          {
+            "id": "458",
+            "label": "Unicycle Jump Dismount"
+          },
+          {
+            "id": "459",
+            "label": "Run, Jump, and Roll"
+          },
+          {
+            "id": "460",
+            "label": "Jump with Arms Open"
+          },
+          {
+            "id": "461",
+            "label": "Jump with Arms and Legs Open"
+          },
+          {
+            "id": "462",
+            "label": "Backflip Jump"
+          },
+          {
+            "id": "463",
+            "label": "Run and Jump"
+          },
+          {
+            "id": "464",
+            "label": "Leap and Punch"
+          },
+          {
+            "id": "465",
+            "label": "Leap Right and Catch"
+          },
+          {
+            "id": "466",
+            "label": "Regular Jump"
+          },
+          {
+            "id": "467",
+            "label": "Jump Over Obstacle 2"
+          },
+          {
+            "id": "468",
+            "label": "Back Jump"
+          },
+          {
+            "id": "470",
+            "label": "Jumping Down"
+          },
+          {
+            "id": "471",
+            "label": "Jump Over Obstacle"
+          },
+          {
+            "id": "472",
+            "label": "Jump Over Obstacle 1"
+          },
+          {
+            "id": "473",
+            "label": "Quad Jump Left"
+          },
+          {
+            "id": "474",
+            "label": "Quad Jump Up"
+          },
+          {
+            "id": "475",
+            "label": "Quad Climb Right"
+          },
+          {
+            "id": "476",
+            "label": "Hang and Push with Foot"
+          },
+          {
+            "id": "477",
+            "label": "Rope Hang Idle"
+          },
+          {
+            "id": "478",
+            "label": "Bar Hang Idle"
+          },
+          {
+            "id": "479",
+            "label": "Upside Down Rope Hang"
+          },
+          {
+            "id": "480",
+            "label": "Upside Down Rope Hang 1"
+          },
+          {
+            "id": "481",
+            "label": "Upside Down Rope Hang 2"
+          },
+          {
+            "id": "482",
+            "label": "Grab Wall Midair Idle"
+          },
+          {
+            "id": "483",
+            "label": "Slow Bar Hang Left"
+          },
+          {
+            "id": "484",
+            "label": "Slow Bar Hang Right"
+          },
+          {
+            "id": "485",
+            "label": "Jump and Hang on Bar"
+          },
+          {
+            "id": "486",
+            "label": "Wall Support to Step Down"
+          },
+          {
+            "id": "487",
+            "label": "Climb Attempt and Fall 3"
+          },
+          {
+            "id": "488",
+            "label": "Climb Attempt and Fall 4"
+          },
+          {
+            "id": "489",
+            "label": "Climb Attempt and Fall 5"
+          },
+          {
+            "id": "490",
+            "label": "Fall Down"
+          },
+          {
+            "id": "491",
+            "label": "Fall from Bar"
+          },
+          {
+            "id": "492",
+            "label": "Wall Support, Jump to Ground"
+          },
+          {
+            "id": "493",
+            "label": "Jump Down from Wall"
+          },
+          {
+            "id": "494",
+            "label": "Swing on Rope to Ground"
+          },
+          {
+            "id": "495",
+            "label": "Grab Bar and Swing Forward"
+          },
+          {
+            "id": "496",
+            "label": "Rope Hang Backflip to Crouch"
+          },
+          {
+            "id": "497",
+            "label": "Climbing Down Wall"
+          },
+          {
+            "id": "498",
+            "label": "Climb Attempt and Fall"
+          },
+          {
+            "id": "499",
+            "label": "Climb Attempt and Fall 1"
+          },
+          {
+            "id": "500",
+            "label": "Climb Attempt and Fall 2"
+          },
+          {
+            "id": "501",
+            "label": "Leap of Faith"
+          },
+          {
+            "id": "502",
+            "label": "Fall 1"
+          },
+          {
+            "id": "503",
+            "label": "Fall 2"
+          },
+          {
+            "id": "504",
+            "label": "Fall 3"
+          },
+          {
+            "id": "505",
+            "label": "Fall 4"
+          },
+          {
+            "id": "506",
+            "label": "Dive Down and Land"
+          },
+          {
+            "id": "507",
+            "label": "Dive Down and Land 1"
+          },
+          {
+            "id": "508",
+            "label": "Dive Down and Land "
+          },
+          {
+            "id": "509",
+            "label": "Lean Forward Sprint"
+          },
+          {
+            "id": "510",
+            "label": "Standard Forward Charge"
+          },
+          {
+            "id": "511",
+            "label": "Rifle Charge"
+          },
+          {
+            "id": "512",
+            "label": "Male Head-down Charge"
+          },
+          {
+            "id": "513",
+            "label": "Female Head-down Charge"
+          },
+          {
+            "id": "514",
+            "label": "Female Bow Charge Left Hand"
+          },
+          {
+            "id": "515",
+            "label": "Female Throwing Stance Charge"
+          },
+          {
+            "id": "516",
+            "label": "Slide Light"
+          },
+          {
+            "id": "517",
+            "label": "Slide Right"
+          },
+          {
+            "id": "518",
+            "label": "Sliding Rool"
+          },
+          {
+            "id": "519",
+            "label": "Sliding Stumble"
+          },
+          {
+            "id": "520",
+            "label": "Crouch Walk with Torch"
+          },
+          {
+            "id": "521",
+            "label": "Crouch Walk Left with Torch"
+          },
+          {
+            "id": "522",
+            "label": "Crouch Walk Right with Torch"
+          },
+          {
+            "id": "523",
+            "label": "Cautious Crouch Walk Backward"
+          },
+          {
+            "id": "524",
+            "label": "Cautious Crouch Walk Forward"
+          },
+          {
+            "id": "525",
+            "label": "Cautious Crouch Walk Left"
+          },
+          {
+            "id": "526",
+            "label": "Cautious Crouch Walk Right"
+          },
+          {
+            "id": "527",
+            "label": "Crouch Walk Left with Gun"
+          },
+          {
+            "id": "528",
+            "label": "Walk Left with Gun"
+          },
+          {
+            "id": "529",
+            "label": "Walk Backward with Gun"
+          },
+          {
+            "id": "530",
+            "label": "Run Fast 3"
+          },
+          {
+            "id": "531",
+            "label": "Sprint and Sudden Stop"
+          },
+          {
+            "id": "532",
+            "label": "Run Fast 4"
+          },
+          {
+            "id": "533",
+            "label": "Run Fast 5"
+          },
+          {
+            "id": "534",
+            "label": "Run Fast 6"
+          },
+          {
+            "id": "535",
+            "label": "Run Fast 7"
+          },
+          {
+            "id": "536",
+            "label": "Run Fast 8"
+          },
+          {
+            "id": "537",
+            "label": "Run Fast 9"
+          },
+          {
+            "id": "538",
+            "label": "Run Fast 10"
+          },
+          {
+            "id": "539",
+            "label": "Run Fast 2"
+          },
+          {
+            "id": "540",
+            "label": "Injured Walk Backward"
+          },
+          {
+            "id": "541",
+            "label": "Walk Backward with Gun 1"
+          },
+          {
+            "id": "542",
+            "label": "Walk Backward with Grenade"
+          },
+          {
+            "id": "543",
+            "label": "Step Back"
+          },
+          {
+            "id": "544",
+            "label": "Walk Backward"
+          },
+          {
+            "id": "545",
+            "label": "Walk Backward with Bow"
+          },
+          {
+            "id": "546",
+            "label": "Walk Backward with Sword"
+          },
+          {
+            "id": "547",
+            "label": "Walk Backward with Bow 1"
+          },
+          {
+            "id": "548",
+            "label": "Walk Backward with Sword & Shield"
+          },
+          {
+            "id": "549",
+            "label": "Crawl Backward"
+          },
+          {
+            "id": "550",
+            "label": "Carry Heavy Cannon Forward"
+          },
+          {
+            "id": "551",
+            "label": "Carry Heavy Object Walk"
+          },
+          {
+            "id": "552",
+            "label": "Carry Water Bucket Walk"
+          },
+          {
+            "id": "553",
+            "label": "Elderly Shaky Walk"
+          },
+          {
+            "id": "554",
+            "label": "Funky Walk"
+          },
+          {
+            "id": "555",
+            "label": "Limping Walk 1"
+          },
+          {
+            "id": "556",
+            "label": "Limping Walk 2"
+          },
+          {
+            "id": "557",
+            "label": "Limping Walk 3"
+          },
+          {
+            "id": "558",
+            "label": "Limping Walk"
+          },
+          {
+            "id": "559",
+            "label": "Sneaky Walk"
+          },
+          {
+            "id": "560",
+            "label": "Spear Walk"
+          },
+          {
+            "id": "561",
+            "label": "Step Hip Hop Dance"
+          },
+          {
+            "id": "562",
+            "label": "Stumble Walk"
+          },
+          {
+            "id": "563",
+            "label": "Stylish Walk"
+          },
+          {
+            "id": "564",
+            "label": "Tightrope Walk"
+          },
+          {
+            "id": "565",
+            "label": "Walk with Umbrella"
+          },
+          {
+            "id": "566",
+            "label": "Walking 2"
+          },
+          {
+            "id": "567",
+            "label": "Walk with Walker Support"
+          },
+          {
+            "id": "568",
+            "label": "Swim Idle"
+          },
+          {
+            "id": "569",
+            "label": "Swim Forward"
+          },
+          {
+            "id": "570",
+            "label": "Swimming to Edge"
+          },
+          {
+            "id": "571",
+            "label": "Run Turn Left"
+          },
+          {
+            "id": "572",
+            "label": "Walk Turn Left",
+            "canonical": "turn"
+          },
+          {
+            "id": "573",
+            "label": "Rifle Turn Left"
+          },
+          {
+            "id": "574",
+            "label": "Walk Turn Left with Weapon"
+          },
+          {
+            "id": "575",
+            "label": "Combat Idle Turn Left"
+          },
+          {
+            "id": "576",
+            "label": "Idle Turn Left"
+          },
+          {
+            "id": "577",
+            "label": "Idle Step Turn Left"
+          },
+          {
+            "id": "578",
+            "label": "Idle Torch Turn Left"
+          },
+          {
+            "id": "579",
+            "label": "Depressed Full Turn Left"
+          },
+          {
+            "id": "580",
+            "label": "Sword and Shield Alert Turn Left"
+          },
+          {
+            "id": "581",
+            "label": "Run Sharp Turn Right"
+          },
+          {
+            "id": "582",
+            "label": "Run Turn Right"
+          },
+          {
+            "id": "583",
+            "label": "Walk Turn Right"
+          },
+          {
+            "id": "584",
+            "label": "Walk Turn Right (female)"
+          },
+          {
+            "id": "585",
+            "label": "Rifle Aim Turn Right"
+          },
+          {
+            "id": "586",
+            "label": "Idle Turn Right"
+          },
+          {
+            "id": "587",
+            "label": "Walk Turn Right (idle Style)"
+          },
+          {
+            "id": "588",
+            "label": "Frustrated Turn Right"
+          },
+          {
+            "id": "589",
+            "label": "Alert Quick Turn Right"
+          },
+          {
+            "id": "590",
+            "label": "Sword and Shield Alert Turn Right"
+          },
+          {
+            "id": "591",
+            "label": "Hip Hop Dance"
+          },
+          {
+            "id": "592",
+            "label": "Hip Hop Dance 1"
+          },
+          {
+            "id": "593",
+            "label": "Hip Hop Dance 2"
+          },
+          {
+            "id": "594",
+            "label": "Hip Hop Dance 3"
+          },
+          {
+            "id": "595",
+            "label": "Jazz Danc"
+          },
+          {
+            "id": "596",
+            "label": "Ymca Dance"
+          },
+          {
+            "id": "597",
+            "label": "Hip Hop Dance "
+          },
+          {
+            "id": "598",
+            "label": "Kettlebell Swing 1"
+          },
+          {
+            "id": "599",
+            "label": "Idle 15"
+          },
+          {
+            "id": "601",
+            "label": "Backflip"
+          },
+          {
+            "id": "604",
+            "label": "Backflip Sweep Kick"
+          },
+          {
+            "id": "605",
+            "label": "Back Jump"
+          },
+          {
+            "id": "606",
+            "label": "BackLeft Run"
+          },
+          {
+            "id": "607",
+            "label": "BackRight Run"
+          },
+          {
+            "id": "608",
+            "label": "BeHit FlyUp"
+          },
+          {
+            "id": "609",
+            "label": "Boxing Practice"
+          },
+          {
+            "id": "610",
+            "label": "Carry Heavy Cannon Forward"
+          },
+          {
+            "id": "611",
+            "label": "Carry Heavy Object Walk"
+          },
+          {
+            "id": "612",
+            "label": "Carry Water Bucket Walk"
+          },
+          {
+            "id": "613",
+            "label": "Casual Walk"
+          },
+          {
+            "id": "615",
+            "label": "Cautious Crouch Walk Backward"
+          },
+          {
+            "id": "616",
+            "label": "Cautious Crouch Walk Forward"
+          },
+          {
+            "id": "617",
+            "label": "Cautious Crouch Walk Left"
+          },
+          {
+            "id": "618",
+            "label": "Cautious Crouch Walk Right"
+          },
+          {
+            "id": "619",
+            "label": "Climb Left with Both Limbs"
+          },
+          {
+            "id": "620",
+            "label": "Climb Right with Both Limbs"
+          },
+          {
+            "id": "621",
+            "label": "Confident Strut"
+          },
+          {
+            "id": "622",
+            "label": "Crawl Backward"
+          },
+          {
+            "id": "623",
+            "label": "Crouch Walk Left with Gun"
+          },
+          {
+            "id": "624",
+            "label": "Crouch Walk Left with Torch"
+          },
+          {
+            "id": "625",
+            "label": "Crouch Walk Right with Torch"
+          },
+          {
+            "id": "626",
+            "label": "Elderly Shaky Walk"
+          },
+          {
+            "id": "627",
+            "label": "Female Bow Charge Left Hand"
+          },
+          {
+            "id": "628",
+            "label": "Female Throwing Stance Charge"
+          },
+          {
+            "id": "629",
+            "label": "Flirty Strut"
+          },
+          {
+            "id": "630",
+            "label": "ForwardLeft Run Fight"
+          },
+          {
+            "id": "631",
+            "label": "ForwardRight Run Fight"
+          },
+          {
+            "id": "632",
+            "label": "Funky Walk"
+          },
+          {
+            "id": "635",
+            "label": "Handbag Walk"
+          },
+          {
+            "id": "636",
+            "label": "Hello Run"
+          },
+          {
+            "id": "637",
+            "label": "Injured Walk"
+          },
+          {
+            "id": "638",
+            "label": "Injured Walk Backward"
+          },
+          {
+            "id": "639",
+            "label": "Jazz Hands"
+          },
+          {
+            "id": "640",
+            "label": "Jump Over Obstacle"
+          },
+          {
+            "id": "641",
+            "label": "Jump Over Obstacle 1"
+          },
+          {
+            "id": "642",
+            "label": "Jump Over Obstacle 2"
+          },
+          {
+            "id": "643",
+            "label": "Jump Run"
+          },
+          {
+            "id": "644",
+            "label": "Lean Forward Sprint"
+          },
+          {
+            "id": "645",
+            "label": "Limping Walk"
+          },
+          {
+            "id": "646",
+            "label": "Limping Walk 1"
+          },
+          {
+            "id": "647",
+            "label": "Limping Walk 2"
+          },
+          {
+            "id": "648",
+            "label": "Limping Walk 3"
+          },
+          {
+            "id": "649",
+            "label": "Lunge Roundhouse Kick"
+          },
+          {
+            "id": "650",
+            "label": "Mummy Stagger"
+          },
+          {
+            "id": "651",
+            "label": "Parkour Vault with Roll"
+          },
+          {
+            "id": "652",
+            "label": "Proud Strut"
+          },
+          {
+            "id": "653",
+            "label": "Red Carpet Walk"
+          },
+          {
+            "id": "654",
+            "label": "Rifle Charge"
+          },
+          {
+            "id": "656",
+            "label": "Run and Leap"
+          },
+          {
+            "id": "657",
+            "label": "Run Fast 10"
+          },
+          {
+            "id": "658",
+            "label": "Run Fast 2"
+          },
+          {
+            "id": "659",
+            "label": "Run Fast 3"
+          },
+          {
+            "id": "660",
+            "label": "Run Fast 4"
+          },
+          {
+            "id": "661",
+            "label": "Run Fast 5"
+          },
+          {
+            "id": "662",
+            "label": "Run Fast 6"
+          },
+          {
+            "id": "663",
+            "label": "Run Fast 7"
+          },
+          {
+            "id": "664",
+            "label": "Run Fast 8"
+          },
+          {
+            "id": "665",
+            "label": "Run Fast 9"
+          },
+          {
+            "id": "666",
+            "label": "Running Reload"
+          },
+          {
+            "id": "667",
+            "label": "Run to Walk Transition"
+          },
+          {
+            "id": "668",
+            "label": "Skip Forward"
+          },
+          {
+            "id": "669",
+            "label": "Slow Orc Walk"
+          },
+          {
+            "id": "670",
+            "label": "Slow Walk Reload"
+          },
+          {
+            "id": "671",
+            "label": "Sneaky Walk"
+          },
+          {
+            "id": "672",
+            "label": "Spear Walk"
+          },
+          {
+            "id": "673",
+            "label": "Standard Forward Charge"
+          },
+          {
+            "id": "674",
+            "label": "Stumble Walk"
+          },
+          {
+            "id": "675",
+            "label": "Stylish Walk"
+          },
+          {
+            "id": "676",
+            "label": "Texting Walk"
+          },
+          {
+            "id": "677",
+            "label": "Tightrope Walk"
+          },
+          {
+            "id": "678",
+            "label": "Unsteady Walk"
+          },
+          {
+            "id": "679",
+            "label": "Walk Backward"
+          },
+          {
+            "id": "680",
+            "label": "Walk Backward While Shooting"
+          },
+          {
+            "id": "681",
+            "label": "Walk Backward with Bow"
+          },
+          {
+            "id": "682",
+            "label": "Walk Backward with Bow 1"
+          },
+          {
+            "id": "683",
+            "label": "Walk Backward with Bow Aimed"
+          },
+          {
+            "id": "684",
+            "label": "Walk Backward with Grenade"
+          },
+          {
+            "id": "685",
+            "label": "Walk Backward with Gun"
+          },
+          {
+            "id": "686",
+            "label": "Walk Backward with Gun 1"
+          },
+          {
+            "id": "687",
+            "label": "Walk Backward with Sword"
+          },
+          {
+            "id": "688",
+            "label": "Walk Fight Back"
+          },
+          {
+            "id": "689",
+            "label": "Walk Fight Forward"
+          },
+          {
+            "id": "690",
+            "label": "Walk Forward While Shooting"
+          },
+          {
+            "id": "691",
+            "label": "Walk Forward with Bow Aimed"
+          },
+          {
+            "id": "692",
+            "label": "Walking 2"
+          },
+          {
+            "id": "693",
+            "label": "Walking with Phone"
+          },
+          {
+            "id": "694",
+            "label": "Walk Left with Gun"
+          },
+          {
+            "id": "695",
+            "label": "Walk with Umbrella"
+          },
+          {
+            "id": "696",
+            "label": "Walk with Walker Support"
+          }
+        ]
       },
       {
         "name": "fps",
         "kind": "int",
         "min": 1,
-        "max": 120
+        "max": 120,
+        "label": "Frames per second",
+        "description": "The delivered clips' frame rate. Meshy's own fbx comes at 24, 25, 30 or 60; litegen keys the glb."
       },
       {
         "name": "output_formats",
@@ -4332,11 +16128,24 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Meshy returns glb and fbx; litegen derives the rest."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.06
+      "baseCostUsd": 0.06,
+      "unit": "model3d",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perItem",
+            "value": 0.06,
+            "list": "animations"
+          }
+        }
+      ]
     },
     "tags": [
       "animation",
@@ -4360,8 +16169,12 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [],
+    "worksOn": "sourceModel",
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -4373,7 +16186,15 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "source_model",
-        "kind": "source_model"
+        "kind": "source_model",
+        "label": "Source mesh",
+        "description": "A textured character facing +Z, sent inline (at most 100 MB and 320,000 faces).",
+        "formats": [
+          "glb"
+        ],
+        "maxBytes": 100000000,
+        "maxFaces": 320000,
+        "requiresTexture": true
       },
       {
         "name": "skeleton",
@@ -4382,12 +16203,16 @@ export const MODELS: ModelEntry[] = [
           "humanoid",
           "quadruped"
         ],
-        "default": "humanoid"
+        "default": "humanoid",
+        "label": "Skeleton",
+        "description": "Meshy's animation_type (biped or quadruped)."
       },
       {
         "name": "height_m",
         "kind": "float",
-        "default": 1.7
+        "default": 1.7,
+        "label": "Height (m)",
+        "description": "The character's height in metres (Meshy's height_meters)."
       },
       {
         "name": "joint_naming",
@@ -4398,7 +16223,9 @@ export const MODELS: ModelEntry[] = [
           "unity",
           "mixamo"
         ],
-        "default": "vendor"
+        "default": "vendor",
+        "label": "Joint naming",
+        "description": "`vendor` keeps Meshy's own joint names; `vrm`, `unity` and `mixamo` are litegen's renames of them, from the humanoid table it reads Meshy's rigs with (3D doc §3B). Humanoids only."
       },
       {
         "name": "output_formats",
@@ -4409,11 +16236,15 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Meshy returns glb and fbx; litegen derives the rest."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.1
+      "baseCostUsd": 0.1,
+      "unit": "model3d",
+      "rules": []
     },
     "tags": [
       "rig",
@@ -4437,9 +16268,22 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 2048,
+      "minHeight": 512,
+      "maxHeight": 2048,
+      "multipleOf": 8
+    },
     "aspectRatios": [
       "1:1",
       "16:9",
@@ -4463,9 +16307,18 @@ export const MODELS: ModelEntry[] = [
       "required": true,
       "maxLength": 1500
     },
-    "params": [],
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
     "pricing": {
-      "baseCostUsd": 0.0035
+      "baseCostUsd": 0.0035,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -4489,8 +16342,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "21:9",
@@ -4500,6 +16359,14 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 9,
     "refRoles": [
       {
@@ -4544,7 +16411,420 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.4
+      "baseCostUsd": 0.4,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-v2-create"
+  },
+  {
+    "id": "minimax/MiniMax-H3-Highspeed",
+    "provider": "minimax",
+    "displayName": "MiniMax H3 Highspeed",
+    "description": "MiniMax H3 Highspeed — balances quality and speed; text-to-video, image-to-video (first/last frame) and reference-to-video.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 7000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480P",
+          "768P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-v2-create"
+  },
+  {
+    "id": "minimax/MiniMax-H3-Lite",
+    "provider": "minimax",
+    "displayName": "MiniMax H3 Lite",
+    "description": "MiniMax H3 Lite — the lower-cost H3 variant; text-to-video, image-to-video (first/last frame) and reference-to-video.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 7000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480P",
+          "768P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.025
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -4569,8 +16849,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "21:9",
@@ -4580,6 +16866,14 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 9,
     "refRoles": [
       {
@@ -4624,7 +16918,121 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.4
+      "baseCostUsd": 0.4,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.074
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.148
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.222
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.296
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.37
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.444
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.518
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -4650,8 +17058,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 2,
@@ -4679,7 +17093,11 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 6,
         "min": 6,
-        "max": 10
+        "max": 10,
+        "values": [
+          6,
+          10
+        ]
       },
       {
         "name": "resolution",
@@ -4691,7 +17109,36 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.28
+      "baseCostUsd": 0.28,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.56
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080P"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.49
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -4715,8 +17162,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -4738,7 +17191,11 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 6,
         "min": 6,
-        "max": 10
+        "max": 10,
+        "values": [
+          6,
+          10
+        ]
       },
       {
         "name": "resolution",
@@ -4750,7 +17207,36 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.28
+      "baseCostUsd": 0.28,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.56
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080P"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.49
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -4774,8 +17260,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -4797,7 +17288,11 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 6,
         "min": 6,
-        "max": 10
+        "max": 10,
+        "values": [
+          6,
+          10
+        ]
       },
       {
         "name": "resolution",
@@ -4810,7 +17305,36 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.19
+      "baseCostUsd": 0.19,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.32
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080P"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.33
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-video",
@@ -4834,8 +17358,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -4861,7 +17390,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.65
+      "baseCostUsd": 0.65,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "image-to-video",
@@ -4885,8 +17416,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -4905,7 +17441,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.43
+      "baseCostUsd": 0.43,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video"
@@ -4928,17 +17466,40 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage",
+      "inpainting"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 480,
+      "maxWidth": 3840,
+      "minHeight": 480,
+      "maxHeight": 3840,
+      "multipleOf": 16,
+      "minPixels": 655360,
+      "maxPixels": 8294400,
+      "maxAspect": 3
+    },
     "aspectRatios": [],
-    "maxRefImages": 2,
+    "maxRefImages": 17,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
         "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 15
       },
       {
         "name": "mask",
@@ -4983,11 +17544,49 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "region",
-        "kind": "region"
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.053
+      "baseCostUsd": 0.053,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.006
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.211
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "multiplyPerMegapixelAbove",
+            "value": 1.048576
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -5012,17 +17611,40 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage",
+      "inpainting"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 480,
+      "maxWidth": 3840,
+      "minHeight": 480,
+      "maxHeight": 3840,
+      "multipleOf": 16,
+      "minPixels": 655360,
+      "maxPixels": 8294400,
+      "maxAspect": 3
+    },
     "aspectRatios": [],
-    "maxRefImages": 2,
+    "maxRefImages": 17,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
         "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 15
       },
       {
         "name": "mask",
@@ -5069,11 +17691,75 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "region",
-        "kind": "region"
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.0132
+      "baseCostUsd": 0.0132,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 0.446469
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 4
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 7.111617
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 16
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "multiplyPerMegapixelAbove",
+            "value": 1.048576
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -5099,17 +17785,40 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage",
+      "inpainting"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 480,
+      "maxWidth": 3840,
+      "minHeight": 480,
+      "maxHeight": 3840,
+      "multipleOf": 16,
+      "minPixels": 655360,
+      "maxPixels": 8294400,
+      "maxAspect": 3
+    },
     "aspectRatios": [],
-    "maxRefImages": 2,
+    "maxRefImages": 17,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
         "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 15
       },
       {
         "name": "mask",
@@ -5156,11 +17865,75 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "region",
-        "kind": "region"
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.0132
+      "baseCostUsd": 0.0132,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 0.446469
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 4
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 7.111617
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 16
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "multiplyPerMegapixelAbove",
+            "value": 1.048576
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-image",
@@ -5186,9 +17959,21 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": true
     },
+    "modalities": [
+      "textToImage",
+      "pixelArt"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 16,
+      "maxWidth": 400,
+      "minHeight": 16,
+      "maxHeight": 400
+    },
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -5199,7 +17984,11 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "The colours to draw in, as #rrggbb (PixelLab's color_image).",
+        "maxColors": 256,
+        "forced": true
       },
       {
         "name": "background",
@@ -5224,7 +18013,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.013
+      "baseCostUsd": 0.013,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -5248,8 +18039,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -5261,6 +18058,14 @@ export const MODELS: ModelEntry[] = [
       "3:2",
       "21:9"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 2,
     "refRoles": [
       {
@@ -5294,7 +18099,7 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 1,
         "max": 15
@@ -5312,7 +18117,123 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.177778
+      "baseCostUsd": 0.177778,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0355556
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0266667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0444444
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0844444
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0444444
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0355556
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0577778
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1066667
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -5337,8 +18258,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -5347,6 +18274,13 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 1,
     "refRoles": [
       {
@@ -5372,7 +18306,11 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 5,
         "min": 5,
-        "max": 8
+        "max": 8,
+        "values": [
+          5,
+          8
+        ]
       },
       {
         "name": "resolution",
@@ -5386,7 +18324,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video",
@@ -5410,8 +18350,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -5420,6 +18366,13 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 1,
     "refRoles": [
       {
@@ -5445,7 +18398,11 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 5,
         "min": 5,
-        "max": 8
+        "max": 8,
+        "values": [
+          5,
+          8
+        ]
       },
       {
         "name": "resolution",
@@ -5459,7 +18416,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video",
@@ -5483,8 +18442,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -5493,6 +18458,14 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 2,
     "refRoles": [
       {
@@ -5524,7 +18497,11 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 5,
         "min": 5,
-        "max": 8
+        "max": 8,
+        "values": [
+          5,
+          8
+        ]
       },
       {
         "name": "resolution",
@@ -5538,7 +18515,85 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.4
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2666667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            },
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5333333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5333333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.0666667
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -5562,8 +18617,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 31,
@@ -5592,7 +18652,1480 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.10222
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14222
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26222
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.32
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.4
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.42222
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.44
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 15
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 20
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 25
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 30
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 2
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 3
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.18667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 4
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.21333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 5
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 6
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.34667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 7
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.42667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 8
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.53333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 9
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.56
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.58667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 15
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 20
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.06667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 25
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.33333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 30
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 2
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.32
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 3
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.37333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 4
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.42667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 5
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.53333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 6
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.69333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 7
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.85333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 8
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.06667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 9
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.17333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 15
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 20
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.13333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 25
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.66667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 30
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 3.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 11
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 12
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 13
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 14
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 16
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 17
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 18
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 19
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 21
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 22
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 23
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 24
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 26
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 27
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 28
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 29
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 11
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 12
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 13
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 14
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.8
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 16
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.06667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 17
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.06667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 18
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.06667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 19
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.06667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 21
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.33333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 22
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.33333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 23
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.33333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 24
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.33333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 26
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 27
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 28
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 29
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 11
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 12
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 13
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 14
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 1.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 16
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.13333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 17
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.13333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 18
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.13333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 19
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.13333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 21
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.66667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 22
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.66667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 23
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.66667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 24
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 2.66667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 26
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 3.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 27
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 3.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 28
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 3.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 29
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 3.2
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-video",
@@ -5616,8 +20149,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -5629,6 +20168,14 @@ export const MODELS: ModelEntry[] = [
       "3:2",
       "21:9"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 2,
     "refRoles": [
       {
@@ -5662,7 +20209,7 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 1,
         "max": 15
@@ -5680,7 +20227,334 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.1555555
+      "baseCostUsd": 0.1555555,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0311111
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0222222
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0311111
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0533333
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1022222
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.platform.pixverse.ai/text-to-video-13016634e0"
+  },
+  {
+    "id": "pixverse/v6-max",
+    "provider": "pixverse",
+    "displayName": "PixVerse V6 Max",
+    "description": "PixVerse V6 Max text/image-to-video (first frame), 1-15s, optional native audio.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16",
+      "2:3",
+      "3:2",
+      "21:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2048
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "540p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0266667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0488889
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0977778
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0488889
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0666667
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1244444
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -5704,8 +20578,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [
       "1024x1024",
       "1365x1024",
@@ -5715,7 +20594,6 @@ export const MODELS: ModelEntry[] = [
       "1024x1280",
       "1280x1024",
       "1024x1707",
-      "1707x1024",
       "1434x1024",
       "1024x1434",
       "1024x2048",
@@ -5723,7 +20601,24 @@ export const MODELS: ModelEntry[] = [
       "1820x1024",
       "1024x1820"
     ],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -5733,7 +20628,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -5743,7 +20641,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 1000
       },
       {
         "name": "style",
@@ -5759,7 +20658,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.022
+      "baseCostUsd": 0.022,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -5782,10 +20683,32 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -5795,7 +20718,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -5805,7 +20731,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 1000
       },
       {
         "name": "style",
@@ -5837,7 +20764,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.044
+      "baseCostUsd": 0.044,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -5861,8 +20790,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [
       "1024x1024",
       "1365x1024",
@@ -5872,7 +20806,6 @@ export const MODELS: ModelEntry[] = [
       "1024x1280",
       "1280x1024",
       "1024x1707",
-      "1707x1024",
       "1434x1024",
       "1024x1434",
       "1024x2048",
@@ -5880,7 +20813,24 @@ export const MODELS: ModelEntry[] = [
       "1820x1024",
       "1024x1820"
     ],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -5890,7 +20840,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -5900,7 +20853,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 1000
       },
       {
         "name": "style",
@@ -5915,11 +20869,20 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "layout",
-        "kind": "layout"
+        "kind": "layout",
+        "enum": [
+          "text"
+        ],
+        "label": "Text layout",
+        "description": "Words to render, one per box, as fractions of the canvas.",
+        "maxItems": 32,
+        "singleWordText": true
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -5942,10 +20905,32 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -5955,7 +20940,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -5965,7 +20953,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 1000
       },
       {
         "name": "style",
@@ -5977,11 +20966,20 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "layout",
-        "kind": "layout"
+        "kind": "layout",
+        "enum": [
+          "text"
+        ],
+        "label": "Text layout",
+        "description": "Words to render, one per box, as fractions of the canvas.",
+        "maxItems": 32,
+        "singleWordText": true
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.08
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6005,8 +21003,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [
       "1024x1024",
       "1536x768",
@@ -6023,7 +21026,24 @@ export const MODELS: ModelEntry[] = [
       "1344x768",
       "768x1344"
     ],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -6033,7 +21053,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -6043,12 +21066,103 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.035
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
     ],
     "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
+  },
+  {
+    "id": "recraft/recraftv4_1_flash",
+    "provider": "recraft",
+    "displayName": "Recraft V4.1 Flash",
+    "description": "Recraft V4.1 Flash — fast, low-cost raster image generation (no styles).",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.007,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash"
   },
   {
     "id": "recraft/recraftv4_1_pro",
@@ -6066,8 +21180,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [
       "2048x2048",
       "3072x1536",
@@ -6084,7 +21203,24 @@ export const MODELS: ModelEntry[] = [
       "2688x1536",
       "1536x2688"
     ],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -6094,7 +21230,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -6104,7 +21243,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.21
+      "baseCostUsd": 0.21,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
@@ -6127,10 +21268,32 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -6140,7 +21303,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -6150,7 +21316,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.3
+      "baseCostUsd": 0.3,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6174,10 +21342,32 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
@@ -6187,7 +21377,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "palette",
-        "kind": "palette"
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
       },
       {
         "name": "seed",
@@ -6197,7 +21390,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.08
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6221,8 +21416,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": true,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "backgroundRemoval"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -6250,7 +21450,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.01
+      "baseCostUsd": 0.01,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "background-removal"
@@ -6273,8 +21475,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -6293,7 +21500,8 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 1000
       },
       {
         "name": "output_format",
@@ -6306,7 +21514,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "image-to-image",
@@ -6330,8 +21540,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -6369,13 +21584,157 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
       "premium"
     ],
     "referenceUrl": "https://replicate.com/black-forest-labs/flux-1.1-pro/api/schema"
+  },
+  {
+    "id": "replicate/flux-3-image",
+    "provider": "replicate",
+    "displayName": "FLUX 3 Image (Replicate)",
+    "description": "Black Forest Labs FLUX 3 Image on Replicate — generation and editing with up to ten references and web-grounded prompts.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "2:1",
+      "16:9",
+      "3:2",
+      "7:5",
+      "4:3",
+      "5:4",
+      "1:1",
+      "4:5",
+      "3:4",
+      "5:7",
+      "2:3",
+      "9:16",
+      "1:2",
+      "9:21"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "0.75K",
+          "1K",
+          "1.5K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.024,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "0.75K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0205
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1.5K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.035
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.3035
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://replicate.com/black-forest-labs/flux-3-image/api/schema"
   },
   {
     "id": "replicate/flux-dev",
@@ -6393,8 +21752,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -6423,6 +21788,13 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "strength",
+        "kind": "float",
+        "default": 0.8,
+        "min": 0,
+        "max": 1
+      },
       {
         "name": "output_format",
         "kind": "string",
@@ -6455,7 +21827,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.025
+      "baseCostUsd": 0.025,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6479,8 +21853,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -6525,7 +21904,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.055
+      "baseCostUsd": 0.055,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6549,8 +21930,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -6597,7 +21983,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.003
+      "baseCostUsd": 0.003,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6621,8 +22009,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -6654,7 +22047,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 5000
       },
       {
         "name": "seed",
@@ -6678,12 +22072,299 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.035
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image"
     ],
     "referenceUrl": "https://replicate.com/stability-ai/stable-diffusion-3/api/schema"
+  },
+  {
+    "id": "replicate/sd3.5-large",
+    "provider": "replicate",
+    "displayName": "Stable Diffusion 3.5 Large (Replicate)",
+    "description": "Stability AI SD 3.5 Large on Replicate — text-to-image and image-to-image.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "1:1",
+      "21:9",
+      "2:3",
+      "3:2",
+      "4:5",
+      "5:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "webp",
+          "jpeg",
+          "png"
+        ],
+        "default": "webp"
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "default": 0.85,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.065,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://replicate.com/stability-ai/stable-diffusion-3.5-large/api/schema"
+  },
+  {
+    "id": "replicate/sd3.5-large-turbo",
+    "provider": "replicate",
+    "displayName": "Stable Diffusion 3.5 Large Turbo (Replicate)",
+    "description": "Stability AI SD 3.5 Large Turbo on Replicate — fast text-to-image and image-to-image.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "1:1",
+      "21:9",
+      "2:3",
+      "3:2",
+      "4:5",
+      "5:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "webp",
+          "jpeg",
+          "png"
+        ],
+        "default": "webp"
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 1,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "default": 0.85,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://replicate.com/stability-ai/stable-diffusion-3.5-large-turbo/api/schema"
+  },
+  {
+    "id": "replicate/sd3.5-medium",
+    "provider": "replicate",
+    "displayName": "Stable Diffusion 3.5 Medium (Replicate)",
+    "description": "Stability AI SD 3.5 Medium on Replicate — text-to-image and image-to-image.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "1:1",
+      "21:9",
+      "2:3",
+      "3:2",
+      "4:5",
+      "5:4",
+      "9:16",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "webp",
+          "jpeg",
+          "png"
+        ],
+        "default": "webp"
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "default": 0.85,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://replicate.com/stability-ai/stable-diffusion-3.5-medium/api/schema"
   },
   {
     "id": "replicate/sdxl",
@@ -6701,9 +22382,22 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
+    "sizeRange": {
+      "minWidth": 512,
+      "maxWidth": 1536,
+      "minHeight": 512,
+      "maxHeight": 1536,
+      "multipleOf": 8
+    },
     "aspectRatios": [],
     "maxRefImages": 1,
     "refRoles": [
@@ -6720,8 +22414,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "strength",
+        "kind": "float",
+        "default": 0.8,
+        "min": 0,
+        "max": 1
+      },
+      {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 2000
       },
       {
         "name": "seed",
@@ -6745,7 +22447,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.005
+      "baseCostUsd": 0.005,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6769,8 +22473,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -6782,22 +22491,1009 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 2000
       },
       {
         "name": "seed",
         "kind": "seed",
         "min": 0,
-        "max": 4294967294
+        "max": 2147483647
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.1
+      "baseCostUsd": 0.1,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video"
     ],
     "referenceUrl": "https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f"
+  },
+  {
+    "id": "runway/bria_fibo_1_5",
+    "provider": "runway",
+    "displayName": "Bria FIBO 1.5 (Runway)",
+    "description": "Bria FIBO 1.5 through Runway's API — text-to-image and edits from up to 1 image, 1K to 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/bria_fibo_edit_1_5",
+    "provider": "runway",
+    "displayName": "Bria FIBO Edit 1.5 (Runway)",
+    "description": "Bria FIBO Edit 1.5 through Runway's API — edits and combines 1–4 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 4
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gemini_2.5_flash",
+    "provider": "runway",
+    "displayName": "Gemini 2.5 Flash Image (Runway)",
+    "description": "Google's Gemini 2.5 Flash Image through Runway's API — text-to-image and edits from up to 3 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 3,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 45000
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gemini_image3_pro",
+    "provider": "runway",
+    "displayName": "Gemini 3 Pro Image (Runway)",
+    "description": "Google's Gemini 3 Pro Image through Runway's API — text-to-image and edits from up to 14 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "minLength": 3,
+      "maxLength": 45000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.4
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gemini_image3.1_flash",
+    "provider": "runway",
+    "displayName": "Gemini 3.1 Flash Image (Runway)",
+    "description": "Google's Gemini 3.1 Flash Image through Runway's API — text-to-image and edits from up to 14 images, 0.5K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9",
+      "1:4",
+      "4:1",
+      "1:8",
+      "8:1"
+    ],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 45000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "0.5K",
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.07,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "0.5K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gemini_image3.1_flash_lite",
+    "provider": "runway",
+    "displayName": "Gemini 3.1 Flash Lite Image (Runway)",
+    "description": "Google's Gemini 3.1 Flash Lite Image through Runway's API — text-to-image and edits from up to 14 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 45000
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gemini_omni_flash",
+    "provider": "runway",
+    "displayName": "Gemini Omni Flash (Runway)",
+    "description": "Google's Gemini Omni Flash through Runway's API — text-to-video, image-to-video (first frame); 3–10 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.first_frame",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/gemini_omni_flash_1.1",
+    "provider": "runway",
+    "displayName": "Gemini Omni Flash 1.1 (Runway)",
+    "description": "Google's Gemini Omni Flash 1.1 through Runway's API — text-to-video, image-to-video (first and last frame), up to 5 reference images; 3–10 s, 360p to 4k.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 5
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.034
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.3
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/gemini_omni_flash_1.2",
+    "provider": "runway",
+    "displayName": "Gemini Omni Flash 1.2 (Runway)",
+    "description": "Google's Gemini Omni Flash 1.2 through Runway's API — text-to-video, image-to-video (first and last frame), up to 5 reference images; 3–15 s, 360p to 4k.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 5
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.35,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.21
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
   },
   {
     "id": "runway/gen4_image",
@@ -6815,8 +23511,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -6848,7 +23550,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.08
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -6872,8 +23576,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -6905,7 +23614,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.02,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "image-to-image",
@@ -6929,8 +23640,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1280:720",
@@ -6943,9 +23659,15 @@ export const MODELS: ModelEntry[] = [
     "maxRefImages": 1,
     "refRoles": [
       {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
         "name": "init",
-        "required": true,
-        "min": 1,
+        "required": false,
+        "min": 0,
         "max": 1
       }
     ],
@@ -6969,7 +23691,17 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.25
+      "baseCostUsd": 0.25,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-video",
@@ -6993,8 +23725,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1280:720",
@@ -7002,6 +23740,12 @@ export const MODELS: ModelEntry[] = [
     ],
     "maxRefImages": 1,
     "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
       {
         "name": "init",
         "required": false,
@@ -7029,12 +23773,15789 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.6
+      "baseCostUsd": 0.6,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.12
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
       "image-to-video",
       "premium"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/gpt_image_2",
+    "provider": "runway",
+    "displayName": "GPT Image 2 (Runway)",
+    "description": "OpenAI's GPT Image 2 through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 16
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "auto"
+        ],
+        "default": "high"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.41
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "auto"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "auto"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.41
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gpt_image_2_5_flare",
+    "provider": "runway",
+    "displayName": "GPT Image 2.5 Flare (Runway)",
+    "description": "OpenAI's GPT Image 2.5 Flare through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 16
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "opaque"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.11,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.28
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.34
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.23
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.23
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.25
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.25
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.27
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.27
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.42
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.22
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.22
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.29
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.29
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.63
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.31
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.31
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.38
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.38
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.24
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.24
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.18
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.75
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.55
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.55
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 11
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 12
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 13
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 14
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 15
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 16
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gpt_image_2_5_sunburst",
+    "provider": "runway",
+    "displayName": "GPT Image 2.5 Sunburst (Runway)",
+    "description": "OpenAI's GPT Image 2.5 Sunburst through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 16
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.11,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.28
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.34
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.23
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.23
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.25
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.25
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.27
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.27
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.42
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.22
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.22
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.29
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.29
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.63
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.31
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.31
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.38
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.38
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.24
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.24
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.18
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.75
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.55
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.55
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.6
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.43
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.26
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 11
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 12
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 13
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 14
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 15
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 16
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gpt_image_2_6_flare",
+    "provider": "runway",
+    "displayName": "GPT Image 2.6 Flare (Runway)",
+    "description": "OpenAI's GPT Image 2.6 Flare through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 16
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "high"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.11,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 11
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 12
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 13
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 14
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 15
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 16
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/gpt_image_2_6_sunburst",
+    "provider": "runway",
+    "displayName": "GPT Image 2.6 Sunburst (Runway)",
+    "description": "OpenAI's GPT Image 2.6 Sunburst through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 16
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "high"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.11,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 11
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.11
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 12
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 13
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 14
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 15
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 16
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.16
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/grok_imagine_1_5",
+    "provider": "runway",
+    "displayName": "Grok Imagine Video 1.5 (Runway)",
+    "description": "xAI's Grok Imagine Video 1.5 through Runway's API — text-to-video, image-to-video (first frame), up to 7 reference images; 1–15 s, 480p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "9:16",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.8,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.29
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.07
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/grok_imagine_1_5_lite",
+    "provider": "runway",
+    "displayName": "Grok Imagine Video 1.5 Lite (Runway)",
+    "description": "xAI's Grok Imagine Video 1.5 Lite through Runway's API — text-to-video, image-to-video (first frame); 1–15 s, 480p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.15,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.first_frame",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/grok_imagine_image_2",
+    "provider": "runway",
+    "displayName": "Grok Imagine Image 2 (Runway)",
+    "description": "xAI's Grok Imagine Image 2 through Runway's API — text-to-image and edits from up to 3 images, 1K to 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "2:1",
+      "1:2",
+      "19.5:9",
+      "9:19.5",
+      "20:9",
+      "9:20"
+    ],
+    "maxRefImages": 3,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium"
+        ],
+        "default": "medium"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.06,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/h3_max",
+    "provider": "runway",
+    "displayName": "MiniMax H3 Max (Runway)",
+    "description": "MiniMax H3 Max through Runway's API — text-to-video, image-to-video (first and last frame); 5–15 s, 480P to 768P.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 6000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 15
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480P",
+          "768P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/hailuo3",
+    "provider": "runway",
+    "displayName": "MiniMax H3 (Runway)",
+    "description": "MiniMax H3 through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 5–15 s, 768P to 2K.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 11,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 6000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "768P",
+          "2K"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.18
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/happyhorse_1_0",
+    "provider": "runway",
+    "displayName": "HappyHorse 1.0 (Runway)",
+    "description": "HappyHorse 1.0 through Runway's API — text-to-video, image-to-video (first frame); 3–15 s, 720p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.75,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.3
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/ideogram_4_0",
+    "provider": "runway",
+    "displayName": "Ideogram 4.0 (Runway)",
+    "description": "Ideogram 4.0 through Runway's API — text-to-image and edits from up to 1 image.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "12:5",
+      "5:12"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "medium"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.07,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.11
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/ideogram_4_5",
+    "provider": "runway",
+    "displayName": "Ideogram 4.5 (Runway)",
+    "description": "Ideogram 4.5 through Runway's API — text-to-image and edits from up to 5 images, 1K to 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage",
+      "inpainting"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "2:1",
+      "1:2"
+    ],
+    "maxRefImages": 6,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 5
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "very_low",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "name": "region",
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.25,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "extra.preciseEdit",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.25
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "very_low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.25
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "inpainting"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/ideogram_vector",
+    "provider": "runway",
+    "displayName": "Ideogram Vector (Runway)",
+    "description": "Ideogram Vector through Runway's API — text-to-SVG illustration, guided by up to 5 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 5,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 5
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 9500
+    },
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "medium"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.17,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.22
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            },
+            {
+              "fact": "references",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.35
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/kling_4",
+    "provider": "runway",
+    "displayName": "Kling 4.0 (Runway)",
+    "description": "Kling 4.0 through Runway's API — text-to-video, image-to-video (first and last frame), up to 10 reference images; 3–30 s, 720p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 26000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 10,
+        "min": 3,
+        "max": 30
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "1080p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 2.35,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.235
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.157
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/kling_4_flash",
+    "provider": "runway",
+    "displayName": "Kling 4.0 Flash (Runway)",
+    "description": "Kling 4.0 Flash through Runway's API — text-to-video, image-to-video (first frame), up to 10 reference images; 3–20 s, 720p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 26000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 20
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.47,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.094
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/kling2.5_turbo_pro",
+    "provider": "runway",
+    "displayName": "Kling 2.5 Turbo Pro (Runway)",
+    "description": "Kling 2.5 Turbo Pro through Runway's API — text-to-video, image-to-video (first and last frame); 5–10 s, 720p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 10,
+        "values": [
+          5,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.6,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.12
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/kling3.0_4k",
+    "provider": "runway",
+    "displayName": "Kling 3.0 4K (Runway)",
+    "description": "Kling 3.0 4K through Runway's API — text-to-video, image-to-video (first and last frame); 3–15 s, 4k.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 2.15,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.43
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/kling3.0_pro",
+    "provider": "runway",
+    "displayName": "Kling 3.0 Pro (Runway)",
+    "description": "Kling 3.0 Pro through Runway's API — text-to-video, image-to-video (first and last frame); 3–15 s, 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.85,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.17
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": false
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.12
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/kling3.0_standard",
+    "provider": "runway",
+    "displayName": "Kling 3.0 Standard (Runway)",
+    "description": "Kling 3.0 Standard through Runway's API — text-to-video, image-to-video (first and last frame); 3–15 s, 720p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.65,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": false
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.09
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/klingO3_4k",
+    "provider": "runway",
+    "displayName": "Kling O3 4K (Runway)",
+    "description": "Kling O3 4K through Runway's API — text-to-video, image-to-video (first and last frame), up to 7 reference images; 3–15 s, 4k.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 2.15,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.43
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/klingO3_pro",
+    "provider": "runway",
+    "displayName": "Kling O3 Pro (Runway)",
+    "description": "Kling O3 Pro through Runway's API — text-to-video, image-to-video (first and last frame), up to 7 reference images; 3–15 s, 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.85,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.17
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/klingO3_standard",
+    "provider": "runway",
+    "displayName": "Kling O3 Standard (Runway)",
+    "description": "Kling O3 Standard through Runway's API — text-to-video, image-to-video (first and last frame), up to 7 reference images; 3–15 s, 720p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "minLength": 2,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.65,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.13
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/muse_image",
+    "provider": "runway",
+    "displayName": "Muse Image (Runway)",
+    "description": "Muse Image through Runway's API — text-to-image and edits from up to 10 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.01,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/nano_banana_2.1",
+    "provider": "runway",
+    "displayName": "Nano Banana 2.1 (Runway)",
+    "description": "Google's Nano Banana 2.1 through Runway's API — text-to-image and edits from up to 14 images, 1K to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9",
+      "1:4",
+      "4:1",
+      "1:8",
+      "8:1"
+    ],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 45000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.12
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/seedance2",
+    "provider": "runway",
+    "displayName": "Seedance 2.0 (Runway)",
+    "description": "ByteDance's Seedance 2.0 through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 4–15 s, 480p to 4k.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 11,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 1.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.3
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.4
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 1.5
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/seedance2_5",
+    "provider": "runway",
+    "displayName": "Seedance 2.5 (Runway)",
+    "description": "ByteDance's Seedance 2.5 through Runway's API — text-to-video, image-to-video (first and last frame), up to 30 reference images; 4–30 s, 480p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 32,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 30
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 15000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 30
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 1.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.3
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.68
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "extra.draft",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.2
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/seedance2_fast",
+    "provider": "runway",
+    "displayName": "Seedance 2.0 Fast (Runway)",
+    "description": "ByteDance's Seedance 2.0 Fast through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 4–15 s, 480p to 720p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 11,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 1.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.24
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.11
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/seedance2_mini",
+    "provider": "runway",
+    "displayName": "Seedance 2.0 Mini (Runway)",
+    "description": "ByteDance's Seedance 2.0 Mini through Runway's API — text-to-video, image-to-video (first and last frame), up to 9 reference images; 4–15 s, 480p to 720p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 11,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.75,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.07
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/seedream5_flash",
+    "provider": "runway",
+    "displayName": "Seedream 5.0 Flash (Runway)",
+    "description": "ByteDance's Seedream 5.0 Flash through Runway's API — text-to-image and edits from up to 10 images, 1K to 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.02,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/seedream5_lite",
+    "provider": "runway",
+    "displayName": "Seedream 5.0 Lite (Runway)",
+    "description": "ByteDance's Seedream 5.0 Lite through Runway's API — text-to-image and edits from up to 14 images, 2K to 3K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
+    ],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "2K",
+          "3K"
+        ],
+        "default": "2K"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/seedream5_pro",
+    "provider": "runway",
+    "displayName": "Seedream 5.0 Pro (Runway)",
+    "description": "ByteDance's Seedream 5.0 Pro through Runway's API — text-to-image and edits from up to 10 images, 1K to 2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
+  },
+  {
+    "id": "runway/veo3.1",
+    "provider": "runway",
+    "displayName": "Veo 3.1 (Runway)",
+    "description": "Google's Veo 3.1 through Runway's API — text-to-video, image-to-video (first and last frame); 4–8 s, 720p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 1000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 8,
+        "min": 4,
+        "max": 8,
+        "values": [
+          4,
+          6,
+          8
+        ]
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 1000
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 3.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.4
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": false
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.2
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/veo3.1_fast",
+    "provider": "runway",
+    "displayName": "Veo 3.1 Fast (Runway)",
+    "description": "Google's Veo 3.1 Fast through Runway's API — text-to-video, image-to-video (first and last frame); 4–8 s, 720p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 1000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 8,
+        "min": 4,
+        "max": 8,
+        "values": [
+          4,
+          6,
+          8
+        ]
+      },
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 1000
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 1.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.15
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": false
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/wan3",
+    "provider": "runway",
+    "displayName": "Wan 3.0 (Runway)",
+    "description": "Alibaba's Wan 3.0 through Runway's API — text-to-video, image-to-video (first and last frame), up to 10 reference images; 2–30 s, 480p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 12,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 20000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 2,
+        "max": 30
+      },
+      {
+        "name": "audio",
+        "kind": "bool"
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.2
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
+  },
+  {
+    "id": "runway/wan3_prime",
+    "provider": "runway",
+    "displayName": "Wan 3.0 Prime (Runway)",
+    "description": "Alibaba's Wan 3.0 Prime through Runway's API — text-to-video, image-to-video (first and last frame), up to 10 reference images; 2–30 s, 480p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9"
+    ],
+    "maxRefImages": 12,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 20000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 2,
+        "max": 30
+      },
+      {
+        "name": "audio",
+        "kind": "bool"
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.7,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.14
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.068
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.28
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
     ],
     "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
   },
@@ -7054,8 +39575,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -7087,7 +39613,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
@@ -7120,7 +39647,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.03
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -7145,8 +39674,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToImage",
+      "inpainting"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 2,
@@ -7165,12 +39700,47 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "promptLimits": {
-      "required": true
+      "required": true,
+      "maxLength": 10000
     },
     "params": [
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
       },
       {
         "name": "seed",
@@ -7180,11 +39750,15 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "region",
-        "kind": "region"
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.05
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "image-to-image",
@@ -7208,8 +39782,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -7228,7 +39807,10 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "expand",
-        "kind": "expand"
+        "kind": "expand",
+        "label": "Expand",
+        "description": "Pixels to add to each side (Stability's left, up, right, down).",
+        "maxPx": 2000
       },
       {
         "name": "seed",
@@ -7245,10 +39827,35 @@ export const MODELS: ModelEntry[] = [
           "jpeg"
         ],
         "default": "png"
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "image-to-image",
@@ -7272,8 +39879,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": true,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "backgroundRemoval"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -7301,7 +39913,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.05
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "background-removal"
@@ -7311,7 +39925,7 @@ export const MODELS: ModelEntry[] = [
   {
     "id": "stability/sd3-large",
     "provider": "stability",
-    "displayName": "Stable Diffusion 3 Large",
+    "displayName": "Stable Diffusion 3.5 Large",
     "description": "Latest Stability AI model with excellent prompt adherence.",
     "mediaType": "image",
     "output": "image",
@@ -7324,8 +39938,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -7364,7 +39984,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
@@ -7377,10 +39998,42 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "min": 0,
         "max": 1
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 4,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.065
+      "baseCostUsd": 0.065,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -7391,75 +40044,8 @@ export const MODELS: ModelEntry[] = [
   {
     "id": "stability/sd3-turbo",
     "provider": "stability",
-    "displayName": "Stable Diffusion 3 Turbo",
-    "description": "Faster, cheaper SD3 variant.",
-    "mediaType": "image",
-    "output": "image",
-    "task": "generate",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "1:1",
-      "16:9",
-      "9:16",
-      "3:2",
-      "2:3",
-      "4:5",
-      "5:4",
-      "21:9",
-      "9:21"
-    ],
-    "maxRefImages": 0,
-    "refRoles": [],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 10000
-    },
-    "params": [
-      {
-        "name": "output_format",
-        "kind": "string",
-        "enum": [
-          "png",
-          "webp",
-          "jpeg"
-        ],
-        "default": "png"
-      },
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.04
-    },
-    "tags": [
-      "text-to-image",
-      "fast"
-    ],
-    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-diffusion-35"
-  },
-  {
-    "id": "stability/sd3.5-medium",
-    "provider": "stability",
-    "displayName": "Stable Diffusion 3.5 Medium",
-    "description": "Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of",
+    "displayName": "Stable Diffusion 3.5 Large Turbo",
+    "description": "Faster, cheaper SD 3.5 Large variant.",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
@@ -7471,8 +40057,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -7511,7 +40103,8 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
@@ -7524,16 +40117,168 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "min": 0,
         "max": 1
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 1,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.035
+      "baseCostUsd": 0.04,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-diffusion-35"
+  },
+  {
+    "id": "stability/sd3.5-medium",
+    "provider": "stability",
+    "displayName": "Stable Diffusion 3.5 Medium",
+    "description": "Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of prompt accuracy and image quality for fast generation.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "9:16",
+      "3:2",
+      "2:3",
+      "4:5",
+      "5:4",
+      "21:9",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 10000
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 4,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.035,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-diffusion-35 prompt accuracy and image quality for fast generation."
+    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-diffusion-35"
   },
   {
     "id": "stability/sdxl",
@@ -7551,8 +40296,15 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage",
+      "inpainting"
+    ],
     "sizes": [
       "1024x1024",
       "1152x896",
@@ -7586,11 +40338,14 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "region",
-        "kind": "region"
+        "kind": "region",
+        "label": "Region",
+        "description": "The rectangle to edit, sent drawn as the mask."
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 2000
       },
       {
         "name": "seed",
@@ -7604,6 +40359,29 @@ export const MODELS: ModelEntry[] = [
         "default": 30,
         "min": 10,
         "max": 50
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
       },
       {
         "name": "guidance_scale",
@@ -7620,7 +40398,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.009
+      "baseCostUsd": 0.009,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
@@ -7645,8 +40425,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -7665,11 +40450,15 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "mask_prompt",
-        "kind": "string"
+        "kind": "string",
+        "label": "Find",
+        "description": "What to replace, named (Stability's search_prompt).",
+        "maxLength": 10000
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
@@ -7686,10 +40475,35 @@ export const MODELS: ModelEntry[] = [
           "jpeg"
         ],
         "default": "png"
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.05
+      "baseCostUsd": 0.05,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "image-to-image",
@@ -7707,14 +40521,20 @@ export const MODELS: ModelEntry[] = [
     "task": "generate",
     "capabilities": {
       "textToImage": true,
-      "imageToImage": false,
+      "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [
       "1:1",
@@ -7727,8 +40547,15 @@ export const MODELS: ModelEntry[] = [
       "9:16",
       "9:21"
     ],
-    "maxRefImages": 0,
-    "refRoles": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
     "promptLimits": {
       "required": true,
       "maxLength": 10000
@@ -7746,24 +40573,4652 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "negative_prompt",
-        "kind": "string"
+        "kind": "string",
+        "maxLength": 10000
       },
       {
         "name": "seed",
         "kind": "seed",
         "min": 0,
         "max": 4294967294
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "3d-model",
+          "analog-film",
+          "anime",
+          "cinematic",
+          "comic-book",
+          "digital-art",
+          "enhance",
+          "fantasy-art",
+          "isometric",
+          "line-art",
+          "low-poly",
+          "modeling-compound",
+          "neon-punk",
+          "origami",
+          "photographic",
+          "pixel-art",
+          "tile-texture"
+        ]
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.08
+      "baseCostUsd": 0.08,
+      "unit": "image",
+      "rules": []
     },
     "tags": [
       "text-to-image",
+      "image-to-image",
       "premium",
       "photorealistic"
     ],
     "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-image-ultra"
+  },
+  {
+    "id": "tokenhub/hy-image-v3.5-preview",
+    "provider": "tokenhub",
+    "displayName": "Hy-Image 3.5 Preview",
+    "description": "Tencent Hunyuan Image 3.5 preview on TokenHub — text-to-image and edits from up to 20 images, up to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 256,
+      "maxWidth": 8192,
+      "minHeight": 256,
+      "maxHeight": 8192,
+      "maxPixels": 16777216
+    },
+    "aspectRatios": [
+      "1:1",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "16:9",
+      "9:16",
+      "21:9",
+      "9:21"
+    ],
+    "maxRefImages": 20,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 20
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 8192
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "1.5K",
+          "2K"
+        ],
+        "default": "1.5K"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 9223372036854776000
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0225,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 4.194304
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135745"
+  },
+  {
+    "id": "tokenhub/hy-video-v1.5",
+    "provider": "tokenhub",
+    "displayName": "Hy-Video 1.5",
+    "description": "Tencent Hunyuan Video 1.5 on TokenHub — 5 s 720p clips from text or a first frame.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 5
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2248,
+      "unit": "video",
+      "rules": []
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/137202"
+  },
+  {
+    "id": "tokenhub/kling-image-o1",
+    "provider": "tokenhub",
+    "displayName": "Kling Image O1 (TokenHub)",
+    "description": "Kling Image O1 through Tencent TokenHub — text-to-image or up to 10 reference images, 1K/2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/138803"
+  },
+  {
+    "id": "tokenhub/kling-image-v3",
+    "provider": "tokenhub",
+    "displayName": "Kling Image 3.0 (TokenHub)",
+    "description": "Kling Image 3.0 through Tencent TokenHub — text-to-image or one reference image, 1K/2K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string",
+        "maxLength": 2500
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K"
+        ],
+        "default": "1K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/138803"
+  },
+  {
+    "id": "tokenhub/kling-image-v3-omni",
+    "provider": "tokenhub",
+    "displayName": "Kling Image 3.0 Omni (TokenHub)",
+    "description": "Kling Image 3.0 Omni through Tencent TokenHub — text-to-image or up to 10 reference images, up to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9"
+    ],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.03,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0599
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/138803"
+  },
+  {
+    "id": "tokenhub/kling-video-o1",
+    "provider": "tokenhub",
+    "displayName": "Kling Video O1 (TokenHub)",
+    "description": "Kling O1 through Tencent TokenHub — text or first/last frames, 3–10 s, 720p or 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4495,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0899
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1199
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135742"
+  },
+  {
+    "id": "tokenhub/kling-video-v2.5-turbo",
+    "provider": "tokenhub",
+    "displayName": "Kling Video 2.5 Turbo (TokenHub)",
+    "description": "Kling 2.5 Turbo through Tencent TokenHub — text or first/last frames to 5 or 10 s video.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 10,
+        "values": [
+          5,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.225,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0749
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135742"
+  },
+  {
+    "id": "tokenhub/kling-video-v2.6",
+    "provider": "tokenhub",
+    "displayName": "Kling Video 2.6 (TokenHub)",
+    "description": "Kling 2.6 through Tencent TokenHub — text or first/last frames, optional native audio at 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 10,
+        "values": [
+          5,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.225,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0749
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1499
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135742"
+  },
+  {
+    "id": "tokenhub/kling-video-v3",
+    "provider": "tokenhub",
+    "displayName": "Kling Video 3.0 (TokenHub)",
+    "description": "Kling 3.0 through Tencent TokenHub — text or first/last frames, native audio, multi-shot, up to 4K.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4495,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0899
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1349
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1199
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1798
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.4496
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135742"
+  },
+  {
+    "id": "tokenhub/kling-video-v3-omni",
+    "provider": "tokenhub",
+    "displayName": "Kling Video 3.0 Omni (TokenHub)",
+    "description": "Kling 3.0 Omni through Tencent TokenHub — text or first/last frames, native audio, multi-shot, up to 4K.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4495,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0899
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1199
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1199
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1499
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4k"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.4496
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135742"
+  },
+  {
+    "id": "tokenhub/kling-video-v3-turbo",
+    "provider": "tokenhub",
+    "displayName": "Kling Video 3.0 Turbo (TokenHub)",
+    "description": "Kling 3.0 Turbo through Tencent TokenHub — text or a first frame, always with sound.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.5995,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1199
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1499
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135742"
+  },
+  {
+    "id": "tokenhub/kling-video-v4",
+    "provider": "tokenhub",
+    "displayName": "Kling Video 4.0 (TokenHub)",
+    "description": "Kling 4.0 through Tencent TokenHub — text or first/last frames, 3–30 s, 21:9.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 11000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 30
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "1080p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 1.124,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.2248
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1499
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135742"
+  },
+  {
+    "id": "tokenhub/minimax-video-h3",
+    "provider": "tokenhub",
+    "displayName": "MiniMax H3 (TokenHub)",
+    "description": "MiniMax H3 through Tencent TokenHub — text, first/last frames or up to 9 reference images; 4–15 s at 768P or 2K.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 7000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "768P",
+          "2K"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3745,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0749
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1199
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.12
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135737"
+  },
+  {
+    "id": "tokenhub/minimax-video-h3-max",
+    "provider": "tokenhub",
+    "displayName": "MiniMax H3 Max (TokenHub)",
+    "description": "MiniMax H3 Max through Tencent TokenHub — text or first/last frames, 5–15 s at 480P or 768P.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 7000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480P",
+          "768P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3745,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0749
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0495
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135737"
+  },
+  {
+    "id": "tokenhub/minimax-video-v2.3",
+    "provider": "tokenhub",
+    "displayName": "MiniMax Hailuo 2.3 (TokenHub)",
+    "description": "MiniMax Hailuo 2.3 through Tencent TokenHub — text or first/last frames, 6 or 10 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 6,
+        "min": 6,
+        "max": 10,
+        "values": [
+          6,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "768P",
+          "1080P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2997,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5995
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080P"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5245
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135737"
+  },
+  {
+    "id": "tokenhub/minimax-video-v2.3-fast",
+    "provider": "tokenhub",
+    "displayName": "MiniMax Hailuo 2.3 Fast (TokenHub)",
+    "description": "MiniMax Hailuo 2.3 Fast through Tencent TokenHub — image-to-video, 6 or 10 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 6,
+        "min": 6,
+        "max": 10,
+        "values": [
+          6,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "768P",
+          "1080P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2023,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.3372
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080P"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.3462
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135737"
+  },
+  {
+    "id": "tokenhub/pixverse-video-c1",
+    "provider": "tokenhub",
+    "displayName": "PixVerse C1 (TokenHub)",
+    "description": "PixVerse C1 through Tencent TokenHub — action and effects scenes; text, an image, first/last frames or up to 7 references; 1–15 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16",
+      "2:3",
+      "3:2",
+      "21:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "540p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.176,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0352
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0264
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.044
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0835
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.044
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0352
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0571
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1055
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135325"
+  },
+  {
+    "id": "tokenhub/pixverse-video-v5.6",
+    "provider": "tokenhub",
+    "displayName": "PixVerse V5.6 (TokenHub)",
+    "description": "PixVerse V5.6 through Tencent TokenHub — text, an image, first/last frames or up to 7 references; 5, 8 or 10 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 10,
+        "values": [
+          5,
+          8,
+          10
+        ]
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "540p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.154,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0308
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0308
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0396
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0659
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0703
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0703
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0791
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1319
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135325"
+  },
+  {
+    "id": "tokenhub/pixverse-video-v6.0",
+    "provider": "tokenhub",
+    "displayName": "PixVerse V6 (TokenHub)",
+    "description": "PixVerse V6 through Tencent TokenHub — text, an image, first/last frames or up to 7 references; 1–15 s, 360p–1080p, optional sound and multi-shot.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16",
+      "2:3",
+      "3:2",
+      "21:9"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "540p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.154,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0308
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.022
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0396
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0791
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0396
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0308
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "720p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0527
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            },
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1011
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135325"
+  },
+  {
+    "id": "tokenhub/seedream-image-v5.0-flash",
+    "provider": "tokenhub",
+    "displayName": "Seedream 5.0 Flash (TokenHub)",
+    "description": "ByteDance Seedream 5.0 Flash through Tencent TokenHub — fast text-to-image and edits from up to 10 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 240,
+      "maxWidth": 8601,
+      "minHeight": 240,
+      "maxHeight": 8601,
+      "minPixels": 921600,
+      "maxPixels": 4624220,
+      "maxAspect": 16
+    },
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 600
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "1.5K",
+          "2K"
+        ],
+        "default": "2K"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ]
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.018,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/136609"
+  },
+  {
+    "id": "tokenhub/seedream-image-v5.0-pro",
+    "provider": "tokenhub",
+    "displayName": "Seedream 5.0 Pro (TokenHub)",
+    "description": "ByteDance Seedream 5.0 Pro through Tencent TokenHub — text-to-image and edits from up to 10 images.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 240,
+      "maxWidth": 8601,
+      "minHeight": 240,
+      "maxHeight": 8601,
+      "minPixels": 921600,
+      "maxPixels": 4624220,
+      "maxAspect": 16
+    },
+    "aspectRatios": [],
+    "maxRefImages": 10,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 600
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "1.5K",
+          "2K"
+        ],
+        "default": "2K"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ]
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0899,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1.5K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "gt": 2.61
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0899
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "size",
+              "is": "sent"
+            },
+            {
+              "fact": "megapixels",
+              "is": "range",
+              "lte": 2.61
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 2
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.003
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 3
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.006
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 4
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.009
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 5
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.012
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.015
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.018
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.021
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.024
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 10
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.027
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/136609"
+  },
+  {
+    "id": "tokenhub/vidu-image-q2",
+    "provider": "tokenhub",
+    "displayName": "Vidu Image Q2 (TokenHub)",
+    "description": "Vidu Image Q2 through Tencent TokenHub — text-to-image or up to 7 reference images, 1080p to 4K.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3",
+      "21:9",
+      "2:3",
+      "3:2"
+    ],
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "default": "1K"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0281,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0375
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1,
+              "lte": 3
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0375
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1,
+              "lte": 3
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0562
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 1,
+              "lte": 3
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0937
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 4
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 4
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0749
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "range",
+              "gte": 4
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1405
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135746"
+  },
+  {
+    "id": "tokenhub/vidu-video-q2",
+    "provider": "tokenhub",
+    "displayName": "Vidu Q2 (TokenHub)",
+    "description": "Vidu Q2 through Tencent TokenHub — text or up to 3 reference images, 1–10 s, 540p to 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "maxRefImages": 3,
+    "refRoles": [
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.1638,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0234
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0094
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0375
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0234
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0937
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0234
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.3044
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135756"
+  },
+  {
+    "id": "tokenhub/vidu-video-q2-pro",
+    "provider": "tokenhub",
+    "displayName": "Vidu Q2 Pro (TokenHub)",
+    "description": "Vidu Q2 Pro through Tencent TokenHub — a first frame, first/last frames or up to 3 references, 1–10 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 3,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2574,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0234
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0234
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0375
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            },
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 1
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.0375
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0703
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1873
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0234
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1171
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0234
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0703
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.3513
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0703
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135756"
+  },
+  {
+    "id": "tokenhub/vidu-video-q2-turbo",
+    "provider": "tokenhub",
+    "displayName": "Vidu Q2 Turbo (TokenHub)",
+    "description": "Vidu Q2 Turbo through Tencent TokenHub — a first frame or first/last frames, 1–10 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2246,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "addUsd",
+            "value": -0.0094
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0094
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0187
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.1171
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0703
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135756"
+  },
+  {
+    "id": "tokenhub/vidu-video-q3",
+    "provider": "tokenhub",
+    "displayName": "Vidu Q3 (TokenHub)",
+    "description": "Vidu Q3 through Tencent TokenHub — reference-to-video from up to 3 images, 3–16 s, with sound.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "maxRefImages": 3,
+    "refRoles": [
+      {
+        "name": "reference",
+        "required": true,
+        "min": 1,
+        "max": 3
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.281,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0562
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0328
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0703
+          }
+        }
+      ]
+    },
+    "tags": [
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135756"
+  },
+  {
+    "id": "tokenhub/vidu-video-q3-pro",
+    "provider": "tokenhub",
+    "displayName": "Vidu Q3 Pro (TokenHub)",
+    "description": "Vidu Q3 Pro through Tencent TokenHub — text, a first frame or first/last frames, 1–16 s, with sound.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4685,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0937
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0422
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1124
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135756"
+  },
+  {
+    "id": "tokenhub/vidu-video-q3-turbo",
+    "provider": "tokenhub",
+    "displayName": "Vidu Q3 Turbo (TokenHub)",
+    "description": "Vidu Q3 Turbo through Tencent TokenHub — text, frames or up to 3 references, 3–16 s, with sound.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 3,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.281,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0562
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0328
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0609
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0468
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0187
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "range",
+              "gte": 1
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0609
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135756"
+  },
+  {
+    "id": "tokenhub/vidu-video-q4-preview",
+    "provider": "tokenhub",
+    "displayName": "Vidu Q4 Preview (TokenHub)",
+    "description": "Vidu Q4 Preview through Tencent TokenHub — a first frame or up to 15 references, 3–16 s, 540p to 4K, with sound.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 15,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 15
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p",
+          "2K",
+          "4K"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.445,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.089
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0422
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1124
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.178
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.3653
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135756"
+  },
+  {
+    "id": "tokenhub/wand-vega-video-1.0-lite",
+    "provider": "tokenhub",
+    "displayName": "WAND-Vega Video 1.0 Lite",
+    "description": "Tencent Cloud WAND-Vega video on TokenHub — text, first/last frames or up to 9 reference images; 4–15 s, 768P to 4K.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "768P",
+          "1080P",
+          "2K",
+          "4K"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.281,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0562
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080P"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0749
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.0937
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1124
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 6
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0225
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 7
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.0675
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references",
+              "is": "eq",
+              "value": 9
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.09
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/138195"
+  },
+  {
+    "id": "tokenhub/yt-video-2.0",
+    "provider": "tokenhub",
+    "displayName": "YouTu Video 2.0 (TokenHub)",
+    "description": "Tencent YouTu image-to-video on TokenHub — 5 s at 480p, 720p or 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 200
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 5
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "fps",
+        "kind": "int",
+        "default": 30,
+        "min": 16,
+        "max": 30,
+        "values": [
+          16,
+          24,
+          30
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.7494,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "480p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.2997
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video"
+    ],
+    "referenceUrl": "https://cloud.tencent.com/document/product/1823/135716"
   },
   {
     "id": "tripo/animate",
@@ -7781,8 +45236,12 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [],
+    "worksOn": "sourceModel",
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -7794,17 +45253,89 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "source_model",
-        "kind": "source_model"
+        "kind": "source_model",
+        "label": "Source rig",
+        "description": "A tripo/rig generation made on the same Tripo account (Tripo takes only its task id).",
+        "formats": [
+          "glb",
+          "fbx"
+        ],
+        "requiresSkin": true
       },
       {
         "name": "animations",
-        "kind": "animation_list"
+        "kind": "animation_list",
+        "label": "Animations",
+        "description": "Up to five Tripo presets, in order, each named as given.",
+        "maxItems": 5,
+        "presets": [
+          {
+            "id": "preset:idle",
+            "canonical": "idle"
+          },
+          {
+            "id": "preset:walk",
+            "canonical": "walk"
+          },
+          {
+            "id": "preset:run",
+            "canonical": "run"
+          },
+          {
+            "id": "preset:jump",
+            "canonical": "jump"
+          },
+          {
+            "id": "preset:fall",
+            "canonical": "fall"
+          },
+          {
+            "id": "preset:slash",
+            "canonical": "attack_melee"
+          },
+          {
+            "id": "preset:shoot",
+            "canonical": "attack_ranged"
+          },
+          {
+            "id": "preset:hurt",
+            "canonical": "hurt"
+          },
+          {
+            "id": "preset:climb",
+            "canonical": "climb"
+          },
+          {
+            "id": "preset:turn",
+            "canonical": "turn"
+          },
+          {
+            "id": "preset:dive"
+          },
+          {
+            "id": "preset:quadruped:walk"
+          },
+          {
+            "id": "preset:hexapod:walk"
+          },
+          {
+            "id": "preset:octopod:walk"
+          },
+          {
+            "id": "preset:serpentine:march"
+          },
+          {
+            "id": "preset:aquatic:march"
+          }
+        ]
       },
       {
         "name": "fps",
         "kind": "int",
         "min": 1,
-        "max": 120
+        "max": 120,
+        "label": "Frames per second",
+        "description": "litegen keys the delivered clips at this rate (Tripo takes none)."
       },
       {
         "name": "output_formats",
@@ -7815,11 +45346,24 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Mesh containers. Tripo emits glb or fbx; litegen derives the rest."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.1
+      "baseCostUsd": 0.1,
+      "unit": "model3d",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perItem",
+            "value": 0.1,
+            "list": "animations"
+          }
+        }
+      ]
     },
     "tags": [
       "animation",
@@ -7843,8 +45387,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToImage"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 1,
@@ -7875,11 +45424,15 @@ export const MODELS: ModelEntry[] = [
           "left",
           "back",
           "right"
-        ]
+        ],
+        "label": "Views",
+        "description": "The sides of the subject to return, one image each, in this order."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.1
+      "baseCostUsd": 0.1,
+      "unit": "request",
+      "rules": []
     },
     "tags": [
       "multiview"
@@ -7902,8 +45455,12 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [],
+    "worksOn": "sourceModel",
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -7915,7 +45472,16 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "source_model",
-        "kind": "source_model"
+        "kind": "source_model",
+        "label": "Source mesh",
+        "description": "The mesh to rig. GLB, FBX, OBJ or STL up to 150 MB; anything else litegen reads is converted.",
+        "formats": [
+          "glb",
+          "fbx",
+          "obj",
+          "stl"
+        ],
+        "maxBytes": 150000000
       },
       {
         "name": "skeleton",
@@ -7929,7 +45495,9 @@ export const MODELS: ModelEntry[] = [
           "serpentine",
           "aquatic",
           "other"
-        ]
+        ],
+        "label": "Skeleton",
+        "description": "The skeleton to rig for (Tripo's rig_type). Omitted, litegen rigs what Tripo's rig-check finds; named, a mesh rig-check reads as another skeleton is refused."
       },
       {
         "name": "joint_naming",
@@ -7941,7 +45509,9 @@ export const MODELS: ModelEntry[] = [
           "unity",
           "unreal"
         ],
-        "default": "vendor"
+        "default": "vendor",
+        "label": "Joint naming",
+        "description": "Joint names for a humanoid rig (Tripo's spec). `vendor` keeps Tripo's own."
       },
       {
         "name": "output_formats",
@@ -7952,11 +45522,15 @@ export const MODELS: ModelEntry[] = [
         ],
         "default": [
           "glb"
-        ]
+        ],
+        "label": "Output formats",
+        "description": "Mesh containers. Tripo emits glb or fbx; litegen derives the rest."
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.25
+      "baseCostUsd": 0.25,
+      "unit": "model3d",
+      "rules": []
     },
     "tags": [
       "rig",
@@ -7980,14 +45554,27 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
       "9:16",
       "1:1"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 7,
     "refRoles": [
       {
@@ -8015,11 +45602,21 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
         "name": "duration_seconds",
         "kind": "int",
         "default": 4,
         "min": 4,
-        "max": 8
+        "max": 8,
+        "values": [
+          4,
+          8
+        ]
       },
       {
         "name": "resolution",
@@ -8028,17 +45625,72 @@ export const MODELS: ModelEntry[] = [
           "360p",
           "720p",
           "1080p"
-        ]
+        ],
+        "default": "720p"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.2,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "360p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "duration_seconds",
+              "is": "eq",
+              "value": 8
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.5
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.4
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-video",
       "reference-to-video"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/model-map"
+    "referenceUrl": "https://platform.vidu.com/docs/overview/model-map"
   },
   {
     "id": "vidu/viduq1",
@@ -8056,8 +45708,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -8066,6 +45724,14 @@ export const MODELS: ModelEntry[] = [
       "4:3",
       "1:1"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 7,
     "refRoles": [
       {
@@ -8093,6 +45759,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "audio",
+        "kind": "bool"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
         "name": "duration_seconds",
         "kind": "int",
         "default": 5,
@@ -8108,7 +45784,9 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.4
+      "baseCostUsd": 0.4,
+      "unit": "video",
+      "rules": []
     },
     "tags": [
       "text-to-video",
@@ -8116,6 +45794,233 @@ export const MODELS: ModelEntry[] = [
       "reference-to-video"
     ],
     "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video"
+  },
+  {
+    "id": "vidu/viduq1-classic",
+    "provider": "vidu",
+    "displayName": "Vidu Q1 Classic",
+    "description": "Vidu Q1 Classic image-to-video and first-last frame, 5 s at 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 5
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1080p"
+        ],
+        "default": "1080p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4,
+      "unit": "video",
+      "rules": []
+    },
+    "tags": [
+      "image-to-video"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/image-to-video"
+  },
+  {
+    "id": "vidu/viduq2",
+    "provider": "vidu",
+    "displayName": "Vidu Q2",
+    "description": "Vidu Q2 text-to-video with native audio, 1-10 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "3:4",
+      "4:3",
+      "1:1"
+    ],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.175,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.025
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.05
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-video",
+      "audio"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video"
   },
   {
     "id": "vidu/viduq2-pro",
@@ -8133,8 +46038,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -8143,6 +46053,14 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "4:3"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 7,
     "refRoles": [
       {
@@ -8170,6 +46088,17 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
         "name": "duration_seconds",
         "kind": "int",
         "default": 5,
@@ -8183,11 +46112,186 @@ export const MODELS: ModelEntry[] = [
           "540p",
           "720p",
           "1080p"
-        ]
+        ],
+        "default": "720p"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.4
+      "baseCostUsd": 0.275,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.025
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.025
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.075
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.2
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.025
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "sent"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.125
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "sent"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.025
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "sent"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.075
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "sent"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "references.reference",
+              "is": "sent"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.375
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.075
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-video",
@@ -8212,8 +46316,13 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 2,
@@ -8237,6 +46346,12 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
         "name": "duration_seconds",
         "kind": "int",
         "default": 5,
@@ -8254,13 +46369,439 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.08
+      "baseCostUsd": 0.08,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.06
+          }
+        }
+      ]
     },
     "tags": [
       "image-to-video",
       "fast"
     ],
     "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video"
+  },
+  {
+    "id": "vidu/viduq2-turbo",
+    "provider": "vidu",
+    "displayName": "Vidu Q2 Turbo",
+    "description": "Vidu Q2 Turbo image-to-video and first-last frame, 2-8 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 2,
+        "max": 8
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.24,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "addUsd",
+            "value": -0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.01
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.02
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.125
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "audio",
+              "is": "eq",
+              "value": true
+            }
+          ],
+          "effect": {
+            "kind": "addUsd",
+            "value": 0.075
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video",
+      "fast"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video"
+  },
+  {
+    "id": "vidu/viduq3",
+    "provider": "vidu",
+    "displayName": "Vidu Q3",
+    "description": "Vidu Q3 reference-to-video (1-7 subject images) with native audio, 3-16 s.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "reference",
+        "required": true,
+        "min": 1,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.035
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.075
+          }
+        }
+      ]
+    },
+    "tags": [
+      "reference-to-video",
+      "audio"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video"
+  },
+  {
+    "id": "vidu/viduq3-mix",
+    "provider": "vidu",
+    "displayName": "Vidu Q3 Mix",
+    "description": "Vidu Q3 Mix reference-to-video (1-7 subject images), 3-15 s, 720p or 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "reference",
+        "required": true,
+        "min": 1,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.6,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.145
+          }
+        }
+      ]
+    },
+    "tags": [
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video"
   },
   {
     "id": "vidu/viduq3-pro",
@@ -8278,8 +46819,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -8288,6 +46835,14 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "4:3"
     ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
     "maxRefImages": 2,
     "refRoles": [
       {
@@ -8309,6 +46864,12 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
         "name": "audio",
         "kind": "bool",
         "default": true
@@ -8332,7 +46893,43 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.5
+      "baseCostUsd": 0.5,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.1
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.12
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
@@ -8342,10 +46939,110 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video"
   },
   {
+    "id": "vidu/viduq3-pro-fast",
+    "provider": "vidu",
+    "displayName": "Vidu Q3 Pro Fast",
+    "description": "Vidu Q3 Pro Fast image-to-video with native audio, 1-16 s, 720p or 1080p.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 20000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 1,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.075
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video",
+      "audio",
+      "fast"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video"
+  },
+  {
     "id": "vidu/viduq3-turbo",
     "provider": "vidu",
     "displayName": "Vidu Q3 Turbo",
-    "description": "Vidu Q3 Turbo text/image/reference/start-end to video with native audio (faster, cheaper Q3).",
+    "description": "Vidu Q3 Turbo text/image/start-end to video with native audio (faster, cheaper Q3).",
     "mediaType": "video",
     "output": "video",
     "task": "generate",
@@ -8357,8 +47054,14 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
-      "multiviewTo3d": false
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
     },
+    "modalities": [
+      "textToVideo",
+      "imageToVideo"
+    ],
     "sizes": [],
     "aspectRatios": [
       "16:9",
@@ -8367,7 +47070,15 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "4:3"
     ],
-    "maxRefImages": 7,
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "unlessReference": false,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 2,
     "refRoles": [
       {
         "name": "first_frame",
@@ -8380,12 +47091,6 @@ export const MODELS: ModelEntry[] = [
         "required": false,
         "min": 0,
         "max": 1
-      },
-      {
-        "name": "reference",
-        "required": false,
-        "min": 0,
-        "max": 7
       }
     ],
     "promptLimits": {
@@ -8393,6 +47098,12 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
       {
         "name": "audio",
         "kind": "bool",
@@ -8402,7 +47113,7 @@ export const MODELS: ModelEntry[] = [
         "name": "duration_seconds",
         "kind": "int",
         "default": 5,
-        "min": 3,
+        "min": 1,
         "max": 16
       },
       {
@@ -8417,13 +47128,210 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.275
+      "baseCostUsd": 0.3,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.035
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.065
+          }
+        }
+      ]
     },
     "tags": [
       "text-to-video",
-      "image-to-video",
-      "reference-to-video"
+      "image-to-video"
     ],
     "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video"
+  },
+  {
+    "id": "vidu/viduq4-preview",
+    "provider": "vidu",
+    "displayName": "Vidu Q4 Preview",
+    "description": "Vidu Q4 Preview — image or reference (up to 15 images) to video with native audio, 3-16 s, up to 4K.",
+    "mediaType": "video",
+    "output": "video",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "imageToVideo"
+    ],
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "aspectRatioFrames": {
+      "roles": [
+        "first_frame"
+      ],
+      "unlessReference": true,
+      "defaultRole": "first_frame"
+    },
+    "maxRefImages": 15,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 15
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 20000
+    },
+    "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 3,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p",
+          "2K",
+          "4K"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.475,
+      "unit": "video",
+      "rules": [
+        {
+          "when": [],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.095
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "540p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.045
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1080p"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.12
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.19
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "perSecond",
+            "value": 0.39
+          }
+        }
+      ]
+    },
+    "tags": [
+      "image-to-video",
+      "reference-to-video",
+      "audio",
+      "premium"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video"
   }
 ];

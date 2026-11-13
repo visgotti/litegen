@@ -25,6 +25,29 @@
 
 use super::*;
 
+/// What these tests write and read through: the scene API, as production
+/// calls it, on a flat mesh and back. They ran the flat `mesh::read` and
+/// `mesh::write`, which nothing in production calls and which differs from it
+/// (flat PLY wrote RGBA colour where the scene path writes RGB; 2026-10-12
+/// review #31).
+fn write(mesh: &Mesh, to: MeshFormat) -> Result<Vec<u8>, MeshError> {
+    mesh.validate()?;
+    if mesh.triangle_count() == 0 {
+        return Err(MeshError::Empty);
+    }
+    let w = write_scene(&pose::from_flat(mesh), to, WriteOptions::default())?;
+    Ok(w.package.files.into_iter().next().ok_or(MeshError::Empty)?.bytes)
+}
+
+fn read(bytes: &[u8], from: MeshFormat) -> Result<Mesh, MeshError> {
+    let r = read_scene(bytes, from, &NoSidecars)?;
+    let mesh = pose::flatten(&r.scene)?;
+    if mesh.triangle_count() == 0 {
+        return Err(MeshError::Empty);
+    }
+    Ok(mesh)
+}
+
 /// A cube with distinct, non-symmetric bounds on every axis, plus normals and
 /// UVs.
 ///
@@ -164,10 +187,14 @@ fn conversion_keeps_every_attribute_the_target_can_carry() {
             assert!(back.normals.is_some(), "{ctx}: normals were dropped");
         }
         assert_eq!(to.keeps_uvs(), back.uvs.is_some(), "{ctx}: uvs disagree with keeps_uvs()");
-        assert_eq!(
-            to.keeps_color(), back.base_color.is_some(),
-            "{ctx}: colour disagrees with keeps_color()",
-        );
+        // Colour as the scene keeps it: a material's, or vertex colours where
+        // the container bakes it into them (OBJ alone, PLY), which the flat
+        // view does not show.
+        let scene = read_scene(&out, to, &NoSidecars).unwrap().scene;
+        let coloured = scene.meshes.iter().flat_map(|m| &m.primitives).any(|p| {
+            p.colors.is_some() || p.material.and_then(|i| scene.materials.get(i)).is_some_and(|m| m.base_color != [1.0; 4])
+        });
+        assert_eq!(to.keeps_color(), coloured, "{ctx}: colour disagrees with keeps_color()");
     }
 }
 
@@ -217,6 +244,12 @@ fn every_reader_rejects_every_other_formats_bytes() {
         let bytes = write(&source, from).unwrap();
         for to in MeshFormat::ALL {
             if from == to {
+                continue;
+            }
+            // `usda` and `usdc` are two names for one USD layer reader: either
+            // takes either encoding (Ruling U10), and what it reads is the
+            // layer the bytes hold, not a mislabelled container.
+            if matches!((from, to), (MeshFormat::Usda, MeshFormat::Usdc) | (MeshFormat::Usdc, MeshFormat::Usda)) {
                 continue;
             }
             assert!(
@@ -285,7 +318,9 @@ fn format_parsing_round_trips_and_rejects_what_we_cannot_convert() {
     }
     // Containers this module does not model, plus noise. A caller must read
     // `None` as "not convertible", never as a reason to fall back to glb.
-    for s in ["usd", "usdc", "blend", "abc", "max", "", "  ", "png"] {
+    // `usd` names either encoding, so it is no container: `usda` and `usdc`
+    // are.
+    for s in ["usd", "blend", "abc", "max", "", "  ", "png"] {
         assert_eq!(MeshFormat::parse(s), None, "{s:?} must not parse");
     }
 }
@@ -596,13 +631,14 @@ fn a_present_but_unreadable_field_is_an_error_not_a_default() {
 #[test]
 fn a_required_extension_is_refused_however_it_is_spelled() {
     // The guard fell through to Ok whenever `extensionsRequired` was not an
-    // array, so a string-valued one bypassed it entirely. Only a separate
-    // per-primitive Draco check caught that case; meshopt had no backstop.
+    // array, so a string-valued one bypassed it entirely, whatever it named.
+    // As an array, it refuses an extension litegen doesn't implement:
+    // `EXT_litegen_mock_undecodable`, an extension nothing implements or
+    // ever will (mesh-gaps item 2, Ruling B17).
     for value in [
         serde_json::json!("KHR_draco_mesh_compression"),
         serde_json::json!("EXT_meshopt_compression"),
-        serde_json::json!(["EXT_meshopt_compression"]),
-        serde_json::json!(["KHR_draco_mesh_compression"]),
+        serde_json::json!(["EXT_litegen_mock_undecodable"]),
     ] {
         let mut doc = triangle_doc();
         doc["extensionsRequired"] = value.clone();
@@ -612,17 +648,18 @@ fn a_required_extension_is_refused_however_it_is_spelled() {
         );
     }
 
-    // And a bufferView carrying meshopt data: the extension only has to appear
-    // in extensionsRequired when its fallback buffer is NOT the BIN chunk, so a
-    // file can declare it in extensionsUsed alone and have its placeholder
-    // bytes read as geometry.
+    // And a bufferView whose meshopt extension doesn't describe the view (no
+    // byteStride or count) is refused for that, though the extension is only
+    // used. A view whose fallback is the BIN chunk, with the extension only
+    // used, is decoded rather than read: glb.rs's
+    // `a_bin_chunk_fallback_is_never_read_as_geometry`.
     let mut doc = triangle_doc();
     doc["extensionsUsed"] = serde_json::json!(["EXT_meshopt_compression"]);
     doc["bufferViews"][0]["extensions"] =
         serde_json::json!({ "EXT_meshopt_compression": { "buffer": 0, "byteLength": 36, "mode": "ATTRIBUTES" } });
     assert!(
         read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err(),
-        "meshopt placeholder bytes were read as geometry",
+        "a meshopt view with no byteStride or count was read",
     );
 }
 
@@ -661,4 +698,89 @@ fn triangle_strips_and_fans_are_not_silently_dropped() {
             }
         }
     }
+}
+
+// ─── Written glTF ───────────────────────────────────────────────────────────
+
+/// glTF 2.0 §5.28.2 on a written document: a skin's `skeleton` "MUST be the
+/// closest common root of the joints hierarchy or a direct or indirect parent
+/// node of the closest common root", so it is each joint or an ancestor of
+/// it. A skin whose joints all hang from one root must name one, since litegen
+/// writes the closest common root wherever there is one. Returns how many
+/// skins name one.
+pub(super) fn skeletons_checked(doc: &serde_json::Value, ctx: &str) -> usize {
+    let nodes = doc["nodes"].as_array().map_or(&[][..], |v| v.as_slice());
+    let mut parent = vec![None; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        for c in n["children"].as_array().into_iter().flatten() {
+            parent[c.as_u64().unwrap() as usize] = Some(i);
+        }
+    }
+    // Bounded by the node count, so a cycle fails instead of hanging.
+    let reaches = |j: usize, k: usize| std::iter::successors(Some(j), |n| parent[*n]).take(nodes.len()).any(|n| n == k);
+    let top = |j: usize| std::iter::successors(Some(j), |n| parent[*n]).take(nodes.len()).last().unwrap_or(j);
+    let mut named = 0;
+    for (si, skin) in doc["skins"].as_array().into_iter().flatten().enumerate() {
+        let joints: Vec<usize> = skin["joints"].as_array().unwrap().iter().map(|j| j.as_u64().unwrap() as usize).collect();
+        let Some(k) = skin.get("skeleton") else {
+            let tops: Vec<usize> = joints.iter().map(|&j| top(j)).collect();
+            assert!(
+                tops.iter().any(|t| *t != tops[0]) || tops.is_empty(),
+                "{ctx}: skin {si} names no skeleton, though every joint hangs from root {}",
+                tops[0]
+            );
+            continue;
+        };
+        let root = k.as_u64().unwrap_or_else(|| panic!("{ctx}: skin {si}'s skeleton {k} is not a node index")) as usize;
+        for &j in &joints {
+            assert!(reaches(j, root), "{ctx}: skin {si}'s skeleton {root} is neither joint {j} nor an ancestor of it");
+        }
+        named += 1;
+    }
+    named
+}
+
+/// Every skinned fixture, as it is and naming no skeleton, both directly and
+/// read back from every container that carries skins, plus an FBX that
+/// Assimp wrote. Each is written as GLB and as glTF, and every skin keeps the
+/// rules above. The writer fills in a skeleton the scene doesn't name
+/// (leftover e of the 2026-10-30 review), and the Khronos validator calls a
+/// wrong one an error.
+#[test]
+fn every_written_gltf_skeleton_is_an_ancestor_or_self_of_its_joints() {
+    let opts = WriteOptions::default();
+    let mut sources: Vec<(String, Scene)> = Vec::new();
+    for (name, fixture) in fixtures::all().into_iter().filter(|(_, s)| !s.skins.is_empty()) {
+        let mut unnamed = fixture.clone();
+        for s in unnamed.skins.iter_mut() {
+            s.skeleton = None;
+        }
+        for (variant, scene) in [("", &fixture), (" naming no skeleton", &unnamed)] {
+            sources.push((format!("{name}{variant}"), scene.clone()));
+            for from in MeshFormat::ALL.into_iter().filter(|f| f.capabilities(opts).skinning) {
+                let w = write_scene(scene, from, opts).unwrap_or_else(|e| panic!("{name}{variant}: write {from}: {e}"));
+                let side = package::MemorySidecars { files: &w.package.files };
+                let back = read_scene(&w.package.files[0].bytes, from, &side)
+                    .unwrap_or_else(|e| panic!("{name}{variant}: read {from}: {e}"))
+                    .scene;
+                sources.push((format!("{name}{variant}, via {from}"), back));
+            }
+        }
+    }
+    let assimp = include_bytes!("testdata/fbx/skinned_small_assimp_7500.fbx");
+    sources.push(("Assimp's FBX".into(), read_scene(assimp, MeshFormat::Fbx, &NoSidecars).unwrap().scene));
+
+    let mut checked = 0;
+    for (source, scene) in &sources {
+        for to in [MeshFormat::Glb, MeshFormat::Gltf] {
+            let w = write_scene(scene, to, opts).unwrap_or_else(|e| panic!("{source} -> {to}: {e}"));
+            let bytes = &w.package.files[0].bytes;
+            let doc = match to {
+                MeshFormat::Glb => glb::json_chunk(bytes),
+                _ => serde_json::from_slice(bytes).unwrap(),
+            };
+            checked += skeletons_checked(&doc, &format!("{source} -> {to}"));
+        }
+    }
+    assert!(checked > 0, "no written skin named a skeleton, so nothing was checked");
 }

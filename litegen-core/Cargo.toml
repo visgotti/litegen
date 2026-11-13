@@ -24,12 +24,19 @@ rmcp = { version = "3.8", default-features = false, features = ["base64", "serve
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["full"] }
+# The server loop (src/serve.rs) builds hyper's connections itself, as
+# axum::serve does, so it can arm hyper's header timer and bound the stop.
+# Already locked through axum and reqwest, with these features.
+hyper-util = { version = "0.1", features = ["server", "http1", "http2", "service", "tokio"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # YAML parsing for capability schemas
 serde_yaml = "0.9"
+# A catalog string's `pattern` (ParamSpecString), checked at load and enforced
+# by the validator. Already in the lock (utoipa-gen, jsonschema and wiremock).
+regex = "1"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
@@ -116,25 +123,51 @@ futures = "0.3"
 # Hex encoding
 hex = "0.4"
 
-# 3D mesh conversion (src/mesh). Both are already compiled into the binary
-# through other dependencies (miniz_oxide via flate2/png, quick-xml via
-# rust-s3), so naming them here adds no code: DEFLATE for ZIP entries (USDZ,
-# 3MF) and FBX arrays, XML for 3MF and Collada.
+# 3D mesh conversion (src/mesh). miniz_oxide is already compiled into the
+# binary through flate2/png, so naming it adds no code: DEFLATE for ZIP
+# entries (USDZ, 3MF) and FBX arrays. quick-xml reads 3MF and Collada, which
+# are uploaded input: 0.41 bounds the namespace declarations it stores per tag
+# (RUSTSEC-2026-0195) and checks duplicate attributes in linear time
+# (RUSTSEC-2026-0194). rust-s3 0.38 and its aws-creds use 0.41 too, so the
+# binary links one copy.
 miniz_oxide = "0.8"
-quick-xml = "0.32"
+quick-xml = "0.41"
+# Draco geometry (glTF KHR_draco_mesh_compression), in src/mesh/draco.rs
+# only: pure Rust, `unsafe_code = "forbid"`, pinned exactly (an upgrade reruns
+# the Draco tests). Decoder only, with valence EdgeBreaker, which 10 of the 16
+# Khronos Draco samples use; point clouds and pre-2.2 streams stay refused.
+draco-core = { version = "=2.3.3", default-features = false, features = ["decoder", "edgebreaker_valence_decode"] }
+# Zstandard (KTX2 supercompression scheme 2), in src/mesh/ktx2.rs only: a pure
+# Rust decoder, pinned exactly (an upgrade reruns the Zstandard tests, the
+# reference-`zstd` corpus, Miri and `cargo audit`). With these features it
+# has no runtime dependencies. The output is capped at the level's exact
+# size, and a frame that names a dictionary is refused.
+ruzstd = { version = "=0.9.1", default-features = false, features = ["std"] }
 
 # CSV serialization
 csv = "1.3"
 
-# S3-compatible object storage
-rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
+# S3-compatible object storage. 0.38 is on reqwest 0.12 and quick-xml 0.41
+# (0.35 brought reqwest 0.11's rustls 0.21 and quick-xml 0.32 with it).
+rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls"] }
 
-# OAuth2 / OIDC
-oauth2 = "4"
-openidconnect = "3"
+# Sign-in with GitHub and Google calls the providers with reqwest
+# (api/handlers/oauth.rs), so no OAuth2/OIDC crate is linked.
 
 # URL encoding (used in OAuth redirect URLs)
 urlencoding = "2"
+
+# Redis shared by replicas (src/shared). TLS is rustls, as sqlx and rust-s3
+# use; `tls-rustls-insecure` is what LITEGEN_REDIS_SSL_CERT_REQS=none needs.
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "tls-rustls-insecure", "script"] }
+# Loads the system's root certificates for the CA bundle that
+# LITEGEN_REDIS_SSL_CA_CERTS adds to: redis replaces its roots with a
+# bundle it is given. The version redis itself uses, so the lock gains nothing.
+rustls-native-certs = "0.8"
+# redis builds its TLS client config with rustls's process-wide default crypto
+# provider, and rustls panics when it must pick one of two (sqlx brings ring,
+# litegen uses aws-lc-rs): src/shared installs aws-lc-rs. Already in the lock.
+rustls = { version = "0.23", default-features = false, features = ["std", "aws-lc-rs"] }
 
 [dev-dependencies]
 jsonschema = "0.60"

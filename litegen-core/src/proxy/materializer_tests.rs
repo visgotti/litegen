@@ -23,7 +23,7 @@ mod tests {
             docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.01, variable_pricing: Vec::new() },
             capabilities: ModelCapabilityFlags { text_to_image: true, ..Default::default() },
-            prompt: PromptSpec { required: true, min_length: None, max_length: None },
+            prompt: PromptSpec { required: true, min_length: None, max_length: None, required_for_text_to_video: false },
             params: Default::default(),
             ref_inputs: Some(RefInputSpec {
                 max_total: 2,
@@ -37,6 +37,8 @@ mod tests {
                 ]),
             }),
             extra_allowlist: vec![],
+            extra_params: Default::default(),
+            litegen_params: Default::default(),
             tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         }
@@ -173,6 +175,37 @@ mod tests {
         }
     }
 
+    /// P15 (timing; run alone): decoding large base64 references for a
+    /// multipart vendor holds no async worker. Today a task queued behind
+    /// the decode waited as long as it took.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn decoding_a_large_reference_leaves_the_runtime_free() {
+        use std::collections::HashMap;
+        let schema = schema_with_format(RefProviderFormat::Multipart(crate::capabilities::RefProviderFormatMultipart {
+            field_map: HashMap::from([("init".into(), "image".into()), ("mask".into(), "mask".into())]),
+        }));
+        let raw = vec![7u8; 15 * 1024 * 1024];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
+        // The materializer converts what the validator let through; four
+        // references make the decode heavy enough to measure in a debug build.
+        let refs: Vec<_> = ["init", "mask", "init", "mask"].iter().map(|role| ref_(RefImageKind::Base64, &b64, role)).collect();
+        let mat = Arc::new(Materializer::new(Arc::new(InMemoryStorage::default()), reqwest_stub()));
+        let started = std::time::Instant::now();
+        mat.materialize(&schema, refs.clone(), &Default::default()).await.unwrap();
+        let alone = started.elapsed();
+        assert!(alone >= std::time::Duration::from_millis(200), "too light to show a stall: {alone:?}");
+        let (out, stall) = crate::util::blocking::longest_stall_while({
+            let mat = mat.clone();
+            async move { mat.materialize(&schema, refs, &Default::default()).await.unwrap() }
+        })
+        .await;
+        match &out.refs[0].form {
+            MaterializedRefForm::MultipartField { bytes, .. } => assert_eq!(bytes.len(), raw.len()),
+            other => panic!("expected multipart, got {other:?}"),
+        }
+        assert!(stall < alone / 4, "the runtime stalled {stall:?} while decoding (the decode alone takes {alone:?})");
+    }
+
     // Helper: an in-memory fake of the storage backend.
     #[derive(Default)]
     pub struct InMemoryStorage {
@@ -207,8 +240,8 @@ mod tests {
 
     fn publisher(base: &str) -> (Arc<crate::proxy::ref_publish::RefPublisher>, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap().keep();
-        let store: Arc<dyn crate::proxy::storage::ImageStorage> =
-            Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir.clone(), base.into()));
+        let store: Arc<dyn crate::store::ImageStorage> =
+            Arc::new(crate::store::LocalModel3dStorage::new(dir.clone(), base.into()));
         (Arc::new(crate::proxy::ref_publish::RefPublisher::new(store, base.into())), dir)
     }
 

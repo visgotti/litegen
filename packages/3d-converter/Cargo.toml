@@ -1,0 +1,33 @@
+# The 3D converter packages: litegen-core/src/mesh/ compiled as its own crate
+# (mesh/), the typed high-level API every binding wraps (core/), and the npm
+# (js/) and PyPI (python/) bindings. Its own workspace and target/, so peers'
+# litegen-core builds never compile it and its builds never take their lock.
+[workspace]
+members = ["mesh", "core", "js", "python"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+license = "MIT"
+edition = "2024"
+rust-version = "1.98"
+
+# Native builds (the Python extension, the core's tests in release): fat LTO
+# and one codegen unit, so mesh's codecs inline across crate boundaries.
+# Unwinding stays on: PyO3 turns a panic into PanicException, not an abort.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = "symbols"
+
+# The wasm build. wasm32-unknown-unknown cannot unwind, so abort drops the
+# landing pads; wasm-bindgen and wasm-opt strip, so names are kept for them.
+# opt-level 3, chosen by measurement (js/README.md, "How it is built"): on
+# js/scripts/bench.mjs it is 14-17% faster than "s", which is 17% smaller.
+[profile.release-wasm]
+inherits = "release"
+opt-level = 3
+panic = "abort"
+strip = "none"

@@ -1,9 +1,10 @@
 models:
   # Kling (api-singapore.klingai.com: "The API endpoint has been changed from
   # https://api.klingai.com to https://api-singapore.klingai.com"; other regions
-  # via api_base). Auth: per-request JWT (HS256) from access_key (key_id) +
-  # secret_key (key_secret). Async tasks.
-  # @see https://kling.ai/document-api/api/get-started/authentication.md (2026-10-30)
+  # via api_base). Auth: an API key, "Authorization = "Bearer XXX"" ("API Key
+  # authentication must be used to call Kling AI API"); the access/secret key
+  # pair is "only applicable to legacy version design standards". Async tasks.
+  # @see https://kling.ai/document-api/api/get-started/authentication.md (2026-11-03)
   # ─── Image (Kolors) ───────────────────────────────────────────────────────
   # Kling Image 2.1: the successor to Image 2.0 / 1.5 (both retired 2026-09-15).
   # Same POST /v1/images/generations endpoint, sent as model_name `kling-v2-1`.
@@ -19,7 +20,10 @@ models:
     # Text-to-image at 1K or 2K: 4 units ($0.014) per image. Image-to-image
     # (a reference image) is 8 units ($0.028).
     # @see https://kling.ai/document-api/pricing/base/image.md (2026-09-11)
-    pricing: { base_cost_usd: 0.014 }
+    pricing:
+      base_cost_usd: 0.014
+      variable_pricing:
+        - { when: { references: '*' }, usd: 0.028 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 2500 }
     params:
@@ -30,17 +34,26 @@ models:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1","4:3","3:4","3:2","2:3","21:9"]
         default: "16:9"
+      # "resolution: 1k (default) | 2k", the same price: litegen's 1K and 2K,
+      # sent as Kling's `resolution`.
+      # @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-11-03)
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
     ref_inputs:
       max_total: 1
       default_role: subject
       provider_format: { form: base64 }
       roles:
         subject: { required: false, min_count: 0, max_count: 1 }
-    # image_reference: subject | face. resolution: 1k (default) | 2k, same
-    # price. image_fidelity and human_fidelity (0-1; human_fidelity only with
-    # image_reference subject): "Only kling-v2-1 supports this parameter".
+    # image_reference: subject | face. image_fidelity and human_fidelity (0-1;
+    # human_fidelity only with image_reference subject): "Only kling-v2-1
+    # supports this parameter".
     # @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-10-12)
-    extra_allowlist: [image_reference, resolution, image_fidelity, human_fidelity]
+    extra_allowlist: [image_reference, image_fidelity, human_fidelity]
+    extra_params:
+      # From Kling's image API (drift snapshot kling/images.txt).
+      image_reference: { kind: string, enum_values: ["subject", "face"] }
+      image_fidelity: { kind: float, min: 0, max: 1, default: 0.5 }
+      human_fidelity: { kind: float, min: 0, max: 1, default: 0.45 }
     tags: [text-to-image, image-to-image]
 
   # Kling Image 3.0: the same POST /v1/images/generations endpoint, sent as
@@ -69,62 +82,74 @@ models:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1","4:3","3:4","3:2","2:3","21:9"]
         default: "16:9"
+      # "resolution: 1k (default) | 2k", the same price: litegen's 1K and 2K,
+      # sent as Kling's `resolution`.
+      # @see https://kling.ai/document-api/api/image/3-0-omni/image-generation.md (2026-11-03)
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
     ref_inputs:
       max_total: 1
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    # resolution: 1k (default) | 2k, same price. image_reference (subject |
-    # face) is feature reference, "Not Supported" on Image 3.0; image_fidelity
-    # / human_fidelity are kling-v2-1 only; element_list needs element ids
-    # from the Element Management API, which we do not wrap.
-    extra_allowlist: [resolution]
+    # image_reference (subject | face) is feature reference, "Not Supported"
+    # on Image 3.0; image_fidelity / human_fidelity are kling-v2-1 only;
+    # element_list needs element ids from the Element Management API, which
+    # we do not wrap.
+    extra_allowlist: []
     tags: [text-to-image, image-to-image]
 
   # ─── Video ────────────────────────────────────────────────────────────────
   # Kling 2.5 Turbo and 2.6: the successors to 1.6 / 2.1 (both retired
-  # 2026-09-15). Both were in the model_name enums of the legacy
-  # /v1/videos/text2video and /v1/videos/image2video endpoints the adapter
-  # calls; `video-` and `kling/` are stripped, so the ids reach Kling unchanged.
-  # Kling stopped documenting those legacy endpoints when 1.6 / 2.1 retired (it
-  # says they keep working); per-model limits are re-read from the new API's
-  # pages for the same model, which state the same rules under new field names.
-  # @see https://kling.ai/document-api/api/video/2-5-turbo/text-to-video.md (2026-10-12)
-  # @see https://kling.ai/document-api/api/video/2-6/image-to-video.md (2026-10-12)
-  # Per-model support comes from the capability map, which the request-body
-  # notes defer to ("Support varies by model version and video mode"):
-  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
-  #   - duration: 5 s or 10 s only. The schema can only express a range, so
-  #     5-10 is advertised; 6-9 s will be refused by Kling.
-  #   - mode: std = 720p, pro = 1080p. Neither model lists 4K, so `4k` fails.
-  #   - first + last frame: 1080p (mode pro) only; last-frame-only is not
-  #     supported, so last_frame needs a first_frame.
-  #   - cfg_scale: "kling-v2.x models do not support this parameter".
-  #   - camera_control: "Not Supported" for both.
+  # 2026-09-15), on Kling's current API design since 2026-11-03 — POST
+  # /text-to-video/<model> and /image-to-video/<model> (path_model in
+  # video/kling.rs: kling-2.5-turbo, kling-2.6), an API key as the credential.
+  # @see https://kling.ai/document-api/api/video/2-5-turbo/text-to-video.md (2026-11-09)
+  # @see https://kling.ai/document-api/api/video/2-6/image-to-video.md (2026-11-09)
+  # Per-model support comes from the capability map (its tables cover
+  # single/multi-shot, native audio, first/last frame, multi-keyframes and
+  # voice reference); the request bodies carry the enums:
+  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-11-09)
+  #   - duration: "`settings.duration` | int | No | `5` | `5`, `10`" on all
+  #     four pages (`values`).
+  #   - settings.resolution: "`720p`, `1080p`" (default `720p`). Neither model
+  #     lists 4K (the capability map's Models table: "720P, 1080P").
+  #   - first + last frame: "Supported: Only supports 1080P" (2.5 Turbo),
+  #     "Supported: Only supports 1080P silent videos" (2.6); the
+  #     image-to-video pages: "last-frame-only video generation is not
+  #     supported", so last_frame needs a first_frame (the adapter refuses
+  #     the rest).
+  #   - no cfg_scale or camera_control: neither field is in any of the four
+  #     request bodies, and the capability map has no row for either.
   - id: kling/video-kling-v2-5-turbo
     provider: kling
     media_type: video
     display_name: Kling Video v2.5 Turbo
-    description: Kling 2.5 Turbo text/image-to-video (first frame + image_tail last frame).
+    description: Kling 2.5 Turbo text/image-to-video (first frame, or first and last frame at 1080p).
     docs_url: https://kling.ai/document-api/api/video/2-5-turbo/text-to-video
-    # Default request (mode std = 720p, 5 s, no audio): 0.3 units ($0.042)/s
-    # x 5 s = $0.21. 1080p (mode pro) is $0.07/s.
-    # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
+    # Default request (720p, 5 s, no audio): "0.3 Units ($0.042) /s" x 5 s =
+    # $0.21. 1080p is "0.5 Units ($0.07) /s".
+    # @see https://kling.ai/document-api/pricing/base/video.md (re-read 2026-11-03)
     pricing:
       base_cost_usd: 0.21
       variable_pricing:
         - { per_second_usd: 0.042 }
-        - { when: { extra.mode: pro }, per_second_usd: 0.07 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.07 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
-      negative_prompt: { kind: string, max_length: 2500 }
       duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0, values: [5.0, 10.0] }
+      # "`settings.resolution` … `720p`, `1080p`" (default 720p), sent as is.
+      # @see https://kling.ai/document-api/api/video/2-5-turbo/text-to-video.md (2026-11-03)
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1"]
         default: "16:9"
+        # The image-to-video body's settings are `settings.resolution` and
+        # `settings.duration`: no aspect_ratio, so a frame sets the shape (E5).
+        # @see https://kling.ai/document-api/api/video/2-5-turbo/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -132,7 +157,7 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [mode]
+    extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
   - id: kling/video-kling-v2-6
@@ -141,27 +166,34 @@ models:
     display_name: Kling Video v2.6
     description: Kling 2.6 text/image-to-video with optional native audio.
     docs_url: https://kling.ai/document-api/api/video/2-6/text-to-video
-    # Default request (mode std = 720p, 5 s, sound off): 0.3 units ($0.042)/s
-    # x 5 s = $0.21. 1080p silent is $0.07/s; 1080p with native audio
-    # (sound: on) is $0.14/s.
-    # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
+    # Default request (720p, 5 s, no audio): "0.3 Units ($0.042) /s" x 5 s =
+    # $0.21. 1080p silent is $0.07/s; 1080p with native audio "1.0 Unit
+    # ($0.14) /s".
+    # @see https://kling.ai/document-api/pricing/base/video.md (re-read 2026-11-03)
     pricing:
       base_cost_usd: 0.21
       variable_pricing:
         - { per_second_usd: 0.042 }
-        - { when: { extra.mode: pro }, per_second_usd: 0.07 }
-        - { when: { extra.mode: pro, audio: true }, per_second_usd: 0.14 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.07 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.14 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
-      # PixelGenie L10: audio is sent as sound on | off (default off).
+      # PixelGenie L10: audio is sent as `settings.audio` native | off (default off).
       audio: { kind: bool, default: false }
-      negative_prompt: { kind: string, max_length: 2500 }
       duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0, values: [5.0, 10.0] }
+      # "`settings.resolution` … `720p`, `1080p`" (default 720p), sent as is.
+      # @see https://kling.ai/document-api/api/video/2-6/text-to-video.md (2026-11-03)
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1"]
         default: "16:9"
+        # The image-to-video body's settings are `settings.audio`,
+        # `settings.resolution` and `settings.duration`: no aspect_ratio, so a
+        # frame sets the shape (E5).
+        # @see https://kling.ai/document-api/api/video/2-6/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -169,25 +201,23 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    # sound: on | off (default off). Native audio is 1080p only (mode pro;
-    # "720P supports silent videos only"), and first + last frame is 1080p
-    # silent only. Kling contradicts itself on 2.6 audio (2026-10-30): the
+    # `settings.audio` native | off (default off). Native audio is 1080p only
+    # ("When generating videos with native audio, only 1080P resolution is
+    # supported"), and first + last frame is 1080p silent only. Kling contradicts itself on 2.6 audio (2026-10-30): the
     # capability map says "Kling 2.6: Not Supported" for Native Audio, while
     # the 2.6 API page has "`settings.audio` … `native`, `off`" and the price
     # page lists "With Native Audio x No Voice Reference … 1.0 Unit ($0.14) /s".
     # Kept until a live run settles it.
-    extra_allowlist: [mode]
+    extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
-  # Kling 3.0 on the same legacy /v1/videos/text2video and
-  # /v1/videos/image2video endpoints: both `model_name` enums list kling-v3,
-  # and `video-` and `kling/` are stripped, so the id reaches Kling unchanged.
-  # (Kling 3.0's own docs page describes the newer /text-to-video/kling-3.0
-  # API; the legacy endpoints are the ones the adapter speaks.)
-  # @see https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md (2026-09-11)
-  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
+  # Kling 3.0 on Kling's current API design (2026-11-03): POST
+  # /text-to-video/kling-3.0 and /image-to-video/kling-3.0 (path_model in
+  # video/kling.rs), an API key as the credential.
+  # @see https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md (2026-11-03)
+  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-11-03)
   #   - duration: 3~15 s (the `duration` enum is every whole second 3-15).
-  #   - mode: std = 720p, pro = 1080p, 4k = 4K; Kling 3.0 lists all three.
+  #   - settings.resolution: 720p, 1080p, 4k.
   #   - first + last frame: "Supported" at every resolution; last-frame-only
   #     is not supported, so last_frame needs a first_frame.
   #   - native audio and multi-shot: "Supported"; camera control, motion
@@ -198,29 +228,36 @@ models:
     display_name: Kling Video v3
     description: Kling 3.0 text/image-to-video with native audio, multi-shot and up to 4K.
     docs_url: https://kling.ai/document-api/api/video/3-0-omni/text-to-video
-    # Default request (mode std = 720p, 5 s, sound off): 0.6 units ($0.084)/s
-    # x 5 s = $0.42. 1080p is $0.112/s silent, $0.168/s with native audio;
-    # 720p with audio is $0.126/s; 4K is $0.42/s either way.
-    # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
+    # Default request (720p, 5 s, no audio): "0.6 Units ($0.084) /s" x 5 s =
+    # $0.42. 1080p is $0.112/s silent, $0.168/s with native audio; 720p with
+    # audio is $0.126/s; 4K is "3.0 Units ($0.42) /s" either way.
+    # @see https://kling.ai/document-api/pricing/base/video.md (re-read 2026-11-03)
     pricing:
       base_cost_usd: 0.42
       variable_pricing:
         - { per_second_usd: 0.084 }
         - { when: { audio: true }, per_second_usd: 0.126 }
-        - { when: { extra.mode: pro }, per_second_usd: 0.112 }
-        - { when: { extra.mode: pro, audio: true }, per_second_usd: 0.168 }
-        - { when: { extra.mode: 4k }, per_second_usd: 0.42 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.112 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.168 }
+        - { when: { resolution: 4k }, per_second_usd: 0.42 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
-      # PixelGenie L10: audio is sent as sound on | off (default off).
+      # PixelGenie L10: audio is sent as `settings.audio` native | off (default off).
       audio: { kind: bool, default: false }
-      negative_prompt: { kind: string, max_length: 2500 }
       duration_seconds: { kind: float, min: 3.0, max: 15.0, default: 5.0 }
+      # "`settings.resolution` … `720p`, `1080p`, `4k`" (default 720p), sent as is.
+      # @see https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md (2026-11-03)
+      resolution: { kind: string, enum_values: [720p, 1080p, 4k], default: 720p }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1"]
         default: "16:9"
+        # The image-to-video body's settings are `settings.multi_shot`,
+        # `settings.audio`, `settings.resolution` and `settings.duration`: no
+        # aspect_ratio, so a frame sets the shape (E5).
+        # @see https://kling.ai/document-api/api/video/3-0-omni/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -228,13 +265,135 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    # mode: std | pro | 4k. sound: on | off (default off). multi_shot (bool),
-    # shot_type (customize | intelligence) and multi_prompt (up to 6 shots,
-    # 512 characters each, durations summing to the total) drive multi-shot;
-    # shot_type customize takes multi_prompt in place of the prompt,
-    # intelligence still needs the prompt. cfg_scale is not documented for
-    # Kling 3.0 (its own API has no such setting), so it is not allowlisted;
-    # voice_list is voice control ("Not Supported"); element_list needs
-    # Element Management ids, which we do not wrap.
-    extra_allowlist: [mode, multi_shot, shot_type, multi_prompt]
+    # `settings`: resolution 720p | 1080p | 4k, audio native | off (canonical
+    # `audio`), duration 3-15, aspect_ratio on text-to-video, and multi_shot
+    # ("Whether to generate multi-shot video", default true) — the one
+    # allowlisted extra, sent inside `settings`. Multi-shot itself is written
+    # in the prompt ("shot n, m, words;", up to 6 shots of ≤ 512 characters),
+    # so the legacy shot_type / multi_prompt are gone, and the body has no
+    # negative prompt ("The prompt can include positive and negative
+    # descriptions"). Elements need Element Management ids, which we do not wrap.
+    # @see https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md (2026-11-03)
+    extra_allowlist: [multi_shot]
+    extra_params:
+      # From Kling's video API (drift snapshots kling/t2v-3-0.txt, i2v-3-0.txt).
+      multi_shot: { kind: bool, default: true }
+    tags: [text-to-video, image-to-video]
+
+  # Kling 3.0 Turbo on Kling's current API design: POST
+  # /text-to-video/kling-3.0-turbo and /image-to-video/kling-3.0-turbo
+  # (path_model in video/kling.rs), an API key as the credential.
+  # @see https://kling.ai/document-api/api/video/3-0-turbo/text-to-video.md (2026-11-03)
+  # @see https://kling.ai/document-api/api/video/3-0-turbo/image-to-video.md (2026-11-03)
+  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-11-03)
+  #   - "Kling 3.0 Turbo | Text, Image | 3~15s | 720P, 1080P"; "First/Last
+  #     Frame … Supported: First frame only" — image-to-video's
+  #     "`contents[].type` … `prompt`, `first_frame`", so no last_frame role.
+  #   - no `settings.audio`: the price page lists 3.0 Turbo only "With Native
+  #     Audio", so every clip has sound and `audio` is not declared.
+  #   - frames: "no less than 300px", ratio "1:2.5 to 2.5:1", ≤ 50MB (can't
+  #     express).
+  - id: kling/video-kling-v3-turbo
+    provider: kling
+    media_type: video
+    display_name: Kling Video v3 Turbo
+    description: Kling 3.0 Turbo text/image-to-video (first frame), 3-15 s, always with native audio.
+    docs_url: https://kling.ai/document-api/api/video/3-0-turbo/text-to-video
+    # "Kling 3.0 Turbo | With Native Audio | Per second (Total duration =
+    # Output duration) | 0.8 Units ($0.112) /s | 1.0 Unit ($0.14) /s" (720P |
+    # 1080P). Default request (720p, 5 s): $0.112 x 5 = $0.56.
+    # @see https://kling.ai/document-api/pricing/base/video.md (2026-11-03)
+    pricing:
+      base_cost_usd: 0.56
+      variable_pricing:
+        - { per_second_usd: 0.112 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.14 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # Text-to-video: "The content length cannot exceed 3072 characters";
+    # image-to-video's prompt item "cannot exceed 2500 characters" — one
+    # limit serves both modes.
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "`settings.duration` | int | No | `5` | `3` … `15`": whole seconds (C5).
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      # "`settings.resolution` … `720p`, `1080p`" (default 720p), sent as is.
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+      # "`settings.aspect_ratio` … `16:9`, `9:16`, `1:1`" — text-to-video only;
+      # image-to-video takes the frame's shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1"]
+        default: "16:9"
+        # The image-to-video body's settings are `settings.resolution` and
+        # `settings.duration`: no aspect_ratio (E5).
+        # @see https://kling.ai/document-api/api/video/3-0-turbo/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  # Kling 4.0 on Kling's current API design: POST /text-to-video/kling-4.0 and
+  # /image-to-video/kling-4.0 (path_model in video/kling.rs).
+  # @see https://kling.ai/document-api/api/video/4-0/text-to-video.md (2026-11-09)
+  # @see https://kling.ai/document-api/api/video/4-0/image-to-video.md (2026-11-09)
+  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-11-09)
+  #   - "`settings.resolution` … `1080p` | `720p`, `1080p`" (the default is
+  #     1080p), "`settings.aspect_ratio` … `21:9`, `16:9`, `9:16`, `1:1`",
+  #     "`settings.duration` | int | No | - | `3`, `4`, … `30`"; the field
+  #     note: "When this parameter is omitted and no explicit duration is
+  #     identified in the prompt, the default is 10 seconds."
+  #   - image-to-video frames "`first_frame`, `middle_frame`, `last_frame`";
+  #     the middle frame is not carried (no canonical role), first + last are.
+  #     Frames "should not be less than 300px", ratio "between 2:5 and 5:2",
+  #     ≤ 30MB (can't express).
+  #   - no `settings.audio` (the capability map gives 4.0 native audio);
+  #     reference videos, elements and video editing are not wrapped.
+  - id: kling/video-kling-v4
+    provider: kling
+    media_type: video
+    display_name: Kling Video v4
+    description: Kling 4.0 text/image-to-video (first and last frame), 3-30 s, up to 1080p.
+    docs_url: https://kling.ai/document-api/api/video/4-0/text-to-video
+    # "Kling 4.0 | No Input Video … | Per second (Total duration = Output
+    # duration) | 1.0 Unit ($0.157) /s | 1.5 Units ($0.235) /s" (720P | 1080P).
+    # Default request (the vendor's 1080p, 10 s): $0.235 x 10 = $2.35. Input
+    # video would bill input + output seconds; litegen sends none.
+    # @see https://kling.ai/document-api/pricing/base/video.md (2026-11-03)
+    pricing:
+      base_cost_usd: 2.35
+      variable_pricing:
+        - { per_second_usd: 0.235 }
+        - { when: { resolution: 720p }, per_second_usd: 0.157 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "English-only input supports up to 26,000 characters, and non-English-only
+    # input supports up to 11,000 characters" — 11,000 holds in any language.
+    prompt: { required: true, max_length: 11000 }
+    params:
+      # Whole seconds, 3-30 (C5); the vendor's default is 10.
+      duration_seconds: { kind: int, min: 3, max: 30, default: 10 }
+      # 720p or 1080p, the vendor's default 1080p, sent as is.
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 1080p }
+      # Text-to-video only; image-to-video takes the frames' shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9","16:9","9:16","1:1"]
+        default: "16:9"
+        # The image-to-video `settings`: "settings.resolution: The resolution of
+        # the generated video", "settings.duration: Target duration of the
+        # generated video, in seconds": no aspect_ratio (E5).
+        # @see https://kling.ai/document-api/api/video/4-0/image-to-video.md (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
     tags: [text-to-video, image-to-video]

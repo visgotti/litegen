@@ -29,12 +29,18 @@ pub struct PixelLabProvider {
 }
 
 impl PixelLabProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(110), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder().timeout(std::time::Duration::from_secs(110)).build().expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -86,6 +92,7 @@ impl ImageProvider for PixelLabProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -112,10 +119,8 @@ impl ImageProvider for PixelLabProvider {
             .and_then(|s| s.split_once('x'))
             .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
             .unwrap_or((64, 64));
-        let mut body = match &extras.extra {
-            Some(Value::Object(extra)) => Value::Object(extra.clone()),
-            _ => json!({}),
-        };
+        // `extra` first; every field litegen sets below replaces it (rule 11).
+        let mut body = Value::Object(crate::providers::extra_fields(extras.extra.as_ref(), |_| false).map(|(k, v)| (k.clone(), v.clone())).collect());
         body["description"] = json!(base.prompt);
         body["image_size"] = json!({ "width": width, "height": height });
         if let Some(palette) = extras.palette.as_deref() {
@@ -139,18 +144,19 @@ impl ImageProvider for PixelLabProvider {
             retryable: crate::providers::may_resend_after(&e, true),
         })?;
         let status = resp.status();
-        let answer: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse PixelLab response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
+        let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
+            // The status first: a gateway's 5xx page is a passing failure.
+            let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
             let detail = answer["detail"]
                 .as_str()
                 .map(str::to_string)
                 .or_else(|| answer["detail"][0]["msg"].as_str().map(str::to_string))
-                .unwrap_or_else(|| answer.to_string());
+                .unwrap_or_else(|| if answer.is_null() { text.chars().take(200).collect() } else { answer.to_string() });
+            if let Some(e) = crate::providers::rate_limited("pixellab", status, retry_after, &format!("PixelLab API error: {detail}"), Some(&answer)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
                 message: format!("PixelLab API error: {detail}"),
                 status_code: Some(status.as_u16()),
@@ -158,6 +164,12 @@ impl ImageProvider for PixelLabProvider {
                 retryable: status.as_u16() >= 500 || status.as_u16() == 429,
             });
         }
+        let answer: Value = serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
+            message: format!("Failed to parse PixelLab response: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })?;
         let b64 = answer["image"]["base64"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "PixelLab response has no image".into(),
             status_code: None,
@@ -219,7 +231,7 @@ mod tests {
             palette: Some(vec!["#081820".into(), "#346856".into(), "#88c070".into(), "#e0f8d0".into()]),
             directions: None,
             size: Some("64x48".into()),
-            aspect_ratio: None, quality: None, style: None, steps: None,
+            resolution: None, aspect_ratio: None, quality: None, style: None, steps: None,
             guidance_scale: Some(9.5),
             strength: None,
             response_format: "b64_json".into(),

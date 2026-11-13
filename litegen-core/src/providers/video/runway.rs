@@ -1,3 +1,4 @@
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -11,8 +12,10 @@ use crate::providers::{
 };
 use crate::types::*;
 
-/// Runway video generation provider: gen4.5 (text- and image-to-video) and
-/// gen4_turbo (image-to-video).
+/// Runway video generation provider: gen4.5 (text- and image-to-video),
+/// gen4_turbo (image-to-video), and the third-party models Runway resells on
+/// the same endpoints ([`RESOLD`]: Veo, Gemini Omni Flash, Kling, MiniMax H3,
+/// Seedance, Grok Imagine, Wan, HappyHorse), each sent its own branch.
 ///
 /// Submits text-to-video / image-to-video tasks to the Runway API
 /// (`api.dev.runwayml.com`) with the required `X-Runway-Version: 2024-11-06` header.
@@ -23,21 +26,217 @@ pub struct RunwayProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
 }
 
 /// What litegen itself sends to `/text_to_video` and `/image_to_video`;
 /// `extra` cannot replace it.
 const OWNED_FIELDS: &[&str] = &["model", "promptText", "promptImage", "duration", "ratio", "seed"];
 
+/// What litegen sends a resold model's branch; `extra` cannot replace it.
+const RESOLD_OWNED_FIELDS: &[&str] =
+    &["model", "promptText", "promptImage", "duration", "ratio", "seed", "references", "resolution", "audio", "negativePrompt"];
+
+/// One size a resold model takes: (litegen `aspect_ratio`, `resolution` tier,
+/// or "" for a model with one tier, Runway `ratio`).
+type Size = (&'static str, &'static str, &'static str);
+
+/// How one mode of a resold model's branch takes the output's shape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Shape {
+    /// `ratio`: the table's size at the asked (else default) aspect and tier.
+    Size,
+    /// The same, only when an aspect or a tier is asked: the mode's `ratio` is
+    /// optional and the image sets the shape otherwise. A tier alone is
+    /// `auto_<tier>` where the branch has those, else the default aspect.
+    SizeIfAsked,
+    /// `ratio`: the aspect itself ("16:9"), asked or default.
+    Named,
+    /// The aspect itself, only when asked.
+    NamedIfAsked,
+    /// `ratio`: `auto_<tier>` at the asked (else default) tier; the image sets
+    /// the aspect.
+    AutoTier,
+    /// No `ratio`.
+    None,
+}
+
+/// A third-party video model Runway sells on `POST /v1/text_to_video` and
+/// `/v1/image_to_video`: its two branches of the request unions, read
+/// 2026-11-10. Prices, bounds and roles are on its catalog row.
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-11-10)
+pub(crate) struct ResoldVideo {
+    /// Runway's `model`, and the catalog id's suffix.
+    wire: &'static str,
+    /// The text-to-video `ratio` sizes by aspect and tier (image-to-video's
+    /// enum holds the same), generated from the branch
+    /// (`.superpowers/sdd/2026-11-04-tokenhub-bedrock-fal/runway-gen/gen-video.mjs`).
+    sizes: &'static [Size],
+    t2v: Shape,
+    i2v: Shape,
+    /// Whether image-to-video's `ratio` takes `auto_<tier>`.
+    auto_tiers: bool,
+    /// The `resolution` field's values, (litegen tier, Runway value), where a
+    /// mode takes one.
+    resolution: &'static [(&'static str, &'static str)],
+    resolution_t2v: bool,
+    resolution_i2v: bool,
+    /// `references` maxItems per mode: reference images in a mode with none
+    /// are refused.
+    references_t2v: usize,
+    references_i2v: usize,
+    /// Text-to-video requires `promptText` though image-to-video doesn't, so
+    /// the row's prompt is optional and a text-only request without one is
+    /// refused here.
+    t2v_needs_prompt: bool,
+}
+
+const NO_SIZES: &[Size] = &[];
+
+/// veo3.1, veo3.1_fast.
+const VEO3_1_SIZES: &[Size] = &[
+    ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"),
+    ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"),
+];
+
+/// gemini_omni_flash.
+const GEMINI_OMNI_FLASH_SIZES: &[Size] = &[
+    ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"),
+];
+
+/// gemini_omni_flash_1.1, gemini_omni_flash_1.2.
+const GEMINI_OMNI_FLASH_1_1_SIZES: &[Size] = &[
+    ("9:16", "360p", "360:640"), ("16:9", "360p", "640:360"),
+    ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"),
+    ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"),
+    ("9:16", "4k", "2160:3840"), ("16:9", "4k", "3840:2160"),
+];
+
+/// kling2.5_turbo_pro.
+const KLING2_5_TURBO_PRO_SIZES: &[Size] = &[
+    ("1:1", "720p", "720:720"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"),
+    ("1:1", "1080p", "1440:1440"), ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"),
+];
+
+/// kling3.0_standard, klingO3_standard.
+const KLING3_0_STANDARD_SIZES: &[Size] = &[
+    ("1:1", "", "960:960"), ("9:16", "", "720:1280"), ("16:9", "", "1280:720"),
+];
+
+/// kling3.0_pro, klingO3_pro.
+const KLING3_0_PRO_SIZES: &[Size] = &[
+    ("1:1", "", "1440:1440"), ("9:16", "", "1080:1920"), ("16:9", "", "1920:1080"),
+];
+
+/// kling3.0_4k, klingO3_4k.
+const KLING3_0_4K_SIZES: &[Size] = &[
+    ("1:1", "", "2880:2880"), ("9:16", "", "2160:3840"), ("16:9", "", "3840:2160"),
+];
+
+/// kling_4.
+const KLING_4_SIZES: &[Size] = &[
+    ("1:1", "720p", "940:940"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"), ("21:9", "720p", "1460:624"),
+    ("1:1", "1080p", "1440:1440"), ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"), ("21:9", "1080p", "2200:940"),
+];
+
+/// kling_4_flash.
+const KLING_4_FLASH_SIZES: &[Size] = &[
+    ("1:1", "", "960:960"), ("9:16", "", "720:1280"), ("16:9", "", "1280:720"), ("21:9", "", "1464:628"),
+];
+
+/// seedance2.
+const SEEDANCE2_SIZES: &[Size] = &[
+    ("1:1", "480p", "640:640"), ("3:4", "480p", "560:752"), ("4:3", "480p", "752:560"), ("9:16", "480p", "496:864"), ("16:9", "480p", "864:496"), ("21:9", "480p", "992:432"),
+    ("1:1", "720p", "960:960"), ("3:4", "720p", "834:1112"), ("4:3", "720p", "1112:834"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"), ("21:9", "720p", "1470:630"),
+    ("1:1", "1080p", "1440:1440"), ("3:4", "1080p", "1248:1664"), ("4:3", "1080p", "1664:1248"), ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"), ("21:9", "1080p", "2206:946"),
+    ("1:1", "4k", "3840:3840"), ("3:4", "4k", "2880:3840"), ("4:3", "4k", "3840:2880"), ("9:16", "4k", "2160:3840"), ("16:9", "4k", "3840:2160"), ("21:9", "4k", "3840:1646"),
+];
+
+/// seedance2_fast, seedance2_mini.
+const SEEDANCE2_FAST_SIZES: &[Size] = &[
+    ("1:1", "480p", "640:640"), ("3:4", "480p", "560:752"), ("4:3", "480p", "752:560"), ("9:16", "480p", "496:864"), ("16:9", "480p", "864:496"), ("21:9", "480p", "992:432"),
+    ("1:1", "720p", "960:960"), ("3:4", "720p", "834:1112"), ("4:3", "720p", "1112:834"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"), ("21:9", "720p", "1470:630"),
+];
+
+/// seedance2_5.
+const SEEDANCE2_5_SIZES: &[Size] = &[
+    ("1:1", "480p", "640:640"), ("3:4", "480p", "560:752"), ("4:3", "480p", "752:560"), ("9:16", "480p", "480:854"), ("16:9", "480p", "854:480"), ("21:9", "480p", "992:432"),
+    ("1:1", "720p", "960:960"), ("3:4", "720p", "834:1112"), ("4:3", "720p", "1112:834"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"), ("21:9", "720p", "1470:630"),
+    ("1:1", "1080p", "1440:1440"), ("3:4", "1080p", "1248:1664"), ("4:3", "1080p", "1664:1248"), ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"), ("21:9", "1080p", "2206:946"),
+];
+
+/// grok_imagine_1_5_lite.
+const GROK_IMAGINE_1_5_LITE_SIZES: &[Size] = &[
+    ("1:1", "480p", "480:480"), ("2:3", "480p", "480:720"), ("3:2", "480p", "720:480"), ("3:4", "480p", "480:640"), ("4:3", "480p", "640:480"), ("9:16", "480p", "480:848"), ("16:9", "480p", "848:480"),
+    ("1:1", "720p", "720:720"), ("2:3", "720p", "720:1088"), ("3:2", "720p", "1088:720"), ("3:4", "720p", "720:960"), ("4:3", "720p", "960:720"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"),
+    ("1:1", "1080p", "1424:1424"), ("2:3", "1080p", "1152:1744"), ("3:2", "1080p", "1744:1152"), ("3:4", "1080p", "1232:1648"), ("4:3", "1080p", "1648:1232"), ("9:16", "1080p", "1072:1904"), ("16:9", "1080p", "1904:1072"),
+];
+
+/// wan3, wan3_prime.
+const WAN3_SIZES: &[Size] = &[
+    ("1:1", "480p", "624:624"), ("3:4", "480p", "544:720"), ("4:3", "480p", "720:544"), ("9:16", "480p", "480:832"), ("16:9", "480p", "832:480"),
+    ("1:1", "720p", "960:960"), ("3:4", "720p", "832:1104"), ("4:3", "720p", "1104:832"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"),
+    ("1:1", "1080p", "1440:1440"), ("3:4", "1080p", "1248:1648"), ("4:3", "1080p", "1648:1248"), ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"),
+];
+
+/// happyhorse_1_0.
+const HAPPYHORSE_1_0_SIZES: &[Size] = &[
+    ("1:1", "720p", "960:960"), ("3:4", "720p", "832:1108"), ("4:3", "720p", "1108:832"), ("9:16", "720p", "720:1280"), ("16:9", "720p", "1280:720"),
+    ("1:1", "1080p", "1440:1440"), ("3:4", "1080p", "1248:1662"), ("4:3", "1080p", "1662:1248"), ("9:16", "1080p", "1080:1920"), ("16:9", "1080p", "1920:1080"),
+];
+
+/// Every resold video model litegen carries (models/runway.yaml).
+/// @see <https://docs.dev.runwayml.com/guides/pricing.md> (2026-11-10)
+const RESOLD: &[ResoldVideo] = &[
+    ResoldVideo { wire: "veo3.1", sizes: VEO3_1_SIZES, t2v: Shape::Size, i2v: Shape::Size, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "veo3.1_fast", sizes: VEO3_1_SIZES, t2v: Shape::Size, i2v: Shape::Size, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "gemini_omni_flash", sizes: GEMINI_OMNI_FLASH_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "gemini_omni_flash_1.1", sizes: GEMINI_OMNI_FLASH_1_1_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 5, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "gemini_omni_flash_1.2", sizes: GEMINI_OMNI_FLASH_1_1_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 5, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "kling2.5_turbo_pro", sizes: KLING2_5_TURBO_PRO_SIZES, t2v: Shape::Size, i2v: Shape::None, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "kling3.0_standard", sizes: KLING3_0_STANDARD_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "kling3.0_pro", sizes: KLING3_0_PRO_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "kling3.0_4k", sizes: KLING3_0_4K_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "klingO3_standard", sizes: KLING3_0_STANDARD_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 7, t2v_needs_prompt: false },
+    ResoldVideo { wire: "klingO3_pro", sizes: KLING3_0_PRO_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 7, t2v_needs_prompt: false },
+    ResoldVideo { wire: "klingO3_4k", sizes: KLING3_0_4K_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 7, t2v_needs_prompt: false },
+    ResoldVideo { wire: "kling_4", sizes: KLING_4_SIZES, t2v: Shape::Size, i2v: Shape::AutoTier, auto_tiers: true, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 10, references_i2v: 10, t2v_needs_prompt: true },
+    ResoldVideo { wire: "kling_4_flash", sizes: KLING_4_FLASH_SIZES, t2v: Shape::Size, i2v: Shape::None, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 10, references_i2v: 10, t2v_needs_prompt: true },
+    ResoldVideo { wire: "hailuo3", sizes: NO_SIZES, t2v: Shape::Named, i2v: Shape::NamedIfAsked, auto_tiers: false, resolution: &[("768P", "768P"), ("2K", "2K")], resolution_t2v: true, resolution_i2v: true, references_t2v: 9, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "h3_max", sizes: NO_SIZES, t2v: Shape::None, i2v: Shape::None, auto_tiers: false, resolution: &[("480P", "480p"), ("768P", "768p")], resolution_t2v: true, resolution_i2v: true, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "seedance2", sizes: SEEDANCE2_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 9, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "seedance2_fast", sizes: SEEDANCE2_FAST_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 9, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "seedance2_mini", sizes: SEEDANCE2_FAST_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 9, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "seedance2_5", sizes: SEEDANCE2_5_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: false, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 30, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "grok_imagine_1_5", sizes: NO_SIZES, t2v: Shape::Named, i2v: Shape::None, auto_tiers: false, resolution: &[("480p", "480p"), ("720p", "720p"), ("1080p", "1080p")], resolution_t2v: true, resolution_i2v: true, references_t2v: 7, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "grok_imagine_1_5_lite", sizes: GROK_IMAGINE_1_5_LITE_SIZES, t2v: Shape::Size, i2v: Shape::AutoTier, auto_tiers: true, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: true },
+    ResoldVideo { wire: "wan3", sizes: WAN3_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: true, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 10, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "wan3_prime", sizes: WAN3_SIZES, t2v: Shape::Size, i2v: Shape::SizeIfAsked, auto_tiers: true, resolution: &[], resolution_t2v: false, resolution_i2v: false, references_t2v: 10, references_i2v: 0, t2v_needs_prompt: false },
+    ResoldVideo { wire: "happyhorse_1_0", sizes: HAPPYHORSE_1_0_SIZES, t2v: Shape::Size, i2v: Shape::None, auto_tiers: false, resolution: &[("720p", "720p"), ("1080p", "1080p")], resolution_t2v: false, resolution_i2v: true, references_t2v: 0, references_i2v: 0, t2v_needs_prompt: true },
+];
+
+/// Which request a catalog id takes.
+enum Native {
+    /// Runway's own gen4.5 and gen4_turbo.
+    Gen4(&'static str),
+    /// A resold model's branches.
+    Resold(&'static ResoldVideo),
+}
+
 impl RunwayProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(600), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::auth::AuthSpec::bearer(),
         }
     }
 
@@ -65,59 +264,31 @@ impl RunwayProvider {
     /// the `/v1/image_to_video` model union. `gen4_turbo` is the fast tier,
     /// `gen4.5` the quality tier.
     /// @see <https://docs.dev.runwayml.com/api-details/api_changelog/>
-    fn resolve_model(model: &str) -> Option<&'static str> {
+    fn resolve_model(model: &str) -> Option<Native> {
         match model {
-            "runway/gen4.5" | "runway-gen4.5" | "gen4.5" => Some("gen4.5"),
-            "runway/gen4-turbo" | "runway-gen4-turbo" | "gen4_turbo" => Some("gen4_turbo"),
+            "runway/gen4.5" | "runway-gen4.5" | "gen4.5" => Some(Native::Gen4("gen4.5")),
+            "runway/gen4-turbo" | "runway-gen4-turbo" | "gen4_turbo" => Some(Native::Gen4("gen4_turbo")),
             // An id with no arm is refused, not billed as gen4_turbo (L13).
-            _ => None,
+            id => {
+                let wire = id.strip_prefix("runway/")?;
+                RESOLD.iter().find(|r| r.wire == wire).map(Native::Resold)
+            }
         }
     }
-}
 
-impl Default for RunwayProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl VideoProvider for RunwayProvider {
-    fn name(&self) -> &str {
-        "runway"
-    }
-
-    fn configure(&mut self, config: ProviderInstanceConfig) {
-        if !config.api_keys.is_empty() {
-            self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
-        }
-        self.config = Some(config);
-    }
-
-    fn is_configured(&self) -> bool {
-        self.config
-            .as_ref()
-            .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
-    }
-
-    /// Submit a task: `POST {api_base}/text_to_video` (or `/image_to_video`
-    /// when an init image is supplied), with `X-Runway-Version: 2024-11-06`.
-    ///
-    /// @see <https://docs.dev.runwayml.com/api/> — Start generating. Proves the `model`/`promptText`/
-    ///   `promptImage`/`duration`/`ratio`/`seed` request fields, the version header, and the `id` response.
-    async fn generate(
+    /// The endpoint and body of a gen4.5 or gen4_turbo request.
+    fn gen4_request(
         &self,
+        model_name: &'static str,
         model: &ModelSchema,
         base: &BaseGenerationRequest,
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
-    ) -> Result<VideoGenerationHandle, ProviderError> {
-        let api_key = self.api_key()?;
-        let model_name = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "runway".into() })?;
-
-        // The init-role image, as a URL or a data URI of its own type; one
-        // Runway cannot take is refused here.
-        let prompt_image: Option<String> = match materialized.refs.iter().find(|r| r.role == "init") {
+    ) -> Result<(&'static str, Value), ProviderError> {
+        // The start frame (`first_frame`, or `init` from older callers), as a
+        // URL or a data URI of its own type; one Runway cannot take is
+        // refused here.
+        let prompt_image: Option<String> = match materialized.refs.iter().find(|r| r.role == "first_frame" || r.role == "init") {
             Some(r) => crate::providers::image::runway::runway_uri(&r.form)?,
             None => None,
         };
@@ -141,12 +312,10 @@ impl VideoProvider for RunwayProvider {
             "text_to_video"
         };
 
-        let url = format!("{}/{}", self.api_base(), endpoint);
-
         let duration = extras.duration_seconds as u64;
 
         let mut body = json!({
-            "model": model_name,
+            "model": crate::providers::wire_model(self.config.as_ref(), &model.id, model_name),
             "duration": duration,
         });
         // promptText is "A non-empty string", and optional for gen4_turbo.
@@ -172,18 +341,184 @@ impl VideoProvider for RunwayProvider {
         }
 
         // Shallow-merge extra, never over what litegen sends.
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(body_obj) = body.as_object_mut() {
-                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let Some(body_obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
+        Ok((endpoint, body))
+    }
+
+    /// The `ratio` a resold model's mode takes (see [`Shape`]); `None` when
+    /// the mode sends none.
+    fn resold_ratio(r: &ResoldVideo, shape: Shape, model: &ModelSchema, extras: &VideoExtras) -> Result<Option<String>, ProviderError> {
+        use crate::capabilities::schema::ParamSpec;
+        let default = |param: &str| match model.params.get(param) {
+            Some(ParamSpec::AspectRatio(a)) => a.default.clone(),
+            Some(ParamSpec::String(s)) => s.default.clone(),
+            _ => None,
+        };
+        let asked = extras.aspect_ratio.is_some() || extras.resolution.is_some();
+        let aspect = || extras.aspect_ratio.clone().or_else(|| default("aspect_ratio"));
+        let tier = || extras.resolution.clone().or_else(|| default("resolution"));
+        let auto = |t: String| format!("auto_{}", t.to_lowercase());
+        let size = || {
+            let aspect = aspect().unwrap_or_default();
+            let tier = tier().unwrap_or_else(|| r.sizes.first().map_or("", |s| s.1).to_string());
+            r.sizes
+                .iter()
+                .find(|(a, t, _)| *a == aspect && *t == tier)
+                .map(|s| Some(s.2.to_string()))
+                .ok_or_else(|| ProviderError::InvalidRequest(format!("{} has no {aspect} size at {tier:?}", model.id)))
+        };
+        match shape {
+            Shape::None => Ok(None),
+            Shape::Named => Ok(aspect()),
+            Shape::NamedIfAsked => Ok(extras.aspect_ratio.clone()),
+            Shape::AutoTier => Ok(tier().map(auto)),
+            Shape::SizeIfAsked if !asked => Ok(None),
+            Shape::SizeIfAsked if extras.aspect_ratio.is_none() && r.auto_tiers => Ok(tier().map(auto)),
+            Shape::Size | Shape::SizeIfAsked => size(),
+        }
+    }
+
+    /// The endpoint and body of a resold model's request: image-to-video when
+    /// a start frame comes, else text-to-video, each with only its own fields.
+    fn resold_request(
+        &self,
+        r: &ResoldVideo,
+        model: &ModelSchema,
+        base: &BaseGenerationRequest,
+        extras: &VideoExtras,
+        materialized: &MaterializedRequest,
+    ) -> Result<(&'static str, Value), ProviderError> {
+        use crate::providers::image::runway::runway_uri;
+        let (mut first, mut last, mut references) = (None, None, Vec::new());
+        for rf in &materialized.refs {
+            let Some(uri) = runway_uri(&rf.form)? else { continue };
+            match rf.role.as_str() {
+                "first_frame" | "init" => first = Some(uri),
+                "last_frame" => last = Some(uri),
+                _ => references.push(json!({ "uri": uri })),
+            }
+        }
+        // Veo: "This model does not support generating with only a last frame";
+        // every promptImage array here leads with its first frame.
+        if last.is_some() && first.is_none() {
+            return Err(ProviderError::InvalidRequest(format!("{}: a last frame needs a first frame", model.id)));
+        }
+        let i2v = first.is_some();
+        let (shape, references_max, resolution_field) =
+            if i2v { (r.i2v, r.references_i2v, r.resolution_i2v) } else { (r.t2v, r.references_t2v, r.resolution_t2v) };
+        if !references.is_empty() && references_max == 0 {
+            return Err(ProviderError::InvalidRequest(format!(
+                "{}: reference images go {}",
+                model.id,
+                if i2v { "without a start frame (text-to-video)" } else { "with a start frame (image-to-video)" }
+            )));
+        }
+        if !i2v && r.t2v_needs_prompt && base.prompt.is_empty() {
+            return Err(ProviderError::InvalidRequest(format!("{}: text-to-video needs a prompt (or attach a first_frame)", model.id)));
+        }
+
+        // `extra` first, so nothing below can be replaced by it.
+        let mut body = json!({});
+        for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| RESOLD_OWNED_FIELDS.contains(&k)) {
+            body[k] = v.clone();
+        }
+        body["model"] = Value::String(crate::providers::wire_model(self.config.as_ref(), &model.id, r.wire).to_string());
+        if !base.prompt.is_empty() {
+            body["promptText"] = Value::String(base.prompt.clone());
+        }
+        if let Some(first) = first {
+            body["promptImage"] = match last {
+                Some(last) => json!([{ "uri": first, "position": "first" }, { "uri": last, "position": "last" }]),
+                None => Value::String(first),
+            };
+        }
+        if !references.is_empty() {
+            body["references"] = Value::Array(references);
+        }
+        if let Some(ratio) = Self::resold_ratio(r, shape, model, extras)? {
+            body["ratio"] = Value::String(ratio);
+        }
+        if resolution_field {
+            let tier = extras.resolution.clone().or_else(|| match model.params.get("resolution") {
+                Some(crate::capabilities::schema::ParamSpec::String(s)) => s.default.clone(),
+                _ => None,
+            });
+            if let Some(tier) = tier {
+                let wire = r.resolution.iter().find(|(t, _)| *t == tier).map(|(_, w)| *w).ok_or_else(|| {
+                    ProviderError::InvalidRequest(format!("{} has no resolution {tier}", model.id))
+                })?;
+                body["resolution"] = Value::String(wire.to_string());
+            }
+        }
+        body["duration"] = json!(extras.duration_seconds as u64);
+        // Each reaches only a model whose row declares it (the validator).
+        if let Some(audio) = extras.audio {
+            body["audio"] = Value::Bool(audio);
+        }
+        if let Some(seed) = base.seed {
+            body["seed"] = json!(seed);
+        }
+        if let Some(negative) = base.negative_prompt.as_deref().filter(|n| !n.is_empty()) {
+            body["negativePrompt"] = Value::String(negative.to_string());
+        }
+        Ok((if i2v { "image_to_video" } else { "text_to_video" }, body))
+    }
+}
+
+impl Default for RunwayProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl VideoProvider for RunwayProvider {
+    fn name(&self) -> &str {
+        "runway"
+    }
+
+    fn configure(&mut self, config: ProviderInstanceConfig) {
+        if !config.api_keys.is_empty() {
+            self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
+        }
+        self.client = Self::api_client(&config.extra_headers);
+        self.config = Some(config);
+    }
+
+    fn is_configured(&self) -> bool {
+        self.config
+            .as_ref()
+            .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
+    }
+
+    /// Submit a task: `POST {api_base}/text_to_video` (or `/image_to_video`
+    /// when an init image is supplied), with `X-Runway-Version: 2024-11-06`.
+    ///
+    /// @see <https://docs.dev.runwayml.com/api/> — Start generating. Proves the `model`/`promptText`/
+    ///   `promptImage`/`duration`/`ratio`/`seed` request fields, the version header, and the `id` response.
+    async fn generate(
+        &self,
+        model: &ModelSchema,
+        base: &BaseGenerationRequest,
+        extras: &VideoExtras,
+        materialized: &MaterializedRequest,
+    ) -> Result<VideoGenerationHandle, ProviderError> {
+        let api_key = self.api_key()?;
+        let (endpoint, body) = match Self::resolve_model(&model.id) {
+            Some(Native::Gen4(model_name)) => self.gen4_request(model_name, model, base, extras, materialized)?,
+            Some(Native::Resold(r)) => self.resold_request(r, model, base, extras, materialized)?,
+            None => return Err(ProviderError::ModelNotSupported { model: model.id.clone(), provider: "runway".into() }),
+        };
+        let url = format!("{}/{}", self.api_base(), endpoint);
 
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("X-Runway-Version", "2024-11-06")
                 .header("Content-Type", "application/json")
                 .json(&body),
@@ -200,6 +535,7 @@ impl VideoProvider for RunwayProvider {
         })?;
 
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             let resp_json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -208,6 +544,9 @@ impl VideoProvider for RunwayProvider {
                 .or_else(|| resp_json["error"].as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| text.chars().take(200).collect());
+            if let Some(e) = crate::providers::rate_limited("runway", status, retry_after, &format!("Runway API error: {err}"), Some(&resp_json)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
                 message: format!("Runway API error: {err}"),
                 status_code: Some(status.as_u16()),
@@ -254,7 +593,7 @@ impl VideoProvider for RunwayProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .get(format!("{}/tasks/{}", self.api_base(), handle.provider_job_id))
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("X-Runway-Version", "2024-11-06"),
         )
         .send()
@@ -277,7 +616,8 @@ impl VideoProvider for RunwayProvider {
             Some("SUCCEEDED") => GenerationStatus::Completed,
             Some("FAILED") | Some("CANCELLED") => GenerationStatus::Failed,
             Some("RUNNING") | Some("THROTTLED") => GenerationStatus::Processing,
-            _ => GenerationStatus::Pending,
+            Some("PENDING") => GenerationStatus::Pending,
+            other => return Ok(super::unknown_state("runway", other)),
         };
 
         let video_url = data["output"]
@@ -348,7 +688,7 @@ impl VideoProvider for RunwayProvider {
         let task = crate::providers::inject_trace_headers(
             self.client
                 .get(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("X-Runway-Version", "2024-11-06"),
         )
         .send()
@@ -364,7 +704,7 @@ impl VideoProvider for RunwayProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .delete(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("X-Runway-Version", "2024-11-06"),
         )
         .send()
@@ -417,6 +757,23 @@ mod tests {
             assert!(RunwayProvider::resolve_model(&m.id).is_some(), "{} has no arm", m.id);
         }
         assert!(RunwayProvider::resolve_model("runway/not-a-model").is_none());
+    }
+
+    /// N3: the catalog refuses an empty text-to-video request (no first frame,
+    /// no prompt) exactly where this adapter would (`t2v_needs_prompt`), so it
+    /// is refused before anything is reserved, and never where Runway takes
+    /// one (Kling 3.0's shots can carry their prompts in `providerSettings`).
+    #[test]
+    fn the_catalog_says_which_text_to_video_needs_a_prompt_as_runway_does() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for r in RESOLD {
+            let id = format!("runway/{}", r.wire);
+            let m = catalog.get(&id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+            assert_eq!(m.prompt.required_for_text_to_video, r.t2v_needs_prompt, "{id}");
+        }
     }
 
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
@@ -516,6 +873,34 @@ mod tests {
         assert_eq!(version_header.unwrap(), "2024-11-06");
     }
 
+    /// The start frame arrives as `first_frame` (the role every video row
+    /// shares) or, from older callers, `init`; either is the promptImage.
+    #[tokio::test]
+    async fn a_first_frame_ref_is_the_prompt_image() {
+        for role in ["first_frame", "init"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/image_to_video"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1" })))
+                .mount(&server)
+                .await;
+            let materialized = crate::proxy::materializer::MaterializedRequest {
+                refs: vec![crate::proxy::materializer::MaterializedRef {
+                    role: role.to_string(),
+                    form: MaterializedRefForm::Url("https://example.test/first.png".to_string()),
+                    time_s: None,
+                }],
+                cleanup: crate::proxy::materializer::Cleanup::empty(),
+            };
+            make_provider(&server.uri())
+                .generate(&ref_schema("runway/gen4-turbo"), &make_base("a drone shot", "runway/gen4-turbo"), &make_extras(), &materialized)
+                .await
+                .unwrap_or_else(|e| panic!("{role}: {e}"));
+            let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+            assert_eq!(body["promptImage"], "https://example.test/first.png", "{role}");
+        }
+    }
+
     /// `gen3a_turbo` was removed from the Runway API on 2026-07-30 ("Requests
     /// that use these model identifiers will fail"), and does not appear in the
     /// `/v1/image_to_video` model union in docs.dev.runwayml.com/openapi.json.
@@ -564,8 +949,7 @@ mod tests {
         let err = provider
             .generate(&schema, &base, &make_extras(), &empty_materialized())
             .await
-            .err()
-            .expect("gen4_turbo cannot do text-to-video");
+            .expect_err("gen4_turbo cannot do text-to-video");
         assert!(matches!(err, ProviderError::InvalidRequest(_)), "got {err:?}");
         assert!(
             server.received_requests().await.unwrap().is_empty(),
@@ -746,6 +1130,200 @@ mod tests {
             refs: vec![crate::proxy::materializer::MaterializedRef { role: "init".into(), form, time_s: None }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         }
+    }
+
+    // ─── Resold models (2026-11-10) ─────────────────────────────────────────
+
+    fn refs(roles: &[&str]) -> MaterializedRequest {
+        MaterializedRequest {
+            refs: roles
+                .iter()
+                .enumerate()
+                .map(|(i, role)| crate::proxy::materializer::MaterializedRef {
+                    role: role.to_string(),
+                    form: MaterializedRefForm::Url(format!("https://example.com/{role}{i}.png")),
+                    time_s: None,
+                })
+                .collect(),
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        }
+    }
+
+    fn extras_with(aspect: Option<&str>, resolution: Option<&str>, duration: f64) -> VideoExtras {
+        let mut e = make_extras();
+        e.aspect_ratio = aspect.map(str::to_string);
+        e.resolution = resolution.map(str::to_string);
+        e.duration_seconds = duration;
+        e
+    }
+
+    /// The last request the server saw: its path and body.
+    async fn last_sent(server: &MockServer) -> (String, Value) {
+        let all = server.received_requests().await.unwrap();
+        let r = all.last().expect("a request");
+        (r.url.path().to_string(), serde_json::from_slice(&r.body).unwrap())
+    }
+
+    /// Every aspect × resolution a resold row offers reaches Runway in a shape
+    /// its branch takes, in both modes: a `ratio` that is the aspect itself,
+    /// `auto_<tier>`, or a size of that aspect (within 4.5%) larger at each
+    /// higher tier; a `resolution` field only as one of the row's tiers.
+    /// Driven through `generate()` against a server that refuses every submit.
+    #[tokio::test]
+    async fn every_aspect_and_resolution_a_resold_row_offers_reaches_runway_in_a_shape_it_takes() {
+        let server = refusing_server().await;
+        let provider = make_provider(&server.uri());
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        let rows: Vec<_> = catalog
+            .for_provider("runway")
+            .filter(|m| m.media_type == crate::capabilities::MediaType::Video && !m.id.starts_with("runway/gen4"))
+            .cloned()
+            .collect();
+        assert_eq!(rows.len(), 25);
+        let mut checked = 0;
+        for m in &rows {
+            let aspects: Vec<Option<String>> = match m.params.get("aspect_ratio") {
+                Some(crate::capabilities::schema::ParamSpec::AspectRatio(a)) => a.allowed.iter().cloned().map(Some).collect(),
+                _ => vec![None],
+            };
+            let tiers: Vec<Option<String>> = match m.params.get("resolution") {
+                Some(crate::capabilities::schema::ParamSpec::String(s)) => s.enum_values.iter().cloned().map(Some).collect(),
+                _ => vec![None],
+            };
+            for (mode, materialized) in [("/text_to_video", empty_materialized()), ("/image_to_video", refs(&["first_frame"]))] {
+                for aspect in &aspects {
+                    let mut last_pixels = 0.0;
+                    for tier in &tiers {
+                        let before = server.received_requests().await.unwrap().len();
+                        let extras = extras_with(aspect.as_deref(), tier.as_deref(), 5.0);
+                        let err = provider.generate(m, &make_base("a lighthouse at dusk", &m.id), &extras, &materialized).await.unwrap_err();
+                        let all = server.received_requests().await.unwrap();
+                        assert_eq!(all.len(), before + 1, "{} {mode} {aspect:?} {tier:?} never reached Runway: {err:?}", m.id);
+                        assert_eq!(all[before].url.path(), mode, "{}", m.id);
+                        let body: Value = serde_json::from_slice(&all[before].body).unwrap();
+                        assert_eq!(body["model"], m.id.trim_start_matches("runway/"), "{}", m.id);
+                        if let Some(r) = body["resolution"].as_str() {
+                            let tier = tier.as_deref().unwrap_or_else(|| panic!("{} sent resolution {r} with none asked", m.id));
+                            assert!(r.eq_ignore_ascii_case(tier), "{} {mode} sent resolution {r} for {tier}", m.id);
+                        }
+                        let Some(ratio) = body["ratio"].as_str() else { continue };
+                        if let Some(t) = ratio.strip_prefix("auto_") {
+                            assert!(tier.as_deref().is_some_and(|tier| tier.eq_ignore_ascii_case(t)), "{} {mode} sent {ratio} for {tier:?}", m.id);
+                        } else if aspect.as_deref() == Some(ratio) {
+                            // The aspect itself (hailuo3, grok_imagine_1_5).
+                        } else {
+                            let aspect = aspect.as_deref().unwrap_or_else(|| panic!("{} sent ratio {ratio} with no aspect", m.id));
+                            let f = |s: &str| s.split_once(':').map(|(a, b)| (a.parse::<f64>().unwrap(), b.parse::<f64>().unwrap())).unwrap();
+                            let ((w, h), (a, b)) = (f(ratio), f(aspect));
+                            assert!(((w / h) / (a / b)).ln().abs() < 0.045, "{} {mode} {aspect} {tier:?} sent {ratio}", m.id);
+                            assert!(w * h > last_pixels, "{} {mode} {aspect}: {tier:?} ({ratio}) is no larger than the tier below", m.id);
+                            last_pixels = w * h;
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 300, "only {checked} cells checked");
+    }
+
+    /// A resold model gets exactly its own branch's fields, mode by mode.
+    /// @see <https://docs.dev.runwayml.com/openapi.json> (2026-11-10)
+    #[tokio::test]
+    async fn a_resold_model_sends_its_own_branchs_fields() {
+        let server = refusing_server().await;
+        let provider = make_provider(&server.uri());
+        let send = |id: &'static str, extras: VideoExtras, materialized: MaterializedRequest, seed: Option<i64>, negative: Option<&str>| {
+            let provider = &provider;
+            let server = &server;
+            let negative = negative.map(str::to_string);
+            async move {
+                let mut base = make_base("a lighthouse at dusk", id);
+                base.seed = seed;
+                base.negative_prompt = negative;
+                let _ = provider.generate(&ref_schema(id), &base, &extras, &materialized).await;
+                last_sent(server).await
+            }
+        };
+
+        // Veo 3.1 text-to-video: the 1080p 9:16 size, audio, seed and negativePrompt.
+        let mut e = extras_with(Some("9:16"), Some("1080p"), 6.0);
+        e.audio = Some(false);
+        let (path, body) = send("runway/veo3.1", e, empty_materialized(), Some(5), Some("blur")).await;
+        assert_eq!(path, "/text_to_video");
+        assert_eq!(body, json!({ "model": "veo3.1", "promptText": "a lighthouse at dusk", "ratio": "1080:1920", "duration": 6, "audio": false, "seed": 5, "negativePrompt": "blur" }));
+        // …and image-to-video from first and last frames, in that order, at its default size.
+        let (path, body) = send("runway/veo3.1", extras_with(None, None, 8.0), refs(&["last_frame", "first_frame"]), None, None).await;
+        assert_eq!(path, "/image_to_video");
+        assert_eq!(body["promptImage"], json!([{ "uri": "https://example.com/first_frame1.png", "position": "first" }, { "uri": "https://example.com/last_frame0.png", "position": "last" }]));
+        assert_eq!((body["ratio"].as_str(), body.get("audio")), (Some("1280:720"), None));
+
+        // Kling 4.0 image-to-video: the tier as auto_<tier>, references beside the frame.
+        let (path, body) = send("runway/kling_4", extras_with(None, None, 10.0), refs(&["first_frame", "reference", "reference"]), None, None).await;
+        assert_eq!(path, "/image_to_video");
+        assert_eq!(body["promptImage"], "https://example.com/first_frame0.png");
+        assert_eq!(body["ratio"], "auto_1080p");
+        assert_eq!(body["references"], json!([{ "uri": "https://example.com/reference1.png" }, { "uri": "https://example.com/reference2.png" }]));
+        assert_eq!(body["duration"], 10);
+
+        // MiniMax H3: references alone go text-to-video; the aspect itself and the tier.
+        let (path, body) = send("runway/hailuo3", extras_with(None, None, 5.0), refs(&["reference", "reference", "reference"]), None, None).await;
+        assert_eq!(path, "/text_to_video");
+        assert_eq!(body["references"].as_array().map(Vec::len), Some(3));
+        assert_eq!((body["ratio"].as_str(), body["resolution"].as_str()), (Some("16:9"), Some("768P")));
+
+        // H3 Max: a resolution field, spelled as Runway's enum, and no ratio.
+        let (_, body) = send("runway/h3_max", extras_with(None, Some("480P"), 5.0), refs(&["first_frame"]), None, None).await;
+        assert_eq!((body["resolution"].as_str(), body.get("ratio")), (Some("480p"), None));
+
+        // HappyHorse: text-to-video's tier is its size; image-to-video's a field.
+        let (_, body) = send("runway/happyhorse_1_0", extras_with(Some("4:3"), Some("1080p"), 5.0), empty_materialized(), None, None).await;
+        assert_eq!((body["ratio"].as_str(), body.get("resolution")), (Some("1662:1248"), None));
+        let (_, body) = send("runway/happyhorse_1_0", extras_with(Some("4:3"), Some("1080p"), 5.0), refs(&["first_frame"]), None, None).await;
+        assert_eq!((body.get("ratio"), body["resolution"].as_str()), (None, Some("1080p")));
+
+        // Seedance 2.0 image-to-video: no ratio unless asked; a tier alone is
+        // the default aspect at that tier.
+        let (_, body) = send("runway/seedance2", extras_with(None, None, 5.0), refs(&["first_frame"]), None, None).await;
+        assert!(body.get("ratio").is_none(), "{body}");
+        let (_, body) = send("runway/seedance2", extras_with(None, Some("480p"), 5.0), refs(&["first_frame"]), None, None).await;
+        assert_eq!(body["ratio"], "864:496");
+        // Wan 3.0 image-to-video: a tier alone is auto_<tier>.
+        let (_, body) = send("runway/wan3", extras_with(None, Some("1080p"), 5.0), refs(&["first_frame"]), None, None).await;
+        assert_eq!(body["ratio"], "auto_1080p");
+
+        // Kling 3.0 Pro: its one size; audio only when asked; extra can't
+        // replace owned fields.
+        let mut e = extras_with(None, None, 5.0);
+        e.extra = Some(json!({ "cfgScale": 0.3, "ratio": "auto", "references": [], "promptImage": "x", "resolution": "4k", "audio": true, "duration": 99 }));
+        let (_, body) = send("runway/kling3.0_pro", e, empty_materialized(), None, None).await;
+        assert_eq!(body, json!({ "model": "kling3.0_pro", "promptText": "a lighthouse at dusk", "ratio": "1920:1080", "duration": 5, "cfgScale": 0.3 }));
+    }
+
+    /// Requests a branch cannot take are refused before any call:
+    /// - references where the chosen mode has no `references` (Kling O3
+    ///   without a frame; Seedance with one);
+    /// - a last frame without a first ("does not support generating with only
+    ///   a last frame");
+    /// - a text-only request without the prompt text-to-video requires.
+    /// @see <https://docs.dev.runwayml.com/openapi.json> (2026-11-10)
+    #[tokio::test]
+    async fn a_request_a_branch_cannot_take_is_refused_before_any_call() {
+        let server = refusing_server().await;
+        let provider = make_provider(&server.uri());
+        for (id, prompt, materialized) in [
+            ("runway/klingO3_pro", "x", refs(&["reference"])),
+            ("runway/seedance2", "x", refs(&["first_frame", "reference"])),
+            ("runway/veo3.1", "x", refs(&["last_frame"])),
+            ("runway/veo3.1", "", empty_materialized()),
+        ] {
+            let err = provider.generate(&ref_schema(id), &make_base(prompt, id), &extras_with(None, None, 5.0), &materialized).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{id}: {err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "a refused request reached Runway");
     }
 
     /// #16: `extra` adds Runway's own knobs but never replaces what litegen sends.
