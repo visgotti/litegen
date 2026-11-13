@@ -3,6 +3,9 @@
  * `messages/<locale>.json`; this holds URLs and the structural lists (features,
  * providers) that pair message keys with icons/metadata.
  */
+import { PROVIDER_CAPABILITIES } from '@/components/infra-flow/capabilities.generated';
+import providerBrands from './providers.json';
+
 export const siteConfig = {
   name: 'LiteGen',
   url: process.env.NEXT_PUBLIC_SITE_URL ?? 'https://litegen.ai',
@@ -26,42 +29,27 @@ export const FEATURES = [
 ] as const;
 
 /**
- * Supported providers (brand names — not translated), each tagged with the
- * modalities LiteGen integrates for it. The Providers section renders these as
- * capability-tagged chips; the "Image"/"Video" tag words are translated.
+ * Supported providers: every provider in litegen's catalog, in display order.
+ * The brand data (name, logo) lives in `providers.json`; what each one makes
+ * comes from the catalog-derived capability snapshot, so a chip's Image /
+ * Video / 3D tags can't drift from what ships. `derive-capabilities.test.mjs`
+ * fails when the list and the catalog disagree.
  */
 export interface ProviderInfo {
+  /** The catalog's provider id, e.g. "bfl". */
+  id: string;
   name: string;
-  image?: boolean;
-  video?: boolean;
   /** Logo filename under public/logos/ (full-colour brand mark). */
   logo?: string;
+  image: boolean;
+  video: boolean;
+  model3d: boolean;
 }
 
-export const PROVIDERS: readonly ProviderInfo[] = [
-  // First-party APIs we integrate directly. Marquee names first.
-  { name: 'OpenAI', image: true, video: true, logo: 'openai.png' },
-  { name: 'Google', image: true, video: true, logo: 'google.png' },
-  { name: 'Stability AI', image: true, logo: 'stability-ai.webp' },
-  { name: 'Black Forest Labs', image: true, logo: 'black-forest-labs.png' },
-  { name: 'Ideogram', image: true, logo: 'ideogram.svg' },
-  { name: 'Recraft', image: true, logo: 'recraft.png' },
-  { name: 'Leonardo.Ai', image: true, video: true, logo: 'leonardo-ai.png' },
-  { name: 'Runway', image: true, video: true, logo: 'runway.png' },
-  { name: 'Luma', image: true, video: true, logo: 'luma.png' },
-  { name: 'Kling', image: true, video: true, logo: 'kling.png' },
-  { name: 'MiniMax', image: true, video: true, logo: 'minimax.png' },
-  { name: 'ByteDance', image: true, video: true, logo: 'bytedance.svg' },
-  { name: 'Amazon Bedrock', image: true, video: true, logo: 'amazon-bedrock.png' },
-  { name: 'Tencent Hunyuan', image: true, video: true, logo: 'tencent-hunyuan.svg' },
-  { name: 'Vidu', video: true, logo: 'vidu.png' },
-  { name: 'PixVerse', video: true, logo: 'pixverse.png' },
-  { name: 'Tripo' },
-  { name: 'Meshy' },
-  // Aggregators / self-hosted.
-  { name: 'Replicate', image: true, video: true, logo: 'replicate.png' },
-  { name: 'Fal', image: true, video: true, logo: 'fal.png' },
-] as const;
+export const PROVIDERS: readonly ProviderInfo[] = providerBrands.map((p) => {
+  const outputs = PROVIDER_CAPABILITIES[p.id]?.outputs ?? { image: false, video: false, model3d: false };
+  return { ...p, ...outputs };
+});
 
 /** The quickstart snippet (code is not translated). */
 export const QUICKSTART_CODE = `curl https://your-litegen-host/v1/images/generations \\

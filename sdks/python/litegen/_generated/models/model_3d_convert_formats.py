@@ -14,8 +14,8 @@ class Model3DConvertFormats:
 
     Attributes:
         formats (List[Model3DFormat]): Containers accepted as both `from` and `to`. Every pair converts, in
-            both directions. Grows with litegen's converter, so read it rather than
-            hardcoding it; it can be narrower than the `Model3dFormat` vocabulary.
+            both directions. Today every `Model3dFormat`; it follows litegen's
+            converter, so read it rather than hardcoding it.
         max_input_bytes (int): Largest request body accepted, in bytes. Larger bodies get `413`.
     """
 

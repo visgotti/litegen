@@ -32,6 +32,15 @@ export function formatMiB(bytes: number): string {
 
 /** Raw bytes the inline (base64) entries carry: a data URL's payload is 4/3
  *  the size of the bytes it encodes. */
+/**
+ * The references in a role the selected models take. A model switch can leave
+ * others behind; they are never sent (`refsForModel`), so they mustn't count
+ * toward the new model's caps either, or they'd block its uploads unseen.
+ */
+export function refsOfRoles(refs: RefEntry[], roles: ReadonlyArray<{ role: string }>): RefEntry[] {
+  return refs.filter(x => roles.some(r => r.role === x.role));
+}
+
 export function inlineBytes(refs: RefEntry[]): number {
   let total = 0;
   for (const r of refs) {

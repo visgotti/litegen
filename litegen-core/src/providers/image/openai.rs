@@ -1,3 +1,4 @@
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use reqwest::Client;
@@ -14,7 +15,7 @@ use crate::types::{CostEstimate, CostSource, ImageGenerationRequest};
 
 /// What litegen itself sends in an Images API body; `extra` cannot replace it.
 const OWNED_FIELDS: &[&str] = &[
-    "model", "prompt", "n", "size", "quality", "style", "response_format", "image", "mask", "output_format", "background",
+    "model", "prompt", "n", "size", "quality", "style", "response_format", "image", "image[]", "mask", "output_format", "background",
 ];
 
 /// OpenAI image generation provider (GPT Image family).
@@ -33,6 +34,8 @@ pub struct OpenAiProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
     /// Result downloads: no redirects, so a URL that passed the public-address
     /// check cannot bounce into a private one.
     asset_client: Client,
@@ -42,15 +45,19 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::auth::AuthSpec::bearer(),
+            asset_client: crate::util::ssrf::public_only_download_client(
                 std::time::Duration::from_secs(120),
                 std::time::Duration::from_secs(30),
             ),
@@ -139,15 +146,19 @@ impl OpenAiProvider {
     /// GPT Image 2.5 output-token cost of `quality` relative to `medium`, the
     /// quality the catalog's base cost is priced at.
     ///
-    /// OpenAI's token calculator ("GPT Image 2.5 (Sunburst and Flare)") puts a
-    /// 1024x1024 image at 196 / 439 / 1,756 / 3,122 / 7,024 output tokens for
-    /// low / medium / high / xhigh / max. `max` is 16x `medium`, so the flat
-    /// GPT Image factors (high 2x, anything unknown 1x) would bill a `max`
-    /// image at a sixteenth of its cost. `auto` depends on the generated
-    /// image, so it stays at the medium anchor.
+    /// OpenAI's token calculator (the guide's "Calculating costs" section) puts
+    /// a 1024x1024 `gpt-image-2.5` image at 196 / 439 / 1,756 / 3,122 / 7,024
+    /// output tokens for low / medium / high / xhigh / max. `max` is 16x
+    /// `medium`, so the flat GPT Image factors (high 2x, anything unknown 1x)
+    /// would bill a `max` image at a sixteenth of its cost. `auto` depends on
+    /// the generated image, so it stays at the medium anchor.
     ///
-    /// @see <https://developers.openai.com/api/docs/guides/image-generation>
-    ///   ("GPT Image 2.5 and GPT Image 2 output tokens", re-read 2026-09-11)
+    /// The calculator is a client-rendered component, so the counts are not
+    /// page text: they come from its script's grid (`low:16, medium:24,
+    /// high:48, xhigh:64, max:96` for "gpt-image-2.5") and formula, re-derived
+    /// 2026-11-09.
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation#calculating-costs>
+    /// @see <https://developers.openai.com/_astro/GptImageTokenCalculator.react.Ul9pMTwf.js>
     fn gpt_image_2_5_quality_factor(quality: &str) -> f64 {
         const MEDIUM_TOKENS: f64 = 439.0;
         let tokens = match quality {
@@ -158,6 +169,23 @@ impl OpenAiProvider {
             _ => MEDIUM_TOKENS,
         };
         tokens / MEDIUM_TOKENS
+    }
+
+    /// GPT Image 2's price by quality, relative to the medium image the
+    /// catalog's base is for: OpenAI's 1024x1024 table, "Low $0.006 · Medium
+    /// $0.053 · High $0.211". `auto` depends on the generated image, so it
+    /// stays at the medium anchor.
+    ///
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation.md>
+    ///   ("Historical output costs", 2026-11-09)
+    fn gpt_image_2_quality_factor(quality: &str) -> f64 {
+        const MEDIUM_USD: f64 = 0.053;
+        let usd = match quality {
+            "low" => 0.006,
+            "high" | "hd" => 0.211,
+            _ => MEDIUM_USD,
+        };
+        usd / MEDIUM_USD
     }
 
     fn is_dalle3(model: &str) -> bool {
@@ -187,8 +215,8 @@ impl OpenAiProvider {
     /// every unknown id silently resolved to a model that no longer exists.
     fn resolve_model_name(&self, model: &str) -> String {
         if let Some(cfg) = &self.config {
-            if let Some(mapped) = cfg.model_mapping.get(model) {
-                return mapped.clone();
+            if let Some(mapped) = cfg.mapped_model(model) {
+                return mapped.to_string();
             }
         }
         let native = Self::native_model_id(model);
@@ -227,36 +255,40 @@ impl OpenAiProvider {
         materialized: &MaterializedRequest,
     ) -> Result<Option<reqwest::RequestBuilder>, ProviderError> {
         let mut form = reqwest::multipart::Form::new();
-        let mut has_image = false;
 
-        for r in &materialized.refs {
-            if let MaterializedRefForm::MultipartField {
-                field_name,
-                bytes,
-                content_type,
-            } = &r.form
-            {
-                // The catalog maps `init` → `image` and `mask` → `mask`.
-                if field_name != "image" && field_name != "mask" {
-                    continue;
-                }
+        // The catalog maps `init` and `reference` → `image`, and `mask` → `mask`.
+        // "You can use one or more images as a reference" — several go as
+        // repeated `image[]` parts, the edited one (`init`) first, since "If you
+        // provide multiple input images, the mask will be applied to the first
+        // image"; one goes as `image`.
+        // @see <https://developers.openai.com/api/docs/guides/image-generation.md> (2026-11-03)
+        let mut images: Vec<&crate::proxy::materializer::MaterializedRef> = materialized
+            .refs
+            .iter()
+            .filter(|r| matches!(&r.form, MaterializedRefForm::MultipartField { field_name, .. } if field_name == "image"))
+            .collect();
+        if images.is_empty() {
+            return Ok(None);
+        }
+        images.sort_by_key(|r| r.role != "init");
+        let image_field = if images.len() > 1 { "image[]" } else { "image" };
+        let masks = materialized
+            .refs
+            .iter()
+            .filter(|r| matches!(&r.form, MaterializedRefForm::MultipartField { field_name, .. } if field_name == "mask"));
+        for (field, r) in images.iter().map(|r| (image_field, *r)).chain(masks.map(|r| ("mask", r))) {
+            if let MaterializedRefForm::MultipartField { bytes, content_type, .. } = &r.form {
                 let part = reqwest::multipart::Part::bytes(bytes.to_vec())
-                    .file_name(format!("{field_name}.png"))
+                    .file_name(format!("{}.png", field.trim_end_matches("[]")))
                     .mime_str(content_type)
                     .map_err(|e| {
                         ProviderError::InvalidRequest(format!("openai edit ref mime: {e}"))
                     })?;
-                form = form.part(field_name.clone(), part);
-                has_image |= field_name == "image";
+                form = form.part(field.to_string(), part);
             }
         }
 
-        if !has_image {
-            return Ok(None);
-        }
-
-        // One image: litegen reads `data[0]` and bills one, whatever `n` was.
-        let _ = base.n;
+        // One image: litegen reads `data[0]` and bills one, so `n` is never sent.
         form = form
             .text("model", model_name.to_string())
             .text("prompt", base.prompt.clone())
@@ -270,14 +302,12 @@ impl OpenAiProvider {
         // sets, and `moderation` — which only the generations body and the
         // JSON edit body take — is not a multipart edit field.
         // @see <https://developers.openai.com/api/reference/resources/images/methods/edit>
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str()) && k.as_str() != "moderation") {
-                let s = match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                form = form.text(k.clone(), s);
-            }
+        for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k) || k == "moderation") {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            form = form.text(k.clone(), s);
         }
         // PixelGenie L9: the canonical container and background.
         if let Some(f) = extras.output_format.as_deref() {
@@ -290,7 +320,7 @@ impl OpenAiProvider {
         Ok(Some(
             self.client
                 .post(self.edits_url())
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, api_key)?
                 .multipart(form),
         ))
     }
@@ -315,26 +345,10 @@ impl OpenAiProvider {
                 retryable: e.is_connect(),
             })?;
 
-        let status = resp.status();
-        let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse OpenAI response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-
-        if !status.is_success() {
-            let error_msg = resp_json["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown error")
-                .to_string();
-            return Err(ProviderError::RequestFailed {
-                message: format!("OpenAI API error: {error_msg}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(resp_json),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        // The status before the body (read_vendor_json): a 429, a 408 or a
+        // 5xx turned the call away and is retried, after any `Retry-After`
+        // (docs/gateway-settings.md); any other error status is OpenAI's refusal.
+        let resp_json = crate::providers::read_vendor_json(resp, "OpenAI").await?;
 
         let data = resp_json["data"]
             .as_array()
@@ -432,6 +446,7 @@ impl ImageProvider for OpenAiProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -463,13 +478,11 @@ impl ImageProvider for OpenAiProvider {
         let size = extras.size.as_deref().unwrap_or("1024x1024");
         let size = Self::vendor_size(size, &model_name)?;
 
-        // `response_format` applies to `dall-e-2`/`dall-e-3` only: "This
-        // parameter isn't supported for the GPT image models, which always
-        // return base64-encoded images."
-        // @see <https://developers.openai.com/api/reference> `CreateImageRequest`
-        let response_format = if is_gpt_image {
-            "b64_json"
-        } else if extras.response_format == "b64_json" {
+        // `response_format` applies to `dall-e-2`/`dall-e-3` only: "Legacy
+        // response format parameter for retired image models. Unsupported for
+        // GPT image models, which always return base64-encoded images."
+        // @see <https://developers.openai.com/api/reference/resources/images/methods/generate> `response_format` (2026-11-09)
+        let response_format = if is_gpt_image || extras.response_format == "b64_json" {
             "b64_json"
         } else {
             "url"
@@ -508,8 +521,8 @@ impl ImageProvider for OpenAiProvider {
         // `extra` adds the endpoint's own fields (output_compression,
         // moderation, user, safety_identifier); it cannot replace one litegen
         // sets — `extra.model` would run a dearer model than the one billed.
-        if let (Some(Value::Object(extra_map)), Some(body_map)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
+        if let Some(body_map) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
                 body_map.insert(k.clone(), v.clone());
             }
         }
@@ -525,7 +538,7 @@ impl ImageProvider for OpenAiProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(self.api_url())
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("Content-Type", "application/json")
                 .json(&body),
         );
@@ -553,12 +566,7 @@ impl ImageProvider for OpenAiProvider {
         let quality_factor = if model_name.starts_with("gpt-image-2.5") {
             Self::gpt_image_2_5_quality_factor(quality)
         } else {
-            match quality {
-                "low" => 0.5,
-                "medium" => 1.0,
-                "high" | "hd" => 2.0,
-                _ => 1.0,
-            }
+            Self::gpt_image_2_quality_factor(quality)
         };
         let base_cost = model.pricing.base_cost_usd * size_factor * quality_factor;
 
@@ -598,14 +606,11 @@ impl ImageProvider for OpenAiProvider {
             }
         };
 
-        match self
-            .client
-            .get(format!("{}/models", self.api_root()))
-            .header("Authorization", format!("Bearer {api_key}"))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
+        let request = match self.client.get(format!("{}/models", self.api_root())).authorized(&self.auth, &api_key) {
+            Ok(request) => request,
+            Err(e) => return HealthCheckResult { healthy: false, message: format!("OpenAI health check failed: {e}"), latency_ms: None },
+        };
+        match request.timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => HealthCheckResult {
                 healthy: true,
                 message: "OpenAI API key valid".into(),
@@ -684,7 +689,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: size.map(|s| s.to_string()),
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             quality: quality.map(|s| s.to_string()),
             style: style.map(|s| s.to_string()),
             steps: None,
@@ -890,7 +895,7 @@ mod tests {
         let request = ImageGenerationRequest {
             base: make_base("a tide pool at dawn", id),
             size: Some("1024x1024".to_string()),
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             quality: Some(quality.to_string()),
             style: None,
             steps: None,
@@ -912,11 +917,13 @@ mod tests {
     }
 
     /// GPT Image 2.5 adds `xhigh` and `max`, and its output tokens per quality
-    /// are not GPT Image 2's. OpenAI's token calculator ("GPT Image 2.5
-    /// (Sunburst and Flare)", 1024x1024): low 196, medium 439, high 1,756,
-    /// xhigh 3,122, max 7,024 output tokens. The flat factors billed `max`,
-    /// which they did not know, at the medium price: a sixteenth of its cost.
-    /// @see <https://developers.openai.com/api/docs/guides/image-generation> (2026-09-11)
+    /// are not GPT Image 2's. OpenAI's token calculator (the guide's
+    /// "Calculating costs" component, "gpt-image-2.5" at 1024x1024): low 196,
+    /// medium 439, high 1,756, xhigh 3,122, max 7,024 output tokens. The flat
+    /// factors billed `max`, which they did not know, at the medium price: a
+    /// sixteenth of its cost.
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation#calculating-costs> (2026-11-09)
+    /// @see <https://developers.openai.com/_astro/GptImageTokenCalculator.react.Ul9pMTwf.js> (the grid and formula)
     #[tokio::test]
     async fn gpt_image_2_5_estimate_scales_with_the_documented_quality_tokens() {
         let provider = OpenAiProvider::new();
@@ -938,6 +945,19 @@ mod tests {
                     "{id} {quality}: estimated {got}, OpenAI's calculator implies {want}"
                 );
             }
+        }
+    }
+
+    /// GPT Image 2 at 1024x1024: "Low $0.006 · Medium $0.053 · High $0.211"
+    /// (OpenAI's "Historical output costs" table), not the flat half and
+    /// double the estimate once used (which billed `high` at half its cost).
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation.md> (2026-11-09)
+    #[tokio::test]
+    async fn gpt_image_2_estimate_is_openais_table_by_quality() {
+        let provider = OpenAiProvider::new();
+        for (quality, usd) in [("low", 0.006), ("medium", 0.053), ("high", 0.211)] {
+            let got = estimated_cost(&provider, "openai/gpt-image-2", quality).await;
+            assert!((got - usd).abs() < 1e-9, "gpt-image-2 {quality}: estimated {got}, OpenAI's table says {usd}");
         }
     }
 
@@ -1087,6 +1107,57 @@ mod tests {
         assert!(body.contains("put a hat on the cat"));
     }
 
+    /// "You can use one or more images as a reference to generate a new
+    /// image" — `image` takes "an array of images" (maxItems 16), sent as
+    /// repeated `image[]` parts — and "If you provide multiple input images,
+    /// the mask will be applied to the first image": several images go as
+    /// `image[]`, the edited one (`init`) first whatever order they came in;
+    /// one image still goes as `image`.
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation.md> (2026-11-03)
+    #[tokio::test]
+    async fn several_images_go_as_an_image_array_with_the_edited_one_first() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/images/edits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "created": 1, "data": [{ "b64_json": B64.encode(b"edited") }]
+            })))
+            .mount(&server)
+            .await;
+        let provider = make_provider_with_base(&format!("{}/v1/images/generations", server.uri()));
+        let id = "openai/gpt-image-2.5-sunburst";
+        let part = |role: &str, field: &str, bytes: &'static [u8]| crate::proxy::materializer::MaterializedRef {
+            role: role.to_string(),
+            form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                field_name: field.to_string(),
+                bytes: bytes::Bytes::from_static(bytes),
+                content_type: "image/png".to_string(),
+            },
+            time_s: None,
+        };
+        let refs = |parts| crate::proxy::materializer::MaterializedRequest { refs: parts, cleanup: crate::proxy::materializer::Cleanup::empty() };
+        let extras = make_extras(Some("1024x1024"), None, None);
+        provider
+            .generate(&ref_schema(id), &make_base("a gift basket", id), &extras, &refs(vec![
+                part("reference", "image", b"REF-A"), part("init", "image", b"INIT-B"), part("mask", "mask", b"MASK"), part("reference", "image", b"REF-C"),
+            ]))
+            .await
+            .expect("generate");
+        provider
+            .generate(&ref_schema(id), &make_base("a hat", id), &extras, &refs(vec![part("init", "image", b"ONLY")]))
+            .await
+            .expect("generate");
+        let received = server.received_requests().await.unwrap();
+        let many = String::from_utf8_lossy(&received[0].body).to_string();
+        assert_eq!(many.matches("name=\"image[]\"").count(), 3, "{many}");
+        assert!(!many.contains("name=\"image\""), "no bare image part beside the array: {many}");
+        let (b, a, c) = (many.find("INIT-B").unwrap(), many.find("REF-A").unwrap(), many.find("REF-C").unwrap());
+        assert!(b < a && a < c, "the edited image goes first, the rest in order: {many}");
+        assert_eq!(many.matches("name=\"mask\"").count(), 1, "{many}");
+        let one = String::from_utf8_lossy(&received[1].body).to_string();
+        assert!(one.contains("name=\"image\"") && !one.contains("image[]"), "{one}");
+    }
+
     // ─── OpenAI audit, 2026-10-30: W7–W9, W12–W14 ───────────────────────────
 
     fn edit_refs() -> crate::proxy::materializer::MaterializedRequest {
@@ -1205,5 +1276,40 @@ mod tests {
         extras.response_format = "url".into();
         let err = p.generate(&ref_schema("openai/gpt-image-2"), &make_base("x", "openai/gpt-image-2"), &extras, &empty_materialized()).await.unwrap_err();
         assert!(matches!(&err, ProviderError::RequestFailed { message, retryable: false, .. } if message.contains("refused")), "{err:?}");
+    }
+
+    /// A 429 turned the call away and is retried, after the `Retry-After`
+    /// OpenAI asked for when it sent one (docs/gateway-settings.md).
+    #[tokio::test]
+    async fn a_429_is_retryable() {
+        let body = json!({ "error": { "message": "Rate limit reached for requests", "type": "requests", "param": null, "code": "rate_limit_exceeded" } });
+        for (answer, wait_ms) in [
+            (ResponseTemplate::new(429).insert_header("retry-after", "2").set_body_json(body.clone()), Some(2000)),
+            (ResponseTemplate::new(429).set_body_json(body.clone()), None),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).respond_with(answer).mount(&server).await;
+            let err = make_provider_with_base(&format!("{}/v1", server.uri()))
+                .generate(&ref_schema("openai/gpt-image-2"), &make_base("x", "openai/gpt-image-2"), &make_extras(Some("1024x1024"), None, None), &empty_materialized())
+                .await
+                .unwrap_err();
+            match wait_ms {
+                Some(ms) => assert!(matches!(&err, ProviderError::RateLimited { retry_after_ms, provider_error: Some(_), .. } if *retry_after_ms == ms), "{err:?}"),
+                None => assert!(matches!(&err, ProviderError::RequestFailed { retryable: true, status_code: Some(429), .. }), "{err:?}"),
+            }
+        }
+    }
+
+    /// A gateway's 5xx page is not JSON: the status decides, and the call is
+    /// retried rather than failed as an unreadable answer.
+    #[tokio::test]
+    async fn a_5xx_page_that_is_not_json_is_retryable() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(503).set_body_string("<html>Service Unavailable</html>")).mount(&server).await;
+        let err = make_provider_with_base(&format!("{}/v1", server.uri()))
+                .generate(&ref_schema("openai/gpt-image-2"), &make_base("x", "openai/gpt-image-2"), &make_extras(Some("1024x1024"), None, None), &empty_materialized())
+                .await
+                .unwrap_err();
+        assert!(matches!(&err, ProviderError::RequestFailed { retryable: true, status_code: Some(503), .. }), "{err:?}");
     }
 }

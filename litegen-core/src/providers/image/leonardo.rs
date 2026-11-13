@@ -28,6 +28,7 @@ use crate::types::*;
 /// @see <https://docs.leonardo.ai/v1.0/docs/how-to-upload-an-image-using-a-presigned-url.md> (2026-10-30)
 pub(crate) async fn upload_init_image(
     client: &Client,
+    upload_client: &Client,
     api_base: &str,
     auth: &AuthSpec,
     creds: &ProviderCredentials,
@@ -72,10 +73,18 @@ pub(crate) async fn upload_init_image(
         provider_error: Some(data.clone()),
         retryable: false,
     })?;
-    let fields: HashMap<String, String> = serde_json::from_str(uii["fields"].as_str().unwrap_or("{}"))
-        .map_err(|e| ProviderError::InvalidRequest(format!("Leonardo init-image fields parse: {e}")))?;
+    // Leonardo was called by now: an answer litegen can't read is a vendor
+    // failure, not a refusal before any call (E9). The presign is free, so it
+    // may be asked again.
+    let fields: HashMap<String, String> = serde_json::from_str(uii["fields"].as_str().unwrap_or("{}")).map_err(|e| ProviderError::RequestFailed {
+        message: format!("Leonardo init-image fields parse: {e}"),
+        status_code: None,
+        provider_error: Some(data.clone()),
+        retryable: true,
+    })?;
 
-    // POST the file to S3 with the presigned form fields (no Authorization header).
+    // POST the file to S3 with the presigned form fields: storage, not
+    // Leonardo's API, so no auth and none of the operator's extra_headers.
     let mut form = Form::new();
     for (k, v) in fields {
         form = form.text(k, v);
@@ -85,9 +94,9 @@ pub(crate) async fn upload_init_image(
         Part::bytes(bytes.to_vec())
             .file_name(format!("image.{extension}"))
             .mime_str(mime)
-            .map_err(|e| ProviderError::InvalidRequest(format!("leonardo ref mime: {e}")))?,
+            .map_err(|e| ProviderError::RequestFailed { message: format!("leonardo ref mime: {e}"), status_code: None, provider_error: None, retryable: false })?,
     );
-    let s3_resp = client.post(s3_url).multipart(form).send().await.map_err(|e| ProviderError::RequestFailed {
+    let s3_resp = upload_client.post(s3_url).multipart(form).send().await.map_err(|e| ProviderError::RequestFailed {
         message: format!("Leonardo S3 upload failed: {e}"),
         status_code: None,
         provider_error: None,
@@ -109,9 +118,15 @@ pub(crate) async fn upload_init_image(
 /// only when Leonardo turned the call away (429, 5xx).
 pub(crate) async fn read_create(resp: reqwest::Response, what: &str) -> Result<Value, ProviderError> {
     let status = resp.status();
+    let retry_after = crate::providers::retry_after_ms(resp.headers());
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
         let snippet: String = text.chars().take(200).collect();
+        let body: Option<Value> = serde_json::from_str(&text).ok();
+        let message = format!("{what} returned HTTP {}: {snippet}", status.as_u16());
+        if let Some(e) = crate::providers::rate_limited("leonardo", status, retry_after, &message, body.as_ref()) {
+            return Err(e);
+        }
         return Err(ProviderError::RequestFailed {
             message: format!("{what} returned HTTP {}: {snippet}", status.as_u16()),
             status_code: Some(status.as_u16()),
@@ -128,8 +143,10 @@ pub(crate) async fn read_create(resp: reqwest::Response, what: &str) -> Result<V
 }
 
 /// What litegen itself sends to `POST /generations`; `extra` cannot replace it.
-const OWNED_FIELDS: &[&str] =
-    &["prompt", "modelId", "width", "height", "num_images", "negative_prompt", "seed", "init_image_id", "init_strength"];
+const OWNED_FIELDS: &[&str] = &[
+    "prompt", "modelId", "width", "height", "num_images", "negative_prompt", "seed", "init_image_id", "init_strength",
+    "guidance_scale", "num_inference_steps",
+];
 
 /// Leonardo.Ai image generation provider.
 ///
@@ -163,16 +180,19 @@ const DEFAULT_MODEL_ID: &str = "b24e16ff-06e3-43eb-8d33-4416c2d75876";
 const DIFFUSION_XL_MODEL_ID: &str = "1e60896f-3c26-4296-8ecc-53e2afecc132";
 
 impl LeonardoImageProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(
+            client: Self::api_client(&Default::default()),
+            asset_client: crate::util::ssrf::public_only_download_client(
                 std::time::Duration::from_secs(120),
                 std::time::Duration::from_secs(30),
             ),
@@ -204,8 +224,8 @@ impl LeonardoImageProvider {
     /// and refused rather than billed as another model (L13).
     fn resolve_model_id(&self, model_id: &str) -> Option<String> {
         if let Some(cfg) = &self.config {
-            if let Some(m) = cfg.model_mapping.get(model_id) {
-                return Some(m.clone());
+            if let Some(m) = cfg.mapped_model(model_id) {
+                return Some(m.to_string());
             }
         }
         match model_id.strip_prefix("leonardo/").unwrap_or(model_id) {
@@ -220,9 +240,11 @@ impl LeonardoImageProvider {
     async fn poll_generation(&self, id: &str) -> Result<Value, ProviderError> {
         let creds = self.creds()?;
         let url = format!("{}/generations/{}", self.api_base(), id);
-        let max_attempts = 90;
-        for _ in 0..max_attempts {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // As long as litegen waits for this call (the vendor timeout,
+        // docs/gateway-settings.md); 180 s when called directly.
+        let started = std::time::Instant::now();
+        let mut budget = crate::providers::PollBudget::new(std::time::Duration::from_secs(180), std::time::Duration::from_secs(2));
+        while budget.next().await {
             let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.get(&url))?;
             let resp = match crate::providers::inject_trace_headers(builder).send().await {
                 Ok(resp) => resp,
@@ -245,10 +267,12 @@ impl LeonardoImageProvider {
                         retryable: false,
                     })
                 }
-                _ => continue,
+                // job_status: PENDING | COMPLETE | FAILED.
+                Some("PENDING") => continue,
+                other => return Err(super::unknown_state("leonardo", other)),
             }
         }
-        Err(ProviderError::Timeout { timeout_ms: max_attempts * 2000 })
+        Err(ProviderError::Timeout { timeout_ms: budget.total_ms(started) })
     }
 
     /// A non-2xx (an expired or throttled presigned CDN URL) is an error, not
@@ -264,6 +288,28 @@ impl Default for LeonardoImageProvider {
     }
 }
 
+impl LeonardoImageProvider {
+    /// A finished job's result, as `generate` returns it: its image
+    /// downloaded, with the vendor's ids.
+    async fn finish(&self, gen_id: &str, result: Value) -> Result<GenerationOutput, ProviderError> {
+        let image_url = result["generations_by_pk"]["generated_images"][0]["url"]
+            .as_str()
+            .ok_or_else(|| ProviderError::RequestFailed {
+                message: "Leonardo result missing generated_images[0].url".to_string(),
+                status_code: None,
+                provider_error: Some(result.clone()),
+                retryable: false,
+            })?;
+
+        let bytes = self.fetch_image_bytes(image_url).await?;
+        let mut metadata = HashMap::new();
+        metadata.insert("generation_id".to_string(), Value::String(gen_id.to_string()));
+        metadata.insert("url".to_string(), Value::String(image_url.to_string()));
+
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
+    }
+}
+
 #[async_trait]
 impl ImageProvider for LeonardoImageProvider {
     fn name(&self) -> &str {
@@ -274,6 +320,7 @@ impl ImageProvider for LeonardoImageProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -297,7 +344,7 @@ impl ImageProvider for LeonardoImageProvider {
         let mut init_image_id: Option<String> = None;
         for r in &materialized.refs {
             if let MaterializedRefForm::MultipartField { bytes, .. } = &r.form {
-                init_image_id = Some(upload_init_image(&self.client, self.api_base(), &self.auth, &creds, bytes).await?);
+                init_image_id = Some(upload_init_image(&self.client, &self.asset_client, self.api_base(), &self.auth, &creds, bytes).await?);
                 break;
             }
         }
@@ -315,8 +362,8 @@ impl ImageProvider for LeonardoImageProvider {
         // One image: `num_images` defaults to 4, and litegen returns and bills
         // one. Alchemy off unless asked for: it defaults on, and "when using
         // Alchemy v2, the output dimension is 1.75 times bigger" than `size`.
-        // @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-10-30)
-        // @see <https://docs.leonardo.ai/docs/legacy-faq.md> (2026-10-30)
+        // @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-11-09)
+        // @see <https://docs.leonardo.ai/docs/legacy-faq.md> (2026-11-09)
         let mut body = json!({
             "prompt": base.prompt,
             "modelId": model_id,
@@ -331,17 +378,24 @@ impl ImageProvider for LeonardoImageProvider {
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
         }
+        // "guidance_scale … Must be between 1 and 20"; "num_inference_steps …
+        // Must be between 10 and 60. Default is 15."
+        // @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-11-03)
+        if let Some(g) = extras.guidance_scale {
+            body["guidance_scale"] = json!(g);
+        }
+        if let Some(steps) = extras.steps {
+            body["num_inference_steps"] = json!(steps);
+        }
         if let Some(id) = init_image_id {
             body["init_image_id"] = Value::String(id);
             if let Some(strength) = extras.strength {
                 body["init_strength"] = json!(strength);
             }
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
-                    obj.insert(k.clone(), v.clone());
-                }
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -374,21 +428,20 @@ impl ImageProvider for LeonardoImageProvider {
         extras.vendor_job.record(gen_id);
 
         let result = self.poll_generation(gen_id).await?;
-        let image_url = result["generations_by_pk"]["generated_images"][0]["url"]
-            .as_str()
-            .ok_or_else(|| ProviderError::RequestFailed {
-                message: "Leonardo result missing generated_images[0].url".to_string(),
-                status_code: None,
-                provider_error: Some(result.clone()),
-                retryable: false,
-            })?;
+        self.finish(gen_id, result).await
+    }
 
-        let bytes = self.fetch_image_bytes(image_url).await?;
-        let mut metadata = HashMap::new();
-        metadata.insert("generation_id".to_string(), Value::String(gen_id.to_string()));
-        metadata.insert("url".to_string(), Value::String(image_url.to_string()));
+    fn resumable(&self, _model: &ModelSchema) -> bool {
+        true
+    }
 
-        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
+    /// One look at an accepted job, read as `generate`'s own poll loop reads it.
+    async fn poll_job(&self, _model: &str, job: &str, _resume: Option<&Value>) -> Result<crate::providers::ImageJobPoll, ProviderError> {
+        match super::poll_once(self.poll_generation(job)).await {
+            Ok(Some(result)) => self.finish(job, result).await.map(crate::providers::ImageJobPoll::Done),
+            Ok(None) => Ok(crate::providers::ImageJobPoll::Running),
+            Err(e) => super::job_failed(e),
+        }
     }
 
     async fn estimate_cost(
@@ -489,7 +542,7 @@ mod tests {
     fn make_extras() -> ImageExtras {
         ImageExtras {
             vendor_job: Default::default(),
-            size: Some("1024x768".to_string()), aspect_ratio: None, quality: None, style: None,
+            size: Some("1024x768".to_string()), resolution: None, aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
             edit: None, views: Vec::new(),
             output_format: None, background: None,
@@ -586,8 +639,8 @@ mod tests {
     /// 8"), so one is asked for; `alchemy` defaults to true and makes the
     /// output 1.75 times the requested size, so it is sent off; `extra` cannot
     /// replace the model litegen bills or anything else litegen sends.
-    /// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-10-30)
-    /// @see <https://docs.leonardo.ai/docs/legacy-faq.md> (2026-10-30)
+    /// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-11-09)
+    /// @see <https://docs.leonardo.ai/docs/legacy-faq.md> (2026-11-09)
     #[tokio::test]
     async fn one_plain_image_is_asked_for_and_extra_cannot_replace_what_litegen_sends() {
         let server = refusing_server().await;
@@ -614,6 +667,39 @@ mod tests {
         extras.extra = Some(json!({ "alchemy": true }));
         let _ = make_provider(&server.uri()).generate(&ref_schema("leonardo/diffusion-xl"), &base, &extras, &no_refs()).await;
         assert_eq!(created_body(&server).await["alchemy"], true);
+    }
+
+    /// E4a: whether the images show in Leonardo's community feed (`public`)
+    /// is litegen's: never sent, so the account's own default applies; the
+    /// endpoint's other fields still go.
+    #[tokio::test]
+    async fn public_is_never_sent() {
+        let server = refusing_server().await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "public": true, "alchemy": true }));
+        let base = make_base("a quiet harbour", "leonardo/diffusion-xl");
+        let _ = make_provider(&server.uri()).generate(&ref_schema("leonardo/diffusion-xl"), &base, &extras, &no_refs()).await;
+        let body = created_body(&server).await;
+        assert!(body.get("public").is_none(), "{body}");
+        assert_eq!(body["alchemy"], true, "{body}");
+    }
+
+    /// "guidance_scale … How strongly the generation should reflect the
+    /// prompt. 7 is recommended. Must be between 1 and 20" and
+    /// "num_inference_steps … The Step Count to use for the generation. Must be
+    /// between 10 and 60. Default is 15" carry the canonical `guidance_scale`
+    /// and `steps`; `extra` cannot replace either.
+    /// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-11-03)
+    #[tokio::test]
+    async fn guidance_and_steps_go_as_leonardos_own_fields() {
+        let server = refusing_server().await;
+        let mut extras = make_extras();
+        extras.guidance_scale = Some(9.5);
+        extras.steps = Some(40);
+        extras.extra = Some(json!({ "guidance_scale": 2, "num_inference_steps": 10 }));
+        let _ = make_provider(&server.uri()).generate(&ref_schema("leonardo/diffusion-xl"), &make_base("a quiet harbour", "leonardo/diffusion-xl"), &extras, &no_refs()).await;
+        let body = created_body(&server).await;
+        assert_eq!((body["guidance_scale"].as_f64(), body["num_inference_steps"].as_u64()), (Some(9.5), Some(40)), "{body}");
     }
 
     /// #12: `extension` "Has to be png, jpg, jpeg, or webp", and "the image
@@ -659,6 +745,36 @@ mod tests {
         let err = provider.generate(&schema, &base, &make_extras(), &one(b"GIF89a\x01\x00\x01\x00")).await.unwrap_err();
         assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
         assert_eq!(server.received_requests().await.unwrap().len(), before, "a GIF reached Leonardo");
+    }
+
+    /// E9: a presign answer litegen can't read (`uploadInitImage.fields`)
+    /// comes after a call to Leonardo: a vendor failure that may be asked
+    /// again, not the adapter's refusal before any call.
+    #[tokio::test]
+    async fn a_presign_answer_that_cannot_be_read_is_a_vendor_failure() {
+        let server = refusing_server().await;
+        Mock::given(method("POST"))
+            .and(path("/init-image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "uploadInitImage": { "id": "init-1", "url": "http://127.0.0.1:9/upload", "fields": "not json" }
+            })))
+            .mount(&server)
+            .await;
+        let jpeg = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".into(),
+                form: MaterializedRefForm::MultipartField {
+                    field_name: "file".into(),
+                    bytes: bytes::Bytes::from_static(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16]),
+                    content_type: "image/jpeg".into(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        };
+        let schema = ref_schema("leonardo/diffusion-xl");
+        let err = make_provider(&server.uri()).generate(&schema, &make_base("x", "leonardo/diffusion-xl"), &make_extras(), &jpeg).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: true, .. }), "{err:?}");
     }
 
     /// #17, #19: a create Leonardo turned away says so, with its status — a

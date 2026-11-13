@@ -4,6 +4,7 @@
 // GET  /v1/predictions/{id} — poll for status
 // Models: AnimateDiff (replicate/video)
 
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -22,12 +23,14 @@ use crate::types::*;
 /// Runs AnimateDiff (`lucataco/animate-diff`), the model behind
 /// `replicate/video`, through the Replicate predictions API.
 ///
-/// @see <https://replicate.com/docs/reference/http#create-a-prediction> — create (`POST /v1/predictions`)
-/// @see <https://replicate.com/docs/reference/http#get-a-prediction> — poll (`GET /v1/predictions/{id}`)
+/// @see <https://replicate.com/docs/reference/http#predictions.create> — create (`POST /v1/predictions`)
+/// @see <https://replicate.com/docs/reference/http#predictions.get> — poll (`GET /v1/predictions/{id}`)
 pub struct ReplicateVideoProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
 }
 
 /// What litegen itself sends in a prediction's `input`; `extra` cannot
@@ -38,7 +41,7 @@ const OWNED_FIELDS: &[&str] = &["prompt", "seed", "n_prompt"];
 /// refused, not billed as AnimateDiff. (Stable Video Diffusion was removed
 /// from Replicate, and Zeroscope and Deforum were never catalog rows.)
 ///
-/// @see <https://replicate.com/docs/reference/http#create-a-prediction> — the `version` hash sent in the create body
+/// @see <https://replicate.com/docs/reference/http#predictions.create> — the `version` hash sent in the create body
 /// @see <https://replicate.com/lucataco/animate-diff/versions> — `beecf59c…`, the latest version (2026-10-30)
 fn resolve_model_version(model: &str) -> Option<&'static str> {
     match model {
@@ -48,14 +51,18 @@ fn resolve_model_version(model: &str) -> Option<&'static str> {
 }
 
 impl ReplicateVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(600), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::auth::AuthSpec::bearer(),
         }
     }
 
@@ -93,6 +100,7 @@ impl VideoProvider for ReplicateVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -104,7 +112,7 @@ impl VideoProvider for ReplicateVideoProvider {
 
     /// Create a prediction (`POST {api_base}/predictions`) with a `version` hash.
     ///
-    /// @see <https://replicate.com/docs/reference/http#create-a-prediction> — create a prediction.
+    /// @see <https://replicate.com/docs/reference/http#predictions.create> — create a prediction.
     ///   Proves the `{version, input}` body, the `input` fields (`prompt`, `n_prompt`,
     ///   `seed`, plus `steps`/`guidance_scale` via `extra`), and the `id` response
     ///   field. The backing AnimateDiff model does not accept `fps`/`num_frames`/
@@ -125,12 +133,12 @@ impl VideoProvider for ReplicateVideoProvider {
         let version = self
             .config
             .as_ref()
-            .and_then(|c| c.model_mapping.get(&model.id))
+            .and_then(|c| c.mapped_model(&model.id))
             .map(|mapped| {
                 mapped
                     .rsplit_once(':')
                     .map(|(_, v)| v.to_string())
-                    .unwrap_or_else(|| mapped.clone())
+                    .unwrap_or_else(|| mapped.to_string())
             })
             .unwrap_or_else(|| pinned.to_string());
         let url = format!("{}/predictions", self.api_base());
@@ -160,11 +168,9 @@ impl VideoProvider for ReplicateVideoProvider {
         }
 
         // Shallow-merge extra, never over what litegen sends.
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(input_obj) = input.as_object_mut() {
-                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
-                    input_obj.insert(k.clone(), v.clone());
-                }
+        if let Some(input_obj) = input.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                input_obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -176,7 +182,7 @@ impl VideoProvider for ReplicateVideoProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("Content-Type", "application/json")
                 .json(&body),
         )
@@ -192,6 +198,7 @@ impl VideoProvider for ReplicateVideoProvider {
         })?;
 
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             let resp_json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -200,6 +207,9 @@ impl VideoProvider for ReplicateVideoProvider {
                 .or_else(|| resp_json["error"].as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| text.chars().take(200).collect());
+            if let Some(e) = crate::providers::rate_limited("replicate", status, retry_after, &format!("Replicate API error: {err}"), Some(&resp_json)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
                 message: format!("Replicate API error: {err}"),
                 status_code: Some(status.as_u16()),
@@ -242,7 +252,7 @@ impl VideoProvider for ReplicateVideoProvider {
     /// Poll a prediction (`GET {api_base}/predictions/{id}`), reading `status`
     /// (`succeeded`/`failed`/`processing`/`starting`) and the `output` URL(s).
     ///
-    /// @see <https://replicate.com/docs/reference/http#get-a-prediction> — get a prediction
+    /// @see <https://replicate.com/docs/reference/http#predictions.get> — get a prediction
     async fn poll_status(
         &self,
         handle: &VideoGenerationHandle,
@@ -261,11 +271,11 @@ impl VideoProvider for ReplicateVideoProvider {
             })?;
         let poll_url = format!("{}/predictions/{prediction_id}", self.api_base());
 
-        // GET /v1/predictions/{id} — https://replicate.com/docs/reference/http#get-a-prediction
+        // GET /v1/predictions/{id} — https://replicate.com/docs/reference/http#predictions.get
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .get(&poll_url)
-                .header("Authorization", format!("Bearer {api_key}")),
+                .authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -291,10 +301,7 @@ impl VideoProvider for ReplicateVideoProvider {
                 error.get_or_insert_with(|| "replicate prediction aborted before it started".into());
                 GenerationStatus::Failed
             }
-            other => {
-                error = Some(format!("replicate prediction status {}", other.unwrap_or("missing")));
-                GenerationStatus::Failed
-            }
+            other => return Ok(super::unknown_state("replicate", other)),
         };
 
         // Video URL from output (string or array of strings)
@@ -350,7 +357,7 @@ impl VideoProvider for ReplicateVideoProvider {
 
     /// Validate the API token via `GET {api_base}/account`.
     ///
-    /// @see <https://replicate.com/docs/reference/http#get-the-authenticated-account> — Get the authenticated account
+    /// @see <https://replicate.com/docs/reference/http#account.get> — Get the authenticated account
     /// Cancel a prediction (`POST {api_base}/predictions/{id}/cancel`). The
     /// reference documents only the call; what it answers is read as the
     /// prediction it returns: one that had already succeeded or failed had
@@ -365,7 +372,7 @@ impl VideoProvider for ReplicateVideoProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(format!("{}/predictions/{prediction_id}/cancel", self.api_base()))
-                .header("Authorization", format!("Bearer {api_key}")),
+                .authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -411,14 +418,11 @@ impl VideoProvider for ReplicateVideoProvider {
                 }
             }
         };
-        match self
-            .client
-            .get(format!("{}/account", self.api_base()))
-            .header("Authorization", format!("Bearer {api_key}"))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
+        let request = match self.client.get(format!("{}/account", self.api_base())).authorized(&self.auth, &api_key) {
+            Ok(request) => request,
+            Err(e) => return HealthCheckResult { healthy: false, message: format!("Replicate health check failed: {e}"), latency_ms: None },
+        };
+        match request.timeout(std::time::Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => HealthCheckResult {
                 healthy: true,
                 message: "Replicate API key valid".into(),

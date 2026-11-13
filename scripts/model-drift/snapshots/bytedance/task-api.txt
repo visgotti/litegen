@@ -1,13 +1,13 @@
 id `string`
 model `string`
 status `string`
-  values: `queued`, `running`, `cancelled`, `succeeded`, `failed`
+  values: `queued`, `running`, `cancelled`, `succeeded`, `failed`, `expired`
 content `object`
 last_frame_url `string`
 video_url `string`
 created_at `integer`
 draft `boolean`
-  values: `true`, `false`
+  supported models: (none of ours)
 draft_task_id `string`
 duration `integer`
 error `object / null`
@@ -18,11 +18,12 @@ frames `integer`
 framespersecond `integer`
 generate_audio `boolean`
   values: `true`, `false`
-output_format `string`
+output_formatnew `string`
 priority `integer`
+  supported models: Dreamina Seedance 2.0 series
 ratio `string`
 resolution `string`
-safety_identifier `string`
+safety_identifiernew `string`
 seed `integer`
 service_tier `string`
 updated_at `integer`

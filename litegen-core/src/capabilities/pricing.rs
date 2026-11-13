@@ -11,7 +11,7 @@ use super::{ModelSchema, ParamSpec, PriceRule};
 use crate::types::BaseGenerationRequest;
 
 /// Derived facts a rule may name besides the model's params.
-pub const DERIVED_FACTS: &[&str] = &["views", "keyframes", "animations", "duration_seconds", "megapixels"];
+pub const DERIVED_FACTS: &[&str] = &["views", "added_views", "keyframes", "animations", "duration_seconds", "megapixels", "references"];
 
 /// What a price reads about one request: every param it sent, else the
 /// model's default for it; `extra.<field>` for each vendor field; and the
@@ -41,11 +41,30 @@ impl PriceFacts {
             }
         }
         let roles = || base.reference_images.iter().filter_map(|r| r.role.as_deref());
+        // What the request sends: every reference (`references`), and each
+        // role's (`references.<role>`), a role left out being the row's default.
+        if !base.reference_images.is_empty() {
+            facts.insert("references".into(), Value::from(base.reference_images.len()));
+            let default_role = schema.ref_inputs.as_ref().and_then(|ri| ri.default_role.as_deref()).unwrap_or("init");
+            let mut by_role: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+            for r in &base.reference_images {
+                *by_role.entry(r.role.as_deref().unwrap_or(default_role)).or_default() += 1;
+            }
+            for (role, n) in by_role {
+                facts.insert(format!("references.{role}"), Value::from(n));
+            }
+        }
         let views = roles().filter(|r| r.starts_with("view-")).count();
         let keyframes: Vec<f64> =
             base.reference_images.iter().filter(|r| r.role.as_deref() == Some("keyframe")).filter_map(|r| r.time_s).collect();
         if views > 0 {
             facts.insert("views".into(), Value::from(views));
+        }
+        // The views besides the front: a lone front view is the plain image
+        // input, which vendors don't bill as multi-view.
+        let added_views = roles().filter(|r| r.starts_with("view-") && *r != "view-front").count();
+        if added_views > 0 {
+            facts.insert("added_views".into(), Value::from(added_views));
         }
         if !keyframes.is_empty() {
             facts.insert("keyframes".into(), Value::from(keyframes.len()));
@@ -57,7 +76,7 @@ impl PriceFacts {
         // The clip's length: the request's, else the model's default; a
         // model with no duration param makes its clip from its keyframes.
         let duration = if schema.params.contains_key("duration_seconds") || keyframes.is_empty() {
-            crate::api::middleware::validator::resolve_duration_seconds(schema, facts.get("duration_seconds").and_then(Value::as_f64))
+            crate::capabilities::resolve_duration_seconds(schema, facts.get("duration_seconds").and_then(Value::as_f64))
         } else {
             keyframes.iter().copied().fold(0.0, f64::max)
         };
@@ -82,7 +101,7 @@ impl PriceFacts {
 }
 
 /// A param's declared default, as a request would send it.
-fn param_default(spec: &ParamSpec) -> Option<Value> {
+pub(crate) fn param_default(spec: &ParamSpec) -> Option<Value> {
     match spec {
         ParamSpec::Bool(s) => s.default.map(Value::from),
         ParamSpec::Int(s) => s.default.map(Value::from),
@@ -93,15 +112,31 @@ fn param_default(spec: &ParamSpec) -> Option<Value> {
     }
 }
 
+/// The bounds a rule may name instead of one value: a range of a numeric
+/// fact, such as `megapixels: { gt: 1.048576, lte: 4.194304 }`.
+pub const RANGE_BOUNDS: &[&str] = &["gt", "gte", "lt", "lte"];
+
 /// Whether a fact has the value a rule asks for: equal (numbers by value),
-/// or present at all for `"*"`.
+/// present at all for `"*"`, or a number inside every bound of a range.
 fn matches(fact: Option<&Value>, want: &Value) -> bool {
     match (fact, want) {
         (Some(_), Value::String(s)) if s == "*" => true,
+        (Some(fact), Value::Object(range)) => fact.as_f64().is_some_and(|x| in_range(x, range)),
         (Some(Value::Number(a)), Value::Number(b)) => a.as_f64() == b.as_f64(),
         (Some(a), b) => a == b,
         (None, _) => false,
     }
+}
+
+/// `x` against every bound a range names (`gt` and `lt` exclude theirs).
+fn in_range(x: f64, range: &Map<String, Value>) -> bool {
+    range.iter().all(|(bound, n)| match (bound.as_str(), n.as_f64()) {
+        ("gt", Some(n)) => x > n,
+        ("gte", Some(n)) => x >= n,
+        ("lt", Some(n)) => x < n,
+        ("lte", Some(n)) => x <= n,
+        _ => false,
+    })
 }
 
 impl PriceRule {
@@ -197,6 +232,8 @@ models:
     params:
 {params}
     extra_allowlist: [addons]
+    extra_params:
+      addons: {{ kind: string }}
 "#
         );
         crate::capabilities::CapabilityRegistry::from_yaml_strs(&[("t.yaml", &yaml)]).unwrap().get("x/m").unwrap().clone()
@@ -218,6 +255,42 @@ models:
         assert!((price(&m, json!({})) - 0.5).abs() < 1e-9, "the default 5 s at 720p");
         assert!((price(&m, json!({ "duration_seconds": 8.0 })) - 0.8).abs() < 1e-9);
         assert!((price(&m, json!({ "duration_seconds": 8.0, "resolution": "1080p" })) - 1.6).abs() < 1e-9);
+    }
+
+    /// A vendor that prices by what the request sends (Kling: image-to-image
+    /// costs double; Vidu: reference-to-video has its own table) names the
+    /// references: `references` counts them all, `references.<role>` one role.
+    #[test]
+    fn a_rule_can_name_the_references_a_request_sends() {
+        let yaml = r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: video
+    display_name: M
+    pricing:
+      base_cost_usd: 0.2
+      variable_pricing:
+        - { when: { references: '*' }, usd: 0.3 }
+        - { when: { references.reference: '*' }, usd: 0.4 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    params: {}
+    ref_inputs:
+      max_total: 3
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 2 }
+"#;
+        let m = crate::capabilities::CapabilityRegistry::from_yaml_strs(&[("t.yaml", yaml)]).unwrap().get("x/m").unwrap().clone();
+        let with = |refs: Value| unit_price_usd(&m, &PriceFacts::new(&m, &base(Value::Null, refs), &json!({})));
+        assert!((with(json!([])) - 0.2).abs() < 1e-9, "none sent");
+        let frame = json!([{ "type": "url", "value": "https://x/a.png" }]);
+        assert!((with(frame) - 0.3).abs() < 1e-9, "a start frame (the default role)");
+        let reference = json!([{ "type": "url", "value": "https://x/a.png", "role": "reference" }]);
+        assert!((with(reference) - 0.4).abs() < 1e-9, "a reference");
     }
 
     #[test]
@@ -243,6 +316,30 @@ models:
         let m = row("      {}", "        - { when: { views: '*' }, add_usd: 0.15 }");
         let views = unit_price_usd(&m, &PriceFacts::new(&m, &base(Value::Null, json!([{ "type": "url", "value": "u", "role": "view-front" }])), &json!({})));
         assert!((views - 0.65).abs() < 1e-9, "{views}");
+    }
+
+    /// A vendor that bills by pixel tier ("billed at the smallest
+    /// `resolution` with at least as many pixels") or by a size band ("Up to
+    /// 2.61 million pixels"): a rule may name a range of a numeric fact —
+    /// `gt`, `gte`, `lt`, `lte`, alone or together — instead of one value.
+    #[test]
+    fn a_rule_can_name_a_range_of_a_numeric_fact() {
+        let m = row_of(
+            "image",
+            "      size: { kind: size, mode: freeform, min_width: 16, max_width: 8192, min_height: 16, max_height: 8192 }",
+            "        - { when: { size: '*', megapixels: { gt: 1.048576, lte: 4.194304 } }, usd: 0.7 }\n        - { when: { size: '*', megapixels: { gt: 4.194304 } }, usd: 0.9 }\n        - { when: { size: '*', megapixels: { lt: 0.5 } }, usd: 0.2 }\n        - { when: { size: '*', megapixels: { gte: 16.0 } }, usd: 1.5 }",
+        );
+        let at = |size: &str| price(&m, json!({ "size": size }));
+        assert!((price(&m, json!({})) - 0.5).abs() < 1e-9, "no size: the base");
+        assert!((at("1024x1024") - 0.5).abs() < 1e-9, "gt excludes its bound");
+        assert!((at("1056x1024") - 0.7).abs() < 1e-9);
+        assert!((at("2048x2048") - 0.7).abs() < 1e-9, "lte includes its bound");
+        assert!((at("2080x2048") - 0.9).abs() < 1e-9);
+        assert!((at("512x512") - 0.2).abs() < 1e-9, "lt");
+        assert!((at("4000x4000") - 1.5).abs() < 1e-9, "gte includes its bound");
+        // A range never matches a fact that is no number.
+        let m = row_of("image", "      quality: { kind: string, enum_values: [hd, sd] }", "        - { when: { quality: { gt: 1 } }, usd: 0.1 }");
+        assert!((price(&m, json!({ "quality": "hd" })) - 0.5).abs() < 1e-9);
     }
 
     /// OpenAI bills a larger image by its output tokens, which grow with its

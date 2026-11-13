@@ -40,6 +40,13 @@ CASES: list[Case] = [
     (lambda c: c.limits.set_app("a1", LIMITS), "PUT", "/v1/apps/a1/limits", {}, LIMITS),
     (lambda c: c.limits.delete_app("a1"), "DELETE", "/v1/apps/a1/limits", {}, None),
     (lambda c: c.limits.reset_app("a1"), "POST", "/v1/apps/a1/limits/reset", {}, None),
+    # who may open an app's stored files
+    (lambda c: c.file_access.get_app("a/1"), "GET", "/v1/apps/a%2F1/access", {}, None),
+    (
+        lambda c: c.file_access.set_app("a1", mode="signed", signed_url_ttl_seconds=900),
+        "PUT", "/v1/apps/a1/access", {}, {"mode": "signed", "signed_url_ttl_seconds": 900},
+    ),
+    (lambda c: c.file_access.set_app("a1"), "PUT", "/v1/apps/a1/access", {}, {}),
     (lambda c: c.limits.get_member("o1", "u1"), "GET", "/v1/orgs/o1/members/u1/limits", {}, None),
     (lambda c: c.limits.set_member("o1", "u1", LIMITS), "PUT", "/v1/orgs/o1/members/u1/limits", {}, LIMITS),
     (lambda c: c.limits.delete_member("o1", "u1"), "DELETE", "/v1/orgs/o1/members/u1/limits", {}, None),

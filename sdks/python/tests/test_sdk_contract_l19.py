@@ -89,7 +89,9 @@ async def test_the_async_client_calls_on_response_too() -> None:
 
 def test_a_request_waits_out_the_servers_worst_case() -> None:
     # A synchronous call can take three vendor attempts of up to 120 s each.
-    assert DEFAULT_TIMEOUT > 3 * 120
+    # A 3D operation's URL source is fetched first (up to 300 s), then the
+    # vendor attempts run.
+    assert DEFAULT_TIMEOUT > 300 + 3 * 120
     assert LiteGenClient(base_url=BASE)._http.timeout.read == DEFAULT_TIMEOUT
     assert AsyncLiteGenClient(base_url=BASE)._http.timeout.read == DEFAULT_TIMEOUT
 

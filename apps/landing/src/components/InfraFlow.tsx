@@ -391,7 +391,7 @@ export function InfraFlow() {
                       )}
                     </span>
                     <span className={styles.pname}>{provider.name}</span>
-                    {(provider.outputs?.image || provider.outputs?.video) && (
+                    {(provider.outputs?.image || provider.outputs?.video || provider.outputs?.model3d) && (
                       <span className={styles.pkinds}>
                         {provider.outputs?.image && (
                           <span className={styles.pkind} data-kind="image">
@@ -401,6 +401,11 @@ export function InfraFlow() {
                         {provider.outputs?.video && (
                           <span className={styles.pkind} data-kind="video">
                             {t('kinds.video')}
+                          </span>
+                        )}
+                        {provider.outputs?.model3d && (
+                          <span className={styles.pkind} data-kind="model3d">
+                            {t('kinds.model3d')}
                           </span>
                         )}
                       </span>
@@ -431,6 +436,18 @@ export function InfraFlow() {
                             </span>
                             <ul className={styles.panelList}>
                               {models.video.map((m) => (
+                                <li key={m}>{m}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {models.model3d.length > 0 && (
+                          <div className={styles.panelGroup}>
+                            <span className={styles.panelHead} data-kind="model3d">
+                              {t('kinds.model3d')}
+                            </span>
+                            <ul className={styles.panelList}>
+                              {models.model3d.map((m) => (
                                 <li key={m}>{m}</li>
                               ))}
                             </ul>

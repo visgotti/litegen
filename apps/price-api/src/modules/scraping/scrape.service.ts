@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { AppConfig } from '../../config/configuration';
-import { Freshness, PriceSource, ProviderMode, ScrapeStatus } from '../../common/enums';
+import { PriceSource, ProviderMode, ScrapeStatus } from '../../common/enums';
 import { tierKey } from '../../common/tier-key';
 import {
   ModelEntity,
@@ -92,7 +92,8 @@ export class ScrapeService {
       return this.finish(run, startedAt);
     }
 
-    const models = await this.modelRepo.find({ where: { providerId } });
+    // A retired model (litegen no longer carries it) keeps its last price.
+    const models = await this.modelRepo.find({ where: { providerId, active: true } });
     const scrapedModels = models.filter((m) => this.effectiveMode(m, provider) === ProviderMode.SCRAPED);
 
     let components: ScrapedPriceComponent[];

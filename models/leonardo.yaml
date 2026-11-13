@@ -11,6 +11,14 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 4000 }
     params:
+      # "guidance_scale … How strongly the generation should reflect the
+      # prompt. 7 is recommended. Must be between 1 and 20"; "num_inference_steps
+      # … Must be between 10 and 60. Default is 15." presetStyle stays an extra:
+      # its list depends on Alchemy ("When alchemy is disabled, use LEONARDO or
+      # NONE"), which litegen sends off unless asked.
+      # @see https://docs.leonardo.ai/v1.0/reference/creategeneration (2026-11-03)
+      guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 7.0 }
+      steps: { kind: int, min: 10, max: 60, default: 15 }
       negative_prompt: { kind: string, max_length: 4000 }
       seed: { kind: seed, min: 0, max: 2147483647 }
       # Sent as init_strength ("How strongly the generated images should
@@ -36,9 +44,16 @@ models:
         init: { required: false, min_count: 0, max_count: 1 }
     # No modelId: it would run any Leonardo model at this row's price. No
     # contrast: "Used in Phoenix and Flux models". alchemy is sent false
-    # unless asked for (it defaults on and makes the output 1.75x `size`).
-    # @see https://docs.leonardo.ai/v1.0/reference/creategeneration (2026-10-30)
+    # unless asked for (it defaults on and makes the output 1.75x `size`:
+    # "when using Alchemy v2, the output dimension is 1.75 times bigger").
+    # @see https://docs.leonardo.ai/v1.0/reference/creategeneration (2026-11-09)
+    # @see https://docs.leonardo.ai/docs/legacy-faq.md (2026-11-09)
     extra_allowlist: [alchemy, photoReal, presetStyle]
+    extra_params:
+      # From Leonardo's OpenAPI (drift snapshot leonardo/generations.txt); alchemy goes off unless asked, so no default.
+      alchemy: { kind: bool }
+      photoReal: { kind: bool }
+      presetStyle: { kind: string, enum_values: ["ANIME", "BOKEH", "CINEMATIC", "CINEMATIC_CLOSEUP", "CREATIVE", "DYNAMIC", "ENVIRONMENT", "FASHION", "FILM", "FOOD", "GENERAL", "HDR", "ILLUSTRATION", "LEONARDO", "LONG_EXPOSURE", "MACRO", "MINIMALISTIC", "MONOCHROME", "MOODY", "NONE", "NEUTRAL", "PHOTOGRAPHY", "PORTRAIT", "RAYTRACED", "RENDER_3D", "RETRO", "SKETCH_BW", "SKETCH_COLOR", "STOCK_PHOTO", "VIBRANT", "UNPROCESSED"], default: "DYNAMIC" }
     tags: [text-to-image, image-to-image]
 
   # ─── Motion / Veo 3.1 / Kling video (image-to-video; start frame required) ─
@@ -53,13 +68,25 @@ models:
     prompt: { required: true, max_length: 4000 }
     # No duration_seconds: Motion 2.0 has no duration parameter (the v1
     # image-to-video `duration` lists values only for VEO3/VEO3FAST/KLING2_5),
-    # and its resolutions are 480p and 720p only.
-    # @see https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration
-    # @see https://docs.leonardo.ai/docs/motion-20
+    # and its resolutions are 480p and 720p only. The Motion 2.0 guide now
+    # documents the v2 API (`motion_2.0` on POST /v2/generations, with
+    # `width`/`height`): it also has no duration and lists 480p and 720p
+    # only. The v1 `MOTION2` path is documented in the v1 reference alone.
+    # @see https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration (2026-11-09)
+    # @see https://docs.leonardo.ai/docs/motion-20 (2026-11-09)
     params:
-      # Motion 2.0 "Defaults to RESOLUTION_480"; litegen sends 720p unless
-      # 480p is asked for.
-      # @see https://docs.leonardo.ai/docs/motion-20.md (2026-10-30)
+      # The v1 body's `seed` and `negativePrompt`; Leonardo's model list gives
+      # motion_2.0 "seed {"type":"number","minimum":0,"maximum":2147483637}" and
+      # "negative_prompt {"type":"string","maxLength":1000}".
+      # @see https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration (2026-11-03)
+      seed: { kind: seed, min: 0, max: 2147483637 }
+      negative_prompt: { kind: string, max_length: 1000 }
+      # Motion 2.0 defaults to 480p: the guide's (now v2) `mode` field,
+      # "Deprecated. Width and height are the canonical inputs for this model.
+      # Retained for backwards compatibility. Valid values are `RESOLUTION_480`
+      # and `RESOLUTION_720`. Defaults to `RESOLUTION_480`." litegen sends
+      # 720p unless 480p is asked for.
+      # @see https://docs.leonardo.ai/docs/motion-20.md (2026-11-09)
       resolution:
         kind: string
         enum_values: [480p, 720p]
@@ -73,16 +100,15 @@ models:
           first_frame: file
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [imageId, imageType, isPublic]
     tags: [image-to-video]
 
   # Veo 3.1 replaces Veo 3 (VEO3), which Leonardo retired 2026-06-29.
   # @see https://docs.leonardo.ai/docs/deprecations-changes
   # v1 guide: POST /generations-image-to-video with "model": "VEO3_1";
   # "duration ... Set to 4, 6, or 8"; "resolution ... Set to RESOLUTION_720
-  # and RESOLUTION_1080". The schema can only express a range, so 4-8 is
-  # advertised; 5 and 7 s will be refused. VEO3_1 is listed under Video Model
-  # IDs but not yet in the v1 reference's `model` enum.
+  # and RESOLUTION_1080". Declared as those three lengths (`values`), so 5 and
+  # 7 s are refused before billing. VEO3_1 is listed under Video Model IDs but
+  # not yet in the v1 reference's `model` enum.
   # @see https://docs.leonardo.ai/v1.0/docs/veo-31 (2026-09-11)
   # @see https://docs.leonardo.ai/v1.0/docs/commonly-used-api-values (2026-09-11)
   - id: leonardo/veo3.1
@@ -98,7 +124,9 @@ models:
     # @see https://docs.leonardo.ai/reference/creategeneration (2026-09-11)
     prompt: { required: true, max_length: 9999 }
     params:
-      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0 }
+      # "duration {"type":"integer","enum":[4,6,8],"default":8}" (v2 model
+      # list, 2026-11-03): nothing between.
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0, values: [4.0, 6.0, 8.0] }
       resolution:
         kind: string
         enum_values: [720p, 1080p]
@@ -111,12 +139,11 @@ models:
           first_frame: file
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [imageId, imageType, isPublic]
     tags: [image-to-video, premium]
 
   # Veo 3.1 Fast: the v1 Veo 3.1 guide covers it with the same request —
   # "model ... Set to VEO3_1, VEO3_1FAST"; "duration ... Set to 4, 6, or 8"
-  # (range 4-8 advertised; 5 and 7 s will be refused); "resolution ... Set to
+  # (declared as those three values); "resolution ... Set to
   # RESOLUTION_720 and RESOLUTION_1080". Listed under Video Model IDs but not
   # yet in the v1 reference's `model` enum.
   # @see https://docs.leonardo.ai/v1.0/docs/veo-31 (2026-09-11)
@@ -134,7 +161,9 @@ models:
     # @see https://docs.leonardo.ai/reference/creategeneration (2026-09-11)
     prompt: { required: true, max_length: 9999 }
     params:
-      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0 }
+      # "duration {"type":"integer","enum":[4,6,8],"default":8}" (v2 model
+      # list, 2026-11-03): nothing between.
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0, values: [4.0, 6.0, 8.0] }
       resolution:
         kind: string
         enum_values: [720p, 1080p]
@@ -147,7 +176,6 @@ models:
           first_frame: file
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [imageId, imageType, isPublic]
     tags: [image-to-video, fast]
 
   # Kling 2.5 Turbo (model KLING2_5 in the v1 reference's `model` enum; the
@@ -184,5 +212,4 @@ models:
           first_frame: file
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [imageId, imageType, isPublic]
     tags: [image-to-video]

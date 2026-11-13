@@ -53,6 +53,68 @@ describe("models3d.convert", () => {
     expect(seen[0]!.body).toBe(GLB);
   });
 
+  it("passes units and up axes for unitless containers only when set", async () => {
+    const { client, seen } = clientReturning(() => objResponse());
+    await client.models3d.convert(GLB, { from: "glb", to: "stl", units: "mm", up: "z" });
+    await client.models3d.convert(GLB, { from: "stl", to: "glb", fromUnits: "in", fromUp: "z" });
+    await client.models3d.convert(GLB, { from: "glb", to: "fbx", fbxColorSpace: "linear" });
+    expect(seen[0]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=stl&units=mm&up=z");
+    expect(seen[1]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=stl&to=glb&from_units=in&from_up=z");
+    expect(seen[2]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=fbx&fbx_color_space=linear");
+  });
+
+  it("passes what to do with KTX2 textures only when set", async () => {
+    const { client, seen } = clientReturning(() => objResponse());
+    await client.models3d.convert(GLB, { from: "glb", to: "glb", ktx2Textures: "keep" });
+    await client.models3d.convert(GLB, { from: "glb", to: "obj", package: "zip", ktx2Textures: "png" });
+    await client.models3d.convert(GLB, { from: "glb", to: "gltf" });
+    expect(seen[0]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=glb&ktx2_textures=keep");
+    expect(seen[1]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=obj&package=zip&ktx2_textures=png");
+    expect(seen[2]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=gltf");
+  });
+
+  it("passes the FBX and USD light units only when set", async () => {
+    const { client, seen } = clientReturning(() => objResponse());
+    await client.models3d.convert(GLB, { from: "glb", to: "fbx", fbxLightUnits: "blender" });
+    await client.models3d.convert(GLB, { from: "usdz", to: "glb", usdLightUnits: "blender" });
+    await client.models3d.convert(GLB, { from: "glb", to: "fbx" });
+    expect(seen[0]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=fbx&fbx_light_units=blender");
+    expect(seen[1]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=usdz&to=glb&usd_light_units=blender");
+    expect(seen[2]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=fbx");
+  });
+
+  it("passes the Collada morph choice only when set", async () => {
+    const { client, seen } = clientReturning(() => objResponse());
+    await client.models3d.convert(GLB, { from: "glb", to: "dae", daeMorphs: "keep" });
+    await client.models3d.convert(GLB, { from: "glb", to: "dae", package: "zip", daeMorphs: "bake" });
+    await client.models3d.convert(GLB, { from: "glb", to: "dae" });
+    expect(seen[0]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=dae&dae_morphs=keep");
+    expect(seen[1]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=dae&package=zip&dae_morphs=bake");
+    expect(seen[2]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=dae");
+  });
+
+  it("passes the USD choices only when set", async () => {
+    const { client, seen } = clientReturning(() => objResponse());
+    await client.models3d.convert(GLB, { from: "glb", to: "usdz", usdzRoot: "usdc" });
+    await client.models3d.convert(GLB, { from: "glb", to: "usda", usdClips: "all" });
+    await client.models3d.convert(GLB, { from: "glb", to: "usdz", usdzRoot: "usda", usdClips: "first" });
+    await client.models3d.convert(GLB, { from: "glb", to: "usdc" });
+    expect(seen[0]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=usdz&usdz_root=usdc");
+    expect(seen[1]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=usda&usd_clips=all");
+    expect(seen[2]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=usdz&usdz_root=usda&usd_clips=first");
+    expect(seen[3]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=usdc");
+  });
+
+  it("hands back what reading the input said", async () => {
+    const { client } = clientReturning(() =>
+      objResponse({ "x-litegen-conversion-warnings": "material library \"m.mtl\" was not supplied; 2 line and 0 point element(s) were skipped" }),
+    );
+    const out = await client.models3d.convert(GLB, { from: "obj", to: "glb" });
+    expect(out.warnings).toEqual(['material library "m.mtl" was not supplied', "2 line and 0 point element(s) were skipped"]);
+    const quiet = await clientReturning(() => objResponse()).client.models3d.convert(GLB, { from: "glb", to: "obj" });
+    expect(quiet.warnings).toEqual([]);
+  });
+
   it("hands back the file, its format, the server's file name and what it lost", async () => {
     const { client } = clientReturning(() =>
       objResponse({
@@ -81,6 +143,31 @@ describe("models3d.convert", () => {
     const { client } = clientReturning(() => objResponse({ "x-litegen-conversion-losses": "uvs,some_future_kind" }));
     const out = await client.models3d.convert(GLB, { from: "glb", to: "obj" });
     expect(out.losses).toEqual(["uvs", "some_future_kind"]);
+  });
+
+  it("asks for a zip package and hands the zip back unopened", async () => {
+    const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04]); // "PK\x03\x04"
+    const { client, seen } = clientReturning(
+      () =>
+        new Response(zip, {
+          status: 200,
+          headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="model.obj.zip"' },
+        }),
+    );
+    const out = await client.models3d.convert(GLB, { from: "glb", to: "obj", package: "zip" });
+    expect(seen[0]!.url).toBe("https://litegen.test/v1/utils/models3d/convert?from=glb&to=obj&package=zip");
+    expect(out.blob.type).toBe("application/zip");
+    expect(out.filename).toBe("model.obj.zip");
+    expect(out.format).toBe("obj");
+    expect(new Uint8Array(await out.blob.arrayBuffer())).toEqual(zip);
+  });
+
+  it("names a zip model.<to>.zip itself when the disposition header is hidden", async () => {
+    const { client } = clientReturning(
+      () => new Response(new Uint8Array([0x50, 0x4b]), { status: 200, headers: { "content-type": "application/zip" } }),
+    );
+    const out = await client.models3d.convert(GLB, { from: "glb", to: "obj", package: "zip" });
+    expect(out.filename).toBe("model.obj.zip");
   });
 
   it("accepts an ArrayBuffer or a Blob as well as a typed array", async () => {

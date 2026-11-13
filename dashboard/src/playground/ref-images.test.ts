@@ -6,6 +6,7 @@ import {
   inlineBytes,
   isFetchableUrl,
   inlineRefCount,
+  refsOfRoles,
   withoutInlineMasks,
   withoutInlineRefs,
 } from './ref-images';
@@ -129,5 +130,20 @@ describe('a history write that cannot be stored', () => {
     } finally {
       (globalThis as { localStorage?: unknown }).localStorage = saved;
     }
+  });
+});
+
+
+describe('refsOfRoles', () => {
+  it('leaves out references in a role the selected models no longer take', () => {
+    // After a switch from an image-to-video model (first_frame) to an edit
+    // model (init), the old first_frame upload is never sent, so it must not
+    // count toward the new model's caps either.
+    const refs = [
+      { id: 'a', role: 'first_frame', type: 'base64' as const, value: 'data:image/png;base64,AAAA' },
+      { id: 'b', role: 'init', type: 'url' as const, value: 'https://example.com/a.png' },
+    ];
+    expect(refsOfRoles(refs, [{ role: 'init' }]).map(r => r.id)).toEqual(['b']);
+    expect(refsOfRoles(refs, [])).toEqual([]);
   });
 });

@@ -4,7 +4,7 @@ import { ModelPriceEntity } from '../../../entities';
 
 /** One flattened price row — the primary shape consumers integrate against. */
 export class PricingRowDto {
-  @ApiProperty({ example: 'openai/dall-e-3' })
+  @ApiProperty({ example: 'openai/gpt-image-2' })
   modelId!: string;
 
   @ApiProperty({ example: 'openai' })

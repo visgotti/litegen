@@ -82,6 +82,13 @@ async fn spawn_app_no_secrets() -> TestApp {
     spawn_app_cfg(&[], None).await
 }
 
+/// Like [`spawn_app`], but an app's own bucket may be wiremock on 127.0.0.1
+/// (the tests-only `storage_access.unchecked_app_storage_hosts`). A running
+/// hosted litegen refuses a bucket inside the deployment.
+async fn spawn_app_with_local_buckets() -> TestApp {
+    spawn_app_cfg_with(&[], Some([7u8; 32]), |c| c.storage_access.unchecked_app_storage_hosts = true).await
+}
+
 async fn spawn_app_cfg(extra_providers: &[(&str, Value)], secrets_key: Option<[u8; 32]>) -> TestApp {
     spawn_app_cfg_with(extra_providers, secrets_key, |_| {}).await
 }
@@ -1337,6 +1344,75 @@ async fn byo_credential_reaches_upstream() {
     );
 }
 
+// ─── BYO-ROUTE (code review 2026-11-11, security) ───────────────────────────
+// A model route may send a model to another vendor's deployment. Each
+// deployment gets the org's credential for its own provider only. Here the
+// org stored a fal key and the route sends `fal/flux-schnell` to OpenAI: the
+// OpenAI stub must never see the org's fal key. With no OpenAI key of the
+// org's, the deployment runs on the platform's, as a direct OpenAI request would.
+#[tokio::test]
+async fn a_routes_other_vendor_never_receives_the_orgs_key() {
+    use base64::Engine as _;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let openai = MockServer::start().await;
+    let fake_b64 = base64::engine::general_purpose::STANDARD.encode(b"fake-png-bytes");
+    Mock::given(method("POST"))
+        .and(path("/v1/images/generations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "created": 1234567890, "data": [{ "b64_json": fake_b64 }] })))
+        .mount(&openai)
+        .await;
+    let openai_cfg = json!({
+        "enabled": true,
+        "api_key": "PLATFORM_OPENAI_KEY",
+        "api_base": format!("{}/v1/images/generations", openai.uri()),
+    });
+    let app = spawn_app_cfg_with(&[("openai", openai_cfg)], Some([7u8; 32]), |c| {
+        c.model_routes = vec![litegen::config::ModelRouteConfig {
+            model: "fal/flux-schnell".into(),
+            deployments: vec![litegen::config::DeploymentConfig { provider: "openai".into(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 }],
+            strategy: None,
+            cache: None,
+        }];
+    })
+    .await;
+
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "byo-route").await;
+    let org_id = first_org_id(&mut c).await;
+    let csrf = c.csrf().await;
+    let stored = c
+        .post_with(
+            &format!("/v1/orgs/{org_id}/provider-credentials"),
+            json!({ "provider": "fal", "credentials": { "api_key": "ORG_FAL_KEY" } }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(stored.status, 200, "store the org's fal key: {:?}", stored.body);
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": "fal/flux-schnell", "prompt": "x", "response_format": "b64_json" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "the route's OpenAI deployment answered: {} {:?}", r.status, r.body);
+
+    let sent: Vec<String> = openai
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|q| q.headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string())
+        .collect();
+    assert!(!sent.iter().any(|a| a.contains("ORG_FAL_KEY")), "the org's fal key reached another vendor (OpenAI): {sent:?}");
+    assert_eq!(sent, ["Bearer PLATFORM_OPENAI_KEY"], "with no OpenAI key of the org's, the platform's, as a direct request");
+}
+
 // ─── Test: provider catalog drives the dashboard credential form ───────────────
 #[tokio::test]
 async fn provider_catalog_lists_bearer_and_signing_field_shapes() {
@@ -1598,7 +1674,7 @@ async fn app_storage_uploads_generation_to_per_app_bucket() {
         .mount(&s3)
         .await;
 
-    let app = spawn_app().await; // global image_store is LocalStore (b64 fallback)
+    let app = spawn_app_with_local_buckets().await; // global image_store is LocalStore (b64 fallback)
     let mut c = Client::new(&app.base);
     let (app_id, secret) = signup_app_and_key(&mut c, "stg-upload").await;
     let csrf = c.csrf().await;
@@ -1645,6 +1721,14 @@ async fn app_storage_uploads_generation_to_per_app_bucket() {
         p.starts_with("/test-bucket/litegen/images/"),
         "unexpected S3 key path: {p}"
     );
+    // A hosted tenant's bucket is reached by a presigned request through the
+    // guarded client (security fix 1, round 2), never by rust-s3's own.
+    assert!(
+        received[0].url.query().is_some_and(|q| q.contains("X-Amz-Signature=")),
+        "presigned: {}",
+        received[0].url
+    );
+    assert!(received[0].headers.get("authorization").is_none(), "no Authorization header");
 }
 
 #[tokio::test]
@@ -1678,7 +1762,7 @@ async fn corrupt_storage_config_falls_back_without_failing() {
         .mount(&s3)
         .await;
 
-    let app = spawn_app().await;
+    let app = spawn_app_with_local_buckets().await;
     let mut c = Client::new(&app.base);
     let (app_id, secret) = signup_app_and_key(&mut c, "stg-corrupt").await;
     let csrf = c.csrf().await;
@@ -1730,7 +1814,7 @@ async fn delete_storage_reverts_to_global_store() {
         .mount(&s3)
         .await;
 
-    let app = spawn_app().await;
+    let app = spawn_app_with_local_buckets().await;
     let mut c = Client::new(&app.base);
     let (app_id, secret) = signup_app_and_key(&mut c, "stg-revert").await;
     let csrf = c.csrf().await;
@@ -1769,6 +1853,206 @@ async fn delete_storage_reverts_to_global_store() {
 
     let received = s3.received_requests().await.expect("recorded requests");
     assert_eq!(received.len(), 1, "exactly one S3 PUT total (before delete)");
+}
+
+// ─── BYO app storage: a tenant's bucket can't reach inside the deployment ────
+//
+// Security fix 1 (2026-11-05): litegen sends an app's bucket signed GET, PUT
+// and DELETE requests from inside the deployment, and the file route returns
+// what comes back. In hosted mode the tenant names the bucket, so a bucket
+// whose requests would go to a private, loopback or link-local address is
+// refused when saved and unusable whenever it is used.
+
+#[tokio::test]
+async fn a_hosted_app_bucket_inside_the_deployment_is_refused_when_saved() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut c, "stg-ssrf-save").await;
+    let csrf = c.csrf().await;
+    let uri = format!("/v1/apps/{app_id}/storage");
+    let keys = json!({ "access_key_id": "AKIATEST", "secret_access_key": "secret" });
+    let with = |extra: Value| {
+        let mut body = keys.clone();
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        body
+    };
+
+    for (body, code) in [
+        (json!({ "bucket_name": "b", "endpoint_url": "http://127.0.0.1:9000" }), "invalid_storage_endpoint"),
+        (json!({ "bucket_name": "b", "endpoint_url": "http://169.254.169.254" }), "invalid_storage_endpoint"),
+        (json!({ "bucket_name": "b", "endpoint_url": "http://[::1]:9000" }), "invalid_storage_endpoint"),
+        (json!({ "bucket_name": "b", "endpoint_url": "http://10.0.0.5:9000" }), "invalid_storage_endpoint"),
+        (json!({ "bucket_name": "b", "endpoint_url": "file:///etc/passwd" }), "invalid_storage_endpoint"),
+        // No endpoint: rust-s3 would use an unknown region as the host.
+        (json!({ "bucket_name": "b", "region": "169.254.169.254" }), "invalid_region"),
+        // In a virtual-hosted URL the bucket is part of the host.
+        (json!({ "bucket_name": "x@169.254.169.254#" }), "invalid_bucket"),
+    ] {
+        let put = c.put_with(&uri, with(body.clone()), &[("x-csrf-token", &csrf)]).await;
+        assert_eq!(put.status, 400, "{body} must be refused: {:?}", put.body);
+        assert_eq!(put.body["error"]["code"], code, "{body}: {:?}", put.body);
+        let got = c.get(&uri).await;
+        assert_eq!(got.body["configured"], json!(false), "{body} must not be saved: {:?}", got.body);
+    }
+
+    // A host that doesn't resolve yet is saved; every use checks it again.
+    let put = c.put_with(&uri, with(json!({ "bucket_name": "b", "endpoint_url": "https://litegen-bucket-test.invalid" })), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(put.status, 200, "a lookup failure is not a verdict: {:?}", put.body);
+    // A bucket on a public address is still saved.
+    let put = c.put_with(&uri, with(json!({ "bucket_name": "b", "endpoint_url": "https://93.184.216.34" })), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(put.status, 200, "a public endpoint is allowed: {:?}", put.body);
+}
+
+#[tokio::test]
+async fn a_hosted_app_bucket_moved_inside_the_deployment_gets_no_request() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT")).respond_with(ResponseTemplate::new(200)).mount(&s3).await;
+
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-ssrf-use").await;
+    let csrf = c.csrf().await;
+    let put = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({
+            "bucket_name": "test-bucket",
+            "endpoint_url": "https://93.184.216.34",
+            "access_key_id": "AKIATEST",
+            "secret_access_key": "secret"
+        }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(put.status, 200, "{:?}", put.body);
+
+    // A row saved before the check existed (or a host whose answer changed)
+    // points inside the deployment.
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    let pool = sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite");
+    sqlx::query("UPDATE app_storage_credentials SET endpoint_url = ? WHERE app_id = ?")
+        .bind(s3.uri())
+        .bind(&app_id)
+        .execute(&pool)
+        .await
+        .expect("move the bucket");
+    pool.close().await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with("/v1/images/generations", json!({ "model": MOCK_MODEL, "prompt": "x" }), &[("authorization", &bearer_hdr)])
+        .await;
+    let received = s3.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 0, "a bucket inside the deployment must get no request");
+    assert_eq!(r.status, 200, "the generation still succeeds: {:?}", r.body);
+    assert!(r.body["data"][0]["b64_json"].is_string(), "litegen's store stands in: {:?}", r.body);
+}
+
+/// A delete must not call files gone while they're still in the app's
+/// bucket. When the bucket can't be used right now (its settings can't be
+/// read, or its address check fails), the delete answers 502 and marks
+/// nothing, so it can be retried. Review of security fix 1: the per-use
+/// address check made this path common, since one resolver blip is enough.
+#[tokio::test]
+async fn deleting_files_in_a_bucket_that_cant_be_used_marks_nothing() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT")).respond_with(ResponseTemplate::new(200)).mount(&s3).await;
+    Mock::given(method("DELETE")).respond_with(ResponseTemplate::new(204)).mount(&s3).await;
+
+    let app = spawn_app_with_local_buckets().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-del").await;
+    let csrf = c.csrf().await;
+    let put = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({
+            "bucket_name": "test-bucket",
+            "endpoint_url": s3.uri(),
+            "custom_public_url": "https://cdn.example.test",
+            "access_key_id": "AKIATEST",
+            "secret_access_key": "secret"
+        }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(put.status, 200, "{:?}", put.body);
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let made = bearer
+        .post_with("/v1/images/generations", json!({ "model": MOCK_MODEL, "prompt": "x" }), &[("authorization", &bearer_hdr)])
+        .await;
+    assert_eq!(made.status, 200, "{:?}", made.body);
+    assert!(made.body["data"][0]["url"].as_str().unwrap_or("").starts_with("https://cdn.example.test/"), "kept in the app's bucket: {:?}", made.body);
+    let id = made.body["id"].as_str().unwrap().to_string();
+
+    // The bucket can't be used now.
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    let pool = sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite");
+    sqlx::query("UPDATE app_storage_credentials SET secret_ciphertext = 'not-base64-$$$' WHERE app_id = ?")
+        .bind(&app_id)
+        .execute(&pool)
+        .await
+        .expect("break the bucket");
+    pool.close().await;
+
+    // Reading it answers 502 (try again), not a redirect to the bucket's
+    // own URL. (A client that follows no redirect, to see which.)
+    let raw = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let file = raw
+        .get(format!("{}/v1/generations/{id}/assets/0", app.base))
+        .header("authorization", &bearer_hdr)
+        .send()
+        .await
+        .expect("the file route answers");
+    assert_eq!(file.status().as_u16(), 502, "{:?}", file.headers().get("location"));
+
+    let del = bearer.delete(&format!("/v1/generations/{id}"), &[("authorization", &bearer_hdr)]).await;
+    assert_eq!(del.status, 502, "the files are still in the bucket: {:?}", del.body);
+    assert_eq!(del.body["error"]["code"], "files_delete_failed", "{:?}", del.body);
+    let row = bearer.get_with(&format!("/v1/generations/{id}"), &[("authorization", &bearer_hdr)]).await;
+    assert!(row.body["files_deleted_at"].is_null(), "nothing is marked deleted: {:?}", row.body);
+}
+
+/// A bucket that can't be used holds up only the files that may be in it:
+/// a generation kept in litegen's own store is still deleted.
+#[tokio::test]
+async fn a_bucket_that_cant_be_used_does_not_hold_up_files_in_litegens_store() {
+    let app = spawn_app_with_local_buckets().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-del-own").await;
+    let csrf = c.csrf().await;
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    // Made before the app had a bucket: kept in litegen's store.
+    let made = bearer
+        .post_with("/v1/images/generations", json!({ "model": MOCK_MODEL, "prompt": "x" }), &[("authorization", &bearer_hdr)])
+        .await;
+    assert_eq!(made.status, 200, "{:?}", made.body);
+    let id = made.body["id"].as_str().unwrap().to_string();
+
+    let put = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "test-bucket", "endpoint_url": "http://127.0.0.1:9", "access_key_id": "AKIATEST", "secret_access_key": "secret" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(put.status, 200, "{:?}", put.body);
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    let pool = sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite");
+    sqlx::query("UPDATE app_storage_credentials SET secret_ciphertext = 'not-base64-$$$' WHERE app_id = ?")
+        .bind(&app_id)
+        .execute(&pool)
+        .await
+        .expect("break the bucket");
+    pool.close().await;
+
+    let del = bearer.delete(&format!("/v1/generations/{id}"), &[("authorization", &bearer_hdr)]).await;
+    assert_eq!(del.status, 200, "{:?}", del.body);
+    assert!(del.body["files_deleted_at"].is_string(), "{:?}", del.body);
 }
 
 // ─── BYO app storage: secrets_key required for PUT ───────────────────────────
@@ -1924,7 +2208,7 @@ async fn a_3d_generation_completed_by_the_clients_poll_lands_in_the_apps_bucket(
     let s3 = MockServer::start().await;
     Mock::given(method("PUT")).respond_with(ResponseTemplate::new(200)).mount(&s3).await;
 
-    let app = spawn_app().await;
+    let app = spawn_app_with_local_buckets().await;
     let mut c = Client::new(&app.base);
     let (app_id, secret) = signup_app_and_key(&mut c, "stg-3d").await;
     let csrf = c.csrf().await;
@@ -1970,6 +2254,10 @@ async fn a_3d_generation_completed_by_the_clients_poll_lands_in_the_apps_bucket(
         .collect();
     assert!(puts.contains(&format!("/mesh-bucket/litegen/3d/{id}/model.glb")), "mesh not in the app's bucket: {puts:?}");
     assert!(puts.iter().all(|p| p.starts_with("/mesh-bucket/litegen/3d/")), "every asset goes to the app's bucket: {puts:?}");
+    // Re-hosted through the guarded client, presigned (security fix 1, round 2).
+    for r in s3.received_requests().await.expect("recorded requests") {
+        assert!(r.url.query().is_some_and(|q| q.contains("X-Amz-Signature=")), "presigned: {}", r.url);
+    }
 }
 
 #[tokio::test]

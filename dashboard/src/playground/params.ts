@@ -16,6 +16,8 @@ interface LooseSchema {
   prompt?: { required?: boolean; max_length?: number | null };
   ref_inputs?: {
     max_total?: number;
+    /** The sides a model reads its views by position, in that order. */
+    view_order?: string[];
     roles?: Record<string, { required?: boolean; min_count?: number; max_count?: number }>;
   } | null;
   extra_allowlist?: string[];
@@ -117,7 +119,7 @@ export function defaultForSpec(spec: ParamSpec): unknown {
 // derives containers locally from any one it can read, and the server lists
 // exactly those in `derivable_values` (served on GET /v1/models/{id}): any
 // subset of them costs ONE job. A format litegen cannot convert would be a job
-// of its own. Since litegen converts between all ten of its containers
+// of its own. Since litegen converts between all eleven of its containers
 // (docs/superpowers/3d-format-conversion.md) every served format is derivable
 // and the cap cannot bind — `allShareOneJob` — but the rule stands for a model
 // that offers one it cannot. Which formats are derivable is the server's
@@ -693,6 +695,22 @@ export function requestProblems(
         : `needs ${min} image${min === 1 ? '' : 's'} for the ${roleLabel(role).toLowerCase()}`);
     }
   }
+  // Multiview, as the server's check_multiview_refs has it: views mean
+  // multiview, so they cannot ride with an input image; every vendor needs the
+  // front; and a model that reads its views by position cannot be sent a gap.
+  // A required view the loop above already reported is not reported again.
+  const views = sent.flatMap(r => (r.role?.startsWith('view-') ? [r.role.slice('view-'.length)] : []));
+  if (views.length > 0) {
+    const required = (side: string) => roles[`view-${side}`]?.required === true;
+    if (sent.some(r => r.role === 'init')) problems.push('takes an input image or views, not both');
+    if (!views.includes('front') && !required('front')) problems.push('needs the front view with any other view');
+    const order = stringList(loose(schema).ref_inputs?.view_order);
+    const last = order.reduce((at, side, i) => (views.includes(side) ? i : at), -1);
+    const gap = order.slice(0, Math.max(0, last)).find(side => !views.includes(side));
+    if (gap && !required(gap)) {
+      problems.push(`reads its views in order (${order.join(', ')}): add the ${roleLabel(`view-${gap}`).toLowerCase()} or leave out the views after it`);
+    }
+  }
   return problems;
 }
 
@@ -759,7 +777,7 @@ export function schemaInputs(
  * The calls one Compare run makes, one tile each: N one-image requests per
  * image model (litegen returns one image per request), one job per 3D model.
  */
-export function fanOutJobs<T extends { modelId: string; mediaType: 'image' | 'model3d'; request: object }>(
+export function fanOutJobs<T extends { modelId: string; mediaType: 'image' | 'model3d'; request: object; seedMax?: number }>(
   requests: T[],
   imagesPerModel: number,
 ): Array<T & { index: number; key: string }> {
@@ -768,8 +786,29 @@ export function fanOutJobs<T extends { modelId: string; mediaType: 'image' | 'mo
     const one = { ...(r.request as Record<string, unknown>) };
     delete one.n;
     const count = r.mediaType === 'image' ? n : 1;
-    return Array.from({ length: count }, (_, index) => ({ ...r, request: one as T['request'], index, key: `${r.modelId}#${index}` }));
+    return Array.from({ length: count }, (_, index) => ({
+      ...r,
+      request: seededCopy(one, index, r.seedMax) as T['request'],
+      index,
+      key: `${r.modelId}#${index}`,
+    }));
   });
+}
+
+/** The highest seed a model takes, when its schema bounds it. */
+export function seedMaxOf(schema: ModelSchema | undefined): number | undefined {
+  const max = (paramsOf(schema).seed as { max?: unknown } | undefined)?.max;
+  return typeof max === 'number' ? max : undefined;
+}
+
+/** Copy `index` of a fixed-seed request takes seed + index, wrapped into the
+ *  model's range (`seedMax`): N copies of one seed would be one image billed
+ *  N times. A request with no seed is left to vary on its own. */
+function seededCopy(req: Record<string, unknown>, index: number, seedMax?: number): Record<string, unknown> {
+  const seed = req.seed;
+  if (index === 0 || typeof seed !== 'number' || !Number.isInteger(seed)) return req;
+  const next = seedMax != null && seedMax >= 0 ? (seed + index) % (seedMax + 1) : seed + index;
+  return { ...req, seed: next };
 }
 
 // ─── Restoring a stored request (Playground history) ─────────────────────────
@@ -781,11 +820,23 @@ const NON_PARAM_FIELDS = new Set([
   'reference_images', 'extra', 'metadata', 'response_format',
 ]);
 
+/** A stored value as the draft its control edits: a layout item's wire form
+ *  `{kind, text, box: {x, y, w, h}}` is the draft `{kind, text, x, y, w, h}`
+ *  (`layoutBox` reads the box flat). Other values are their own drafts. */
+function draftOfStored(v: unknown): unknown {
+  if (!Array.isArray(v)) return v;
+  return v.map(item => {
+    if (!isDraft(item) || !isDraft(item.box)) return item;
+    const { box, ...rest } = item;
+    return { ...rest, ...box };
+  });
+}
+
 /** The schema params a stored request body set, ready for `SharedFormState.params`. */
 export function paramsFromBody(body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
-    if (!NON_PARAM_FIELDS.has(k) && v != null) out[k] = v;
+    if (!NON_PARAM_FIELDS.has(k) && v != null) out[k] = draftOfStored(v);
   }
   return out;
 }
@@ -795,9 +846,12 @@ export function paramsFromBody(body: Record<string, unknown>): Record<string, un
 export function refsFromBody(body: Record<string, unknown>): RefEntry[] {
   const refs = Array.isArray(body.reference_images) ? body.reference_images : [];
   return refs.flatMap((r, i) => {
-    const ref = r as { type?: unknown; value?: unknown; role?: unknown } | null;
+    const ref = r as { type?: unknown; value?: unknown; role?: unknown; time_s?: unknown } | null;
     if (ref?.type !== 'url' || typeof ref.value !== 'string' || typeof ref.role !== 'string') return [];
-    return [{ id: `restored-${i}`, role: ref.role, type: 'url' as const, value: ref.value }];
+    const entry: RefEntry = { id: `restored-${i}`, role: ref.role, type: 'url', value: ref.value };
+    // A keyframe's time, as the picker's field holds it (text as typed).
+    if (typeof ref.time_s === 'number') entry.time_s = String(ref.time_s);
+    return [entry];
   });
 }
 

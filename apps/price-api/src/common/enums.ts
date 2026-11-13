@@ -8,6 +8,7 @@
 export enum MediaType {
   IMAGE = 'image',
   VIDEO = 'video',
+  MODEL_3D = 'model3d',
 }
 
 /** How a provider's (or an individual model's) pricing is kept up to date. */

@@ -263,6 +263,29 @@ models:
         }
     }
 
+    /// A `docs_url:` written into the middle of a wrapped `description:` takes
+    /// the description's next line as part of the URL (YAML folds the plain
+    /// scalar): "https://docs.bfl.ml/… generation and multi-reference editing."
+    /// `Url::parse` percent-encodes the spaces and accepts it, so the loader
+    /// refuses whitespace itself.
+    #[test]
+    fn rejects_a_docs_url_that_swallowed_the_next_line() {
+        let err = yaml(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: image
+    display_name: M
+    description: A model that is the default for image
+    docs_url: https://docs.bfl.ml/api-reference/models/x
+      generation and multi-reference editing.
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+"#).unwrap_err();
+        assert!(err.to_string().contains("docs_url"), "{err}");
+    }
+
     #[test]
     fn an_https_docs_url_loads_and_is_kept() {
         let r = yaml(r#"
@@ -549,14 +572,14 @@ models:
 
     #[test]
     fn an_operation_may_keep_its_sources_orientation() {
-        let line = format!("    task: animate\n    native_orientation: {{ up: source, front: source, evidence: \"returns the source mesh\" }}");
+        let line = "    task: animate\n    native_orientation: { up: source, front: source, evidence: \"returns the source mesh\" }".to_string();
         let r = yaml(&model3d(&line, "{}", &format!("    params:\n{ANIMATIONS}"))).unwrap();
         let o = r.get("x/op").unwrap().native_orientation.clone().unwrap();
         assert_eq!((o.up.as_str(), o.front.as_str()), ("source", "source"));
         // Only an operation has a source to keep, and both axes go together.
         let err = oriented("    native_orientation: { up: source, front: source, evidence: \"e\" }").unwrap_err().to_string();
         assert!(err.contains("source"), "{err}");
-        let half = format!("    task: animate\n    native_orientation: {{ up: \"+y\", front: source, evidence: \"e\" }}");
+        let half = "    task: animate\n    native_orientation: { up: \"+y\", front: source, evidence: \"e\" }".to_string();
         assert!(yaml(&model3d(&half, "{}", &format!("    params:\n{ANIMATIONS}"))).is_err());
     }
 
@@ -762,6 +785,8 @@ models:
     params:
 {params}
     extra_allowlist: [addons]
+    extra_params:
+      addons: {{ kind: string }}
 "#))
     }
 
@@ -769,6 +794,7 @@ models:
     fn a_pricing_rule_names_one_effect_over_facts_the_request_has() {
         let video = "      duration_seconds: { kind: float, min: 1, max: 10, default: 5 }\n      resolution: { kind: string, enum_values: [720p, 1080p] }";
         assert!(priced("video", video, "        - { per_second_usd: 0.1 }\n        - { when: { resolution: 1080p, extra.addons: x }, multiply: 2 }").is_ok());
+        assert!(priced("image", "      {}", "        - { when: { megapixels: { gt: 1, lte: 2 } }, usd: 1 }").is_ok(), "a range");
         for (media, rules, needle) in [
             ("video", "        - { per_second_usd: 0.1, multiply: 2 }", "one effect"),
             ("video", "        - { when: { resolution: 1080p } }", "one effect"),
@@ -778,6 +804,9 @@ models:
             ("image", "        - { per_second_usd: 0.1 }", "per_second_usd"),
             ("video", "        - { per_megapixel_usd: 0.1 }", "per_megapixel_usd"),
             ("video", "        - { usd: -1 }", "negative"),
+            ("image", "        - { when: { megapixels: { between: 1 } }, usd: 1 }", "range"),
+            ("image", "        - { when: { megapixels: { gt: big } }, usd: 1 }", "range"),
+            ("image", "        - { when: { megapixels: {} }, usd: 1 }", "range"),
         ] {
             let params = if media == "video" { video } else { "      {}" };
             let err = priced(media, params, rules).unwrap_err().to_string();
@@ -1028,5 +1057,234 @@ models:
             let err = row(task, params).unwrap_err().to_string();
             assert!(err.contains(needle), "{task} {params}: {err}");
         }
+    }
+
+    /// D2: a key the catalog schema does not name is refused, naming it, at
+    /// every level: a typo, or the rest of a description a flow mapping cut
+    /// at ", " (fal.yaml:244 and ideogram.yaml:379 as they were).
+    #[test]
+    fn a_catalog_key_the_schema_does_not_know_is_refused() {
+        const BASE: &str = r#"
+models:
+  - id: x/e
+    provider: x
+    media_type: image
+    display_name: E
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      seed: { kind: seed, min: 0, max: 9 }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [x]
+"#;
+        assert!(yaml(BASE).is_ok(), "the base row loads");
+        let seed = "seed: { kind: seed, min: 0, max: 9 }";
+        for (from, to, key) in [
+            (seed, "region: { kind: region, input: mask, label: Region, description: The rectangle to edit, sent drawn as the mask. }", "sent drawn as the mask."),
+            (seed, "mask_prompt: { kind: string, description: What to replace, named. }", "named."),
+            ("extra_allowlist: [x]", "extra_alowlist: [x]", "extra_alowlist"),
+            ("max_count: 1 }", "max_count: 1, convnetion: white_edits }", "convnetion"),
+            ("prompt: { required: true }", "prompt: { required: true, max_lenght: 10 }", "max_lenght"),
+            ("image_to_image: true }", "image_to_image: true, text_to_imgae: true }", "text_to_imgae"),
+            (seed, "aspect_ratio: { kind: aspect_ratio, allowed: [\"16:9\"], frames_set_shap: always }", "frames_set_shap"),
+            (seed, "size: { kind: size, mode: freeform, min_width: 64, max_width: 1024, min_height: 64, max_height: 1024, multiple: 8 }", "multiple"),
+            ("pricing: { base_cost_usd: 0.1 }", "pricing: { base_cost_usd: 0.1, variable_pricng: [] }", "variable_pricng"),
+            ("default_role: init", "default_role: init\n      defualt_role: init", "defualt_role"),
+            ("provider_format: { form: url }", "provider_format: { form: multipart, field_map: { init: image }, fieldmap: {} }", "fieldmap"),
+        ] {
+            assert_eq!(BASE.matches(from).count(), 1, "{from}");
+            let err = yaml(&BASE.replace(from, to)).expect_err(key).to_string();
+            assert!(err.contains(key), "{key}: {err}");
+        }
+    }
+
+    // ─── Typed extras (E4b) ───────────────────────────────────────────────────
+
+    fn typed(extra: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: image
+    display_name: M
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: true }}
+    prompt: {{ required: true }}
+    params:
+      steps: {{ kind: int, min: 1, max: 50 }}
+{extra}
+"#))
+    }
+
+    /// N5: a `url` or `base64` provider format takes no other key (a
+    /// `field_map` there was ignored), as a multipart one takes no unknown key.
+    #[test]
+    fn a_provider_format_takes_only_its_own_keys() {
+        let row = |format: &str| {
+            yaml(&format!(r#"
+models:
+  - id: x/r
+    provider: x
+    media_type: image
+    display_name: R
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: true, image_to_image: true }}
+    prompt: {{ required: true }}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: {format}
+      roles:
+        init: {{ required: false, min_count: 0, max_count: 1 }}
+"#))
+        };
+        for ok in ["{ form: url }", "{ form: base64 }", "{ form: multipart, field_map: { init: image } }"] {
+            assert!(row(ok).is_ok(), "{ok}: {:?}", row(ok).err());
+        }
+        for (bad, key) in [("{ form: url, field_map: { init: image } }", "field_map"), ("{ form: base64, quality: 90 }", "quality")] {
+            let err = row(bad).expect_err(bad).to_string();
+            assert!(err.contains(key), "{bad}: {err}");
+        }
+    }
+
+    /// N4: a `pattern` is a regular expression, checked when the catalog
+    /// loads, on a param and on a typed extra alike.
+    #[test]
+    fn a_pattern_that_is_no_regular_expression_is_refused() {
+        assert!(typed("    extra_allowlist: [x]\n    extra_params:\n      x: { kind: string, pattern: \"^[a-z]+$\" }").is_ok());
+        let err = typed("    extra_allowlist: [x]\n    extra_params:\n      x: { kind: string, pattern: \"([a-z\" }").expect_err("extra").to_string();
+        assert!(err.contains("pattern") && err.contains("([a-z"), "{err}");
+        let param = |pattern: &str| {
+            yaml(&format!(r#"
+models:
+  - id: x/s
+    provider: x
+    media_type: image
+    display_name: S
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: true }}
+    prompt: {{ required: true }}
+    params:
+      style: {{ kind: string, pattern: "{pattern}" }}
+"#))
+        };
+        assert!(param("^[a-z]+$").is_ok());
+        let err = param("([a-z").expect_err("param").to_string();
+        assert!(err.contains("pattern") && err.contains("([a-z"), "{err}");
+    }
+
+    /// E4b: an allowlisted key may carry the vendor's type, which is served
+    /// with the model.
+    #[test]
+    fn a_typed_extra_loads_and_is_served() {
+        let r = typed(r#"    extra_allowlist: [safety_tolerance, enhance_prompt]
+    extra_params:
+      safety_tolerance: { kind: string, enum_values: ["1", "2"], default: "2", description: "How permissive the vendor's filter is." }"#)
+        .unwrap();
+        let served = serde_json::to_value(r.get("x/m").unwrap()).unwrap();
+        assert_eq!(served["extra_params"]["safety_tolerance"]["kind"], "string", "{served}");
+        assert_eq!(served["extra_params"]["safety_tolerance"]["enum_values"], serde_json::json!(["1", "2"]), "{served}");
+        assert!(served["extra_params"].get("enhance_prompt").is_none(), "an untyped key stays untyped: {served}");
+    }
+
+    /// E4b: a type is for an allowlisted key, is a plain JSON kind, is not
+    /// one of the row's own params, and its listed values and default lie
+    /// inside its own bounds.
+    #[test]
+    fn a_typed_extra_is_allowlisted_plain_and_not_a_param() {
+        assert!(typed("    extra_allowlist: [x]\n    extra_params:\n      x: { kind: int, min: 0, max: 4, default: 2 }").is_ok());
+        for (extra, needle) in [
+            ("    extra_allowlist: [x]\n    extra_params:\n      tier: { kind: string }", "not on the allowlist"),
+            ("    extra_allowlist: [x]\n    extra_params:\n      x: { kind: region, input: mask }", "kind `region`"),
+            ("    extra_allowlist: [steps]\n    extra_params:\n      steps: { kind: int }", "is one of the row's params"),
+            ("    extra_allowlist: [x]\n    extra_params:\n      x: { kind: int, min: 0, max: 4, values: [9] }", "outside its min/max"),
+            ("    extra_allowlist: [x]\n    extra_params:\n      x: { kind: string, enum_values: [a], default: b }", "default"),
+            ("    extra_allowlist: [x]\n    extra_params:\n      x: { kind: int, min: 0, max: 4, default: 7 }", "default"),
+        ] {
+            let err = typed(extra).expect_err(needle).to_string();
+            assert!(err.contains(needle), "{extra}: {err}");
+        }
+    }
+
+    /// E4b, N3: a price that reads an extra compares JSON exactly, so the
+    /// extra must be typed and the rule's value must be one a request could
+    /// send: `"*"` (any value), a range for a number, or a value of the type.
+    #[test]
+    fn a_price_that_reads_an_extra_needs_its_type() {
+        let rule = |extra: &str, when: &str| {
+            yaml(&format!(r#"
+models:
+  - id: x/p
+    provider: x
+    media_type: video
+    display_name: P
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+        - {{ when: {{ {when} }}, multiply: 2 }}
+    capabilities: {{ text_to_video: true }}
+    prompt: {{ required: true }}
+    extra_allowlist: [draft, n, tier]
+{extra}
+"#))
+        };
+        let typed = "    extra_params:\n      draft: { kind: bool }\n      n: { kind: int, min: 0, max: 9 }\n      tier: { kind: string, enum_values: [a, b] }";
+        for when in ["extra.draft: true", "extra.draft: \"*\"", "extra.n: { gt: 1 }", "extra.n: 3", "extra.tier: b"] {
+            assert!(rule(typed, when).is_ok(), "{when}: {:?}", rule(typed, when).err());
+        }
+        let err = rule("", "extra.draft: true").expect_err("untyped").to_string();
+        assert!(err.contains("type it in extra_params"), "{err}");
+        for when in ["extra.draft: \"yes\"", "extra.draft: { gt: 1 }", "extra.n: 1.5", "extra.n: 12", "extra.tier: c"] {
+            let err = rule(typed, when).expect_err(when).to_string();
+            assert!(err.contains("`when` value") && err.contains("extra takes"), "{when}: {err}");
+        }
+    }
+
+    /// E4a: no row, file or runtime model, can let a caller set where the
+    /// vendor sends a result or whether it publishes it.
+    #[test]
+    fn an_extra_allowlist_cannot_name_a_field_litegen_owns() {
+        let row = |key: &str| {
+            yaml(&format!(r#"
+models:
+  - id: x/v
+    provider: x
+    media_type: video
+    display_name: V
+    pricing: {{ base_cost_usd: 0.5 }}
+    capabilities: {{ text_to_video: true }}
+    prompt: {{ required: true }}
+    extra_allowlist: [watermark, {key}]
+"#))
+        };
+        assert!(row("enhance_prompt").is_ok(), "a vendor knob loads");
+        for key in ["callback_url", "isPublic", "CallbackUrl", "webhook_url", "public", "status_callback"] {
+            let err = row(key).expect_err(key).to_string();
+            assert!(err.contains(&format!("'{key}'")) && err.contains("litegen"), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_values_entry_outside_min_max_is_refused_on_any_number_param() {
+        let err = yaml(r#"
+models:
+  - id: n/vid
+    provider: n
+    media_type: video
+    display_name: Vid
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      fps: { kind: int, min: 24, max: 50, values: [24, 60] }
+"#)
+        .expect_err("a value outside min/max is refused");
+        assert!(err.to_string().contains("fps value 60"), "{err}");
     }
 }

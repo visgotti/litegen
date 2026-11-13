@@ -16,7 +16,7 @@ export class ModelsService {
   ) {}
 
   async list(query: ListModelsQuery): Promise<ModelDto[]> {
-    const where: FindOptionsWhere<ModelEntity> = {};
+    const where: FindOptionsWhere<ModelEntity> = { active: true };
     if (query.provider) {
       where.providerId = query.provider;
     }

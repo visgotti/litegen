@@ -11,10 +11,16 @@ export {
   type LiteGenResponseInfo,
   type JobSubmission,
   type IdempotencyOptions,
+  type KeepOutputsOptions,
   type ImageGenerateOptions,
+  type ImageSubmitOptions,
+  type ImageGenerationAccepted,
+  type ImageSubmitResult,
+  isAccepted,
   type JobGenerateOptions,
   type ListModelsOptions,
   type Model3dConversion,
+  type Model3dUnit,
   type ConvertModel3dOptions,
   type LiteGenClientOptions,
   type FetchLike,
@@ -122,6 +128,7 @@ export const Model3dAssetKind = {
   Texture: "texture",
   Preview: "preview",
   Original: "original",
+  Package: "package",
 } as const;
 export type Model3dAssetKind = (typeof Model3dAssetKind)[keyof typeof Model3dAssetKind];
 
@@ -239,6 +246,46 @@ export type Model3dSymmetry = components["schemas"]["Model3dSymmetry"];
 export type Model3dSkeleton = components["schemas"]["Model3dSkeleton"];
 /** The joint names a rig is delivered with (`joint_naming`); `vendor` keeps the vendor's own. */
 export type Model3dJointNaming = components["schemas"]["Model3dJointNaming"];
+export type Model3dFbxColorSpace = components["schemas"]["Model3dFbxColorSpace"];
+export type Model3dFormatSource = components["schemas"]["Model3dFormatSource"];
+/**
+ * What delivery does with a KTX2 (Basis Universal) texture (`ktx2_textures`):
+ * `png` (the default) re-encodes it as PNG in every container; `keep` leaves
+ * it in `glb` and `gltf`, which then require `KHR_texture_basisu`.
+ */
+export type Model3dKtx2Textures = components["schemas"]["Model3dKtx2Textures"];
+/**
+ * How a delivered or read FBX or USD stores its light strengths
+ * (`fbx_light_units`, `usd_light_units`): `photometric` (the default; the
+ * scene's own, glTF's candela and lux) or `blender` (Blender's `energy`, so
+ * the lights open in Blender as bright as the glTF does).
+ */
+export type Model3dLightUnits = components["schemas"]["Model3dLightUnits"];
+/**
+ * How a Collada (`dae`) file litegen writes stores a mesh's morph targets
+ * (`dae_morphs`): `bake` (the default; each node's mesh at that node's
+ * weights, which every Collada reader opens) or `keep` (`<morph>` controllers
+ * with their weight animation, which SceneKit and Godot read and three.js and
+ * assimp refuse).
+ */
+export type Model3dDaeMorphs = components["schemas"]["Model3dDaeMorphs"];
+/**
+ * What the root layer of a `usdz` litegen writes is (`usdz_root`): `usda`
+ * (the default; text, which `usdchecker --arkit` accepts and `<model-viewer>`
+ * hands to AR Quick Look) or `usdc` (the binary crate, as Apple's own
+ * packagers write it). A request that keeps nothing can't ask for `usdc`
+ * (`option_needs_keeping`).
+ */
+export type Model3dUsdzRoot = components["schemas"]["Model3dUsdzRoot"];
+/**
+ * Which animation clips a USD file litegen writes holds (`usd_clips`): `all`
+ * (every clip as an alternative, chosen by a variant set `Animation`; rigid
+ * node motion is the first clip's only, the others' named in the losses) or
+ * `first` (the first, the rest named in the losses). Unset is the
+ * container's default: `all` for `usda` and `usdc`, `first` for `usdz`. A
+ * request that keeps nothing can't ask for `all` (`option_needs_keeping`).
+ */
+export type Model3dUsdClips = components["schemas"]["Model3dUsdClips"];
 /**
  * One clip an `animate` model makes (`animations[]`): exactly one of `preset`
  * and `prompt`, delivered as a glTF animation named exactly `name`, in order.
@@ -286,6 +333,13 @@ export type OrganizationMember = components["schemas"]["OrganizationMember"];
 export type ProviderCredentialInfo = components["schemas"]["ProviderCredentialInfo"];
 export type AppStorageInfo = components["schemas"]["AppStorageInfo"];
 export type PutAppStorageRequest = components["schemas"]["PutAppStorageRequest"];
+export type AccessMode = components["schemas"]["AccessMode"];
+export type OwnerScope = components["schemas"]["OwnerScope"];
+export type AccessSettings = components["schemas"]["AccessSettings"];
+export type AppAccessSettings = components["schemas"]["AppAccessSettings"];
+export type PutAppAccessRequest = components["schemas"]["PutAppAccessRequest"];
+export type LinksRevoked = components["schemas"]["LinksRevoked"];
+export type SignedLinks = components["schemas"]["SignedLinks"];
 export type CreateOrgRequest = components["schemas"]["CreateOrgRequest"];
 export type UpdateOrgRequest = components["schemas"]["UpdateOrgRequest"];
 export type CreateAppRequest = components["schemas"]["CreateAppRequest"];

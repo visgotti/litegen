@@ -35,6 +35,17 @@ class ModelCapabilities:
     Attributes:
         supports_image_to_image (bool):
         supports_text_to_image (bool):
+        task (ModelTask): What a catalog model does.
+
+            An operation on an existing asset is a model of its own, submitted to its
+            modality's one job endpoint: `tripo/rig` and `meshy/animate` go to
+            `POST /v1/models3d/generations` like any generation, and are polled,
+            priced, cancelled, re-hosted and billed the same way, because each
+            produces a new asset.
+
+            One task per model. `generate` is the default in every modality. It still
+            covers image edits driven by `init` and `mask` references, and 3D models
+            that infer text, image or multiview input from their references.
         directions (Union[Unset, List[int]]): The `directions` counts it takes; empty when none.
         duration_values (Union[Unset, List[float]]): The only `duration_seconds` values the model takes; empty when it
             takes its range.
@@ -104,23 +115,13 @@ class ModelCapabilities:
         supports_texture (Union[Unset, bool]): Takes the `texture` param.
         supports_time_range (Union[Unset, bool]): Takes `time_range`.
         supports_transparent_background (Union[Unset, bool]): Takes `background: transparent` (PixelGenie L9).
-        task (Union[Unset, ModelTask]): What a catalog model does.
-
-            An operation on an existing asset is a model of its own, submitted to its
-            modality's one job endpoint: `tripo/rig` and `meshy/animate` go to
-            `POST /v1/models3d/generations` like any generation, and are polled,
-            priced, cancelled, re-hosted and billed the same way, because each
-            produces a new asset.
-
-            One task per model. `generate` is the default in every modality. It still
-            covers image edits driven by `init` and `mask` references, and 3D models
-            that infer text, image or multiview input from their references.
         texture_resolutions (Union[Unset, List[int]]): The map sizes a `texture` model paints at (`texture_resolution`);
             empty when it takes none.
     """
 
     supports_image_to_image: bool
     supports_text_to_image: bool
+    task: ModelTask
     directions: Union[Unset, List[int]] = UNSET
     duration_values: Union[Unset, List[float]] = UNSET
     extend_output: Union[ExtendOutput, None, Unset] = UNSET
@@ -174,7 +175,6 @@ class ModelCapabilities:
     supports_texture: Union[Unset, bool] = UNSET
     supports_time_range: Union[Unset, bool] = UNSET
     supports_transparent_background: Union[Unset, bool] = UNSET
-    task: Union[Unset, ModelTask] = UNSET
     texture_resolutions: Union[Unset, List[int]] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -184,6 +184,8 @@ class ModelCapabilities:
         supports_image_to_image = self.supports_image_to_image
 
         supports_text_to_image = self.supports_text_to_image
+
+        task = self.task.value
 
         directions: Union[Unset, List[int]] = UNSET
         if not isinstance(self.directions, Unset):
@@ -357,10 +359,6 @@ class ModelCapabilities:
 
         supports_transparent_background = self.supports_transparent_background
 
-        task: Union[Unset, str] = UNSET
-        if not isinstance(self.task, Unset):
-            task = self.task.value
-
         texture_resolutions: Union[Unset, List[int]] = UNSET
         if not isinstance(self.texture_resolutions, Unset):
             texture_resolutions = self.texture_resolutions
@@ -371,6 +369,7 @@ class ModelCapabilities:
             {
                 "supports_image_to_image": supports_image_to_image,
                 "supports_text_to_image": supports_text_to_image,
+                "task": task,
             }
         )
         if directions is not UNSET:
@@ -481,8 +480,6 @@ class ModelCapabilities:
             field_dict["supports_transparent_background"] = (
                 supports_transparent_background
             )
-        if task is not UNSET:
-            field_dict["task"] = task
         if texture_resolutions is not UNSET:
             field_dict["texture_resolutions"] = texture_resolutions
 
@@ -496,6 +493,8 @@ class ModelCapabilities:
         supports_image_to_image = d.pop("supports_image_to_image")
 
         supports_text_to_image = d.pop("supports_text_to_image")
+
+        task = ModelTask(d.pop("task"))
 
         directions = cast(List[int], d.pop("directions", UNSET))
 
@@ -734,18 +733,12 @@ class ModelCapabilities:
             "supports_transparent_background", UNSET
         )
 
-        _task = d.pop("task", UNSET)
-        task: Union[Unset, ModelTask]
-        if isinstance(_task, Unset):
-            task = UNSET
-        else:
-            task = ModelTask(_task)
-
         texture_resolutions = cast(List[int], d.pop("texture_resolutions", UNSET))
 
         model_capabilities = cls(
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
+            task=task,
             directions=directions,
             duration_values=duration_values,
             extend_output=extend_output,
@@ -799,7 +792,6 @@ class ModelCapabilities:
             supports_texture=supports_texture,
             supports_time_range=supports_time_range,
             supports_transparent_background=supports_transparent_background,
-            task=task,
             texture_resolutions=texture_resolutions,
         )
 

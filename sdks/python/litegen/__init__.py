@@ -8,7 +8,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from .client import DEFAULT_TIMEOUT, LiteGenClient, Model3dJob, VideoJob, response_meta
+from .client import DEFAULT_TIMEOUT, LiteGenClient, Model3dJob, VideoJob, is_accepted, response_meta
 from .async_client import AsyncLiteGenClient, AsyncModel3dJob, AsyncVideoJob
 from .errors import (
     LiteGenError,
@@ -94,6 +94,7 @@ def _reexport_generated() -> list[str]:
 
 __all__ = [
     "__version__",
+    "is_accepted",
     "LiteGenClient",
     "VideoJob",
     "Model3dJob",

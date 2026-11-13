@@ -3,3 +3,5 @@ storybook-static/
 debug-storybook.log
 # Left behind if make_fixtures.py is imported rather than run.
 __pycache__/
+# The stories suite (playwright.stories.config.ts).
+test-results-stories/

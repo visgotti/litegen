@@ -1,3 +1,5 @@
+pub mod generation;
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -22,7 +24,11 @@ pub struct BaseGenerationRequest {
     #[serde(default)]
     pub prompt: String,
     pub model: String,
+    /// One image, video or mesh per request: more than 1 is refused
+    /// (`param_out_of_range`); send several requests for several. 0 is the
+    /// same as 1.
     #[serde(default = "default_n")]
+    #[schema(maximum = 1)]
     pub n: u32,
     #[serde(default)]
     pub negative_prompt: Option<String>,
@@ -30,8 +36,24 @@ pub struct BaseGenerationRequest {
     pub seed: Option<i64>,
     #[serde(default)]
     pub reference_images: Vec<ReferenceImage>,
+    /// `true` (the default) refuses a field the request has no such name for,
+    /// and a param the model does not take, with `param_unsupported`; `false`
+    /// drops both and names them in `X-Litegen-Dropped-Params`. A field inside
+    /// one of the request's objects is named by its path, such as
+    /// `reference_images[0].weight`. A bad value for a param the model does
+    /// take is refused either way. A top-level field the model passes through
+    /// (its `extra_allowlist` in `GET /v1/models/{id}`, such as OpenAI's
+    /// `user`) is sent on as if it were in `extra`, in both modes.
     #[serde(default = "default_true")]
     pub strict: bool,
+    /// Vendor fields with no canonical param, sent to the vendor as given:
+    /// only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`),
+    /// each of the type its `extra_params` entry gives, when it has one (a
+    /// wrong value is refused in either mode, with `param: "extra.<key>"`).
+    /// Strict mode refuses any other key (`extra_key_unsupported`); `strict:
+    /// false` drops it and names it in `X-Litegen-Dropped-Params`. Where a
+    /// job's result is sent or stored, and whether the vendor publishes it,
+    /// are litegen's: it polls every job and fires your key's webhook.
     #[serde(default)]
     pub extra: Option<serde_json::Value>,
     /// Your own labels for the job (PixelGenie L17): a map of string values,
@@ -120,6 +142,13 @@ pub struct ImageGenerationRequest {
     pub background: Option<String>,
     #[serde(default)] pub size: Option<String>,
     #[serde(default)] pub aspect_ratio: Option<String>,
+    /// The output tier, on a model that has tiers: one of its
+    /// `params.resolution` values, on one scale for every vendor (`0.5K`,
+    /// `0.75K`, `1K`, `1.5K`, `2K`, `4K`, about that many thousand pixels a
+    /// side; FLUX 3 Image adds `match_input`, an edit at its reference's
+    /// size). An exact `size` wins where a model takes both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
     #[serde(default)] pub quality: Option<String>,
     #[serde(default)] pub style: Option<String>,
     #[serde(default)] pub steps: Option<u32>,
@@ -133,11 +162,13 @@ pub struct ImageGenerationRequest {
 pub struct VideoGenerationRequest {
     #[serde(flatten)]
     pub base: BaseGenerationRequest,
-    /// Absent means the model's own `duration_seconds` default (resolved by
-    /// `resolve_duration_seconds`), not a fixed 5s: models whose minimum is
-    /// higher (fal/ltx-2.3, bedrock nova-reel) rejected every request that
-    /// omitted it.
+    /// Seconds of video, above 0, as the model's `params.duration_seconds`
+    /// allows: within its range, and one of its `values` where it lists
+    /// them; a whole-second model gets the nearest whole second. Absent means
+    /// the model's own default. A model whose listing has no
+    /// `duration_seconds` takes none: refused when `strict`, dropped otherwise.
     #[serde(default)]
+    #[schema(exclusive_minimum = 0)]
     pub duration_seconds: Option<f64>,
     #[serde(default)] pub aspect_ratio: Option<String>,
     #[serde(default)] pub resolution: Option<String>,
@@ -260,6 +291,11 @@ pub struct ImageResult {
     /// URL of the generated image (if response_format=url).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// When a signed link stops working (`docs/storage-access.md`); read the
+    /// generation again for a fresh one. Absent on every other URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Base64-encoded image data (if response_format=b64_json).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub b64_json: Option<String>,
@@ -332,6 +368,11 @@ pub struct VideoGenerationResponse {
     /// Video URL when completed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_url: Option<String>,
+    /// When `video_url` stops working, if it is a signed link
+    /// (`docs/storage-access.md`); poll again for a fresh one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub video_url_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Progress percentage (0-100).
     pub progress: u8,
     /// Error message if failed.
@@ -390,6 +431,8 @@ pub enum Model3dFormat {
     Usdz,
     /// Text USD.
     Usda,
+    /// Binary USD (a crate file).
+    Usdc,
     #[serde(rename = "3mf")]
     ThreeMf,
     /// Collada 1.4.1.
@@ -397,7 +440,7 @@ pub enum Model3dFormat {
 }
 
 impl Model3dFormat {
-    pub const ALL: [Model3dFormat; 10] = [
+    pub const ALL: [Model3dFormat; 11] = [
         Model3dFormat::Glb,
         Model3dFormat::Gltf,
         Model3dFormat::Obj,
@@ -406,6 +449,7 @@ impl Model3dFormat {
         Model3dFormat::Fbx,
         Model3dFormat::Usdz,
         Model3dFormat::Usda,
+        Model3dFormat::Usdc,
         Model3dFormat::ThreeMf,
         Model3dFormat::Dae,
     ];
@@ -421,6 +465,7 @@ impl Model3dFormat {
             Model3dFormat::Fbx => "fbx",
             Model3dFormat::Usdz => "usdz",
             Model3dFormat::Usda => "usda",
+            Model3dFormat::Usdc => "usdc",
             Model3dFormat::ThreeMf => "3mf",
             Model3dFormat::Dae => "dae",
         }
@@ -517,6 +562,131 @@ impl Model3dSkeleton {
             Model3dSkeleton::Aquatic => "aquatic",
             Model3dSkeleton::Other => "other",
         }
+    }
+}
+
+/// How a delivered or read FBX stores its material and light colours
+/// (`fbx_color_space`). FBX does not say, and the tools that read it disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dFbxColorSpace {
+    /// sRGB-encoded, as three.js's FBXLoader reads them. The default.
+    #[default]
+    Srgb,
+    /// The linear values themselves, as Blender, Unity, Unreal, ufbx and
+    /// assimp read them.
+    Linear,
+}
+
+/// How a delivered or read FBX or USD stores its light strengths
+/// (`fbx_light_units`, `usd_light_units`). Neither format says which units it
+/// uses, and Blender reads them in its own units rather than glTF's
+/// photometric ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dLightUnits {
+    /// The scene's own units: FBX `Intensity` is 100 × the candela (point and
+    /// spot lights) or lux (directional lights), as three.js's FBXLoader and
+    /// ufbx read it, and USD lights are UsdLux's normalised values by the
+    /// schema. The default.
+    #[default]
+    Photometric,
+    /// Blender's `energy`: the watts (point and spot lights, candela × 4π /
+    /// 683) or W/m² (directional lights, lux / 683) that Blender's own glTF
+    /// importer gives the same scene's glTF light, so the light opens in
+    /// Blender as bright as the glTF does. FBX stores 100 × that energy and
+    /// USD the values Blender's USD exporter writes for it.
+    Blender,
+}
+
+/// How a Collada (`dae`) file litegen writes stores a mesh's morph targets
+/// (`dae_morphs`). Collada's morph controllers are read by only some tools, so
+/// the caller chooses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dDaeMorphs {
+    /// Each node's mesh is written at that node's weights and the targets'
+    /// weight animation is dropped (the losses name it as `morph_targets`).
+    /// Every Collada reader opens the result. The default.
+    #[default]
+    Bake,
+    /// The targets are written as `<morph>` controllers, with their weight
+    /// animation. SceneKit (and so Xcode) and Godot read them, while three.js's
+    /// ColladaLoader and assimp refuse the whole file.
+    Keep,
+}
+
+/// What the root layer of a `usdz` litegen writes is (`usdz_root`). Both pass
+/// `usdchecker --arkit`, and every USD reader opens either, so the caller
+/// chooses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dUsdzRoot {
+    /// `model.usda`, text: the root a litegen USDZ has always had, and the one
+    /// `<model-viewer>` hands to AR Quick Look. The default.
+    #[default]
+    Usda,
+    /// `model.usdc`, the binary crate: the root Apple's own packagers write.
+    /// Still the package's first entry, its data 64-byte aligned.
+    Usdc,
+}
+
+/// Which animation clips a USD file litegen writes holds (`usd_clips`). USD has
+/// one timeline, so a scene with several clips keeps them as alternatives or
+/// keeps the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dUsdClips {
+    /// Every clip, as alternatives: a SkelAnimation prim for each, and a
+    /// variant set `Animation` that picks which one the skeleton plays, in the
+    /// layout of Apple's own `variant_combiner.py`. Every clip's skeletal and
+    /// blend-shape animation is kept; rigid (node) motion is the first
+    /// clip's only, and a scene whose clips are all rigid writes as `first`.
+    All,
+    /// The first clip; the rest are named in the losses.
+    First,
+}
+
+/// Where a delivered `fbx` or `usdz` comes from (`format_source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dFormatSource {
+    /// The vendor's own export, when it offers one; litegen makes the other
+    /// containers from it. The default.
+    #[default]
+    Native,
+    /// The vendor's GLB, which carries the most; litegen makes `fbx`, `usdz`
+    /// and every other container from it.
+    Glb,
+}
+
+/// What delivery does with a KTX2 (Basis Universal) texture
+/// (`ktx2_textures`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dKtx2Textures {
+    /// PNG in every container. The default.
+    #[default]
+    Png,
+    /// `glb` and `gltf` keep the KTX2 through `KHR_texture_basisu`; every
+    /// other container gets PNG.
+    Keep,
+}
+
+impl Model3dKtx2Textures {
+    pub const ALL: [Model3dKtx2Textures; 2] = [Model3dKtx2Textures::Png, Model3dKtx2Textures::Keep];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Model3dKtx2Textures::Png => "png",
+            Model3dKtx2Textures::Keep => "keep",
+        }
+    }
+
+    /// The option a request names: case- and space-insensitive, as the
+    /// converter's is. `None` for a word that is neither.
+    pub fn parse(s: &str) -> Option<Model3dKtx2Textures> {
+        Self::ALL.into_iter().find(|v| v.as_str().eq_ignore_ascii_case(s.trim()))
     }
 }
 
@@ -812,6 +982,11 @@ pub struct ImageSegmentationRequest {
     #[serde(default)]
     #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
     pub metadata: Option<serde_json::Value>,
+    /// `true` (the default) refuses a field the request has no such name for
+    /// (`prompt` for `prompts`, say) with `param_unsupported`; `false` drops
+    /// it and names it in `X-Litegen-Dropped-Params`.
+    #[serde(default = "default_true")]
+    pub strict: bool,
 }
 
 /// What the prompts selected.
@@ -972,6 +1147,103 @@ pub struct Model3dGenerationRequest {
     /// Frames per second of the delivered clips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<u32>,
+    /// How FBX material and light colours are stored, when litegen reads the
+    /// vendor's FBX or writes one for this request (a vendor FBX delivered as
+    /// it is keeps the vendor's): `srgb` (the default; three.js reads them so)
+    /// or `linear` (Blender, ufbx and assimp read both so, and Unity and Unreal
+    /// material colours). Vertex colours are sRGB either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fbx_color_space: Option<Model3dFbxColorSpace>,
+    /// The units FBX light strengths are stored in, when litegen reads the
+    /// vendor's FBX or writes one for this request (a vendor FBX delivered as
+    /// it is keeps the vendor's units): `photometric` (the default; the
+    /// scene's own, as three.js's FBXLoader and ufbx read them: `Intensity` is
+    /// 100 × the candela or lux) or `blender` (100 × the `energy` Blender's
+    /// own glTF importer gives the same scene's glTF light, so the lights open
+    /// in Blender as bright as the glTF does, and a vendor FBX that Blender
+    /// wrote reads as the glTF light whose import gives that `energy`).
+    /// Colours are in `fbx_color_space` either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fbx_light_units: Option<Model3dLightUnits>,
+    /// The units USD light strengths are stored in, when litegen reads the
+    /// vendor's `usdz`, `usda` or `usdc` or writes one for this request (one delivered
+    /// as it is keeps the vendor's units): `photometric` (the default;
+    /// UsdLux's own, by the schema) or `blender` (the UsdLux values Blender's
+    /// USD exporter writes for the `energy` Blender's own
+    /// glTF importer gives the same scene's glTF light, so the lights open in
+    /// Blender as bright as the glTF does, and a vendor USD that Blender wrote
+    /// reads as the glTF light whose import gives that `energy`). A file
+    /// litegen wrote keeps its exact strengths in `customData`, which wins on
+    /// read under either choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_light_units: Option<Model3dLightUnits>,
+    /// How the Collada (`dae`) litegen writes stores a mesh's morph targets,
+    /// when litegen writes one for this request (a vendor Collada delivered as
+    /// it is keeps the vendor's): `bake` (the default) applies the targets at
+    /// each node's weights and drops their weight animation, which every
+    /// Collada reader opens; `keep` writes them as `<morph>` controllers with
+    /// their weight animation, which SceneKit (and so Xcode) and Godot read,
+    /// while three.js's ColladaLoader and assimp refuse the whole file. A
+    /// request that keeps nothing (`keep_outputs: false`) can't ask for `keep`:
+    /// `option_needs_keeping`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dae_morphs: Option<Model3dDaeMorphs>,
+    /// What the root layer of a `usdz` litegen writes for this request is (a
+    /// vendor USDZ delivered as it is keeps the vendor's): `usda` (the
+    /// default) is text, which `usdchecker --arkit` accepts and which
+    /// `<model-viewer>` hands to AR Quick Look; `usdc` is the binary crate,
+    /// as Apple's own packagers write it. Either way the root is the
+    /// package's first entry, 64-byte aligned. A request that keeps nothing
+    /// (`keep_outputs: false`) can't ask for `usdc`: `option_needs_keeping`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usdz_root: Option<Model3dUsdzRoot>,
+    /// Which animation clips the `usda`, `usdc` or `usdz` litegen writes for
+    /// this request holds (a vendor USD delivered as it is keeps the vendor's):
+    /// `all` keeps every clip as an alternative (a SkelAnimation prim for
+    /// each, chosen by a variant set `Animation`, as Apple's own tooling lays
+    /// them out), `first` keeps the first and names the rest in the losses.
+    /// Under `all` every clip's skeletal and blend-shape animation is kept;
+    /// rigid (node) motion is the first clip's only, the other clips' is
+    /// named in the losses, and a scene whose clips are all rigid writes as
+    /// `first`.
+    /// Unset is the container's default: `all` for `usda` and `usdc`, `first`
+    /// for `usdz` until AR Quick Look's behaviour with variants is checked on
+    /// a device. A request that keeps nothing (`keep_outputs: false`) can't
+    /// ask for `all`: `option_needs_keeping`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_clips: Option<Model3dUsdClips>,
+    /// Where a promised `fbx` or `usdz` comes from: `native` (the default)
+    /// asks the vendor for its own export when it offers one, and litegen
+    /// makes the other containers from that file; `glb` asks for the vendor's
+    /// GLB, which carries the most, and litegen makes them all from it. Either
+    /// way one vendor job is billed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_source: Option<Model3dFormatSource>,
+    /// Also deliver each requested container that is a file and its
+    /// sidecars (an `obj` with its `.mtl` and textures, a `dae`, `usda` or
+    /// `usdc` with its textures, a `gltf` with its `.bin` and images) as one zip of
+    /// them: an asset of kind `package` whose `format` is the container
+    /// inside. litegen applies it on delivery, to any model's mesh, and the
+    /// `mesh` assets stay as they are. A container that is one file for this
+    /// mesh gets no package. A request that keeps nothing (`keep_outputs:
+    /// false`) can't ask for packages: `option_needs_keeping`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_packages: Option<bool>,
+    /// What delivery does with a KTX2 (Basis Universal) texture, such as the
+    /// images of a GLB that requires `KHR_texture_basisu`. `png` (the default)
+    /// re-encodes it as PNG in every container, as WebP is, so no delivered
+    /// file needs an extension to read; the vendor's own file is delivered
+    /// beside it as `original`. `keep` leaves it as the vendor made it in the
+    /// `glb` and `gltf` containers (byte for byte, through
+    /// `KHR_texture_basisu`, which those files then require: for viewers that
+    /// upload KTX2 to the GPU, such as three.js with KTX2Loader, Babylon.js
+    /// and Godot), and every other container still gets PNG. A request that
+    /// keeps nothing (`keep_outputs: false`) can't ask for `keep`:
+    /// `option_needs_keeping`. litegen applies it on delivery, to any model's
+    /// mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Model3dKtx2Textures>)]
+    pub ktx2_textures: Option<String>,
     /// A `texture` model's map size in pixels, one of its
     /// `texture_resolutions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1029,6 +1301,10 @@ pub enum Model3dAssetKind {
     /// the meshes it delivers (a rotation, a transcode, a rename), so nothing
     /// is lost by normalising.
     Original,
+    /// A zip of a mesh container and the sidecars it references, at the paths
+    /// it names them by (`output_packages`). `format` is the container
+    /// inside, e.g. `obj`, and `scene` is what litegen read from the package.
+    Package,
 }
 
 /// One file produced by a 3D generation, re-hosted on litegen storage (the
@@ -1036,14 +1312,22 @@ pub enum Model3dAssetKind {
 ///
 /// A `completed` generation carries one `mesh` asset for every format in its
 /// `output_formats` — never fewer; a missing one fails the generation instead —
-/// plus whatever textures and previews the vendor returned.
+/// plus whatever textures and previews the vendor returned, and, when the
+/// request set `output_packages`, a `package` asset (a zip) for each of those
+/// formats that is a file and its sidecars, after every other asset.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Model3dAsset {
     pub kind: Model3dAssetKind,
     /// Always absolute: a root-relative path is indistinguishable from an
     /// outage to a client fetching it from a worker. Meshes live at
-    /// `…/{generation_id}/model.{format}`.
+    /// `…/{generation_id}/model.{format}`, packages at
+    /// `…/{generation_id}/package_{format}.zip`.
     pub url: String,
+    /// When a signed link stops working (`docs/storage-access.md`); read the
+    /// generation again for a fresh one. Absent on every other URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Lowercase container without a dot. Meshes use the `Model3dFormat`
     /// vocabulary; textures and previews their image format (`png`, `jpg`,
     /// `webp`). A plain string so a client tolerates a format added later.
@@ -1064,10 +1348,17 @@ pub struct Model3dAsset {
     /// Lowercase hex SHA-256 of the stored file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    /// On meshes: what litegen's own reader found in this very file. Never the
+    /// On meshes and packages: what litegen's own reader found in this very
+    /// file (a package's container read with its sidecars). Never the
     /// vendor's claims.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneManifest>,
+    /// `false` when litegen kept no copy (`keep_outputs: false`): the file is
+    /// the vendor's own, unconverted, and the vendor deletes it on its own
+    /// schedule. Absent when litegen kept it.
+    #[serde(default = "asset_kept", skip_serializing_if = "is_kept")]
+    #[schema(value_type = Option<bool>)]
+    pub kept: bool,
 }
 
 /// What litegen measured in a delivered mesh (3D doc §3D). Every delivered
@@ -1130,7 +1421,11 @@ pub struct SceneBounds {
 pub struct SceneMaterial {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`.
+    /// `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`,
+    /// and the layer maps `clearcoat`, `clearcoat_roughness`,
+    /// `clearcoat_normal`, `transmission`, `volume_thickness`, `specular`,
+    /// `specular_color`, `sheen_color`, `sheen_roughness`, `iridescence`,
+    /// `iridescence_thickness`, `anisotropy`.
     pub maps: Vec<String>,
 }
 
@@ -1178,13 +1473,19 @@ pub struct SceneAnimation {
 pub struct GenerationAsset {
     /// Position in the list; the `{index}` that streams this file.
     pub index: u32,
-    /// `image`, `video`, `mesh`, `texture`, `preview` or `original`. A plain
-    /// string so a client tolerates a kind added later.
+    /// `image`, `video`, `mesh`, `texture`, `preview`, `original` or
+    /// `package`. A plain string so a client tolerates a kind added later.
     pub kind: String,
     /// Lowercase container or image format, without a dot.
     pub format: String,
-    /// Where the file is served from: absolute, and litegen's own storage.
+    /// Where the file is served from: absolute; litegen's own storage, or the
+    /// vendor's link when `kept` is false.
     pub url: String,
+    /// When a signed link stops working (`docs/storage-access.md`); read the
+    /// generation again for a fresh one. Absent on every other URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
     /// Lowercase hex SHA-256 of the stored file.
@@ -1203,6 +1504,20 @@ pub struct GenerationAsset {
     /// Whether a video carries an audio track (PixelGenie L10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_audio: Option<bool>,
+    /// `false` when litegen kept no copy (`keep_outputs: false`,
+    /// docs/storage-access.md): the file is the vendor's, and the vendor
+    /// deletes it on its own schedule. Absent when litegen kept it.
+    #[serde(default = "asset_kept", skip_serializing_if = "is_kept")]
+    #[schema(value_type = Option<bool>)]
+    pub kept: bool,
+}
+
+fn asset_kept() -> bool {
+    true
+}
+
+fn is_kept(kept: &bool) -> bool {
+    *kept
 }
 
 /// `GET /v1/generations/{id}/assets`.
@@ -1398,8 +1713,9 @@ pub enum MediaType {
 pub struct ModelCapabilities {
     /// What the model does: `generate`, or an operation on an existing asset
     /// such as `rig` or `animate`. The same value `GET /v1/models/{id}`
-    /// serves as `task`.
+    /// serves as `task`. Always sent.
     #[serde(default)]
+    #[schema(required = true)]
     pub task: crate::capabilities::ModelTask,
     pub supports_text_to_image: bool,
     pub supports_image_to_image: bool,
@@ -1659,16 +1975,16 @@ fn default_weight() -> u32 {
 
 /// A signing credential set (key_id + key_secret, plus optional region for
 /// SigV4/TC3) with a weight for round-robin distribution. The signing-scheme
-/// analogue of [`ApiKeyEntry`], used by providers like Bedrock, Hunyuan, and
-/// Kling that authenticate with a credential *pair* rather than a bearer key.
+/// analogue of [`ApiKeyEntry`], used by providers like Bedrock and Hunyuan
+/// that authenticate with a credential *pair* rather than a bearer key.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CredentialEntry {
-    /// Access key id (SigV4) / secret id (TC3) / access key (Kling).
+    /// Access key id (SigV4) / secret id (TC3).
     pub key_id: String,
-    /// Secret access key (SigV4) / secret key (TC3, Kling). Stored encrypted.
+    /// Secret access key (SigV4) / secret key (TC3). Stored encrypted.
     pub key_secret: String,
-    /// Region (SigV4 / TC3). Omitted for Kling; when absent the provider falls
-    /// back to its configured/default region.
+    /// Region (SigV4 / TC3). When absent the provider falls back to its
+    /// configured/default region.
     #[serde(default)]
     pub region: Option<String>,
     /// Weight for round-robin (higher = more traffic). Default: 1.
@@ -1703,7 +2019,7 @@ pub struct ProviderCatalogEntry {
     pub name: String,
     /// Which media this provider serves — any of "image", "video".
     pub modalities: Vec<String>,
-    /// Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3" | "kling_jwt".
+    /// Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3".
     pub auth_scheme: String,
     /// Which credentials array to submit: "api_keys" (bearer) or
     /// "credential_sets" (signing). Each array element is `{<fields…>, weight?, label?}`.
@@ -1795,6 +2111,9 @@ fn default_cache_max() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProviderHealth {
     pub provider: String,
+    /// What this entry checked: `image`, `video` or `model3d`. A provider
+    /// that serves several has one entry for each.
+    pub modality: String,
     pub healthy: bool,
     pub message: Option<String>,
     pub latency_ms: Option<u64>,
@@ -1923,6 +2242,35 @@ pub struct ErrorDetail {
     /// not record).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor_job_id: Option<String>,
+    /// On an image `vendor_timeout` whose job the vendor is still running:
+    /// the generation litegen delivers it to when it finishes
+    /// (`GET /v1/generations/{id}`, the key's webhook; docs/async-images.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
+    /// `processing`, with `generation_id`: the job runs on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// On `model_retired` (410): the model that replaces the retired one,
+    /// when the catalog names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<String>,
+}
+
+/// The answer to an image request that won't wait for its job
+/// (`Prefer: respond-async`, or a `wait` the job outlasted): litegen
+/// delivers the image to the generation when the vendor finishes
+/// (docs/async-images.md).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImageGenerationAccepted {
+    /// The generation: `GET /v1/generations/{id}` serves its image once done.
+    pub id: String,
+    /// Always `image.generation`.
+    pub object: String,
+    /// `processing`.
+    pub status: String,
+    pub model: String,
+    /// Unix seconds.
+    pub created: i64,
 }
 
 /// What a vendor said when it refused or failed a request (PixelGenie L15):
@@ -1977,6 +2325,15 @@ pub struct Generation {
     /// Owning application. None for pre-tenancy / untenanted rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// When litegen deleted this generation's kept files: after its app's
+    /// `retention_days`, or on request. The record stays. Absent while they
+    /// are kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub files_deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Why they were deleted: `retention` or `deleted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_deleted_reason: Option<String>,
 }
 
 // ─── Tenancy (Organizations / Applications / Members / Credentials) ─────────
@@ -2033,6 +2390,38 @@ pub struct AppStorageRow {
     pub secret_ciphertext: String,
     pub secret_nonce: String,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// `assume_role`, or `None`/`access_key` for the encrypted key pair.
+    pub credential_mode: Option<String>,
+    pub role_arn: Option<String>,
+    /// `None` is `true`: litegen's store stands in when the bucket is down.
+    pub fallback_to_litegen_store: Option<bool>,
+}
+
+/// One app's stored-file access overrides (`/v1/apps/{id}/access`). A `None`
+/// field uses the gateway's value. Strings rather than the enums, so a value
+/// another litegen version wrote reads back and is skipped, not an error.
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+pub struct AppFileAccessRow {
+    pub app_id: String,
+    pub mode: Option<String>,
+    pub owner_scope: Option<String>,
+    pub signed_url_ttl_seconds: Option<i64>,
+    pub keep_outputs: Option<bool>,
+    pub retention_days: Option<i64>,
+    pub signed_links: Option<String>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Owned input for replacing an app's stored-file access overrides.
+#[derive(Debug, Clone)]
+pub struct AppFileAccessUpsert {
+    pub app_id: String,
+    pub mode: Option<String>,
+    pub owner_scope: Option<String>,
+    pub signed_url_ttl_seconds: Option<i64>,
+    pub keep_outputs: Option<bool>,
+    pub retention_days: Option<i64>,
+    pub signed_links: Option<String>,
 }
 
 /// Owned input for upserting per-app BYO storage config.
@@ -2048,6 +2437,9 @@ pub struct AppStorageUpsert {
     pub access_key_id_hint: Option<String>,
     pub secret_ciphertext: String,
     pub secret_nonce: String,
+    pub credential_mode: Option<String>,
+    pub role_arn: Option<String>,
+    pub fallback_to_litegen_store: Option<bool>,
 }
 
 /// Public view of per-app BYO storage config — NEVER includes the secret.
@@ -2070,6 +2462,24 @@ pub struct AppStorageInfo {
     pub access_key_id_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How litegen reaches the bucket: `access_key` (a key pair) or
+    /// `assume_role` (a cross-account IAM role).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_arn: Option<String>,
+    /// The external ID the role's trust policy must require. litegen assigns
+    /// it, one per app; it is shown before a role is saved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    /// litegen's own AWS principal, which the role must trust; absent when
+    /// litegen has no AWS identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub litegen_principal_arn: Option<String>,
+    /// Whether litegen's own store keeps the app's files while its bucket
+    /// can't be reached (default true). With false, they wait for the bucket.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_to_litegen_store: Option<bool>,
 }
 
 // ─── Model Allowlists ───────────────────────────────────────────────────────
@@ -2200,6 +2610,8 @@ pub struct ReadinessResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReadinessChecks {
     pub db: bool,
+    /// The providers configured with the gateway's own keys, by name, each
+    /// once. Readiness doesn't call them; `GET /health` checks each one.
     pub providers: Vec<String>,
 }
 

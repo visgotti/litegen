@@ -39,8 +39,13 @@ const MODELS = {
   'replicate/flux-1.1-pro': 'black-forest-labs/flux-1.1-pro',
   'replicate/flux-dev': 'black-forest-labs/flux-dev',
   'replicate/flux-schnell': 'black-forest-labs/flux-schnell',
+  'replicate/flux-3-image': 'black-forest-labs/flux-3-image',
   'replicate/sdxl': ref(SDXL),
   'replicate/sd3': 'stability-ai/stable-diffusion-3',
+  // Carried as Replicate routes beside stability/* (the user, 2026-11-04).
+  'replicate/sd3.5-large': 'stability-ai/stable-diffusion-3.5-large',
+  'replicate/sd3.5-large-turbo': 'stability-ai/stable-diffusion-3.5-large-turbo',
+  'replicate/sd3.5-medium': 'stability-ai/stable-diffusion-3.5-medium',
   'replicate/video': ref(ANIMATE_DIFF),
 };
 
@@ -188,10 +193,6 @@ export default {
     {
       id: 'black-forest-labs/flux-3',
       reason: "skipped 2026-09-11: FLUX 3 is a video model — decide together with BFL's own flux-3-video",
-    },
-    {
-      pattern: /^stability-ai\/stable-diffusion-3\.5-/,
-      reason: 'skipped 2026-09-11: the SD 3.5 family — Stability direct covers it',
     },
     ...['stable-diffusion', 'stable-diffusion-img2img', 'stable-diffusion-inpainting'].map((name) => ({
       id: `stability-ai/${name}`,

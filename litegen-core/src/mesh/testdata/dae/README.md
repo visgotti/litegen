@@ -57,6 +57,26 @@ assimp export /tmp/m/cube/src/glb/model.glb cube_assimp.dae
 They use `<polylist>` with every input at offset 0, a geometry per primitive,
 effect-local texture names and assimp's `CHANNEL0` texcoord naming.
 
+`staged_assimp.dae`: assimp 6.0.5's export (Homebrew; `assimp version` says
+6.0) of litegen's GLB of the `staged` fixture with its clip removed, written on
+2026-11-06 by `mesh::write_scene(&still, MeshFormat::Glb,
+WriteOptions::default())` (4,344 bytes). The clip goes because assimp 6.0
+writes every animation's sampler without its `<source>`s, not only a skin's,
+and no reader loads that.
+
+```sh
+assimp export staged_still.glb staged_assimp.dae -fcollada
+```
+
+Running it again changes only `<created>` and `<modified>`. It carries the
+fixture's lights and cameras in assimp's own conventions, which
+`dae.rs`'s `reads_assimps_lights_and_cameras_under_its_own_conventions`
+cites: `<color>` is the colour times the intensity, linear; `<falloff_angle>`
+holds the inner cone, and `<falloff_exponent>` assimp's own encoding of the
+outer; the orthographic camera is a perspective one with an `<xfov>` of 0;
+the perspective camera has `<xfov>` and `<aspect_ratio>`; and no light has a
+range.
+
 ## `research/` — hand-authored references
 
 `ref.dae` and `morph.dae` were written by

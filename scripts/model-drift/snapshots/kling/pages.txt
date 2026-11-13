@@ -21,6 +21,11 @@ video/3-0-omni/video-omni
 video/3-0-omni/voice-customization
 video/3-0-turbo/image-to-video
 video/3-0-turbo/text-to-video
+video/4-0/elements
+video/4-0/image-to-video
+video/4-0/text-to-video
+video/4-0/video-omni
+video/4-0/voice-customization
 video/audio-generation/text-to-audio
 video/audio-generation/video-to-audio
 video/avatar

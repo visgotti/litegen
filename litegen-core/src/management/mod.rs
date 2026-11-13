@@ -5,6 +5,9 @@
 pub mod budget;
 pub mod enforce;
 pub mod runtime;
+pub mod settings;
+pub mod slots;
+pub mod slug;
 pub mod sql;
 pub mod store;
 pub mod types;

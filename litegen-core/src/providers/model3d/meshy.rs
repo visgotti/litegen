@@ -81,13 +81,19 @@ impl Default for MeshyModel3dProvider {
 }
 
 impl MeshyModel3dProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder().timeout(Duration::from_secs(120)).build().expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(Duration::from_secs(600), Duration::from_secs(60)),
+            client: Self::api_client(&Default::default()),
+            asset_client: crate::util::ssrf::public_only_download_client(Duration::from_secs(600), Duration::from_secs(60)),
             public_assets_only: true,
         }
     }
@@ -181,7 +187,7 @@ impl MeshyModel3dProvider {
         if extras
             .output_formats
             .iter()
-            .any(|f| f.eq_ignore_ascii_case("fbx") && crate::proxy::model3d_convert::prefers_vendor_native(f))
+            .any(|f| f.eq_ignore_ascii_case("fbx") && crate::proxy::model3d_convert::asks_vendor_for(f, extras.format_source))
         {
             want.push("fbx");
         }
@@ -295,6 +301,7 @@ impl Model3dProvider for MeshyModel3dProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -334,6 +341,17 @@ impl Model3dProvider for MeshyModel3dProvider {
     /// files the job wants in the same call (Meshy keeps them at most 3 days,
     /// behind signed URLs).
     async fn poll_status(&self, handle: &Model3dGenerationHandle) -> Result<Model3dGenerationPollResult, ProviderError> {
+        self.poll_status_gated(handle, &crate::providers::AlwaysFetch).await
+    }
+
+    /// On success, `gate` decides whether this observer downloads the
+    /// result; after a long wait for it, the task is read again for links
+    /// that have not expired.
+    async fn poll_status_gated(
+        &self,
+        handle: &Model3dGenerationHandle,
+        gate: &dyn crate::providers::FetchGate,
+    ) -> Result<Model3dGenerationPollResult, ProviderError> {
         let ctx = handle.stage_context.clone().unwrap_or(Value::Null);
         let task = ctx["task_id"].as_str().filter(|t| !t.is_empty()).unwrap_or(&handle.provider_job_id).to_string();
         let kind = match ctx["kind"].as_str() {
@@ -352,39 +370,69 @@ impl Model3dProvider for MeshyModel3dProvider {
                     .as_array()
                     .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                     .unwrap_or_else(|| vec!["glb".to_string()]);
-                let r = &t["result"];
-                let urls: [(&str, Option<&str>); 2] = if kind == "rigging" {
-                    [("glb", r["rigged_character_glb_url"].as_str()), ("fbx", r["rigged_character_fbx_url"].as_str())]
-                } else {
-                    let fbx = if ctx["fps_fbx"].as_bool() == Some(true) {
-                        r["processed_animation_fps_fbx_url"].as_str().or(r["animation_fbx_url"].as_str())
+                // The files to download: (format, link), or why the job failed.
+                let wanted = |t: &Value| -> Result<Vec<(&'static str, String)>, String> {
+                    let r = &t["result"];
+                    let urls: [(&'static str, Option<&str>); 2] = if kind == "rigging" {
+                        [("glb", r["rigged_character_glb_url"].as_str()), ("fbx", r["rigged_character_fbx_url"].as_str())]
                     } else {
-                        r["animation_fbx_url"].as_str()
+                        let fbx = if ctx["fps_fbx"].as_bool() == Some(true) {
+                            r["processed_animation_fps_fbx_url"].as_str().or(r["animation_fbx_url"].as_str())
+                        } else {
+                            r["animation_fbx_url"].as_str()
+                        };
+                        [("glb", r["animation_glb_url"].as_str()), ("fbx", fbx)]
                     };
-                    [("glb", r["animation_glb_url"].as_str()), ("fbx", fbx)]
-                };
-                let mut files = Vec::new();
-                for (format, url) in urls {
-                    if !want.iter().any(|w| w == format) {
-                        continue;
-                    }
-                    let primary = format == "glb";
-                    let Some(url) = url.filter(|u| !u.is_empty()) else {
-                        if primary {
-                            return Ok(poll(GenerationStatus::Failed, 100, Some(format!("meshy {kind} finished without a glb")), Vec::new(), meta));
+                    let mut list = Vec::new();
+                    for (format, url) in urls {
+                        if !want.iter().any(|w| w == format) {
+                            continue;
                         }
-                        continue;
-                    };
+                        match url.filter(|u| !u.is_empty()) {
+                            Some(url) => list.push((format, url.to_string())),
+                            None if format == "glb" => return Err(format!("meshy {kind} finished without a glb")),
+                            None => {}
+                        }
+                    }
+                    Ok(list)
+                };
+                let mut urls = match wanted(&t) {
+                    Ok(list) => list,
+                    Err(why) => return Ok(poll(GenerationStatus::Failed, 100, Some(why), Vec::new(), meta)),
+                };
+                if !urls.is_empty() {
+                    match gate.ask().await {
+                        crate::providers::Fetch::StandAside => {
+                            let mut aside = poll(GenerationStatus::Completed, 100, None, Vec::new(), meta);
+                            crate::proxy::model3d_deliver::stand_aside(&mut aside);
+                            return Ok(aside);
+                        }
+                        crate::providers::Fetch::Go { waited } if waited >= crate::providers::REFRESH_LINKS_AFTER => {
+                            let again = self.call(self.request(Method::GET, &format!("v1/{kind}/{task}"))?, "poll", false).await?;
+                            if again["status"].as_str() == Some("SUCCEEDED") {
+                                if let Ok(fresh) = wanted(&again) {
+                                    urls = fresh;
+                                }
+                            }
+                        }
+                        crate::providers::Fetch::Go { .. } => {}
+                    }
+                }
+                let mut files = Vec::new();
+                for (format, url) in &urls {
+                    let (format, url) = (*format, url.as_str());
+                    let primary = format == "glb";
                     match self.fetch(url).await {
                         Ok((bytes, ct)) => files.push(Model3dFile {
                             kind: Model3dAssetKind::Mesh,
                             format: if format_of(url) == format { format.to_string() } else { format_of(url) },
-                            content_type: crate::proxy::storage::model3d_content_type(format, &ct).to_string(),
+                            content_type: crate::store::model3d_content_type(format, &ct).to_string(),
                             bytes,
                             polycount: None,
                             width: None,
                             height: None,
                             manifest: None,
+                            source_url: Some(url.to_string()),
                         }),
                         Err(AssetError::Transient(e)) => return Err(e),
                         Err(AssetError::Gone(why)) if primary => {
@@ -398,7 +446,14 @@ impl Model3dProvider for MeshyModel3dProvider {
             "FAILED" => Ok(poll(GenerationStatus::Failed, 100, Some(format!("meshy {kind} failed: {}", reason())), Vec::new(), meta)),
             "CANCELED" => Ok(poll(GenerationStatus::Failed, 100, Some(format!("meshy {kind} was canceled")), Vec::new(), meta)),
             // IN_PROGRESS, and a task "rescheduled from IN_PROGRESS back to PENDING".
-            _ => Ok(poll(GenerationStatus::Processing, progress.unwrap_or(50), None, Vec::new(), meta)),
+            "IN_PROGRESS" => Ok(poll(GenerationStatus::Processing, progress.unwrap_or(50), None, Vec::new(), meta)),
+            other => Ok(poll(
+                GenerationStatus::Failed,
+                0,
+                Some(crate::providers::video::unknown_state_message("meshy", Some(other).filter(|s| !s.is_empty()))),
+                Vec::new(),
+                meta,
+            )),
         }
     }
 
@@ -459,6 +514,7 @@ mod tests {
             facts: crate::proxy::model3d_source::SourceFacts { triangles: 12, skinned: true, textured: true },
             vendor_task_id: vendor_task_id.map(str::to_string),
             front: None,
+            joint_naming: None,
             delivered: Default::default(),
         }
     }
@@ -468,10 +524,28 @@ mod tests {
             output_formats: formats.iter().map(|f| f.to_string()).collect(),
             texture: None, pbr: None, target_polycount: None, symmetry: None, topology: None, rig: None,
             skeleton: None, joint_naming: None, height_m: None, animations: Vec::new(), fps: None,
-            extra: None, source: Some(src), preflight: None,
+            extra: None, source: Some(src), preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source:None, output_packages: None, ktx2_textures: None,
             texture_resolution: None, keep_uvs: None,
             ground: None, center: None,
         }
+    }
+
+    /// The caller's `format_source`: `glb` downloads Meshy's GLB alone and
+    /// litegen makes the promised fbx from it; the default (`native`) also
+    /// downloads Meshy's own fbx.
+    #[test]
+    fn format_source_glb_downloads_only_the_glb() {
+        let x = |source| Model3dExtras {
+            output_formats: vec!["glb".into(), "fbx".into()],
+            texture: None, pbr: None, target_polycount: None, symmetry: None, topology: None, rig: None,
+            skeleton: None, joint_naming: None, height_m: None, animations: Vec::new(), fps: None,
+            extra: None, source: None, preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source:source, output_packages: None, ktx2_textures: None,
+            texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
+        };
+        assert_eq!(MeshyModel3dProvider::want(&x(None)), ["glb", "fbx"]);
+        assert_eq!(MeshyModel3dProvider::want(&x(Some(crate::types::Model3dFormatSource::Native))), ["glb", "fbx"]);
+        assert_eq!(MeshyModel3dProvider::want(&x(Some(crate::types::Model3dFormatSource::Glb))), ["glb"]);
     }
 
     fn clip(name: &str, preset: &str) -> AnimationClip {
@@ -642,6 +716,42 @@ mod tests {
         }
     }
 
+    /// A delivery gate that always says another observer delivers.
+    struct Refuse;
+
+    #[async_trait]
+    impl crate::providers::FetchGate for Refuse {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::StandAside
+        }
+    }
+
+    /// Review 2026-11-11 P5: an observer that does not deliver the job
+    /// downloads none of its files.
+    #[tokio::test]
+    async fn a_gate_that_says_stand_aside_downloads_nothing() {
+        let server = MockServer::start().await;
+        for at in ["/cdn/rig.glb", "/cdn/rig.fbx"] {
+            Mock::given(method("GET")).and(path(at)).respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec())).mount(&server).await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/openapi/v1/rigging/t-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "t-1", "status": "SUCCEEDED", "progress": 100,
+                "result": {
+                    "rigged_character_glb_url": format!("{}/cdn/rig.glb", server.uri()),
+                    "rigged_character_fbx_url": format!("{}/cdn/rig.fbx", server.uri()),
+                },
+            })))
+            .mount(&server)
+            .await;
+        let r = provider(&server).poll_status_gated(&handle("rigging", json!(["glb", "fbx"]), false), &Refuse).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Processing);
+        assert!(r.files.is_empty() && r.error.is_none() && r.progress < 100, "{:?} {:?} {}", r.files.len(), r.error, r.progress);
+        let downloads = server.received_requests().await.unwrap().iter().filter(|q| q.url.path().starts_with("/cdn/")).count();
+        assert_eq!(downloads, 0);
+    }
+
     #[tokio::test]
     async fn a_finished_animation_downloads_the_glb_and_the_rate_changed_fbx_promised() {
         let server = MockServer::start().await;
@@ -666,6 +776,10 @@ mod tests {
         assert_eq!(done.files.iter().map(|f| f.format.as_str()).collect::<Vec<_>>(), ["glb", "fbx"]);
         assert_eq!(done.files[0].bytes, glb);
         assert_eq!(done.files[1].bytes, b"rate-changed", "Meshy's own fbx at the asked rate");
+        assert!(
+            done.files.iter().all(|f| f.source_url.as_deref().is_some_and(|u| u.starts_with(&server.uri()))),
+            "each file names the URL it came from"
+        );
     }
 
     #[test]

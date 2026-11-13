@@ -19,12 +19,43 @@ const SLOW_MODEL_DELAY: std::time::Duration = std::time::Duration::from_secs(24 
 
 static SLOW_IMAGE_CALLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// A prompt word that makes any mock image call run as a vendor job:
+/// `job_ms=<n>` finishes it `n` ms after submit (`job_fails` fails it then),
+/// polled like a vendor's (late delivery, `Prefer: respond-async`).
+const JOB_WORD: &str = "job_ms=";
+
+struct MockImageJob {
+    ready_at: std::time::Instant,
+    fails: bool,
+    output: GenerationOutput,
+}
+
+/// Jobs by id, process-wide: the call that submits a job, the poller and
+/// client polls may each hold a different instance.
+fn image_jobs() -> &'static std::sync::Mutex<HashMap<String, MockImageJob>> {
+    static JOBS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, MockImageJob>>> = std::sync::OnceLock::new();
+    JOBS.get_or_init(Default::default)
+}
+
 /// How many times `mock/slow-image` has been called with `prompt` in this
 /// process: one per vendor attempt, which is what PixelGenie L1 counts. A
 /// timed-out call is never re-sent, so each request that reaches it adds
 /// exactly one. By prompt, so tests running side by side count their own.
 pub fn slow_image_calls(prompt: &str) -> u32 {
     SLOW_IMAGE_CALLS.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|p| *p == prompt).count() as u32
+}
+
+/// The model that turns a prompt's first call away with a 429 and a
+/// `Retry-After` (the prompt's `wait=<ms>`, 100 by default), then answers:
+/// litegen's retry backoff, observable (`docs/gateway-settings.md`).
+const RATE_LIMITED_MODEL: &str = "mock/rate-limited-image";
+
+static RATE_LIMITED_CALLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// How many times `mock/rate-limited-image` has been called with `prompt` in
+/// this process; by prompt, so tests running side by side count their own.
+pub fn rate_limited_calls(prompt: &str) -> u32 {
+    RATE_LIMITED_CALLS.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|p| *p == prompt).count() as u32
 }
 
 /// The edit mocks (3D doc §4): `mock/inpainting-image` takes a white-edits
@@ -64,6 +95,11 @@ fn multiview_images(prompt: &str, views: &[String]) -> Option<GenerationOutput> 
 /// The model that returns the container and background asked for (L9), and
 /// labels everything `image/png` so a test sees litegen read the bytes.
 const FORMAT_MODEL: &str = "mock/format-image";
+
+/// Answers a small SVG labelled `image/svg+xml`, as a vector model (Recraft's)
+/// does: litegen keeps and serves it as an SVG.
+const SVG_MODEL: &str = "mock/svg-image";
+const SVG_IMAGE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#2563eb"/><circle cx="32" cy="32" r="14" fill="#fff"/></svg>"##;
 
 /// The prompt's image in `format` (`png` by default); with a transparent
 /// `background` the 4 px frame around it is fully transparent.
@@ -457,14 +493,62 @@ impl ImageProvider for MockProvider {
         _extras: &ImageExtras,
         _materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
+        if let Some(ms) = base.prompt.split_whitespace().find_map(|w| w.strip_prefix(JOB_WORD)?.parse::<u64>().ok()) {
+            let id = format!("mock-image-job-{}", uuid::Uuid::new_v4());
+            let output = GenerationOutput {
+                data: generate_visual_image_png(&base.prompt),
+                content_type: "image/png".to_string(),
+                metadata: HashMap::from([("job_id".to_string(), serde_json::json!(id))]),
+                more: Vec::new(),
+            };
+            let job = MockImageJob {
+                ready_at: std::time::Instant::now() + std::time::Duration::from_millis(ms),
+                fails: base.prompt.split_whitespace().any(|w| w == "job_fails"),
+                output,
+            };
+            image_jobs().lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), job);
+            _extras.vendor_job.record(id.clone());
+            let started = std::time::Instant::now();
+            let mut budget = crate::providers::PollBudget::new(std::time::Duration::from_secs(120), std::time::Duration::from_millis(50));
+            while budget.next().await {
+                match self.poll_job(&model.id, &id, None).await? {
+                    crate::providers::ImageJobPoll::Done(output) => return Ok(output),
+                    crate::providers::ImageJobPoll::Failed(why) => {
+                        return Err(ProviderError::RequestFailed { message: why, status_code: None, provider_error: None, retryable: false })
+                    }
+                    crate::providers::ImageJobPoll::Running => continue,
+                }
+            }
+            return Err(ProviderError::Timeout { timeout_ms: budget.total_ms(started) });
+        }
         if model.id == SLOW_MODEL {
             SLOW_IMAGE_CALLS.lock().unwrap_or_else(|p| p.into_inner()).push(base.prompt.clone());
             tokio::time::sleep(SLOW_MODEL_DELAY).await;
+        }
+        if model.id == RATE_LIMITED_MODEL {
+            let earlier = {
+                let mut calls = RATE_LIMITED_CALLS.lock().unwrap_or_else(|p| p.into_inner());
+                let earlier = calls.iter().filter(|p| **p == base.prompt).count();
+                calls.push(base.prompt.clone());
+                earlier
+            };
+            if earlier == 0 {
+                let wait = base.prompt.split_whitespace().find_map(|w| w.strip_prefix("wait=")?.parse::<u64>().ok()).unwrap_or(100);
+                return Err(ProviderError::RateLimited {
+                    provider: "mock".into(),
+                    retry_after_ms: wait,
+                    message: "mock answered HTTP 429: slow down".into(),
+                    provider_error: Some(serde_json::json!({ "error": { "message": "slow down", "code": "rate_limited" } })),
+                });
+            }
         }
         let mut metadata = HashMap::new();
         metadata.insert("prompt".to_string(), serde_json::Value::String(base.prompt.clone()));
         metadata.insert("provider".to_string(), serde_json::Value::String("mock".to_string()));
 
+        if model.id == SVG_MODEL {
+            return Ok(GenerationOutput { data: SVG_IMAGE.to_vec(), content_type: "image/svg+xml".to_string(), metadata, more: Vec::new() });
+        }
         if model.id == FORMAT_MODEL {
             return Ok(GenerationOutput {
                 data: formatted_image(&base.prompt, _extras.output_format.as_deref(), _extras.background.as_deref())?,
@@ -546,6 +630,27 @@ impl ImageProvider for MockProvider {
         })
     }
 
+    fn resumable(&self, _model: &ModelSchema) -> bool {
+        true
+    }
+
+    async fn poll_job(&self, _model: &str, job: &str, _resume: Option<&serde_json::Value>) -> Result<crate::providers::ImageJobPoll, ProviderError> {
+        let jobs = image_jobs().lock().unwrap_or_else(|p| p.into_inner());
+        let Some(j) = jobs.get(job) else {
+            return Ok(crate::providers::ImageJobPoll::Failed(format!("mock has no job {job}")));
+        };
+        Ok(match (std::time::Instant::now() >= j.ready_at, j.fails) {
+            (false, _) => crate::providers::ImageJobPoll::Running,
+            (true, true) => crate::providers::ImageJobPoll::Failed("mock job failed".to_string()),
+            (true, false) => crate::providers::ImageJobPoll::Done(GenerationOutput {
+                data: j.output.data.clone(),
+                content_type: j.output.content_type.clone(),
+                metadata: j.output.metadata.clone(),
+                more: Vec::new(),
+            }),
+        })
+    }
+
     async fn estimate_cost(
         &self,
         model: &ModelSchema,
@@ -619,7 +724,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: None,
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             quality: None,
             style: None,
             steps: None,
@@ -728,7 +833,7 @@ mod tests {
         let req = ImageGenerationRequest {
             base: make_base("hi", "mock/image-gen"),
             size: None,
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             quality: None,
             style: None,
             steps: None,

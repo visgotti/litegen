@@ -190,6 +190,26 @@ function assertNoLocalhostInBundle(dir, label) {
   console.log(`  OK — no wired localhost dev URLs in ${label} output (fallback defaults ignored).`);
 }
 
+// ── Fail-loud guard: the landing export we ship is the one this build wrote ─
+// Existence is not freshness. Assert the build actually rewrote the directory
+// we are about to ship, so a misrouted export can never again publish stale
+// HTML over a live site.
+function assertFreshExport(dir, startedAt) {
+  if (!fs.existsSync(dir)) {
+    throw new Error(`landing build produced no ${dir} directory`);
+  }
+  const indexPath = path.join(dir, 'en.html');
+  const stampPath = fs.existsSync(indexPath) ? indexPath : dir;
+  const writtenAt = fs.statSync(stampPath).mtimeMs;
+  if (writtenAt < startedAt) {
+    throw new Error(
+      `landing build did not refresh ${stampPath} ` +
+        `(last written ${new Date(writtenAt).toISOString()}, build started ` +
+        `${new Date(startedAt).toISOString()}). Refusing to ship a stale export.`,
+    );
+  }
+}
+
 // ── DigitalOcean API ──────────────────────────────────────────────────────
 const DO_API = 'https://api.digitalocean.com/v2';
 
@@ -576,26 +596,14 @@ async function deployWeb() {
         // old content. Observed 2026-08-16: a successful build left `out/` a
         // month stale, still advertising models the vendor had retired.
         //
-        // `out` also satisfies the original reason for setting this at all:
-        // keeping the production build off a running `next dev`'s `.next`.
+        // NEXT_DIST_DIR does not keep this build off a running `next dev`:
+        // Next compiles every production export in `.next` whatever distDir
+        // says (build/index.js resets config.distDir to '.next' when it is
+        // the export folder). Stop `next dev` before deploying from the same
+        // checkout.
         env: { ...process.env, NODE_ENV: 'production', NEXT_DIST_DIR: 'out' },
       });
-      if (!fs.existsSync(landingOut)) {
-        throw new Error(`landing build produced no ${landingOut} directory`);
-      }
-      // Existence is not freshness. Assert the build actually rewrote the
-      // directory we are about to ship, so a misrouted export can never again
-      // publish stale HTML over a live site.
-      const indexPath = path.join(landingOut, 'en.html');
-      const stampPath = fs.existsSync(indexPath) ? indexPath : landingOut;
-      const writtenAt = fs.statSync(stampPath).mtimeMs;
-      if (writtenAt < buildStartedAt) {
-        throw new Error(
-          `landing build did not refresh ${stampPath} ` +
-            `(last written ${new Date(writtenAt).toISOString()}, build started ` +
-            `${new Date(buildStartedAt).toISOString()}). Refusing to ship a stale export.`,
-        );
-      }
+      assertFreshExport(landingOut, buildStartedAt);
       // NOTE: no localhost guard here — the landing is a marketing/docs site that
       // intentionally shows `http://localhost:4000` in API code-examples. The guard
       // is for the dashboard, whose wired API base must never be localhost.
@@ -696,11 +704,21 @@ function deployLanding() {
 
   console.log('\n=== Building landing (static export) ===');
   run('npm --prefix apps/landing install', { stdio: 'inherit' });
-  // NEXT_DIST_DIR isolates this build's `.next` from a running `next dev`
-  // (port 8019) so the dev watcher can't clobber the build mid-flight
-  // (→ `ENOENT … _ssgManifest.js`).
-  run('npm --prefix apps/landing run build', { env: { ...process.env, NODE_ENV: 'production', NEXT_DIST_DIR: '.next-prod' } });
-  if (!DRY_RUN) assertNoLocalhostInBundle(outDir, 'landing');
+  // NEXT_DIST_DIR must be `out`, the folder deployed below: with `output:
+  // 'export'` it IS the export folder (see deployWeb). This used to be
+  // `.next-prod`, so the export landed there and Cloudflare got whatever an
+  // earlier build had left in `out`. It does not keep the build off a running
+  // `next dev` (port 8019): a production export compiles in `.next` either
+  // way, so stop `next dev` first.
+  const buildStartedAt = Date.now();
+  run('npm --prefix apps/landing run build', { env: { ...process.env, NODE_ENV: 'production', NEXT_DIST_DIR: 'out' } });
+  if (!DRY_RUN) {
+    assertFreshExport(path.join(ROOT, outDir), buildStartedAt);
+    // NOTE: no localhost guard here, as in deployWeb — the landing is a
+    // marketing/docs site that intentionally shows `http://localhost:4000` in
+    // its SDK code examples. The guard is for the dashboard, whose wired API
+    // base must never be localhost.
+  }
 
   // `pages deploy` does not auto-create the project. Create it once (idempotent);
   // a re-run just errors with "already exists", which we ignore.

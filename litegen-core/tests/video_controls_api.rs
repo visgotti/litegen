@@ -60,6 +60,8 @@ async fn controls_and_durations_a_model_lacks_are_refused() {
         (json!({ "model": "mock/sprite-video", "prompt": "x", "duration_seconds": 3 }), "param_enum_mismatch"),
         (json!({ "model": "mock/sprite-video", "prompt": "x", "camera": "orbit" }), "param_enum_mismatch"),
         (json!({ "model": "mock/video-gen", "prompt": "x", "loop": true }), "param_unsupported"),
+        // A model whose listing has no duration takes none (E6).
+        (json!({ "model": "mock/empty-video", "prompt": "x", "duration_seconds": 7 }), "param_unsupported"),
     ] {
         let (status, resp) = post(&app, body.clone()).await;
         assert_eq!((status, resp["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some(code)), "{body}: {resp}");

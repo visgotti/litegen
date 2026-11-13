@@ -16,6 +16,7 @@ export class PricingService {
     const qb = this.priceRepo
       .createQueryBuilder('price')
       .innerJoinAndSelect('price.model', 'model')
+      .where('model.active = :active', { active: true })
       .orderBy('model.id', 'ASC')
       .addOrderBy('price.unit', 'ASC');
 

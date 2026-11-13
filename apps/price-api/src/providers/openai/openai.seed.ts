@@ -1,25 +1,25 @@
-import { MediaType, PriceUnit, ProviderMode } from '../../common/enums';
+// GENERATED from litegen's models/*.yaml by `npm run coverage:fix`: each
+// model at its default request's price. Edit the catalog, not this file.
+import { MediaType, PriceUnit } from '../../common/enums';
 import { SeedModel } from '../types';
 
-/** Baseline OpenAI prices (mirrors litegen models/openai.yaml). */
 export const seed: SeedModel[] = [
   {
-    id: 'openai/dall-e-3',
-    displayName: 'DALL-E 3',
+    id: "openai/gpt-image-2",
+    displayName: "GPT Image 2",
     mediaType: MediaType.IMAGE,
-    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.04 }],
+    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.053 }],
   },
   {
-    id: 'openai/dall-e-2',
-    displayName: 'DALL-E 2',
+    id: "openai/gpt-image-2.5-flare",
+    displayName: "GPT Image 2.5 Flare",
     mediaType: MediaType.IMAGE,
-    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.02 }],
+    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.0132 }],
   },
   {
-    id: 'openai/sora',
-    displayName: 'Sora',
-    mediaType: MediaType.VIDEO,
-    modeOverride: ProviderMode.MANUAL,
-    prices: [{ unit: PriceUnit.PER_VIDEO, amountUsd: 0.5 }],
+    id: "openai/gpt-image-2.5-sunburst",
+    displayName: "GPT Image 2.5 Sunburst",
+    mediaType: MediaType.IMAGE,
+    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.0132 }],
   },
 ];

@@ -9,7 +9,7 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      # PixelGenie L9: output_format webp | jpg | png, default webp (Replicate's jpg is litegen's jpeg).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       seed: { kind: seed, min: 0, max: 4294967294 }
       # The model's field is `guidance`, 2-5 (https://replicate.com/black-forest-labs/flux-pro/api/schema).
@@ -21,6 +21,10 @@ models:
         allowed: ["1:1","16:9","2:3","3:2","4:5","5:4","9:16","3:4","4:3"]
         default: "1:1"
     extra_allowlist: [safety_tolerance, output_quality]
+    extra_params:
+      # From the model's schema (drift snapshots replicate/flux-*-schema.txt).
+      safety_tolerance: { kind: int, min: 1, max: 6, default: 2 }
+      output_quality: { kind: int, min: 0, max: 100, default: 80 }
     tags: [text-to-image, premium]
 
   # black-forest-labs/flux-1.1-pro, an official model (POST
@@ -44,7 +48,7 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      # PixelGenie L9: output_format webp | jpg | png, default webp (Replicate's jpg is litegen's jpeg).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
@@ -54,6 +58,11 @@ models:
         allowed: ["1:1","16:9","3:2","2:3","4:5","5:4","9:16","3:4","4:3"]
         default: "1:1"
     extra_allowlist: [safety_tolerance, output_quality, prompt_upsampling]
+    extra_params:
+      # From the model's schema (drift snapshots replicate/flux-*-schema.txt).
+      safety_tolerance: { kind: int, min: 1, max: 6, default: 2 }
+      output_quality: { kind: int, min: 0, max: 100, default: 80 }
+      prompt_upsampling: { kind: bool, default: false }
     tags: [text-to-image, premium]
 
   - id: replicate/flux-dev
@@ -66,7 +75,12 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      # "prompt_strength … Prompt strength when using img2img. 1.0 corresponds
+      # to full destruction of information in image" (0-1, default 0.8), sent
+      # as prompt_strength; a text-only request ignores it.
+      # @see https://replicate.com/black-forest-labs/flux-dev/api/schema (2026-11-03)
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.8 }
+      # PixelGenie L9: output_format webp | jpg | png, default webp (Replicate's jpg is litegen's jpeg).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       seed: { kind: seed, min: 0, max: 4294967294 }
       guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
@@ -85,6 +99,9 @@ models:
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [output_quality]
+    extra_params:
+      # From the model's schema (drift snapshots replicate/flux-*-schema.txt).
+      output_quality: { kind: int, min: 0, max: 100, default: 80 }
     tags: [text-to-image, image-to-image]
 
   - id: replicate/flux-schnell
@@ -97,7 +114,7 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      # PixelGenie L9: output_format webp | jpg | png, default webp (Replicate's jpg is litegen's jpeg).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       # Not reproducible by default: `go_fast` (default true) "outputs will not
       # be deterministic when this is enabled, even if you set a seed".
@@ -109,7 +126,60 @@ models:
         allowed: ["1:1","16:9","21:9","2:3","3:2","4:5","5:4","9:16","9:21","3:4","4:3"]
         default: "1:1"
     extra_allowlist: [output_quality]
+    extra_params:
+      # From the model's schema (drift snapshots replicate/flux-*-schema.txt).
+      output_quality: { kind: int, min: 0, max: 100, default: 80 }
     tags: [text-to-image, fast]
+
+  # FLUX 3 Image on Replicate: an official model, served versionless (POST
+  # /v1/models/black-forest-labs/flux-3-image/predictions). Input: prompt,
+  # images ("Up to 10 reference images the prompt edits or draws from"),
+  # resolution 768sq | 1k | 1.5k | 2k | 4k (default 1k; "Input images are
+  # resized to the closest bin, up to 2k"), aspect_ratio (auto or 15 ratios),
+  # output_format webp | jpg | png, output_quality 0-100, safety_tolerance 0-4,
+  # grounding (default true). No width/height and no seed.
+  # @see https://replicate.com/black-forest-labs/flux-3-image/api/schema (2026-11-03)
+  - id: replicate/flux-3-image
+    provider: replicate
+    media_type: image
+    display_name: FLUX 3 Image (Replicate)
+    description: Black Forest Labs FLUX 3 Image on Replicate — generation and editing with up to ten references and web-grounded prompts.
+    docs_url: https://replicate.com/black-forest-labs/flux-3-image/api/schema
+    # "$0.0205 per output image [image_output_count] when target resolution
+    # equals 768sq", $0.024 at 1k (the default), $0.035 at 1.5k, $0.05 at 2k,
+    # $0.3035 at 4k.
+    # @see https://replicate.com/black-forest-labs/flux-3-image/api/schema (2026-11-03)
+    pricing:
+      base_cost_usd: 0.024
+      variable_pricing:
+        - { when: { resolution: "0.75K" }, usd: 0.0205 }
+        - { when: { resolution: "1.5K" }, usd: 0.035 }
+        - { when: { resolution: "2K" }, usd: 0.05 }
+        - { when: { resolution: "4K" }, usd: 0.3035 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      # "Format of the output images": webp (Replicate's default) | jpg | png;
+      # litegen asks for png unless told otherwise, jpeg sent as jpg.
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9","2:1","16:9","3:2","7:5","4:3","5:4","1:1","4:5","3:4","5:7","2:3","9:16","1:2","9:21"]
+      # litegen's tier as Replicate's: 0.75K is 768sq.
+      resolution: { kind: string, enum_values: ["0.75K", "1K", "1.5K", "2K", "4K"], default: "1K" }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: [grounding, safety_tolerance, output_quality]
+    extra_params:
+      # From the comment above.
+      grounding: { kind: bool, default: true }
+      safety_tolerance: { kind: int, min: 0, max: 4 }
+      output_quality: { kind: int, min: 0, max: 100 }
+    tags: [text-to-image, image-to-image]
 
   - id: replicate/sdxl
     provider: replicate
@@ -118,14 +188,20 @@ models:
     description: SDXL hosted on Replicate.
     docs_url: https://replicate.com/stability-ai/sdxl/versions
     # Replicate bills this community model by GPU time: "costs approximately
-    # $0.0015 to run on Replicate, or 666 runs per $1" (re-read 2026-10-30;
-    # that is the latest version, 7762fd07, and the pinned 39ed52f2 is still
-    # listed). $0.005 covers our 100-step max.
-    # @see https://replicate.com/stability-ai/sdxl
+    # $0.0043 to run on Replicate, or 232 runs per $1, but this varies
+    # depending on your inputs" (re-read 2026-11-09). $0.005 covers that
+    # estimate; Replicate publishes none per step count, so a run near our
+    # 100-step max may cost more than it bills.
+    # @see https://replicate.com/stability-ai/sdxl (2026-11-09)
     pricing: { base_cost_usd: 0.005 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 2000 }
     params:
+      # "prompt_strength … Prompt strength when using img2img. 1.0 corresponds
+      # to full destruction of information in image" (0-1, default 0.8), sent
+      # as prompt_strength; a text-only request ignores it.
+      # @see https://replicate.com/stability-ai/sdxl/api/schema (2026-11-03)
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.8 }
       negative_prompt: { kind: string, max_length: 2000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       steps: { kind: int, min: 10, max: 100, default: 50 }
@@ -157,7 +233,7 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      # PixelGenie L9: output_format webp | jpg | png, default webp (Replicate's jpg is litegen's jpeg).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       negative_prompt: { kind: string, max_length: 5000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
@@ -170,6 +246,119 @@ models:
         default: "1:1"
     extra_allowlist: []
     tags: [text-to-image]
+
+
+  # Stability AI's SD 3.5 on Replicate (official models, versionless: POST
+  # /v1/models/stability-ai/stable-diffusion-3.5-*/predictions), carried as
+  # Replicate routes beside stability/* (the user, 2026-11-04: "like how
+  # litellm can still use openrouter"). Inputs: prompt, aspect_ratio, cfg,
+  # seed, image, output_format, negative_prompt, prompt_strength (no steps).
+  # @see https://replicate.com/stability-ai/stable-diffusion-3.5-large/llms.txt (2026-11-04)
+
+  - id: replicate/sd3.5-large
+    provider: replicate
+    media_type: image
+    display_name: Stable Diffusion 3.5 Large (Replicate)
+    description: Stability AI SD 3.5 Large on Replicate — text-to-image and image-to-image.
+    docs_url: https://replicate.com/stability-ai/stable-diffusion-3.5-large/api/schema
+    # "price": "$0.065", "title": "per output image" (the model page's price).
+    pricing: { base_cost_usd: 0.065 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      # "aspect_ratio … ignored if you are using an input image" (default 1:1).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "1:1", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+      # "output_format" webp | jpg | png (default webp); litegen's jpeg goes as jpg.
+      output_format: { kind: string, enum_values: [webp, jpeg, png], default: webp }
+      negative_prompt: { kind: string }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # "cfg … The guidance scale" (1-10, default 5).
+      guidance_scale: { kind: float, min: 1.0, max: 10.0, default: 5.0 }
+      # "prompt_strength … when using image to image. 1.0 corresponds to full
+      # destruction of information in image" (0-1, default 0.85).
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.85 }
+    # "image … Input image for image to image mode" (a URL or a data URI).
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: replicate/sd3.5-large-turbo
+    provider: replicate
+    media_type: image
+    display_name: Stable Diffusion 3.5 Large Turbo (Replicate)
+    description: Stability AI SD 3.5 Large Turbo on Replicate — fast text-to-image and image-to-image.
+    docs_url: https://replicate.com/stability-ai/stable-diffusion-3.5-large-turbo/api/schema
+    # "price": "$0.04", "title": "per output image" (the model page's price).
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      # "aspect_ratio … ignored if you are using an input image" (default 1:1).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "1:1", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+      # "output_format" webp | jpg | png (default webp); litegen's jpeg goes as jpg.
+      output_format: { kind: string, enum_values: [webp, jpeg, png], default: webp }
+      negative_prompt: { kind: string }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # "cfg … The guidance scale" (1-10, default 1).
+      guidance_scale: { kind: float, min: 1.0, max: 10.0, default: 1.0 }
+      # "prompt_strength … when using image to image. 1.0 corresponds to full
+      # destruction of information in image" (0-1, default 0.85).
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.85 }
+    # "image … Input image for image to image mode" (a URL or a data URI).
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: replicate/sd3.5-medium
+    provider: replicate
+    media_type: image
+    display_name: Stable Diffusion 3.5 Medium (Replicate)
+    description: Stability AI SD 3.5 Medium on Replicate — text-to-image and image-to-image.
+    docs_url: https://replicate.com/stability-ai/stable-diffusion-3.5-medium/api/schema
+    # "price": "$0.035", "title": "per output image" (the model page's price).
+    pricing: { base_cost_usd: 0.035 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true }
+    params:
+      # "aspect_ratio … ignored if you are using an input image" (default 1:1).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "1:1", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+      # "output_format" webp | jpg | png (default webp); litegen's jpeg goes as jpg.
+      output_format: { kind: string, enum_values: [webp, jpeg, png], default: webp }
+      negative_prompt: { kind: string }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # "cfg … The guidance scale" (1-10, default 5).
+      guidance_scale: { kind: float, min: 1.0, max: 10.0, default: 5.0 }
+      # "prompt_strength … when using image to image. 1.0 corresponds to full
+      # destruction of information in image" (0-1, default 0.85).
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.85 }
+    # "image … Input image for image to image mode" (a URL or a data URI).
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
 
   - id: replicate/video
     provider: replicate
@@ -191,9 +380,15 @@ models:
     prompt: { required: true, max_length: 2000 }
     params:
       negative_prompt: { kind: string, max_length: 2000 }
-      seed: { kind: seed, min: 0, max: 4294967294 }
+      # "Seed (0 = random, maximum: 2147483647)" on the pinned version.
+      # @see https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f (2026-11-09)
+      seed: { kind: seed, min: 0, max: 2147483647 }
     # steps/guidance_scale reach AnimateDiff through `extra`. `version` is not
     # allowlisted: extra keys land in `input`, which has no `version`; pin a
     # different version with a `model_mapping` override instead.
     extra_allowlist: [steps, guidance_scale]
+    extra_params:
+      # From the version's schema (drift snapshot replicate/animate-diff-versions.txt).
+      steps: { kind: int, min: 1, max: 100, default: 25 }
+      guidance_scale: { kind: float, min: 1, max: 10, default: 7.5 }
     tags: [text-to-video]

@@ -14,10 +14,10 @@ use crate::types::*;
 
 /// Vendor model ids served only by the V2 video API. Routing is by id so the
 /// v1 models' requests are untouched.
-/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-10-30)
-///   lists `MiniMax-H3`, `MiniMax-H3-Highspeed`, `MiniMax-H3-Lite` and `MiniMax-H3-Max`; the two
-///   carried are below (a new one needs its id here, or it is sent to v1).
-const V2_MODELS: &[&str] = &["MiniMax-H3", "MiniMax-H3-Max"];
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-11-03)
+///   Verbatim: "Currently available: `MiniMax-H3`, `MiniMax-H3-Highspeed`, `MiniMax-H3-Lite`,
+///   `MiniMax-H3-Max`" — all four are carried (a new one needs its id here, or it is sent to v1).
+const V2_MODELS: &[&str] = &["MiniMax-H3", "MiniMax-H3-Highspeed", "MiniMax-H3-Lite", "MiniMax-H3-Max"];
 
 /// MiniMax (Hailuo) video generation provider.
 ///
@@ -32,9 +32,10 @@ const V2_MODELS: &[&str] = &["MiniMax-H3", "MiniMax-H3-Max"];
 /// `task.status == "succeeded"`, which carries the video at `task.content.url`
 /// (no file-retrieve step). Every other model stays on v1.
 ///
-/// @see <https://platform.minimax.io/docs/guides/video-generation>
-///   Verbatim: "if status == \"Success\": return response_json[\"file_id\"]"
-///   Verbatim: "download_url = response.json()[\"file\"][\"download_url\"]"
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-query.md> (v1, 2026-11-09)
+///   Verbatim: "`Success` – Completed successfully"; `file_id`: "Returned when the task succeeds."
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-download.md> (v1, 2026-11-09)
+///   Verbatim: `GET /v1/files/retrieve`; `download_url`: "The URL address for downloading the file, valid for 1 hour."
 /// @see <https://platform.minimax.io/docs/guides/video-generation.md> (V2, 2026-09-11)
 ///   Verbatim: "url = f\"{BASE_URL}/v2/query/video_generation/{task_id}\""
 ///   Verbatim: "if status == \"succeeded\": return task[\"content\"][\"url\"]"
@@ -46,15 +47,18 @@ pub struct MiniMaxVideoProvider {
 }
 
 impl MiniMaxVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -82,7 +86,7 @@ impl MiniMaxVideoProvider {
     }
 
     /// Whether a catalog (or vendor) id is served by the V2 video API.
-    fn is_v2(model_id: &str) -> bool {
+    pub(crate) fn is_v2(model_id: &str) -> bool {
         V2_MODELS.contains(&Self::resolve_model(model_id))
     }
 
@@ -114,8 +118,9 @@ impl MiniMaxVideoProvider {
     /// role. `resolution` and `duration` are required; `ratio` is required
     /// (and may not be `adaptive`) for text-only requests, ignored for
     /// first/last-frame requests and optional for reference requests, so the
-    /// catalog default is sent only when the request is text-only.
-    /// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-09-11)
+    /// catalog default is sent when the request is text-only, and for
+    /// MiniMax-H3-Lite, which "does not support `adaptive` yet".
+    /// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-11-09)
     ///   Verbatim: "required: - model - content - resolution - duration"
     ///   Verbatim: "Text-to-video (t2va, content contains only `text`)**: `ratio` is required and cannot be `adaptive`"
     async fn generate_v2(
@@ -148,7 +153,7 @@ impl MiniMaxVideoProvider {
         }
         let text_only = content.len() == 1;
 
-        let mut body = json!({ "model": Self::resolve_model(&model.id), "content": content });
+        let mut body = json!({ "model": crate::providers::wire_model(self.config.as_ref(), &model.id, Self::resolve_model(&model.id)), "content": content });
         let duration = if extras.duration_seconds > 0.0 {
             Some(Value::Number((extras.duration_seconds.round() as i64).into()))
         } else {
@@ -165,16 +170,24 @@ impl MiniMaxVideoProvider {
         if let Some(r) = resolution {
             body["resolution"] = r;
         }
+        // Reference-to-video: "`ratio` is optional and defaults to `adaptive` …
+        // `MiniMax-H3-Lite` does not support `adaptive` yet; specify a concrete
+        // ratio" — so H3-Lite gets the catalog default too. On first/last-frame
+        // requests a ratio "does not error but is ignored and treated as
+        // `adaptive`".
+        // @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-11-09)
+        let needs_ratio = text_only || Self::resolve_model(&model.id) == "MiniMax-H3-Lite";
         let ratio = extras.aspect_ratio.clone().map(Value::String).or_else(|| {
-            if text_only { Self::param_default(model, "aspect_ratio") } else { None }
+            if needs_ratio { Self::param_default(model, "aspect_ratio") } else { None }
         });
         if let Some(r) = ratio {
             body["ratio"] = r;
         }
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11).
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "content" | "duration" | "resolution" | "ratio")) {
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| matches!(k, "model" | "content" | "duration" | "resolution" | "ratio");
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
                 obj.insert(k.clone(), v.clone());
             }
         }
@@ -199,9 +212,14 @@ impl MiniMaxVideoProvider {
         // Errors are OpenAI-style: the real HTTP status, and
         // `{type: "error", error: {type, message, http_code}, request_id}`.
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let data: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
             let msg = data["error"]["message"].as_str().unwrap_or("Unknown error").to_string();
+            let message = format!("MiniMax V2 API error (HTTP {}): {msg}", status.as_u16());
+            if let Some(e) = crate::providers::rate_limited("minimax", status, retry_after, &message, Some(&data)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
                 message: format!("MiniMax V2 API error (HTTP {}): {msg}", status.as_u16()),
                 status_code: Some(status.as_u16()),
@@ -277,7 +295,8 @@ impl MiniMaxVideoProvider {
                     .unwrap_or_else(|| format!("MiniMax V2 task {s}"));
                 (GenerationStatus::Failed, Some(msg))
             }
-            _ => (GenerationStatus::Processing, None),
+            Some("queued") | Some("running") => (GenerationStatus::Processing, None),
+            other => return Ok(super::unknown_state("minimax", other)),
         };
 
         Ok(VideoGenerationPollResult {
@@ -334,6 +353,7 @@ impl VideoProvider for MiniMaxVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -357,7 +377,7 @@ impl VideoProvider for MiniMaxVideoProvider {
         let native = Self::resolve_model(&model.id);
         let url = format!("{}/video_generation", self.api_base());
 
-        let mut body = json!({ "model": native, "prompt": base.prompt });
+        let mut body = json!({ "model": crate::providers::wire_model(self.config.as_ref(), &model.id, native), "prompt": base.prompt });
         // S2V-01's request has no duration or resolution: "required: - model
         // - subject_reference".
         // @see <https://platform.minimax.io/docs/api-reference/video-generation-s2v.md>
@@ -409,12 +429,13 @@ impl VideoProvider for MiniMaxVideoProvider {
         // sets (rule 11). First-and-last-frame requests take no
         // `fast_pretreatment` ("Applies only to" text- and image-to-video).
         let with_last = body.get("last_frame_image").is_some();
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map {
-                let owned = matches!(k.as_str(), "model" | "prompt" | "duration" | "resolution" | "first_frame_image" | "last_frame_image" | "subject_reference");
-                if !owned && !(with_last && k == "fast_pretreatment") {
-                    obj.insert(k.clone(), v.clone());
-                }
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| {
+                matches!(k, "model" | "prompt" | "duration" | "resolution" | "first_frame_image" | "last_frame_image" | "subject_reference")
+                    || (with_last && k == "fast_pretreatment")
+            };
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -484,15 +505,42 @@ impl VideoProvider for MiniMaxVideoProvider {
                 retryable: true,
             })?;
         let data = super::read_poll_json(resp, "minimax").await?;
+        // A query MiniMax turned away answers HTTP 200 with a non-zero
+        // `base_resp.status_code` and no status. A passing code (unknown
+        // error, timeout, rate limits, internal error) is asked again; any
+        // other is final. A task that failed (`Fail`, its code saying why:
+        // 1026, 1027) keeps its status and reason below.
+        // @see <https://platform.minimax.io/docs/api-reference/errorcode> (2026-11-03)
+        let code = data["base_resp"]["status_code"].as_i64().unwrap_or(0);
+        if code != 0 && data["status"].as_str().is_none_or(str::is_empty) {
+            return Err(ProviderError::RequestFailed {
+                message: format!(
+                    "MiniMax query answered {code}: {}",
+                    data["base_resp"]["status_msg"].as_str().unwrap_or("no message")
+                ),
+                status_code: None,
+                provider_error: Some(data.clone()),
+                retryable: matches!(code, 1000 | 1001 | 1002 | 1013 | 1039),
+            });
+        }
 
         let status_str = data["status"].as_str().unwrap_or("");
         // `file_id` is "Returned when the task succeeds": a Success without one
-        // can never be delivered, and a file lookup that fails is asked again
-        // next tick (its own error decides whether it can be).
+        // can never be delivered. A file lookup that fails transiently is
+        // asked again next tick; one that fails for good (the file is gone)
+        // is a verdict, so the job fails now, naming why, and its webhook fires.
         // @see <https://platform.minimax.io/docs/api-reference/video-generation-query.md>
         let (status, video_url, error) = match status_str {
             "Success" => match data["file_id"].as_str().filter(|f| !f.is_empty()) {
-                Some(file_id) => (GenerationStatus::Completed, Some(self.retrieve_file_url(file_id).await?), None),
+                Some(file_id) => match self.retrieve_file_url(file_id).await {
+                    Ok(url) => (GenerationStatus::Completed, Some(url), None),
+                    Err(ProviderError::RequestFailed { retryable: false, message, .. }) => (
+                        GenerationStatus::Failed,
+                        None,
+                        Some(format!("MiniMax finished the job, but its file could not be fetched: {message}")),
+                    ),
+                    Err(e) => return Err(e),
+                },
                 None => (GenerationStatus::Failed, None, Some("MiniMax reported Success without a file_id".to_string())),
             },
             "Fail" => (
@@ -500,7 +548,9 @@ impl VideoProvider for MiniMaxVideoProvider {
                 None,
                 Some(data["base_resp"]["status_msg"].as_str().unwrap_or("failed").to_string()),
             ),
-            _ => (GenerationStatus::Processing, None, None),
+            // "Preparing", "Queueing", "Processing", "Success", "Fail".
+            "Preparing" | "Queueing" | "Processing" => (GenerationStatus::Processing, None, None),
+            other => return Ok(super::unknown_state("minimax", Some(other).filter(|s| !s.is_empty()))),
         };
 
         Ok(VideoGenerationPollResult {
@@ -720,6 +770,40 @@ mod tests {
         // text-to-video requires a concrete ratio (not adaptive).
         assert_eq!(body["ratio"], "16:9");
         assert!(body.get("prompt").is_none(), "V2 carries the prompt in content, not a prompt field");
+    }
+
+    /// MiniMax-H3-Highspeed and MiniMax-H3-Lite exist only on the V2 video
+    /// API ("Currently available: `MiniMax-H3`, `MiniMax-H3-Highspeed`,
+    /// `MiniMax-H3-Lite`, `MiniMax-H3-Max`"): each goes there, by its own id.
+    /// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-11-03)
+    #[tokio::test]
+    async fn the_new_h3_variants_go_to_the_v2_api() {
+        for id in ["minimax/MiniMax-H3-Highspeed", "minimax/MiniMax-H3-Lite"] {
+            let server = MockServer::start().await;
+            mount_v2_submit(&server, "h3-variant").await;
+            let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+            make_v2_provider(&server).generate(&ref_schema(id), &make_base("a lighthouse", id), &default_extras(), &materialized).await.unwrap_or_else(|e| panic!("{id}: {e:?}"));
+            let body = sent_body(&server).await;
+            assert_eq!(body["model"], id.trim_start_matches("minimax/"), "{body}");
+            assert_eq!(body["resolution"], "768P", "{body}");
+        }
+    }
+
+    /// Reference-to-video: "`ratio` is optional and defaults to `adaptive` …
+    /// `MiniMax-H3-Lite` does not support `adaptive` yet; specify a concrete
+    /// ratio." So an H3-Lite reference request that names no ratio goes with the
+    /// row's default; MiniMax-H3's still sends none, so `adaptive` applies.
+    /// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-11-09)
+    #[tokio::test]
+    async fn h3_lite_references_never_ride_on_the_adaptive_default() {
+        for (id, want) in [("minimax/MiniMax-H3-Lite", Some("16:9")), ("minimax/MiniMax-H3", None)] {
+            let server = MockServer::start().await;
+            mount_v2_submit(&server, "h3-ref").await;
+            let materialized = MaterializedRequest { refs: vec![url_ref("reference", "https://img.test/r.png")], cleanup: Cleanup::empty() };
+            make_v2_provider(&server).generate(&ref_schema(id), &make_base("a lighthouse", id), &default_extras(), &materialized).await.unwrap_or_else(|e| panic!("{id}: {e:?}"));
+            let body = sent_body(&server).await;
+            assert_eq!(body["ratio"].as_str(), want, "{id}: {body}");
+        }
     }
 
     #[tokio::test]
@@ -955,6 +1039,22 @@ mod tests {
         assert!(matches!(got, Err(ProviderError::RequestFailed { retryable: true, .. })), "{got:?}");
     }
 
+    /// A job that finished but whose file is gone is a verdict: it fails now,
+    /// naming why, so its webhook fires (not a row reaped in silence).
+    #[tokio::test]
+    async fn a_finished_job_whose_file_is_gone_fails_with_the_reason() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/query/video_generation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "Success", "file_id": "f1", "base_resp": { "status_code": 0 } })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/files/retrieve")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        let poll = make_provider(&server.uri()).poll_status(&v1_handle("t3", "minimax/MiniMax-Hailuo-02")).await.expect("a verdict");
+        assert_eq!(poll.status, GenerationStatus::Failed);
+        assert!(poll.error.as_deref().is_some_and(|e| e.contains("file")), "{:?}", poll.error);
+    }
+
     async fn submitted(server: &MockServer) -> Value {
         serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap()
     }
@@ -1023,6 +1123,29 @@ mod tests {
         assert!(body.get("fast_pretreatment").is_none(), "{body}");
     }
 
+    /// E4a: where the result goes is litegen's (it polls, then fires the
+    /// key's webhook), so MiniMax's `callback_url` is never sent, on either
+    /// endpoint; the endpoint's own fields still are.
+    #[tokio::test]
+    async fn callback_url_is_never_sent_on_either_endpoint() {
+        let none = || MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        let extra = Some(json!({ "callback_url": "https://attacker.example/cb", "prompt_optimizer": false }));
+        let v1 = MockServer::start().await;
+        accept(&v1).await;
+        let mut extras = make_extras();
+        extras.extra = extra.clone();
+        make_provider(&v1.uri()).generate(&ref_schema("minimax/MiniMax-Hailuo-2.3"), &make_base("x", "minimax/MiniMax-Hailuo-2.3"), &extras, &none()).await.unwrap();
+        let v2 = MockServer::start().await;
+        mount_v2_submit(&v2, "t").await;
+        let mut extras = default_extras();
+        extras.extra = extra;
+        make_v2_provider(&v2).generate(&ref_schema("minimax/MiniMax-H3"), &make_base("x", "minimax/MiniMax-H3"), &extras, &none()).await.unwrap();
+        for body in [submitted(&v1).await, sent_body(&v2).await] {
+            assert!(body.get("callback_url").is_none(), "{body}");
+            assert_eq!(body["prompt_optimizer"], false, "{body}");
+        }
+    }
+
     /// W14: a submit that timed out may still run, and bill, at the vendor:
     /// it is never sent again.
     #[tokio::test]
@@ -1036,5 +1159,38 @@ mod tests {
         p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
         let err = p.generate(&ref_schema("minimax/MiniMax-Hailuo-02"), &make_base("x", "minimax/MiniMax-Hailuo-02"), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }).await.unwrap_err();
         assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// MiniMax answers a query it turned away with HTTP 200 and a non-zero
+    /// `base_resp.status_code`, no `status`: a passing code (rate limit,
+    /// timeout, internal error) is asked again, never a failed job; any other
+    /// code is final. The code is read before the state.
+    /// @see <https://platform.minimax.io/docs/api-reference/errorcode> (2026-11-03)
+    #[tokio::test]
+    async fn a_query_turned_away_is_asked_again_not_failed() {
+        for (code, retryable) in [(1002, true), (1001, true), (1013, true), (1004, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "base_resp": { "status_code": code, "status_msg": "turned away" } })))
+                .mount(&server)
+                .await;
+            let handle = VideoGenerationHandle { provider_job_id: "t1".into(), provider: "minimax".into(), model: "minimax/MiniMax-Hailuo-02".into() };
+            match make_provider(&server.uri()).poll_status(&handle).await {
+                Err(e) => assert_eq!(e.is_retryable(), retryable, "{code}: {e}"),
+                Ok(r) => panic!("{code}: a turned-away query is an error, got {:?} {:?}", r.status, r.error),
+            }
+        }
+        // A failed task says why in the same field, and stays a failure.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": "Fail", "base_resp": { "status_code": 1027, "status_msg": "sensitive content in the generated video" }
+            })))
+            .mount(&server)
+            .await;
+        let handle = VideoGenerationHandle { provider_job_id: "t1".into(), provider: "minimax".into(), model: "minimax/MiniMax-Hailuo-02".into() };
+        let r = make_provider(&server.uri()).poll_status(&handle).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Failed);
+        assert!(r.error.as_deref().is_some_and(|e| e.contains("sensitive")), "{:?}", r.error);
     }
 }

@@ -140,6 +140,38 @@ async fn a_request_the_model_cannot_serve_is_refused_before_anything_is_billed()
     assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed");
 }
 
+/// A field the request has no name for (E2, N3): `prompt` for `prompts` is
+/// refused when `strict` (the default), naming the field it is short for, as
+/// on every other generation route; with `strict: false` it is dropped and
+/// named in `X-Litegen-Dropped-Params`. Segmentation used to ignore both the
+/// field and `strict`.
+#[tokio::test]
+async fn an_unknown_segmentation_field_is_refused_or_named() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let body = |strict: Option<bool>| {
+        let mut b = json!({ "model": "mock/segment-image", "image": photo(), "prompts": [{ "type": "box", "x": 10, "y": 20, "w": 30, "h": 40 }], "prompt": "cat" });
+        if let Some(s) = strict {
+            b["strict"] = json!(s);
+        }
+        b
+    };
+    let (s, resp) = post(&app, "/v1/images/segmentations", body(None)).await;
+    assert_eq!(
+        (s, resp["error"]["code"].as_str(), resp["error"]["param"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("param_unsupported"), Some("prompt")),
+        "{resp}"
+    );
+    assert!(resp["error"]["message"].as_str().is_some_and(|m| m.contains("`prompts`")), "the field it is short for: {resp}");
+    let resp = app
+        .clone()
+        .oneshot(Request::post("/v1/images/segmentations").header("content-type", "application/json").body(Body::from(body(Some(false)).to_string())).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let named = resp.headers().get("x-litegen-dropped-params").map(|v| v.to_str().expect("visible ASCII").to_string());
+    assert_eq!(named.as_deref(), Some("prompt"));
+}
+
 #[tokio::test]
 async fn the_listing_says_which_models_segment_and_with_which_prompts() {
     let (app, _db) = harness::app_with_mock_3d().await;

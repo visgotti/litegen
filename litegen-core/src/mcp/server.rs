@@ -110,11 +110,26 @@ impl ServerHandler for LiteGenMcp {
             Surface::Ai => "ai",
             Surface::Admin => "admin",
         };
-        let span = tracing::info_span!("mcp.tool", tool = %name, surface, caller = ?caller.kind);
+        // A tool the caller cannot see does not exist for them.
+        let spec = self.shared.registry.get(&name).filter(|s| gate::visible(s.def, &caller, &self.shared.state));
+        // Labels and span fields name the catalog's tool, never the caller's
+        // text: a client must not be able to mint metric labels (as with the
+        // JSON-RPC method in `auth.rs`). An unknown or hidden name is `unknown`.
+        let tool: &'static str = spec.map(|s| s.def.name).unwrap_or("unknown");
+        let span = tracing::info_span!(
+            "mcp.tool",
+            tool,
+            surface,
+            caller = ?caller.kind,
+            requested = tracing::field::Empty
+        );
+        if spec.is_none() {
+            // At most 64 characters of what was asked for, so a tracing
+            // exporter never ships a 16 MiB attribute.
+            span.record("requested", name.chars().take(64).collect::<String>().as_str());
+        }
         let progress = context.meta.get_progress_token().map(|token| ProgressSink::new(token, context.peer.clone()));
         async move {
-            // A tool the caller cannot see does not exist for them.
-            let spec = self.shared.registry.get(&name).filter(|s| gate::visible(s.def, &caller, &self.shared.state));
             let result = match spec {
                 None => CallToolResult::error(vec![ContentBlock::text(format!("Unknown tool: {name}"))]),
                 Some(spec) => match &spec.kind {
@@ -129,7 +144,7 @@ impl ServerHandler for LiteGenMcp {
                 },
             };
             let outcome = if result.is_error == Some(true) { "error" } else { "ok" };
-            metrics::counter!("litegen_mcp_tool_calls_total", "tool" => name.clone(), "surface" => surface, "outcome" => outcome).increment(1);
+            metrics::counter!("litegen_mcp_tool_calls_total", "tool" => tool, "surface" => surface, "outcome" => outcome).increment(1);
             Ok(result.into())
         }
         .instrument(span)

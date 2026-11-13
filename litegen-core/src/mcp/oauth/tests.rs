@@ -1,6 +1,8 @@
 //! Unit tests for the OAuth authorization server's rules.
 
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -13,7 +15,9 @@ use super::assertion::{verify, AssertionError, KeyCache};
 use super::clients::{redirect_allowed, resolve_client, uses_refresh_tokens, ClientError, MetadataFetcher, PublicFetcher};
 use super::limit::{client_address, AddressLimiter};
 use super::store::{McpOAuthStore, OAuthClient, Registration};
+use crate::api::middleware::rate_limit::LimitRefusal;
 use crate::db::DatabaseStore;
+use crate::shared::testing::{dead_redis, two_shared};
 
 // ─── Redirect URIs ────────────────────────────────────────────────────────────
 
@@ -163,18 +167,174 @@ fn the_address_a_request_counts_against() {
     assert_eq!(client_address(None, Some("203.0.113.5")), None, "no connection, nothing to count");
 }
 
-#[test]
-fn an_address_gets_its_allowance_back_over_a_minute() {
+#[tokio::test]
+async fn an_address_gets_its_allowance_back_over_a_minute() {
     let limiter = AddressLimiter::default();
     let (a, b) = ("203.0.113.5".parse().unwrap(), "203.0.113.6".parse().unwrap());
     let start = Instant::now();
-    assert!(limiter.try_take(a, 2, start).is_ok());
-    assert!(limiter.try_take(a, 2, start).is_ok());
-    let wait = limiter.try_take(a, 2, start).unwrap_err();
+    assert!(limiter.try_take(a, 2, start).await.is_ok());
+    assert!(limiter.try_take(a, 2, start).await.is_ok());
+    let Err(LimitRefusal::Exceeded { retry_after_secs: wait }) = limiter.try_take(a, 2, start).await else {
+        panic!("a third request in the same instant is refused");
+    };
     assert!((1..=30).contains(&wait), "two a minute: one back within 30 s, said {wait}");
-    assert!(limiter.try_take(b, 2, start).is_ok(), "each address has its own");
-    assert!(limiter.try_take(a, 2, start + Duration::from_secs(30)).is_ok(), "one back after half a minute");
-    assert!(limiter.try_take(a, 2, start + Duration::from_secs(30)).is_err());
+    assert!(limiter.try_take(b, 2, start).await.is_ok(), "each address has its own");
+    assert!(limiter.try_take(a, 2, start + Duration::from_secs(30)).await.is_ok(), "one back after half a minute");
+    assert!(limiter.try_take(a, 2, start + Duration::from_secs(30)).await.is_err());
+}
+
+// ─── The allowance shared across replicas ─────────────────────────────────────
+//
+// The ones on `two_shared` need `LITEGEN_REDIS_TEST_URL` and skip themselves
+// without it; the ones on `dead_redis` need no container.
+
+#[tokio::test]
+async fn two_limiters_share_an_address() {
+    let Some((sa, sb)) = two_shared().await else { return };
+    let (a, b) = (AddressLimiter::with_shared(sa), AddressLimiter::with_shared(sb));
+    let ip: IpAddr = "203.0.113.9".parse().unwrap();
+    assert!(a.try_take(ip, 2, Instant::now()).await.is_ok());
+    assert!(b.try_take(ip, 2, Instant::now()).await.is_ok());
+    let Err(LimitRefusal::Exceeded { retry_after_secs: wait }) = a.try_take(ip, 2, Instant::now()).await else {
+        panic!("the two replicas spent the address's two requests between them");
+    };
+    assert!((1..=30).contains(&wait), "two a minute: one back within 30 s, said {wait}");
+    assert!(matches!(b.try_take(ip, 2, Instant::now()).await, Err(LimitRefusal::Exceeded { .. })), "from either replica");
+    assert_eq!(a.tracked_addresses() + b.tracked_addresses(), 0, "Redis counted them, not the local maps");
+    let other: IpAddr = "203.0.113.10".parse().unwrap();
+    assert!(a.try_take(other, 2, Instant::now()).await.is_ok(), "each address has its own bucket");
+}
+
+#[tokio::test]
+async fn a_dead_redis_falls_back_to_this_replicas_count() {
+    let l = AddressLimiter::with_shared(dead_redis(false).await);
+    let ip: IpAddr = "203.0.113.10".parse().unwrap();
+    assert!(l.try_take(ip, 1, Instant::now()).await.is_ok());
+    assert!(matches!(l.try_take(ip, 1, Instant::now()).await, Err(LimitRefusal::Exceeded { .. })));
+    assert_eq!(l.tracked_addresses(), 1, "this replica's own map counted it");
+}
+
+#[tokio::test]
+async fn a_dead_redis_under_fail_closed_refuses_and_counts_nothing_here() {
+    let l = AddressLimiter::with_shared(dead_redis(true).await);
+    let ip: IpAddr = "203.0.113.11".parse().unwrap();
+    for _ in 0..3 {
+        assert_eq!(l.try_take(ip, 1, Instant::now()).await, Err(LimitRefusal::Unverifiable));
+    }
+    assert_eq!(l.tracked_addresses(), 0, "nothing was spent from this replica's own map");
+}
+
+/// Sign-in endpoints (`POST /oauth/register`, `GET /oauth/authorize`) behind
+/// `by_address`, which allows `per_minute` requests, drawing on `limiter`.
+async fn limited_endpoint(limiter: AddressLimiter, per_minute: u32) -> axum::Router {
+    use crate::api::middleware::backpressure::InFlightLimit;
+    use crate::api::middleware::rate_limit::RateLimiter;
+    use crate::api::middleware::AppState;
+    use crate::capabilities::CapabilityRegistry;
+    use crate::config::{AppConfig, CacheGlobalConfig, DevFlags, Mode};
+    use crate::proxy::cache::GenerationCache;
+    use crate::proxy::materializer::{MaterializeError, Materializer, TempStorage};
+    use crate::proxy::registry::ProviderRegistry;
+    use crate::proxy::router::ProxyRouter;
+    use crate::proxy::storage::LocalStore;
+
+    struct NoStorage;
+    #[async_trait]
+    impl TempStorage for NoStorage {
+        async fn put(&self, key: &str, _bytes: bytes::Bytes, _content_type: &str) -> Result<String, MaterializeError> {
+            Ok(format!("local://{key}"))
+        }
+        async fn delete(&self, _key: &str) -> Result<(), MaterializeError> {
+            Ok(())
+        }
+    }
+
+    let mut config = AppConfig::default();
+    config.mcp.oauth.rate_limit_per_minute = per_minute;
+    let router = Arc::new(ProxyRouter::new(
+        Arc::new(ProviderRegistry::new()),
+        Arc::new(GenerationCache::new(&CacheGlobalConfig::default())),
+        Arc::new(config),
+        Arc::new(LocalStore),
+    ));
+    let state = Arc::new(AppState {
+        router,
+        db: Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite")),
+        master_key: None,
+        registry: Arc::new(CapabilityRegistry::from_yaml_strs(&[]).expect("an empty catalog")),
+        materializer: Arc::new(Materializer::new(Arc::new(NoStorage), reqwest::Client::new())),
+        rate_limiter: Arc::new(RateLimiter::new()),
+        in_flight: Arc::new(InFlightLimit::new(64)),
+        oauth: crate::auth::oauth::OAuthConfig::default(),
+        mode: Mode::SingleTenant,
+        secrets_key: None,
+        dev: DevFlags::default(),
+        allow_password: true,
+    });
+    let shared = Arc::new(super::OAuthShared { state, fetcher: Arc::new(PublicFetcher), keys: Default::default(), limiter });
+    axum::Router::new()
+        .route("/oauth/register", axum::routing::post(|| async { axum::http::StatusCode::CREATED }))
+        .route("/oauth/authorize", axum::routing::get(|| async { axum::http::StatusCode::OK }))
+        .layer(axum::middleware::from_fn_with_state(shared, super::limit::by_address))
+}
+
+/// `POST /oauth/register` from a visitor at `203.0.113.5`.
+async fn register_from_visitor(app: &axum::Router) -> axum::response::Response {
+    use tower::ServiceExt as _;
+    let mut request = axum::http::Request::post("/oauth/register").body(axum::body::Body::empty()).unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from(([203, 0, 113, 5], 40000))));
+    app.clone().oneshot(request).await.unwrap()
+}
+
+/// A browser at `203.0.113.5` opening `GET /oauth/authorize`.
+async fn authorize_from_visitor(app: &axum::Router) -> axum::response::Response {
+    use tower::ServiceExt as _;
+    let mut request = axum::http::Request::get("/oauth/authorize").body(axum::body::Body::empty()).unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from(([203, 0, 113, 5], 40000))));
+    app.clone().oneshot(request).await.unwrap()
+}
+
+#[tokio::test]
+async fn fail_closed_answers_a_sign_in_request_with_the_503() {
+    let app = limited_endpoint(AddressLimiter::with_shared(dead_redis(true).await), 30).await;
+    let refused = register_from_visitor(&app).await;
+    assert_eq!(refused.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(refused.headers().get("retry-after").unwrap(), "1");
+    let body: Value = serde_json::from_slice(&axum::body::to_bytes(refused.into_body(), 1 << 16).await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "rate_limit_unverifiable", "{body}");
+    assert_eq!(body["error"]["type"], "rate_limit_unverifiable", "{body}");
+}
+
+#[tokio::test]
+async fn fail_closed_shows_a_browser_a_page_with_the_503() {
+    let app = limited_endpoint(AddressLimiter::with_shared(dead_redis(true).await), 30).await;
+    let refused = authorize_from_visitor(&app).await;
+    assert_eq!(refused.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let headers = refused.headers();
+    assert_eq!(headers.get("retry-after").unwrap(), "1");
+    assert_eq!(headers.get("content-type").unwrap(), "text/html; charset=utf-8");
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    let body = axum::body::to_bytes(refused.into_body(), 1 << 16).await.unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.contains("Sign-in is briefly unavailable on this server."), "{body}");
+}
+
+#[tokio::test]
+async fn a_dead_redis_keeps_the_429_answer_when_fail_closed_is_off() {
+    let app = limited_endpoint(AddressLimiter::with_shared(dead_redis(false).await), 1).await;
+    assert_eq!(register_from_visitor(&app).await.status(), axum::http::StatusCode::CREATED);
+    let refused = register_from_visitor(&app).await;
+    assert_eq!(refused.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+    let wait: u64 = refused.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).expect("Retry-After");
+    assert!((1..=60).contains(&wait), "{wait}");
+    assert_eq!(refused.headers().get("cache-control").expect("Cache-Control"), "no-store");
+    let body: Value = serde_json::from_slice(&axum::body::to_bytes(refused.into_body(), 1 << 16).await.unwrap()).unwrap();
+    assert_eq!(body["error"], "temporarily_unavailable", "{body}");
+    assert_eq!(
+        body["error_description"],
+        format!("too many sign-in requests from this network; try again in {wait} seconds"),
+        "{body}"
+    );
 }
 
 #[test]
@@ -454,4 +614,32 @@ async fn assertion_keys_come_from_jwks_uri() {
     let fresh_cache = KeyCache::default();
     let result = check_at(store, &client, &new.assertion("new", json!({})), &served, &fresh_cache, later).await;
     assert!(result.as_ref().is_err_and(|e| e.contains("not a JWK set")), "{result:?}");
+}
+
+// ─── The hourly purge (N5, P11's guard) ───────────────────────────────────────
+
+/// A purge that panics is logged, and the purges go on at the next tick; it
+/// used to end the task, so expired sign-in rows piled up until a restart.
+#[tokio::test]
+async fn the_purges_go_on_after_one_panicked() {
+    let purges = Arc::new(AtomicUsize::new(0));
+    let counted = purges.clone();
+    let purger = super::spawn_purge_loop(Duration::from_millis(20), std::future::pending::<()>(), move || {
+        let n = counted.fetch_add(1, Ordering::SeqCst);
+        async move {
+            if n == 0 {
+                panic!("a purge that panics");
+            }
+            true
+        }
+    });
+    for _ in 0..150 {
+        if purges.load(Ordering::SeqCst) >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let finished = purger.is_finished();
+    purger.abort();
+    assert!(purges.load(Ordering::SeqCst) >= 3, "the purges stopped at the panic (task finished: {finished})");
 }

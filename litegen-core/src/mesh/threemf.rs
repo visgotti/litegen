@@ -112,8 +112,8 @@ use super::math::{self, linear_to_srgb, srgb_to_linear, Mat4};
 use super::package::{self, NoSidecars, Package, Sidecars};
 use super::pose;
 use super::scene::{
-    Filter, Image, ImageFormat, Loss, LossKind, Material, Node, Primitive, Sampler, Scene, SceneMesh, Texture,
-    TextureRef, Transform, Wrap, MAX_NODES, MAX_SCENE_INDICES, MAX_SCENE_VERTICES,
+    AlphaMode, Filter, Image, ImageFormat, Loss, LossKind, Material, Node, Primitive, Sampler, Scene, SceneMesh, Texture,
+    TextureRef, TextureSlot, Transform, Wrap, MAX_NODES, MAX_SCENE_INDICES, MAX_SCENE_VERTICES,
 };
 use super::xml::{self, Element, XmlEvent};
 use super::zip::{self, Archive, Store};
@@ -183,6 +183,10 @@ const MAX_PROPERTIES: usize = MAX_SCENE_INDICES;
 /// (PrusaSlicer refuses past 10); the bound keeps a chain of a million
 /// single-component objects from becoming a million-deep walk.
 const MAX_COMPONENT_DEPTH: usize = 64;
+/// Elements and attributes a relationships part may hold: a few per
+/// texture, and nothing else (2026-10-12 review, finding 13: 2M `<a/>` in an
+/// 8 KB deflated `.rels` read at 461 MB).
+const MAX_RELS_NODES: usize = 100_000;
 /// Image bytes one package may hand the scene, in total.
 const MAX_IMAGE_BYTES: usize = super::MAX_INPUT_BYTES;
 /// Distinct warnings kept; past this they are counted, not listed.
@@ -216,9 +220,13 @@ fn quoted(s: &str) -> String {
     format!("{:?}", truncate(s, 40))
 }
 
-/// Strip what XML 1.0 cannot carry, so a name reads back as it was written.
+/// Strip what XML 1.0 cannot carry (controls, and U+FFFE/U+FFFF, outside its
+/// `Char` production), so a name reads back as it was written.
 fn clean_text(s: &str) -> String {
-    truncate(s, MAX_TEXT).chars().filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r')).collect()
+    truncate(s, MAX_TEXT)
+        .chars()
+        .filter(|c| (!c.is_control() || matches!(c, '\t' | '\n' | '\r')) && !matches!(c, '\u{FFFE}' | '\u{FFFF}'))
+        .collect()
 }
 
 /// Escape for an attribute value. Tabs and line breaks become character
@@ -413,6 +421,10 @@ enum Look {
     Plain,
 }
 
+/// The one texture slot 3MF carries, base colour (through a texture2dgroup):
+/// the slot `prepare` and `losses` order uv sets for.
+const TEXTURED_SLOTS: &[TextureSlot] = &[TextureSlot::BaseColor];
+
 /// Texture first (it carries the most), then vertex colours, then the flat
 /// colour. A texture needs UV set 0 — the only set 3MF holds — and a PNG or
 /// JPEG, the only images it allows (Materials §6).
@@ -442,8 +454,13 @@ fn look(scene: &Scene, p: &Primitive) -> Look {
 /// - animation dropped; skinned meshes posed into world space at new roots
 ///   (glTF's rule: a skinned mesh ignores its node's transform), morph targets
 ///   applied at each node's weights;
+/// - points and lines dropped (`pose::strip_topologies`), before the
+///   triangle passes below, which would cut a line list into threes;
 /// - placements whose world transform has no TRS form (shear) baked into their
 ///   own geometry, for the reason in the module docs;
+/// - each primitive's uv sets reordered so that the one its material's base
+///   colour samples comes first (`pose::order_sampled_sets_first`): 3MF holds
+///   one set, so a texture on a later set is written from that one;
 /// - per primitive, the property rule ([`look`]): textured materials become a
 ///   white material with the texture (its `KHR_texture_transform` baked into
 ///   the coordinates), vertex colours absorb the base colour and lose alpha
@@ -460,7 +477,9 @@ fn look(scene: &Scene, p: &Primitive) -> Look {
 pub fn prepare(scene: &Scene) -> Result<Scene, MeshError> {
     scene.validate()?;
     let mut s = pose_statically(scene)?;
+    pose::strip_topologies(&mut s, &super::MeshFormat::ThreeMf.capabilities(super::WriteOptions::default()));
     bake_unrepresentable_placements(&mut s);
+    pose::order_sampled_sets_first(&mut s, TEXTURED_SLOTS);
     reduce_appearance(&mut s);
     drop_degenerate_triangles(&mut s);
     prune(&mut s);
@@ -568,6 +587,7 @@ fn static_primitive(p: &Primitive, positions: Vec<[f32; 3]>, indices: Vec<u32>) 
         indices,
         material: p.material,
         targets: Vec::new(),
+        topology: p.topology,
     }
 }
 
@@ -620,13 +640,18 @@ fn textured_material(texture: usize) -> Material {
 }
 
 /// `<base name>` is required; a material with none is named by its position.
+/// Its colour carries the alpha it is drawn with
+/// ([`Material::drawn_alpha`]): a translucent one is BLEND, as it reads back.
 fn base_material(m: &Material, index: usize) -> Material {
     let name = m.name.as_deref().map(clean_text).filter(|n| !n.trim().is_empty());
+    let c = m.base_color;
+    let alpha = m.drawn_alpha();
     Material {
         name: Some(name.unwrap_or_else(|| format!("material_{index}"))),
-        base_color: quantized(m.base_color),
+        base_color: quantized([c[0], c[1], c[2], alpha]),
         metallic: 0.0,
         roughness: 1.0,
+        alpha_mode: if alpha < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque },
         ..Default::default()
     }
 }
@@ -801,6 +826,22 @@ fn texture_parts(images: &[Image]) -> Vec<(String, String)> {
 /// texture coordinates that exist only inside a texture, and of 3MF's place
 /// in the world (parts, not a node tree).
 pub fn losses(scene: &Scene) -> Vec<Loss> {
+    losses_after_strip(scene, scene)
+}
+
+/// [`losses`] of `scene` as 3MF is given it once `pose::strip_topologies` has
+/// removed the points and lines it lacks, `before` being the scene it was made
+/// from. A node the strip left without a mesh is not a node without geometry:
+/// `scene::losses` has named the lines or points it drew, and a second line
+/// about the same node tells the caller nothing. A node that drew nothing
+/// in `before` is still named.
+pub fn losses_after_strip(scene: &Scene, before: &Scene) -> Vec<Loss> {
+    // Judged on the scene with its uv sets ordered as `prepare` orders them,
+    // so a base colour on a later set, which is written from the one set 3MF
+    // holds, is not reported lost.
+    let mut ordered = scene.clone();
+    pose::order_sampled_sets_first(&mut ordered, TEXTURED_SLOTS);
+    let scene = &ordered;
     let mut out = Vec::new();
     let mut push = |kind: LossKind, what: String, why: &str| out.push(Loss::new(kind, what, format!("3mf {why}")));
     let (mut tinted, mut tex_colors, mut stray_uvs, mut alpha, mut unbound) = (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -917,7 +958,10 @@ pub fn losses(scene: &Scene) -> Vec<Loss> {
             "consumers decompose placements into translation, rotation and scale; sheared ones are baked into their own geometry",
         );
     }
-    let empty = scene.nodes.iter().filter(|n| n.mesh.is_none()).count();
+    // A node the strip emptied drew something in `before` (the strip changes
+    // no node's index), and what it drew has been named.
+    let emptied_by_strip = |n: usize| before.nodes.get(n).is_some_and(|b| b.mesh.is_some());
+    let empty = scene.nodes.iter().enumerate().filter(|(n, node)| node.mesh.is_none() && !emptied_by_strip(*n)).count();
     if empty > 0 {
         push(
             LossKind::Hierarchy,
@@ -1002,7 +1046,7 @@ impl Groups {
         let mat = &scene.materials[m];
         let name = mat.name.clone().unwrap_or_else(|| format!("material_{m}"));
         let c = mat.base_color;
-        self.bases.push((name, [srgb8(c[0]), srgb8(c[1]), srgb8(c[2]), alpha8(c[3])]));
+        self.bases.push((name, [srgb8(c[0]), srgb8(c[1]), srgb8(c[2]), alpha8(mat.drawn_alpha())]));
         let i = (self.bases.len() - 1) as u32;
         self.base_of.insert(m, i);
         i
@@ -1281,6 +1325,10 @@ fn model_part(s: &Scene) -> Result<(String, Vec<(usize, String)>), MeshError> {
 }
 
 fn write_package(s: &Scene) -> Result<Vec<u8>, MeshError> {
+    // `prepare` strips the points and lines 3MF has no element for (Core has
+    // no point or line primitive), so an encoder given one was not prepared:
+    // a debug build says so.
+    pose::debug_assert_holds("3mf", s, &MeshFormat::ThreeMf.capabilities(super::WriteOptions::default()));
     let (model, images) = model_part(s)?;
 
     let mut types = String::new();
@@ -1384,7 +1432,7 @@ fn start_part(pkg: &Pkg<'_>) -> Result<String, MeshError> {
     let Some(rels) = pkg.read(PACKAGE_RELS_PART)? else {
         return Err(not_3mf("the ZIP has no _rels/.rels, so it is not an OPC package"));
     };
-    let doc = xml::parse(&rels)?;
+    let doc = xml::parse_capped(&rels, MAX_RELS_NODES)?;
     if !doc.is(NS_RELATIONSHIPS, "Relationships") {
         return Err(malformed("_rels/.rels is not an OPC relationships part"));
     }
@@ -1531,6 +1579,9 @@ struct Budget {
     vertices: usize,
     triangles: usize,
     properties: usize,
+    /// `<component>`s across every object of every part: capped per object,
+    /// 100 objects × 100k components read at 1.86 GB.
+    components: usize,
 }
 
 impl Budget {
@@ -1559,6 +1610,14 @@ impl Budget {
         self.properties += 1;
         if self.properties > MAX_PROPERTIES {
             return Err(unsupported(format!("the package has more than {MAX_PROPERTIES} property entries")));
+        }
+        Ok(())
+    }
+
+    fn component(&mut self) -> Result<(), MeshError> {
+        self.components += 1;
+        if self.components > MAX_NODES {
+            return Err(unsupported(format!("the package has more than {MAX_NODES} components")));
         }
         Ok(())
     }
@@ -1994,6 +2053,7 @@ impl PartParser<'_> {
                 Ctx::Skip
             }
             Ctx::Components(o) if core && name == "component" => {
+                self.budget.component()?;
                 let c = Comp { objectid: self.id_attr(el, "objectid")?, path: Self::path_attr(el), transform: Self::transform_attr(el)? };
                 if let Shape::Components(list) = &mut self.part.objects[o].shape {
                     if list.len() >= MAX_NODES {
@@ -2028,7 +2088,8 @@ impl PartParser<'_> {
     fn end(&mut self) {
         if let Some(Ctx::Title) = self.stack.pop() {
             if let Some(t) = self.title.take() {
-                self.part.title = Some(t);
+                // The XML layer passes text untrimmed (`xml::stream`).
+                self.part.title = Some(t.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r')).to_string());
             }
         }
     }
@@ -2152,7 +2213,13 @@ struct Builder<'a> {
     base_materials: HashMap<(usize, usize, u32), usize>,
     tex_materials: HashMap<(usize, usize), Option<usize>>,
     images: HashMap<String, Option<usize>>,
-    composite_colors: HashMap<(usize, usize), Vec<[f32; 4]>>,
+    composite_colors: HashMap<(usize, usize), std::rc::Rc<Vec<[f32; 4]>>>,
+    /// Per multiproperties group: the layer carried, its kind and its pid,
+    /// resolved (and reported) once rather than for every triangle.
+    multi_layers: HashMap<(usize, usize), (usize, Option<Res>, u32)>,
+    /// Primitives built across every mesh: one per distinct base index made
+    /// 1.3M of them from 3.5 MB.
+    ir_prims: usize,
     color_material: Option<usize>,
     image_bytes: usize,
     ir_vertices: usize,
@@ -2423,32 +2490,40 @@ impl<'a> Builder<'a> {
     /// layers above a material are for — else the first. Blending the layers
     /// would need a texture times colour the scene cannot express per corner.
     fn multi_property(&mut self, part: usize, oid: u32, pid: u32, g: usize, idx: [u32; 3]) -> Result<Prop, MeshError> {
-        let pids = self.parts[part].multis[g].pids.clone();
-        let kinds: Vec<Option<Res>> = pids.iter().map(|p| self.parts[part].ids.get(p).copied()).collect();
-        let layer = kinds
-            .iter()
-            .rposition(|k| matches!(k, Some(Res::Colors(_)) | Some(Res::TexCoords(_))))
-            .unwrap_or(0);
-        if pids.len() > 1 {
-            self.warnings.push(format!(
-                "multiproperties {pid} layers {} property groups; only group {} is carried, the layers are not blended",
-                pids.len(),
-                pids[layer]
-            ));
-        }
+        let (layer, kind, layer_pid) = match self.multi_layers.get(&(part, g)) {
+            Some(&cached) => cached,
+            None => {
+                let pids = &self.parts[part].multis[g].pids;
+                let kinds: Vec<Option<Res>> = pids.iter().map(|p| self.parts[part].ids.get(p).copied()).collect();
+                let layer = kinds
+                    .iter()
+                    .rposition(|k| matches!(k, Some(Res::Colors(_)) | Some(Res::TexCoords(_))))
+                    .unwrap_or(0);
+                let resolved = (layer, kinds[layer], pids[layer]);
+                if pids.len() > 1 {
+                    self.warnings.push(format!(
+                        "multiproperties {pid} layers {} property groups; only group {} is carried, the layers are not blended",
+                        pids.len(),
+                        resolved.2
+                    ));
+                }
+                self.multi_layers.insert((part, g), resolved);
+                resolved
+            }
+        };
         let entries = &self.parts[part].multis[g].entries;
         // A short pindices list defaults to index 0 (Materials §5.1).
         let corner = idx.map(|i| entries[i as usize].get(layer).copied().unwrap_or(0));
-        self.group_property(part, oid, pids[layer], kinds[layer], corner, false)
+        self.group_property(part, oid, layer_pid, kind, corner, false)
     }
 
     /// The display colours a composite group's entries mix to, linear RGBA:
     /// "the displaycolor of the basematerials ... SHOULD be mixed in the same
     /// proportions" (Materials §4). The colour space of that mix is not
     /// specified; it is done in linear light, as the spec's blending is.
-    fn composite_colors(&mut self, part: usize, g: usize) -> Result<Vec<[f32; 4]>, MeshError> {
+    fn composite_colors(&mut self, part: usize, g: usize) -> Result<std::rc::Rc<Vec<[f32; 4]>>, MeshError> {
         if let Some(c) = self.composite_colors.get(&(part, g)) {
-            return Ok(c.clone());
+            return Ok(std::rc::Rc::clone(c));
         }
         let pt = &self.parts[part];
         let comp = &pt.composites[g];
@@ -2482,7 +2557,8 @@ impl<'a> Builder<'a> {
             })
             .collect();
         self.warnings.push("composite materials are carried as the mix of their base display colours".to_string());
-        self.composite_colors.insert((part, g), colors.clone());
+        let colors = std::rc::Rc::new(colors);
+        self.composite_colors.insert((part, g), std::rc::Rc::clone(&colors));
         Ok(colors)
     }
 
@@ -2496,6 +2572,8 @@ impl<'a> Builder<'a> {
             base_color: [decode_srgb8(c[0]), decode_srgb8(c[1]), decode_srgb8(c[2]), c[3] as f32 / 255.0],
             metallic: 0.0,
             roughness: 1.0,
+            // A colour with alpha below FF is translucent.
+            alpha_mode: if c[3] < 255 { AlphaMode::Blend } else { AlphaMode::Opaque },
             ..Default::default()
         });
         let m = self.scene.materials.len() - 1;
@@ -2547,7 +2625,7 @@ impl<'a> Builder<'a> {
             let rels_name = if dir.is_empty() { format!("_rels/{file}.rels") } else { format!("{dir}/_rels/{file}.rels") };
             let mut targets = Vec::new();
             if let Some(bytes) = self.pkg.read(&rels_name)? {
-                let doc = xml::parse(&bytes)?;
+                let doc = xml::parse_capped(&bytes, MAX_RELS_NODES)?;
                 for r in doc.children.iter().filter(|r| r.is(NS_RELATIONSHIPS, "Relationship")) {
                     if r.attr("Type").map(str::trim) == Some(REL_TEXTURE) {
                         if let Some(t) = r.attr("Target").and_then(|t| part_name(t, &source)) {
@@ -2640,6 +2718,12 @@ impl<'a> Builder<'a> {
             let k = match slot.get(&key) {
                 Some(&k) => k,
                 None => {
+                    self.ir_prims += 1;
+                    if self.ir_prims > MAX_NODES {
+                        return Err(unsupported(format!(
+                            "the model's materials split it into more than {MAX_NODES} primitives"
+                        )));
+                    }
                     let mut prim = Primitive::default();
                     match key {
                         PrimKey::Base(g, i) => prim.material = Some(self.base_material(part, g, i)),
@@ -2760,6 +2844,8 @@ pub fn read_scene(bytes: &[u8], sidecars: &dyn Sidecars) -> Result<SceneRead, Me
         tex_materials: HashMap::new(),
         images: HashMap::new(),
         composite_colors: HashMap::new(),
+        multi_layers: HashMap::new(),
+        ir_prims: 0,
         color_material: None,
         image_bytes: 0,
         ir_vertices: 0,
@@ -2786,7 +2872,7 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures;
-    use super::super::scene::{AlphaMode, UvTransform};
+    use super::super::scene::UvTransform;
     use super::*;
 
     // ── builders ────────────────────────────────────────────────────────────
@@ -2900,9 +2986,14 @@ mod tests {
         image: Option<Vec<u8>>,
     }
 
+    /// The corners of every triangle: a 3MF holds triangles, and the
+    /// shared evaluator keeps a scene's lines and points too.
     fn drawn(s: &Scene) -> Vec<[Corner; 3]> {
         let mut out = Vec::new();
         for wp in pose::world_primitives(s, &pose::default_pose(s)).unwrap() {
+            if wp.topology != super::super::scene::Topology::Triangles {
+                continue;
+            }
             let mat = wp.material.and_then(|m| s.materials.get(m));
             let base = mat.map_or([1.0; 4], |m| m.base_color);
             let image = mat
@@ -3205,6 +3296,7 @@ mod tests {
         let s = one_triangle_scene(Some(Material {
             name: Some("half".into()),
             base_color: [0.5, 1.0, 0.0, 0.5],
+            alpha_mode: AlphaMode::Blend,
             ..Default::default()
         }));
         let dom = model_dom(&written(&s));
@@ -3215,7 +3307,29 @@ mod tests {
         let back = read_ok(&written(&s)).scene;
         let c = back.materials[0].base_color;
         assert!(near(&c, &[srgb_to_linear(188.0 / 255.0), 1.0, 0.0, 128.0 / 255.0], 1e-7), "{c:?}");
+        assert_eq!(back.materials[0].alpha_mode, AlphaMode::Blend, "a translucent colour reads as one");
         assert_eq!(back.materials[0].metallic, 0.0, "a 3MF colour is matte, not glTF's default metal");
+    }
+
+    /// 2026-10-12 review, findings 28.1 and 28.2: the alpha written is the one
+    /// the material is drawn with — glTF ignores it when OPAQUE and draws a
+    /// constant colour wholly or not at all when MASK (glTF 2.0 §3.9.4) — and
+    /// a colour read with alpha below FF is translucent (BLEND), not opaque.
+    #[test]
+    fn the_written_alpha_is_the_drawn_alpha() {
+        for (mode, alpha, cutoff, want) in [
+            (AlphaMode::Opaque, 0.5, 0.5, "FF"),
+            (AlphaMode::Mask, 0.6, 0.5, "FF"),
+            (AlphaMode::Mask, 0.4, 0.5, "00"),
+            (AlphaMode::Blend, 0.5, 0.5, "80"),
+        ] {
+            let s = one_triangle_scene(Some(Material { base_color: [0.5, 1.0, 0.0, alpha], alpha_mode: mode, alpha_cutoff: cutoff, ..Default::default() }));
+            let dom = model_dom(&written(&s));
+            let base = resources(&dom).descendants_named("base")[0];
+            assert_eq!(base.attr("displaycolor"), Some(format!("#BCFF00{want}").as_str()), "{mode:?} {alpha}");
+            let back = read_ok(&written(&s)).scene;
+            assert_eq!(back.materials[0].alpha_mode == AlphaMode::Blend, want != "FF", "{mode:?} {alpha}");
+        }
     }
 
     #[test]
@@ -3291,6 +3405,40 @@ mod tests {
     }
 
     #[test]
+    fn threemf_keeps_the_base_colour_set() {
+        // A base colour on the second of a primitive's two sets. 3MF holds one
+        // set, and it is the one the texture samples
+        // (`pose::order_sampled_sets_first`), not the first.
+        let mut s = fixtures::multiuv();
+        s.meshes[0].primitives[0].uvs.truncate(2);
+        s.materials[0].occlusion_texture = None;
+        s.materials[0].base_color_texture.as_mut().unwrap().uv_set = 1;
+        let set1 = s.meshes[0].primitives[0].uvs[1].clone();
+        let l = losses(&s);
+        assert!(!l.iter().any(|x| x.what.contains("without UV set 0")), "{l:?}");
+        let p = prepare(&s).unwrap();
+        let q = &p.meshes[0].primitives[0];
+        let m = &p.materials[q.material.expect("a material")];
+        assert_eq!(m.base_color_texture.as_ref().map(|r| r.uv_set), Some(0), "the texture is kept");
+        assert_eq!(q.uvs, vec![set1.clone()], "on its one set, the source's set 1");
+        // Written and read back: the same coordinates, and nothing of the
+        // texture reported lost.
+        let w = super::super::write_scene(&s, MeshFormat::ThreeMf, super::super::WriteOptions::default()).unwrap();
+        assert!(!w.losses.iter().any(|x| x.kind == LossKind::Textures), "{:?}", w.losses);
+        let back = read_scene(&w.package.files[0].bytes, &NoSidecars).unwrap().scene;
+        let r = &back.meshes[0].primitives[0];
+        assert!(r.material.and_then(|m| back.materials[m].base_color_texture.as_ref()).is_some(), "read back textured");
+        let sorted = |set: &[[f32; 2]]| {
+            let mut v: Vec<[u32; 2]> = set.iter().map(|uv| uv.map(f32::to_bits)).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        assert_eq!(r.uvs.len(), 1);
+        assert_eq!(sorted(&r.uvs[0]), sorted(&set1));
+    }
+
+    #[test]
     fn webp_textures_are_dropped_to_the_base_colour() {
         let mut s = fixtures::textured();
         s.images[0] = Image { name: None, format: ImageFormat::Webp, data: b"RIFF\0\0\0\0WEBPVP8 ".to_vec() };
@@ -3353,6 +3501,22 @@ mod tests {
         assert_eq!(back.meshes[0].name.as_deref(), Some("x\"y"));
     }
 
+    /// 2026-10-12 review, finding 26.7: U+FFFE and U+FFFF are not XML 1.0
+    /// characters (the `Char` production, §2.2), and expat-based readers
+    /// refuse a document holding them; they are dropped like control
+    /// characters.
+    #[test]
+    fn noncharacters_never_reach_the_document() {
+        let mut s = one_triangle_scene(Some(Material { name: Some("red\u{FFFF}".into()), ..Default::default() }));
+        s.name = Some("t\u{FFFE}".into());
+        let bytes = written(&s);
+        let model = super::super::zip::Archive::parse(&bytes).unwrap().read_name(MODEL_PART).unwrap().unwrap();
+        let text = String::from_utf8(model).unwrap();
+        assert!(!text.contains('\u{FFFE}') && !text.contains('\u{FFFF}'), "{text}");
+        let back = read_ok(&bytes).scene;
+        assert_eq!((back.name.as_deref(), back.materials[0].name.as_deref()), (Some("t"), Some("red")));
+    }
+
     #[test]
     fn grouping_nodes_skins_and_degenerate_triangles_are_reported() {
         let l = losses(&fixtures::textured());
@@ -3364,6 +3528,32 @@ mod tests {
         assert!(l.iter().any(|x| x.what.contains("1 degenerate")), "{l:?}");
         assert_eq!(prepare(&s).unwrap().triangle_count(), 1);
         assert_eq!(read_ok(&written(&s)).scene.triangle_count(), 1);
+    }
+
+    /// The loop's node and the grid's node of `wire` draw nothing once the
+    /// strip has taken their lines and points, and those are named already
+    /// (`points`, `lines`): they are not "node(s) without geometry". A node
+    /// that drew nothing before the strip is still one, and a caller with no
+    /// scene from before it (`losses`) counts what it is given.
+    #[test]
+    fn nodes_the_topology_strip_emptied_are_not_nodes_without_geometry() {
+        let caps = MeshFormat::ThreeMf.capabilities(super::super::WriteOptions::default());
+        let named = |l: &[Loss]| l.iter().find(|x| x.what.contains("node(s) without geometry")).map(|x| x.what.clone());
+        let wire = fixtures::wire();
+        let mut stripped = wire.clone();
+        pose::strip_topologies(&mut stripped, &caps);
+        assert_eq!(stripped.nodes.iter().filter(|n| n.mesh.is_none()).count(), 2, "the loop's node and the grid's draw nothing now");
+        assert_eq!(named(&losses_after_strip(&stripped, &wire)), None, "{:?}", losses_after_strip(&stripped, &wire));
+
+        // A node that drew nothing to begin with, beside them.
+        let mut with_empty = wire.clone();
+        with_empty.add_root(Node { name: Some("empty".into()), ..Default::default() });
+        let mut stripped = with_empty.clone();
+        pose::strip_topologies(&mut stripped, &caps);
+        assert_eq!(named(&losses_after_strip(&stripped, &with_empty)), Some("1 node(s) without geometry".to_string()));
+        // Given no scene from before the strip, every node without a mesh counts.
+        assert_eq!(named(&losses(&stripped)), Some("3 node(s) without geometry".to_string()));
+        assert_eq!(named(&losses(&with_empty)), Some("1 node(s) without geometry".to_string()));
     }
 
     #[test]
@@ -3998,5 +4188,97 @@ mod tests {
         let text: Vec<String> = w.losses.iter().map(|l| l.to_string()).collect();
         assert!(text.iter().any(|t| t.contains("material properties other than colour")), "{text:?}");
         assert!(text.iter().any(|t| t.contains("vertex normals")), "{text:?}");
+    }
+
+    /// `n` disjoint triangles as 3MF mesh markup, the i-th with `attrs(i)`.
+    fn triangles(n: usize, attrs: impl Fn(usize) -> String) -> String {
+        let vertices: String = (0..n)
+            .map(|i| format!(r#"<vertex x="{i}" y="0" z="0"/><vertex x="{i}" y="1" z="0"/><vertex x="{}" y="0" z="0"/>"#, i as f32 + 0.5))
+            .collect();
+        let tris: String = (0..n).map(|i| format!(r#"<triangle v1="{}" v2="{}" v3="{}" {}/>"#, 3 * i, 3 * i + 1, 3 * i + 2, attrs(i))).collect();
+        format!("<mesh><vertices>{vertices}</vertices><triangles>{tris}</triangles></mesh>")
+    }
+
+    /// 2026-10-12 review, finding 12: a multi-property group was re-resolved
+    /// (its pid list cloned and every pid looked up) for every triangle, so
+    /// 50k pids × 50k triangles took 16.5 s. It is resolved once per group.
+    #[test]
+    fn a_multiproperties_group_is_resolved_once_not_per_triangle() {
+        let n = 10_000;
+        let pids = std::iter::repeat_n("1", n).chain(["2"]).collect::<Vec<_>>().join(" ");
+        let pindices = vec!["0"; n + 1].join(" ");
+        let resources = format!(
+            r##"<basematerials id="1"><base name="a" displaycolor="#FF0000"/></basematerials><m:colorgroup id="2"><m:color color="#00FF00"/></m:colorgroup><m:multiproperties id="3" pids="{pids}"><m:multi pindices="{pindices}"/></m:multiproperties><object id="4" type="model" pid="3" pindex="0">{}</object>"##,
+            triangles(n, |_| String::new())
+        );
+        let started = std::time::Instant::now();
+        let r = read_ok(&package(&model(&resources, r#"<item objectid="4"/>"#)));
+        assert_eq!(r.scene.triangle_count(), n);
+        assert_eq!(r.warnings.iter().filter(|w| w.contains("multiproperties")).count(), 1, "{:?}", r.warnings);
+        assert!(started.elapsed().as_secs() < 3, "{:?}", started.elapsed());
+    }
+
+    /// Also finding 12: each triangle of a composite group cloned the group's
+    /// whole mixed-colour table (O(triangles × mixes): 86 s for 13.5 KB); and
+    /// every distinct base index became its own primitive with no ceiling
+    /// (1.3M primitives, 1.3 GB, from 3.5 MB).
+    #[test]
+    fn composites_are_mixed_once_and_base_indices_cannot_multiply_primitives() {
+        let n = 20_000;
+        let mixes: String = (0..n).map(|_| r#"<m:composite values="1"/>"#).collect();
+        let resources = format!(
+            r##"<basematerials id="1"><base name="a" displaycolor="#FF0000"/></basematerials><m:compositematerials id="2" matid="1" matindices="0">{mixes}</m:compositematerials><object id="3" type="model">{}</object>"##,
+            triangles(n, |i| format!(r#"pid="2" p1="{i}""#))
+        );
+        let started = std::time::Instant::now();
+        let r = read_ok(&package(&model(&resources, r#"<item objectid="3"/>"#)));
+        assert_eq!(r.scene.triangle_count(), n);
+        assert!(started.elapsed().as_secs() < 3, "{:?}", started.elapsed());
+
+        let bases: String = (0..=MAX_NODES).map(|i| format!(r##"<base name="b{i}" displaycolor="#FF0000"/>"##)).collect();
+        let resources = format!(
+            r#"<basematerials id="1">{bases}</basematerials><object id="2" type="model">{}</object>"#,
+            triangles(MAX_NODES + 1, |i| format!(r#"pid="1" p1="{i}""#))
+        );
+        let e = unsupported_text(read_err(&package(&model(&resources, r#"<item objectid="2"/>"#))));
+        assert!(e.contains("primitives"), "{e}");
+    }
+
+    /// Also finding 12: components were capped per object, never in total:
+    /// 100 objects × 100k components read at 1.86 GB from 609 KB.
+    #[test]
+    fn components_are_counted_across_every_object() {
+        let comps: String = (0..60_000).map(|_| r#"<component objectid="1"/>"#).collect();
+        let resources = format!(
+            r#"<object id="1" type="model">{TETRA}</object><object id="2" type="model"><components>{comps}</components></object><object id="3" type="model"><components>{comps}</components></object>"#
+        );
+        let e = unsupported_text(read_err(&package(&model(&resources, r#"<item objectid="2"/>"#))));
+        assert!(e.contains("components"), "{e}");
+    }
+
+    /// Finding 13 again, at the package: a relationships part is parsed with
+    /// a cap of its own rather than the 2M-node DOM ceiling.
+    #[test]
+    fn an_oversized_relationships_part_is_refused() {
+        let rels = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>{}</Relationships>"#,
+            "<a/>".repeat(MAX_RELS_NODES)
+        );
+        let m = model(&format!(r#"<object id="1" type="model">{TETRA}</object>"#), r#"<item objectid="1"/>"#);
+        let bytes = zip_of(&[("[Content_Types].xml", CONTENT_TYPES.as_bytes()), ("_rels/.rels", rels.as_bytes()), ("3D/3dmodel.model", m.as_bytes())], Store::Deflated);
+        let e = unsupported_text(read_err(&bytes));
+        assert!(e.contains("elements and attributes"), "{e}");
+    }
+
+    /// 3MF holds neither points nor lines, and `prepare` removes them before
+    /// the encoder (`write_scene` prepares again, so even an unprepared scene
+    /// is reduced first). The encoder given one anyway, as by a caller that
+    /// bypasses `prepare`, panics in a debug build. The cross-format test of
+    /// this name checks that `prepare` and `write_scene` never let one through.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "3mf was given a lines primitive; prepare strips what it cannot hold")]
+    fn writers_never_see_a_topology_they_cannot_hold_3mf() {
+        let _ = write_package(&fixtures::wire());
     }
 }

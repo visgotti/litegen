@@ -1,8 +1,13 @@
 import { INestApplication, ValidationPipe, VersioningType } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { ScrapeService } from '../src/modules/scraping/scrape.service';
+import { SeedService } from '../src/modules/seed/seed.service';
+import { PROVIDER_REGISTRY, allModelIds, getProviderDefinition } from '../src/providers/registry';
+
+const seedOf = (provider: string) => getProviderDefinition(provider)!.seed;
 
 /**
  * The "god" e2e spec: a single suite that boots the whole application against a
@@ -62,13 +67,13 @@ describe('price-api god e2e', () => {
 
   // ------------------------------------------------------------- providers
   describe('providers', () => {
-    it('lists all 7 providers with mode + scraper flag', async () => {
+    it('lists every registered provider with mode + scraper flag', async () => {
       const res = await http.get('/v1/providers').expect(200);
-      expect(res.body).toHaveLength(7);
-      const openai = res.body.find((p: any) => p.id === 'openai');
-      expect(openai.mode).toBe('scraped');
-      expect(openai.scraperImplemented).toBe(true);
-      expect(openai.modelCount).toBe(3);
+      expect(res.body).toHaveLength(PROVIDER_REGISTRY.length);
+      const fal = res.body.find((p: any) => p.id === 'fal');
+      expect(fal.mode).toBe('scraped');
+      expect(fal.scraperImplemented).toBe(true);
+      expect(fal.modelCount).toBe(seedOf('fal').length);
       const luma = res.body.find((p: any) => p.id === 'luma');
       expect(luma.mode).toBe('manual');
       expect(luma.scraperImplemented).toBe(false);
@@ -76,8 +81,14 @@ describe('price-api god e2e', () => {
     it('returns a provider with its models and prices', async () => {
       const res = await http.get('/v1/providers/openai').expect(200);
       expect(res.body.id).toBe('openai');
-      expect(res.body.models.length).toBe(3);
+      expect(res.body.models.length).toBe(seedOf('openai').length);
       expect(res.body.models[0].prices.length).toBeGreaterThan(0);
+    });
+    it("serves the fal models its scraper doesn't read as manual", async () => {
+      const res = await http.get('/v1/models/fal/video').expect(200);
+      expect(res.body.mode).toBe('manual');
+      const scraped = await http.get('/v1/models/fal/flux-dev').expect(200);
+      expect(scraped.body.mode).toBe('scraped');
     });
     it('404s an unknown provider', async () => {
       await http.get('/v1/providers/does-not-exist').expect(404);
@@ -86,18 +97,24 @@ describe('price-api god e2e', () => {
 
   // ---------------------------------------------------------------- models
   describe('models', () => {
-    it('lists all 32 models', async () => {
+    it('lists every seeded model', async () => {
       const res = await http.get('/v1/models').expect(200);
-      expect(res.body).toHaveLength(32);
+      expect(res.body).toHaveLength(allModelIds().size);
     });
     it('filters by provider', async () => {
       const res = await http.get('/v1/models?provider=fal').expect(200);
       expect(res.body.every((m: any) => m.providerId === 'fal')).toBe(true);
-      expect(res.body).toHaveLength(8);
+      expect(res.body).toHaveLength(seedOf('fal').length);
     });
     it('filters by mediaType', async () => {
       const res = await http.get('/v1/models?mediaType=video').expect(200);
       expect(res.body.every((m: any) => m.mediaType === 'video')).toBe(true);
+    });
+    it('carries 3D models, priced per request', async () => {
+      const res = await http.get('/v1/models?mediaType=model3d').expect(200);
+      expect(res.body.length).toBeGreaterThan(0);
+      expect(res.body.every((m: any) => m.mediaType === 'model3d')).toBe(true);
+      expect(res.body.every((m: any) => m.prices.every((p: any) => p.unit === 'per_request'))).toBe(true);
     });
     it('filters by freshness (all seeded fresh)', async () => {
       const fresh = await http.get('/v1/models?freshness=fresh').expect(200);
@@ -109,15 +126,16 @@ describe('price-api god e2e', () => {
       await http.get('/v1/models?mediaType=hologram').expect(400);
     });
     it('resolves a slashed model id', async () => {
-      const res = await http.get('/v1/models/openai/dall-e-3').expect(200);
-      expect(res.body.id).toBe('openai/dall-e-3');
-      expect(res.body.prices[0].amountUsd).toBe(0.04);
+      const res = await http.get('/v1/models/openai/gpt-image-2').expect(200);
+      expect(res.body.id).toBe('openai/gpt-image-2');
+      expect(res.body.active).toBe(true);
+      expect(res.body.prices[0].amountUsd).toBe(0.053);
     });
     it('404s an unknown model', async () => {
       await http.get('/v1/models/openai/nope').expect(404);
     });
     it('returns price history (seed baseline) with a limit', async () => {
-      const res = await http.get('/v1/models/openai/dall-e-3/history?limit=5').expect(200);
+      const res = await http.get('/v1/models/openai/gpt-image-2/history?limit=5').expect(200);
       expect(res.body.length).toBeGreaterThanOrEqual(1);
       expect(res.body[0]).toHaveProperty('recordedAt');
     });
@@ -130,7 +148,7 @@ describe('price-api god e2e', () => {
   describe('pricing', () => {
     it('returns the full flat table', async () => {
       const res = await http.get('/v1/pricing').expect(200);
-      expect(res.body.length).toBeGreaterThanOrEqual(32);
+      expect(res.body.length).toBeGreaterThanOrEqual(allModelIds().size);
       expect(res.body[0]).toHaveProperty('amountUsd');
       expect(res.body[0]).toHaveProperty('freshness');
     });
@@ -236,35 +254,35 @@ describe('price-api god e2e', () => {
   describe('admin: price upsert', () => {
     it('creates a manual price component', async () => {
       const res = await http
-        .post('/v1/admin/models/openai/dall-e-3/price')
+        .post('/v1/admin/models/openai/gpt-image-2/price')
         .set(auth())
         .send({ unit: 'per_image', amountUsd: 0.045 })
         .expect(201);
       expect(res.body.amountUsd).toBe(0.045);
       expect(res.body.source).toBe('manual');
 
-      const model = await http.get('/v1/models/openai/dall-e-3').expect(200);
+      const model = await http.get('/v1/models/openai/gpt-image-2').expect(200);
       const perImage = model.body.prices.find((p: any) => p.unit === 'per_image');
       expect(perImage.amountUsd).toBe(0.045);
       expect(perImage.source).toBe('manual');
     });
     it('updates the existing component on a second upsert (history grows)', async () => {
       await http
-        .post('/v1/admin/models/openai/dall-e-3/price')
+        .post('/v1/admin/models/openai/gpt-image-2/price')
         .set(auth())
         .send({ unit: 'per_image', amountUsd: 0.05, currency: 'USD', unitAmount: 1 })
         .expect(201);
-      const history = await http.get('/v1/models/openai/dall-e-3/history').expect(200);
+      const history = await http.get('/v1/models/openai/gpt-image-2/history').expect(200);
       expect(history.body.filter((h: any) => h.source === 'manual').length).toBeGreaterThanOrEqual(2);
     });
     it('creates a separate tiered component', async () => {
       const res = await http
-        .post('/v1/admin/models/openai/dall-e-3/price')
+        .post('/v1/admin/models/openai/gpt-image-2/price')
         .set(auth())
         .send({ unit: 'per_image', amountUsd: 0.08, tier: { quality: 'hd' } })
         .expect(201);
       expect(res.body.tier).toEqual({ quality: 'hd' });
-      const model = await http.get('/v1/models/openai/dall-e-3').expect(200);
+      const model = await http.get('/v1/models/openai/gpt-image-2').expect(200);
       expect(model.body.prices.filter((p: any) => p.unit === 'per_image').length).toBe(2);
     });
     it('404s an unknown model', async () => {
@@ -276,7 +294,7 @@ describe('price-api god e2e', () => {
     });
     it('400s a malformed body', async () => {
       await http
-        .post('/v1/admin/models/openai/dall-e-3/price')
+        .post('/v1/admin/models/openai/gpt-image-2/price')
         .set(auth())
         .send({ unit: 'per_image' })
         .expect(400);
@@ -289,7 +307,13 @@ describe('price-api god e2e', () => {
       expect(res.body.status).toBe('skipped');
     });
     it('triggers a scrape on a real scraped provider -> failed (no network) but keeps prices', async () => {
+      const svc = app.get(ScrapeService);
+      const live = svc.fetchImpl;
+      svc.fetchImpl = (async () => {
+        throw new Error('offline');
+      }) as unknown as typeof fetch;
       const res = await http.post('/v1/admin/providers/fal/scrape').set(auth()).expect(201);
+      svc.fetchImpl = live;
       expect(['failed', 'partial']).toContain(res.body.status);
       // Price preserved, freshness degraded to stale.
       const stale = await http.get('/v1/pricing?provider=fal&freshness=stale').expect(200);
@@ -352,6 +376,47 @@ describe('price-api god e2e', () => {
       // The change is recorded in history.
       const history = await http.get('/v1/models/fal/flux-dev/history').expect(200);
       expect(history.body.some((h: any) => h.source === 'scraped')).toBe(true);
+    });
+  });
+
+  // Seeding mirrors the registry: a model litegen's catalog dropped is retired
+  // (hidden from every list, still resolvable with its history), and one the
+  // catalog carries again comes back.
+  describe('seed: retired models', () => {
+    const RETIRED = 'openai/dall-e-3';
+
+    beforeAll(async () => {
+      const db = app.get(DataSource);
+      await db.query(
+        `INSERT INTO "models" ("id", "providerId", "displayName", "mediaType", "active")
+         VALUES ($1, 'openai', 'DALL-E 3', 'image', true) ON CONFLICT ("id") DO UPDATE SET "active" = true`,
+        [RETIRED],
+      );
+      await db.query(
+        `INSERT INTO "model_prices" ("modelId", "unit", "amountUsd", "lastUpdatedAt") VALUES ($1, 'per_image', 0.04, now())`,
+        [RETIRED],
+      );
+      await db.query(`UPDATE "models" SET "active" = false WHERE "id" = 'openai/gpt-image-2'`);
+      await app.get(SeedService).seed();
+    });
+
+    it('retires a model the registry no longer declares', async () => {
+      const res = await http.get(`/v1/models/${RETIRED}`).expect(200);
+      expect(res.body.active).toBe(false);
+    });
+    it('hides it from the model list, the pricing table and its provider', async () => {
+      const models = await http.get('/v1/models?provider=openai').expect(200);
+      expect(models.body.map((m: any) => m.id)).not.toContain(RETIRED);
+      const pricing = await http.get('/v1/pricing?provider=openai').expect(200);
+      expect(pricing.body.map((r: any) => r.modelId)).not.toContain(RETIRED);
+      const provider = await http.get('/v1/providers/openai').expect(200);
+      expect(provider.body.models.map((m: any) => m.id)).not.toContain(RETIRED);
+      const providers = await http.get('/v1/providers').expect(200);
+      expect(providers.body.find((p: any) => p.id === 'openai').modelCount).toBe(seedOf('openai').length);
+    });
+    it('brings back a model the registry declares again', async () => {
+      const res = await http.get('/v1/models/openai/gpt-image-2').expect(200);
+      expect(res.body.active).toBe(true);
     });
   });
 });

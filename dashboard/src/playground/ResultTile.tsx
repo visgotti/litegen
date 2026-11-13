@@ -1,9 +1,11 @@
+import { useFileSrc } from '../file-src';
 import type { ResultTileState } from './types';
 
 interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; rerunDisabled?: boolean; }
 
 export default function ResultTile({ tile, onRerun, rerunDisabled }: Props) {
-  const src = tile.b64_json ? `data:image/png;base64,${tile.b64_json}` : tile.url ?? undefined;
+  const fileSrc = useFileSrc(tile.b64_json ? undefined : tile.url);
+  const src = tile.b64_json ? `data:image/png;base64,${tile.b64_json}` : fileSrc;
   return (
     <div className="pg-tile" data-testid={`pg-tile-${tile.modelId}`}>
       <div className="pg-tile-head">

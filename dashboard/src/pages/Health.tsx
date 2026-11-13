@@ -9,31 +9,24 @@ export default function Health() {
   const [error, setError] = useState('');
   const [liveness, setLiveness] = useState<ProbeStatus>('unknown');
   const [readiness, setReadiness] = useState<ProbeStatus>('unknown');
+  // Bumped to fetch everything again (Refresh, and after the cache is cleared).
+  const [fetches, setFetches] = useState(0);
+  const refresh = () => setFetches(n => n + 1);
 
-  const refreshProbes = async () => {
-    // Liveness + readiness entirely through the SDK (the SDK throws on non-2xx).
-    try {
-      await client.health.live();
-      setLiveness('alive');
-    } catch {
-      setLiveness('error');
-    }
-    try {
-      await client.health.ready();
-      setReadiness('ready');
-    } catch {
-      setReadiness('not_ready');
-    }
-  };
-
-  const refresh = () => {
+  useEffect(() => {
+    let current = true;
     client.health.get()
-      .then(setHealth)
-      .catch(e => setError(e.message));
-    refreshProbes();
-  };
-
-  useEffect(() => { refresh(); }, []);
+      .then(h => { if (current) setHealth(h); })
+      .catch(e => { if (current) setError(e.message); });
+    // Liveness + readiness entirely through the SDK (the SDK throws on non-2xx).
+    client.health.live()
+      .then(() => 'alive' as const, () => 'error' as const)
+      .then(s => { if (current) setLiveness(s); });
+    client.health.ready()
+      .then(() => 'ready' as const, () => 'not_ready' as const)
+      .then(s => { if (current) setReadiness(s); });
+    return () => { current = false; };
+  }, [fetches]);
 
   const clearCache = async () => {
     try {

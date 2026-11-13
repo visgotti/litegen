@@ -9,6 +9,7 @@
 /v1/recipes/product_campaign_image
 /v1/text_to_image
 /v1/text_to_video
+/v1/video_to_audio
 /v1/video_to_hdr
 /v1/video_to_video
 /v1/video_upscale

@@ -22,8 +22,14 @@ No API keys are needed. Every source is a public spec or docs page.
 | code | meaning | what happens next |
 |---|---|---|
 | 0 | clean | nothing |
-| 1 | drift: new, missing or changed items | review each item (below) |
-| 2 | needs investigation: a source failed, or a definition is out of sync with `models/*.yaml` | fix the definition first (the skill does this) |
+| 1 | drift: new, missing, deprecated upstream or changed items, or a source with no baseline | review each item (below) |
+| 2 | needs investigation: a source failed, or a definition is out of sync with `models/*.yaml`; or a bad command line | fix the definition first (the skill does this); fix the command |
+
+A bad command line (a flag without its value, `--provider=` or `--provider ,`
+naming no provider, an empty `--snapshots`, an unknown flag such as
+`--dry-run`, or a stray word) stops with a usage message before anything is
+fetched or written. It never falls back to checking every provider into
+`snapshots/`.
 
 ## What the report means
 
@@ -38,18 +44,34 @@ No API keys are needed. Every source is a public spec or docs page.
   reported even while the others remain. Check the vendor's changelog or
   deprecations page. Retired means remove or replace the model, or drop the
   capability that used the endpoint. Renamed means fix the mapping, and the
-  adapter too if it sends the old id.
-- **An announced, future shutdown:** add it to `SCHEDULED_SHUTDOWNS` in
-  `litegen-core/tests/catalog_conformance.rs`. The model stays advertised
-  while the vendor still serves it. From the day after the date, the test
-  fails until the model is removed.
+  adapter too if it sends the old id. A model a source lists as deprecated
+  (still served) is not missing; see the next item.
+- **`deprecated upstream`**: a source lists a vendor id we map as deprecated
+  but still served (fal's registry status `deprecated`, through the source's
+  `deprecated` reader), and `models/*.yaml` records neither `deprecated_at`
+  nor `retires_at` for the model. Set `deprecated_at` to the date the vendor
+  deprecated it, and `replaced_by` when the vendor names a successor (whether
+  to move callers to it is a product decision). Once either date is set the
+  item stops appearing, and the model stays served.
+- **An announced, future shutdown:** set the row's `retires_at` to the date,
+  and add the same id and date to `SCHEDULED_SHUTDOWNS` in
+  `litegen-core/tests/catalog_conformance.rs` (a test requires the two to
+  match). The model stays advertised while the vendor still serves it. From
+  the day after the date, the test fails until the model is removed. For fal,
+  a shutdown date or replacement it announces shows up as a `changed`
+  carried-endpoint snapshot (`retires_at …`, `replacement …` in the
+  endpoint's heading).
 - **`changed`**: a source's snapshot differs from the committed one. Run
   `git diff scripts/model-drift/snapshots/` to see what changed upstream, such
   as new enum values, new bounds or new endpoints. Compare that against the
   typings in `models/<provider>.yaml`, then commit the snapshot to accept it.
-  An **untracked** snapshot has never been reviewed. Compare the whole file,
-  not a diff, before committing it. Committed snapshots are a reviewed
-  baseline, so committing one unreviewed would bury any mismatch it shows.
+- **`no baseline`**: the snapshots folder the run used had no earlier snapshot
+  of this source (a new source, a new provider, or a fresh `--snapshots`
+  folder), so nothing was compared. The run wrote the first one, unless
+  `--no-write`. Read the whole file (`<provider>/<key>.txt` in that folder)
+  against `models/<provider>.yaml`, as a diff would show nothing, then commit
+  it. Committed snapshots are a reviewed baseline, so committing one
+  unreviewed would bury any mismatch it shows.
 - **`FAILED <source>`**: the source didn't give a usable list. Possible causes:
   - an HTTP error
   - an HTML page where a spec or markdown was expected (the page moved, or now
@@ -89,6 +111,8 @@ export default {
   acknowledged: [{ pattern: /-\d{4}-\d{2}-\d{2}$/, reason: 'dated snapshot alias' }],
   // only for a model whose vendor publishes no request schema (rare): litegen id → reason
   untyped: {},
+  // only when the id search would take a model's typings from the wrong schema, or none: litegen id → source keys
+  typingsFrom: {},
 };
 ```
 
@@ -99,9 +123,29 @@ export default {
 - **Every carried model needs typings coverage.** Each vendor id must appear
   in at least one typings snapshot (a non-index source with its own
   `snapshot`), or the run fails with `(typings)`. An id list or an index page
-  does not count: it says the model exists, not what it accepts. An index
-  source whose snapshot is a request schema (its ids are field names, say)
-  counts when it sets `typings: true`.
+  does not count: it says the model exists, not what it accepts. A non-index
+  source whose snapshot is a lineup table or an id list says so with
+  `typings: false` (vidu's Model Map, Leonardo's `model-ids`). An index source
+  whose snapshot is a request schema (its ids are field names, say) counts
+  when it sets `typings: true`.
+- **`typingsFrom` pins a model's typings to named sources** (litegen id →
+  source keys). Use it only where the id search would find the wrong schema,
+  or none:
+  - a free-form model field, whose schema never names the id (Leonardo's
+    `POST /generations` takes diffusion-xl's UUID in `modelId`);
+  - a vendor id that another carried model sends to a different endpoint
+    (`pixverse/v5-multi-transition` sends `v5`, as `pixverse/v5` does, to
+    `multi_transition`).
+
+  A pinned model's typings come from those sources only, and a pin doesn't
+  require its vendor id: the model counts as covered once the pinned sources
+  succeed. So if PixVerse dropped `v5` from `multi_transition`, the report
+  would show `changed: multi-transition` (its `# model values` list), but no
+  `missing` (`v5` is still listed for the other endpoints) and no
+  `(typings)`. Read that diff. Every pinned key must be a typings source of
+  the same definition, and every pinned model must be mapped; otherwise the
+  run fails with `(config)`, and so does the test `every model in
+  models/*.yaml is mapped…`.
 - **Snapshots are typings evidence.** `openapiExcerpt` keeps structural keys
   only, since prose churns every week. For unions discriminated by `model`, it
   keeps only the branches for models we carry. `yamlPrune(markdownExcerpt(…))`
@@ -109,6 +153,11 @@ export default {
   `snapshot` fall back to their sorted id list.
 - **`index: true` sources** list docs pages or endpoints (for example
   `llms.txt`). A new page shows up as a changed snapshot, never as a model id.
+- **`deprecated: (parsed, body) => ids`** (optional, beside `extract`): the
+  ids a source lists as deprecated but still served. They are kept out of
+  `extract`'s ids, never read as missing, and reported as `deprecated
+  upstream` until the catalog records the deprecation. fal's carried-endpoint
+  sources use it for the registry status `deprecated`.
 - **Source preference:** an official machine-readable spec or list first. Next
   is a docs site's markdown twin (`llms.txt` → `<page>.md`). Last is
   server-rendered HTML.
@@ -121,8 +170,17 @@ without a mapping, so the check can't silently skip it.
 1. Add `providers/<name>.mjs`. Map every model in `models/<name>.yaml`,
    mirroring the adapter's model-resolution code in
    `litegen-core/src/providers/{image,video}/<name>.rs`.
-2. Run `node scripts/model-drift/check.mjs --provider <name> --snapshots "$(mktemp -d)"`
-   twice. The first run must not exit 2, and the second must show no `changed`.
+2. Run the check twice into one scratch folder:
+
+   ```bash
+   D="$(mktemp -d)"
+   node scripts/model-drift/check.mjs --provider <name> --snapshots "$D"   # run 1
+   node scripts/model-drift/check.mjs --provider <name> --snapshots "$D"   # run 2
+   ```
+
+   Run 1 must not exit 2. It exits 1 and lists every source under
+   `no baseline`, since the folder starts empty. Run 2 must show neither
+   `changed` (the snapshots are stable) nor `no baseline`.
 3. Run the tests and commit the definition. Its snapshots get committed by
    the first `/model-drift` run, after that run reviews them against
    `models/<name>.yaml`.

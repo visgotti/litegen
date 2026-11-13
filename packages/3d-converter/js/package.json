@@ -1,0 +1,60 @@
+{
+  "name": "@litegen/3d-converter",
+  "version": "0.1.0",
+  "description": "Convert 3D models between glb, gltf, obj, stl, ply, 3mf, dae, fbx, usdz and usda in Node.js and the browser: litegen's converter, compiled to WebAssembly.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visgotti/litegen.git",
+    "directory": "packages/3d-converter/js"
+  },
+  "homepage": "https://github.com/visgotti/litegen/tree/main/packages/3d-converter/js#readme",
+  "bugs": {
+    "url": "https://github.com/visgotti/litegen/issues"
+  },
+  "type": "module",
+  "keywords": [
+    "3d",
+    "gltf",
+    "glb",
+    "obj",
+    "stl",
+    "ply",
+    "3mf",
+    "collada",
+    "fbx",
+    "usdz",
+    "usd",
+    "converter",
+    "webassembly"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/node.js",
+      "default": "./dist/web.js"
+    },
+    "./litegen_3d_converter_bg.wasm": "./dist/litegen_3d_converter_bg.wasm",
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": [
+    "./dist/model.js",
+    "./dist/node.js",
+    "./dist/web.js"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"test/*.test.mjs\" && tsc -p test/tsconfig.json && tsc -p test/plain/tsconfig.json",
+    "bench": "node scripts/bench.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2"
+  }
+}

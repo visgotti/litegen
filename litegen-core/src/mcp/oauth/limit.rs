@@ -6,6 +6,11 @@
 //! back over a minute. Tokens, revocation and discovery are not limited: a
 //! refresh never waits on a busy network.
 //!
+//! With Redis the allowance is shared: every replica draws from the same
+//! bucket per address. Without it, or while Redis cannot be reached, each
+//! replica counts for itself; with fail-closed on, a request that cannot be
+//! counted against Redis is refused with 503 instead.
+//!
 //! A request counts against its connection's peer, unless the peer is a
 //! proxy on this machine or a private network (loopback, RFC 1918, unique or
 //! link local): then against the last address in `X-Forwarded-For`, the one
@@ -25,6 +30,8 @@ use axum::Json;
 use serde_json::json;
 
 use super::OAuthShared;
+use crate::api::middleware::rate_limit::{retry_after_secs, unverifiable_response, LimitRefusal};
+use crate::shared::{rate_limit as shared_bucket, SharedError, SharedRedis, Throttle};
 
 /// When this many addresses are tracked, those whose allowance is whole
 /// again are forgotten.
@@ -36,16 +43,54 @@ struct Bucket {
 }
 
 /// What each address has left of its allowance.
+///
+/// With Redis ([`AddressLimiter::with_shared`]) the allowances live there and
+/// every replica draws from the same ones. Without it, or while Redis cannot
+/// be reached and fail-closed is off, they are this process's own, in a map
+/// here. The map is never cleared when Redis answers again: a Redis that
+/// flaps must not hand every address a full allowance at each failure.
 #[derive(Default)]
-pub struct AddressLimiter(Mutex<HashMap<IpAddr, Bucket>>);
+pub struct AddressLimiter {
+    local: Mutex<HashMap<IpAddr, Bucket>>,
+    shared: Option<Arc<SharedRedis>>,
+    /// Lets the log say that Redis is out once a minute, not once a request.
+    outage_warning: Throttle,
+}
 
 impl AddressLimiter {
-    /// Spend one of `address`'s `per_minute` requests at `now`, or say in
-    /// how many seconds one is back.
-    pub fn try_take(&self, address: IpAddr, per_minute: u32, now: Instant) -> Result<(), u64> {
+    /// Allowances shared through `shared`, falling back to this process's own
+    /// while Redis cannot be reached (or refusing, if `shared.fail_closed()`).
+    pub fn with_shared(shared: Arc<SharedRedis>) -> Self {
+        Self { shared: Some(shared), ..Self::default() }
+    }
+
+    /// Spend one of `address`'s `per_minute` requests, or say why not:
+    /// [`LimitRefusal::Exceeded`] with the seconds until one is back, or
+    /// [`LimitRefusal::Unverifiable`] when Redis is out and fail-closed is on.
+    /// `address` is already the one a request counts against (an IPv6 address
+    /// by its /64, see [`client_address`]). `now` serves this process's own
+    /// map only.
+    pub async fn try_take(&self, address: IpAddr, per_minute: u32, now: Instant) -> Result<(), LimitRefusal> {
+        if let Some(shared) = &self.shared {
+            // Every replica names the address's bucket alike, so they share it.
+            match shared_bucket::take(shared, &format!("signin:{address}"), per_minute).await {
+                Ok((true, _)) => return Ok(()),
+                Ok((false, tokens)) => return Err(LimitRefusal::Exceeded { retry_after_secs: retry_after_secs(tokens, per_minute) }),
+                Err(e) if shared.fail_closed() => {
+                    self.warn_outage(&e, "sign-in requests are refused with 503 until it works again");
+                    return Err(LimitRefusal::Unverifiable);
+                }
+                Err(e) => self.warn_outage(&e, "limits are per replica until it works again"),
+            }
+        }
+        self.take_local(address, per_minute, now)
+    }
+
+    /// Spend one of `address`'s requests from this process's own map.
+    fn take_local(&self, address: IpAddr, per_minute: u32, now: Instant) -> Result<(), LimitRefusal> {
         let whole = f64::from(per_minute);
         let per_second = whole / 60.0;
-        let mut buckets = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut buckets = self.local.lock().unwrap_or_else(|e| e.into_inner());
         if buckets.len() >= MAX_TRACKED {
             buckets.retain(|_, b| now.saturating_duration_since(b.at) < Duration::from_secs(60));
         }
@@ -56,8 +101,29 @@ impl AddressLimiter {
             bucket.left -= 1.0;
             Ok(())
         } else {
-            Err(((1.0 - bucket.left) / per_second).ceil().max(1.0) as u64)
+            // Here `left < 1`, so the wait is `ceil((1 - left) / refill_rate)`:
+            // positive, and a whole number of seconds, so at least 1. That is
+            // why there is no `.max(1)`: `by_address` sends it as `Retry-After`,
+            // and a 0 there would ask the client to retry at once. The shared
+            // path refuses only with `tokens < 1` as well.
+            Err(LimitRefusal::Exceeded { retry_after_secs: retry_after_secs(bucket.left, per_minute) })
         }
+    }
+
+    /// Say that Redis sign-in limiting failed, at most once a minute. The
+    /// cause may be an unreachable Redis or an error reply from one that
+    /// answers. `consequence` is what the operator should expect meanwhile.
+    /// `error` is Redis's or the network's own text, never the URL.
+    fn warn_outage(&self, error: &SharedError, consequence: &str) {
+        if self.outage_warning.due(Instant::now()) {
+            tracing::warn!(%error, "Redis sign-in limiting failed; {consequence}");
+        }
+    }
+
+    /// How many addresses this process's own map tracks.
+    #[cfg(test)]
+    pub(super) fn tracked_addresses(&self) -> usize {
+        self.local.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
@@ -99,7 +165,10 @@ fn is_local(ip: IpAddr) -> bool {
 
 /// Refuse a request from an address that spent its allowance: 429 with
 /// `Retry-After`, as a page for the browser that opened `/oauth/authorize`
-/// and as an OAuth error for a client registering.
+/// and as an OAuth error for a client registering. With Redis and fail-closed
+/// on, while Redis can't be reached, the answer is a 503 with
+/// `Retry-After: 1` instead, since the allowance can't be checked: a page for
+/// the browser, and the fixed `rate_limit_unverifiable` error otherwise.
 pub async fn by_address(State(shared): State<Arc<OAuthShared>>, request: Request, next: Next) -> Response {
     let per_minute = shared.state.router.config.mcp.oauth.rate_limit_per_minute;
     if per_minute == 0 {
@@ -111,8 +180,15 @@ pub async fn by_address(State(shared): State<Arc<OAuthShared>>, request: Request
     let Some(address) = client_address(peer, forwarded.as_deref()) else {
         return next.run(request).await;
     };
-    let Err(wait) = shared.limiter.try_take(address, per_minute, Instant::now()) else {
-        return next.run(request).await;
+    let wait = match shared.limiter.try_take(address, per_minute, Instant::now()).await {
+        Ok(()) => return next.run(request).await,
+        Err(LimitRefusal::Unverifiable) if request.method() == Method::GET => {
+            let mut page = super::authorize::unavailable_page();
+            page.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(1u64));
+            return page;
+        }
+        Err(LimitRefusal::Unverifiable) => return unverifiable_response(),
+        Err(LimitRefusal::Exceeded { retry_after_secs: wait }) => wait,
     };
     tracing::info!(%address, path = request.uri().path(), "MCP OAuth request over the per-address limit");
     let mut response = if request.method() == Method::GET {

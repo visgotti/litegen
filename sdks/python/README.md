@@ -55,7 +55,7 @@ for update in client.models3d.generate(model="fal/hyper3d-rodin", prompt="a teap
 - **`output_formats` is a promise:** a `completed` job carries a mesh asset in every format you listed, or the job fails. The server decides which formats a model can deliver (see its `output_formats` param in `client.models.get(model_id)`). Any conversion happens on the server, never in the SDK.
 - **Lax mode:** with `strict=False`, params the model doesn't support are dropped instead of rejected, and `job.dropped_params` lists them.
 - **Cancel** an in-flight job with `client.generations.cancel(job.id)`.
-- **Convert** a mesh you already have: `client.models3d.convert(data, from_format="glb", to_format="stl")` returns a dict with `content` (bytes), `content_type`, `filename`, `format` and `losses` (what the target container could not keep, e.g. `["uvs"]`). It is a standalone utility: nothing is generated or billed. `client.models3d.convert_formats()` lists the containers it handles and its size cap.
+- **Convert** a mesh you already have: `client.models3d.convert(data, from_format="glb", to_format="stl")` returns a dict with `content` (bytes), `content_type`, `filename`, `format` and `losses` (what the target container could not keep, e.g. `["uvs"]`). It is a standalone utility: nothing is generated or billed. `client.models3d.convert_formats()` lists the containers it handles and its size cap. Pass `package="zip"` to get a zip holding the file and whatever goes beside it (an OBJ's `.mtl` and textures); the SDK returns it unopened.
 - **Timeout:** polling gives up after `JOB_DEFAULT_TIMEOUT` (2 hours 5 minutes) by default, past the 2 hours after which the server fails a job itself (override with `timeout=` in seconds), and raises `LiteGenPollingTimeoutError`. That stops the waiting, not the job, which can still complete and be billed: resume with `client.models3d.wait_for_completion(job_id)`.
 - **Types:** responses are plain dicts. For static checking, import the TypedDicts from `litegen.types` (`Model3dGenerationResponse`, `Model3dAsset`, `Model3dGenerateParams`, ...). `client.models.list(media_type="model3d")` lists the 3D models.
 
@@ -63,7 +63,7 @@ The async client mirrors this: `await client.models3d.generate(...)`, `async for
 
 ## Timeouts, headers and metadata
 
-- **Timeouts:** a request waits up to `DEFAULT_TIMEOUT` (390 s) unless `timeout=` says otherwise: a synchronous call can take three vendor attempts of up to 120 s each.
+- **Timeouts:** a request waits up to `DEFAULT_TIMEOUT` (690 s) unless `timeout=` says otherwise: a synchronous call can take three vendor attempts of up to 120 s each, after fetching a 3D operation's URL source for up to 300 s.
 - **Response headers:** `on_response=` is called with every `httpx.Response`, errors included; `response_meta(response.headers)` reads litegen's (`dropped_params`, `rate_limit`, `idempotent_replayed`, `retry_after`). A `LiteGenAPIError` carries its response's `headers`.
 - **Idempotency:** `idempotency_key=` on every billed submit replays the first answer to a repeated request, billed once.
 - **Cancel** returns the row as settled (a cancelled job is refunded) with `vendor_cancelled`, whether the vendor took the cancel.

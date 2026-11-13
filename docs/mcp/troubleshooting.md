@@ -67,13 +67,27 @@ deletes a registration never used within 30 days, or unused for a year with
 no sign-in left. A self-hosted server must be able to reach the client's
 metadata URL over HTTPS (on `claude.ai` or `chatgpt.com`, for example).
 
+**"Can't sign in to LiteGen: This app's sign-in request has a problem".**
+The app's sign-in link is wrong in a way only the app can fix: the page names
+the problem (no PKCE, a `response_type` other than `code`, `ai:` and `admin:`
+scopes at once, or a `resource` that isn't one of LiteGen's MCP endpoints) and
+the app's host. LiteGen shows this page instead of sending you back, because
+it doesn't trust that host to receive the error before you've signed in. The
+link on the page hands the app the error if you want it to. An operator can
+list hosts in `mcp.oauth.trusted_redirect_hosts` to send their errors straight
+back ([self-hosting](self-hosting.md)); apps on `localhost` always get them.
+
 **"Too many sign-in attempts came from your network", or a 429 from
 `/oauth/register`.** Each address may start 30 sign-ins a minute
 (`mcp.oauth.rate_limit_per_minute`). Wait the seconds the page or the
 `Retry-After` header gives, then connect again. On a self-hosted server
 where this happens to everyone at once, the proxy is probably not passing
 visitors' addresses, so they all share its allowance; see
-[self-hosting](self-hosting.md#behind-a-reverse-proxy).
+[self-hosting](self-hosting.md#behind-a-reverse-proxy). With several replicas
+and Redis set, the allowance is shared across them, so a retry on another
+replica doesn't help. With `LITEGEN_FAIL_CLOSED_RATE_LIMIT_ENFORCEMENT` on, a
+503 from `/oauth/register` or `/oauth/authorize` means the replica can't reach
+Redis to count the request: wait a moment and connect again.
 
 **"This sign-in request has expired. Go back to the app and connect
 again."** A sign-in must be answered within ten minutes, and only once.
@@ -87,11 +101,11 @@ as a member. Ask an owner or admin to connect it, or have the app ask for
 **The app reports `access_denied`.** Someone chose **Deny** on the sign-in
 page. Connect again to approve.
 
-**The app reports `invalid_target`.** It asked to sign in for a `resource`
-that is not one of LiteGen's MCP endpoints, usually because
-`server.public_base_url` differs from the URL the app uses.
+**The app reports `invalid_target`** (or LiteGen's page names it). It asked
+to sign in for a `resource` that is not one of LiteGen's MCP endpoints,
+usually because `server.public_base_url` differs from the URL the app uses.
 
-**The app reports `invalid_scope`.** It asked for `ai:` and `admin:` scopes
+**The app reports `invalid_scope`** (or LiteGen's page names it). It asked for `ai:` and `admin:` scopes
 at once (one sign-in is for one endpoint: connect each endpoint on its own),
 for `admin:` scopes on a server without `/admin/mcp`, or, when refreshing,
 for more than you approved.

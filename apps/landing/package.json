@@ -12,6 +12,7 @@
     "sync-openapi": "node scripts/sync-openapi.mjs",
     "sync-models": "node scripts/sync-models.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
+    "test:built": "node --test e2e/*.test.mjs",
     "prebuild": "node scripts/sync-capabilities.mjs && node scripts/sync-openapi.mjs && node scripts/sync-models.mjs"
   },
   "dependencies": {

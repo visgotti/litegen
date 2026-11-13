@@ -24,6 +24,7 @@ use std::time::Duration;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
+use crate::api::middleware::body::BodyBudget;
 use crate::api::middleware::AppState;
 use auth::OriginPolicy;
 use registry::Registry;
@@ -114,6 +115,12 @@ pub struct McpShared {
     pub registry: Arc<Registry>,
     pub http: reqwest::Client,
     pub origins: OriginPolicy,
+    /// What MCP request bodies are read against (`auth::mcp_auth`): a budget
+    /// of their own, `max_in_flight` bodies of up to `MAX_BODY_BYTES`. A
+    /// call's body stays charged until the call ends, and the request its
+    /// tool sends on through `api` is charged there, to the API's budget; one
+    /// shared budget would count every call twice.
+    pub body: BodyBudget,
 }
 
 /// The `/mcp` and `/admin/mcp` routes, as the config enables them. `api` is the
@@ -146,7 +153,8 @@ pub fn router(state: Arc<AppState>, api: axum::Router) -> axum::Router {
         Some(hosts)
     };
 
-    let shared = Arc::new(McpShared { state, api, registry: tool_registry(), http: preview_client(), origins: OriginPolicy::new(origins) });
+    let body = BodyBudget::new(config.backpressure.max_in_flight, MAX_BODY_BYTES, config.server.request_body_timeout());
+    let shared = Arc::new(McpShared { state, api, registry: tool_registry(), http: preview_client(), origins: OriginPolicy::new(origins), body });
 
     let mut routes = axum::Router::new();
     if !config.mcp.enabled {
@@ -173,9 +181,11 @@ fn mount(routes: axum::Router, surface: Surface, svc: StreamableHttpService<serv
 
 /// The client that fetches external images for previews. It never follows a
 /// redirect: a URL passes `validate_public_url` first, and a public host must
-/// not be able to 3xx the fetch into a private address.
+/// not be able to 3xx the fetch into a private address. It connects only to
+/// public addresses, so a name whose answer changes after that check can't
+/// reach one either.
 pub(crate) fn preview_client() -> reqwest::Client {
-    crate::util::ssrf::no_redirect_client_with_timeout(Duration::from_secs(10))
+    crate::util::ssrf::public_only_client_with_timeout(Duration::from_secs(10))
 }
 
 fn service(

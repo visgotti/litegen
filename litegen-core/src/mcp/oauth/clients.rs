@@ -196,7 +196,7 @@ pub fn redirect_allowed(registered: &[String], requested: &str) -> bool {
     })
 }
 
-fn is_loopback_host(host: Option<&str>) -> bool {
+pub(super) fn is_loopback_host(host: Option<&str>) -> bool {
     matches!(host, Some("localhost" | "127.0.0.1" | "[::1]"))
 }
 

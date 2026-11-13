@@ -773,6 +773,37 @@
                 }
             }
         },
+        "/v1/admin/revoke-links": {
+            "post": {
+                "tags": [
+                    "Gateway"
+                ],
+                "summary": "POST /v1/admin/revoke-links \u2014 end every link litegen signed, gateway-wide.",
+                "operationId": "admin_revoke_links",
+                "responses": {
+                    "200": {
+                        "description": "Every litegen link issued before `revoked_at` no longer works. A bucket's own presigned links work until they expire.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/LinksRevoked"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/admin/routes": {
             "get": {
                 "tags": [
@@ -1056,6 +1087,180 @@
                     },
                     "404": {
                         "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/apps/{app_id}/access": {
+            "get": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "GET /v1/apps/{app_id}/access \u2014 who may open the app's stored files\n(`docs/storage-access.md`): its own settings and the ones in force.",
+                "operationId": "get_app_access",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The app's own settings and the ones its files follow",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AppAccessSettings"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such app",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "PUT /v1/apps/{app_id}/access \u2014 replace the app's stored-file access\nsettings. An omitted or `null` field uses the gateway's value.",
+                "operationId": "put_app_access",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PutAppAccessRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Stored; the app's own settings and the ones its files now follow",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AppAccessSettings"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "invalid_mode, invalid_owner_scope or invalid_ttl",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such app",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/apps/{app_id}/access/revoke-links": {
+            "post": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "POST /v1/apps/{app_id}/access/revoke-links \u2014 end every litegen link to the app's files.",
+                "operationId": "revoke_app_links",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "litegen's links to the app's files issued before `revoked_at` no longer work. A bucket's own presigned links work until they expire.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/LinksRevoked"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such app",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2864,6 +3069,76 @@
                     }
                 }
             },
+            "delete": {
+                "tags": [
+                    "Generations"
+                ],
+                "summary": "DELETE /v1/generations/{id} \u2014 delete a finished generation's files and request.",
+                "operationId": "delete_generation",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The generation as it now stands: its kept files deleted (`files_deleted_at`), its request (prompt and params) removed from it and from the request log. The billing record stays. Files in an app's own bucket are deleted too; a vendor's own files (`kept: false`) are the vendor's.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Generation"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`generation_running`: cancel it first",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "`files_delete_failed`: a file could not be deleted; nothing was marked, so try again",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
             "patch": {
                 "tags": [
                     "Generations"
@@ -3046,6 +3321,153 @@
                 }
             }
         },
+        "/v1/generations/{id}/assets/{index}/signed": {
+            "get": {
+                "tags": [
+                    "Generations"
+                ],
+                "summary": "GET /v1/generations/{id}/assets/{index}/signed \u2014 One file, through a link litegen signed.",
+                "operationId": "get_signed_generation_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "index",
+                        "in": "path",
+                        "description": "The asset's `index` in `GET /v1/generations/{id}/assets`",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "minimum": 0
+                        }
+                    },
+                    {
+                        "name": "expires",
+                        "in": "query",
+                        "description": "When the link stops working (unix seconds)",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "issued",
+                        "in": "query",
+                        "description": "When litegen issued the link (unix seconds)",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "signature",
+                        "in": "query",
+                        "description": "litegen's signature over the file, `issued` and `expires`",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The file, with its content type. No credentials: the signature is the permission"
+                    },
+                    "403": {
+                        "description": "`invalid_link`, `link_expired` or `link_revoked`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such generation or asset",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "`vendor_file_gone`: the vendor no longer has a file litegen didn't keep",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/generations/{id}/revoke-links": {
+            "post": {
+                "tags": [
+                    "Generations"
+                ],
+                "summary": "POST /v1/generations/{id}/revoke-links \u2014 end every litegen link to one generation's files.",
+                "operationId": "revoke_generation_links",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "litegen's links to this generation's files issued before `revoked_at` no longer work. A bucket's own presigned links work until they expire.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/LinksRevoked"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/images/cost": {
             "post": {
                 "tags": [
@@ -3106,6 +3528,30 @@
                                 "null"
                             ]
                         }
+                    },
+                    {
+                        "name": "X-Litegen-Keep-Outputs",
+                        "in": "header",
+                        "description": "`false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). A request can keep less than its app does, never more; any other value is a 400 `invalid_keep_outputs_header`.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Prefer",
+                        "in": "header",
+                        "description": "RFC 7240. `respond-async` answers 202 as soon as the vendor has the job; `wait=N` waits up to N seconds (at most the vendor timeout) and answers 202 if the job is still running then. Honoured only for a model whose vendor runs jobs, a request that keeps its output and isn't an edit litegen finishes itself; otherwise the call is synchronous (`Preference-Applied` absent). See docs/async-images.md.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
                     }
                 ],
                 "requestBody": {
@@ -3128,6 +3574,12 @@
                                 },
                                 "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
                             },
+                            "X-Litegen-Cache": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "What the cache did: `hit` (answered from it), `miss` (looked up, not found) or `bypass` (off for this model, or the request sent `Cache-Control: no-cache`). See docs/gateway-settings.md."
+                            },
                             "X-Litegen-Dropped-Params": {
                                 "schema": {
                                     "type": "string"
@@ -3143,6 +3595,30 @@
                             }
                         }
                     },
+                    "202": {
+                        "description": "The vendor has the job and litegen delivers its image later (`Prefer: respond-async`, or a `wait` it outlasted): poll `GET /v1/generations/{id}` or wait for the key's webhook.",
+                        "headers": {
+                            "Location": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`/v1/generations/{id}`."
+                            },
+                            "Preference-Applied": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "The preference honoured: `respond-async`, `wait=N`, or both."
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ImageGenerationAccepted"
+                                }
+                            }
+                        }
+                    },
                     "400": {
                         "description": "Bad request",
                         "content": {
@@ -3153,8 +3629,38 @@
                             }
                         }
                     },
+                    "404": {
+                        "description": "`model_not_found`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "409": {
                         "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "`model_retired`: the model is past its retirement; `replaced_by` names its successor",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`region_too_small`: an edit region smaller than the vendor takes. A reference that names a generation litegen can't use (`reference_images`: unreadable, too large, a format the model doesn't take).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3174,7 +3680,7 @@
                         }
                     },
                     "504": {
-                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one. When that job can still be delivered, `generation_id` names the generation it goes to and `status` is `processing`.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3246,6 +3752,16 @@
                             }
                         }
                     },
+                    "402": {
+                        "description": "`quota_exceeded` / `budget_exceeded`: the key's quota or a budget it counts against is spent.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "404": {
                         "description": "`model_not_found`",
                         "content": {
@@ -3266,8 +3782,38 @@
                             }
                         }
                     },
+                    "410": {
+                        "description": "`model_retired`: the model is past its retirement; `replaced_by` names its successor",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`rate_limit_exceeded`: the key's requests per minute (`Retry-After` is set); or the vendor's own rate limit, retryable.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "502": {
                         "description": "Provider error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "litegen is at capacity, or the app's bucket can't be reached; retry shortly.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4094,7 +4640,7 @@
                 "tags": [
                     "Models"
                 ],
-                "summary": "GET /v1/models \u2014 List all available models.",
+                "summary": "GET /v1/models \u2014 The models the caller may use (`?all=true`: every model the gateway serves).",
                 "operationId": "list_models",
                 "parameters": [
                     {
@@ -4104,6 +4650,15 @@
                         "required": false,
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    {
+                        "name": "all",
+                        "in": "query",
+                        "description": "true: every model the gateway serves, including those outside the caller's org pool and app access, which generations still enforce. Default: only the models the caller may use.",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean"
                         }
                     }
                 ],
@@ -4153,6 +4708,16 @@
                     },
                     "404": {
                         "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "Retired: `model_retired`, with `replaced_by` naming its successor",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4224,6 +4789,18 @@
                                 "null"
                             ]
                         }
+                    },
+                    {
+                        "name": "X-Litegen-Keep-Outputs",
+                        "in": "header",
+                        "description": "`false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). A request can keep less than its app does, never more; any other value is a 400 `invalid_keep_outputs_header`.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
                     }
                 ],
                 "requestBody": {
@@ -4262,7 +4839,17 @@
                         }
                     },
                     "400": {
-                        "description": "Bad request",
+                        "description": "Bad request: a request that fails validation (`param_*`, with `param`), or one that keeps nothing (`X-Litegen-Keep-Outputs: false`) yet asks litegen for something it makes from a file it keeps: a container it converts (`format_needs_keeping`) or an output option it applies (`option_needs_keeping`, naming the option in `param`, e.g. `output_packages`, `ktx2_textures`, `dae_morphs`, `usdz_root`, `usd_clips`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`model_not_found`",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4273,6 +4860,26 @@
                     },
                     "409": {
                         "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "`model_retired`: the model is past its retirement; `replaced_by` names its successor",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "A `source_model` litegen can't use (unreadable, too large, too many triangles, no skin to animate), or the vendor's free preflight refused it (its own code).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4345,6 +4952,322 @@
                     },
                     "404": {
                         "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/grants": {
+            "get": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "GET /v1/oauth/grants \u2014 The apps a person has connected through OAuth.",
+                "operationId": "list_grants",
+                "parameters": [
+                    {
+                        "name": "user_id",
+                        "in": "query",
+                        "description": "Platform admin only: whose connected apps to list.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The person's connected apps, newest first",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ConnectedApp"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The platform admin named no `user_id`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Not a person (an API key), or `user_id` from anyone but the platform admin",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/grants/{id}": {
+            "delete": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "DELETE /v1/oauth/grants/{id} \u2014 Disconnect an app.",
+                "operationId": "revoke_grant",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The connected app's grant id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Revoked: its tokens stop working at once",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RevokedGrant"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such connected app of yours",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/requests/{id}": {
+            "get": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "GET /v1/oauth/requests/{id} \u2014 A pending sign-in request, for the consent page.",
+                "operationId": "get_request",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The request id from the consent page's `request` parameter",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The request, the app and the orgs the person can approve it in",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OAuthRequestView"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No dashboard session",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Unknown or expired",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Already approved or denied",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/requests/{id}/approve": {
+            "post": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "POST /v1/oauth/requests/{id}/approve \u2014 Approve a sign-in request.",
+                "operationId": "approve_request",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The request id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ApproveOAuthRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Send the browser to `redirect_to`: the app's redirect URI with an authorization code",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OAuthRedirect"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "No scopes, or an app outside the org",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No dashboard session",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`not_a_member` of the org, or `scope_not_grantable` by the person's role there",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Unknown or expired",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Already approved or denied",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/requests/{id}/deny": {
+            "post": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "POST /v1/oauth/requests/{id}/deny \u2014 Deny a sign-in request.",
+                "operationId": "deny_request",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The request id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Send the browser to `redirect_to`: the app's redirect URI with `error=access_denied`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OAuthRedirect"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No dashboard session",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Unknown or expired",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Already approved or denied",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6339,13 +7262,13 @@
                     "Utilities"
                 ],
                 "summary": "POST /v1/utils/models3d/convert \u2014 Convert a mesh between containers without generating anything.",
-                "description": "The body is the raw file. The response is the converted file, with the\ntarget's `Content-Type`. Whatever the target container can hold survives\n(materials, textures, skins, animation); what it cannot is dropped and\nnamed in `X-Litegen-Conversion-Losses`.\n\nLive: `curl --data-binary @fox.glb \"https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj\" -H \"Authorization: Bearer sk_live_...\" -o fox.obj`",
+                "description": "The body is the raw file. The response is the converted file, with the\ntarget's `Content-Type`. Whatever the target container can hold survives\n(materials, textures, skins, animation); what it cannot is dropped and\nnamed in `X-Litegen-Conversion-Losses`. WebP and KTX2 (Basis Universal)\ntextures are re-encoded as PNG, as generations deliver them, so no\ncontainer drops them and, by default, no glTF requires\n`EXT_texture_webp` or `KHR_texture_basisu` (`ktx2_textures=keep` leaves a\nKTX2 in a glb or gltf, which then requires `KHR_texture_basisu`). By\ndefault the output is one file: OBJ carries its materials as vertex\ncolours, and Collada, USDA and USDC leave textures out (named as losses).\n`package=zip` answers with a zip of the file and its sidecars instead,\nwhich keeps them. A USD file (`.usda`, `.usdc`, or a `.usd` holding either)\nis read with `from=usda` or `from=usdc`, whichever encoding it is in.\n\nLive: `curl --data-binary @fox.glb \"https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj\" -H \"Authorization: Bearer sk_live_...\" -o fox.obj`",
                 "operationId": "convert_model3d",
                 "parameters": [
                     {
                         "name": "from",
                         "in": "query",
-                        "description": "Container the request body is in. Must be one of `GET /v1/utils/models3d/formats`.",
+                        "description": "Container the request body is in. Must be one of `GET /v1/utils/models3d/formats`. `usda` and `usdc` each read either USD encoding, text or a binary crate (`.usdc`, or a `.usd` holding either).",
                         "required": true,
                         "schema": {
                             "$ref": "#/components/schemas/Model3dFormat"
@@ -6358,6 +7281,124 @@
                         "required": true,
                         "schema": {
                             "$ref": "#/components/schemas/Model3dFormat"
+                        }
+                    },
+                    {
+                        "name": "units",
+                        "in": "query",
+                        "description": "Only when `to` is `stl`, `obj` or `ply`, which carry no units: the unit the written numbers are in, `m` (the default), `cm`, `mm`, `in` or `ft`. Slicers read STL as millimetres.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "up",
+                        "in": "query",
+                        "description": "Only when `to` is `stl`, `obj` or `ply`: the written up axis, `y` (the default, glTF's) or `z` (slicers, CAD, Blender), turning +Y up to +Z up and the front (+Z) to -Y.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "from_units",
+                        "in": "query",
+                        "description": "Only when `from` is `stl`, `obj` or `ply`: the unit the body's numbers are in, as `units`. Default `m`.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "from_up",
+                        "in": "query",
+                        "description": "Only when `from` is `stl`, `obj` or `ply`: the body's up axis, `y` (the default) or `z`.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "fbx_color_space",
+                        "in": "query",
+                        "description": "Only when `from` or `to` is `fbx`: how FBX material and light colours are stored, at that end. `srgb` (the default; three.js reads them so) or `linear` (Blender, ufbx and assimp read both so, and Unity and Unreal material colours). Vertex colours are sRGB either way.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "package",
+                        "in": "query",
+                        "description": "`file` (the default) answers with the converted file alone; `zip` answers with a zip (`application/zip`, `model.<to>.zip`) of the file and the sidecars it references (an OBJ's `.mtl` and `textures/`, Collada's, USDA's and USDC's `textures/`, a `.gltf`'s `.bin` and images), at the paths it names them by, the file first. Unzipped, the folder opens as it is: an OBJ keeps its materials, Collada, USDA and USDC keep their textures, and the losses header is judged against the package. A single-file container (glb, fbx, stl, ply, 3mf, usdz) zips to one entry, the `file` answer byte for byte.",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "What the converter answers with (`package`).",
+                            "enum": [
+                                "file",
+                                "zip"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "ktx2_textures",
+                        "in": "query",
+                        "description": "`png` (the default) re-encodes every KTX2 (Basis Universal) texture as PNG, as WebP is, so no container drops it and no glTF requires `KHR_texture_basisu`: ETC1S, UASTC and uncompressed RGBA8 KTX2 files decode, and the PNG holds the values the KTX2 stores, with no colour conversion. A KTX2 that cannot be decoded, or that would pass the 64 MiB texture budget, is left out and named as an `image_formats` loss. `keep` leaves the KTX2 as it is, byte for byte, when `to` is `glb` or `gltf`, referenced through `KHR_texture_basisu`, which the file then requires, so a reader with no KTX2 support may refuse it: it suits viewers that upload KTX2 to the GPU (three.js with KTX2Loader, Babylon.js, Godot). Every other `to` gets PNG whichever you choose.",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "What the converter does with a KTX2 (Basis Universal) texture\n(`ktx2_textures`).",
+                            "enum": [
+                                "png",
+                                "keep"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "fbx_light_units",
+                        "in": "query",
+                        "description": "Only when `from` or `to` is `fbx`: the units FBX light strengths are stored in, at that end. `photometric` (the default) is the scene's own, glTF's: `Intensity` is 100 \u00d7 the candela (point and spot lights) or lux (directional lights), which three.js's FBXLoader and ufbx read back. `blender` stores 100 \u00d7 the `energy` Blender's own glTF importer gives the same scene's glTF light (a point or spot light's candela \u00d7 4\u03c0 / 683 W, a directional light's lux / 683 W/m\u00b2), so the light opens in Blender as bright as the glTF does, and reads a light Blender wrote as the glTF light whose Blender glTF import gives that `energy`. Colour, cones and range are the same either way. The option applies at whichever end is fbx, so `from=fbx&to=fbx` with `blender` reads Blender's units and writes them back, a no-op: to move a Blender file to `photometric`, convert twice (fbx to glb with `blender`, then glb to fbx).",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "usd_light_units",
+                        "in": "query",
+                        "description": "Only when `from` or `to` is `usdz`, `usda` or `usdc`: the units USD light strengths are stored in, at that end. `photometric` (the default) is UsdLux's own, by the schema: a point or spot light is a normalised `SphereLight` of 4 \u00d7 the candela, a directional light a normalised `DistantLight` of the lux (Storm, usdview's renderer, agrees on the sun and draws such a sphere 4\u00d7 brighter). `blender` writes the UsdLux values Blender's USD exporter writes for the `energy` Blender's own glTF importer gives the same scene's glTF light (a point or spot light's candela \u00d7 4\u03c0 / 683 W, a directional light's lux / 683 W/m\u00b2), so the light opens in Blender as bright as the glTF does, and reads a light prim without litegen's `customData` (every one Blender wrote) as the glTF light whose Blender glTF import gives that `energy`. A file litegen wrote also carries its exact strengths in `customData`, which litegen reads in preference to the UsdLux values under either choice. The option applies at whichever end is usdz, usda or usdc: `from=usdz&to=usdz` with `blender` keeps the strengths of a file in Blender's units, and rewrites those of a file litegen wrote in Blender's units, its `customData` keeping the exact values. To move a Blender file to `photometric`, convert twice (usdz to glb with `blender`, then glb to usdz).",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "dae_morphs",
+                        "in": "query",
+                        "description": "Only when `to` is `dae`: how Collada's morph targets (blend shapes) are written. `bake` (the default) applies the targets at each node's weights and drops their weight animation, which every Collada reader opens. `keep` writes them as `<morph>` controllers with their weight animation, which SceneKit (and so Xcode) and Godot read, while three.js's ColladaLoader and assimp refuse the whole file, so choose it only for a reader that opens controllers.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "usdz_root",
+                        "in": "query",
+                        "description": "Only when `to` is `usdz`: what the package's root layer, its first entry, is. `usda` (the default) is USDA text, which `usdchecker --arkit` accepts (the rule demanding a crate was removed in OpenUSD 24.03) and which `<model-viewer>` hands to AR Quick Look as it is. `usdc` is the binary crate, as Apple's own packagers write it: the package is `model.usdc` and its textures, every entry stored and 64-byte aligned either way. The two read back as one scene.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "usd_clips",
+                        "in": "query",
+                        "description": "Only when `to` is `usda`, `usdc` or `usdz`: which animation clips the USD file holds. `all` keeps every clip as an alternative, a variant set `Animation` on the default prim with one variant per clip, the first selected, so a reader that composes variants can switch between them and one that does not plays the first. Every clip's skeletal and blend-shape animation is kept; rigid (node) motion is the first clip's only, the other clips' is named in the losses, and a scene whose clips are all rigid writes as `first`. `first` keeps the first clip alone. The default is `all` for `usda` and `usdc`, `first` for `usdz` until AR Quick Look's behaviour with variants is checked on a device.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 ],
@@ -6376,13 +7417,19 @@
                 },
                 "responses": {
                     "200": {
-                        "description": "The converted file. Content-Type is the target container's, e.g. model/obj",
+                        "description": "The converted file, with the target container's Content-Type (e.g. model/obj); with `package=zip`, a zip of it and its sidecars (`application/zip`)",
                         "headers": {
                             "X-Litegen-Conversion-Losses": {
                                 "schema": {
                                     "type": "string"
                                 },
-                                "description": "Comma-separated kinds of content in the input that the target container could not hold, sorted and deduplicated: animation, skins, morph_targets, normals, uvs, vertex_colors, textures, image_formats, materials, alpha, hierarchy, meshes, texture_sampling, texture_transforms, geometry. Judged from what the input actually contains, so a plain mesh to STL loses nothing. Absent when nothing was lost."
+                                "description": "Comma-separated kinds of content in the input that the target container could not hold, in alphabetical order and deduplicated: animation, skins, morph_targets, normals, uvs, vertex_colors, textures, image_formats, materials, alpha, hierarchy, meshes, texture_sampling, texture_transforms, geometry, lights, cameras, points, lines. Judged from what the input actually contains: a mesh with no normals, materials or UVs loses nothing to STL, while one that has them names them. `points` and `lines` name point and line primitives (a point cloud, a wireframe) in a container that has none: STL, 3MF and FBX hold neither, Collada holds no points, and PLY holds points only in a file with no faces or edges. Absent when nothing was lost."
+                            },
+                            "X-Litegen-Conversion-Warnings": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "What reading the input itself dropped or approximated, in prose, joined by `; `: a material library or texture the upload could not include, a glTF extension litegen does not carry (material variants, animation pointers, \u2026), cubic and NURBS curves, a Gaussian splat's extra attributes, an FBX animation layer. Non-ASCII characters are replaced by `?`. Absent when the reader had nothing to say."
                             }
                         },
                         "content": {
@@ -6392,11 +7439,28 @@
                                     "format": "binary",
                                     "description": "A mesh file as raw bytes, for the spec only: the handler reads the `Body`\ndirectly. Without this, `Vec<u8>` documents as an array of integers and the\nSDK generators type the upload as `number[]`."
                                 }
+                            },
+                            "application/zip": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary",
+                                    "description": "A mesh file as raw bytes, for the spec only: the handler reads the `Body`\ndirectly. Without this, `Vec<u8>` documents as an array of integers and the\nSDK generators type the upload as `number[]`."
+                                }
                             }
                         }
                     },
                     "400": {
-                        "description": "`from` or `to` missing or not convertible (`param_required`, `format_unsupported`), or the body is not a `from` file (`format_mismatch`)",
+                        "description": "`from` or `to` missing, repeated or not convertible, an unknown parameter, or `units`/`up`/`from_units`/`from_up` for a container that declares its own, or `fbx_color_space` or `fbx_light_units` with no fbx end, or `usd_light_units` with no usdz, usda or usdc end, or `dae_morphs` when `to` is not dae, or `usdz_root` when `to` is not usdz, or `usd_clips` when `to` is not usda, usdc or usdz (`param_required`, `param_repeated`, `param_unsupported`, `format_unsupported`); a `units`, `up`, `fbx_color_space`, `fbx_light_units`, `usd_light_units`, `dae_morphs`, `usdz_root`, `usd_clips`, `package` or `ktx2_textures` value the converter does not take (`param_invalid`); the body is not a `from` file (`format_mismatch`); or the upload broke off (`body_unreadable`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "408": {
+                        "description": "The upload took longer than 120 s (`body_timeout`)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6416,7 +7480,17 @@
                         }
                     },
                     "422": {
-                        "description": "The file parsed as `from` but cannot be converted (`mesh_malformed`, `mesh_unsupported`, `mesh_empty`)",
+                        "description": "The file is `from` but unreadable or past a converter limit (`mesh_malformed`, `mesh_unsupported`, `mesh_empty`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "The converter failed on this file: a litegen bug, logged (`conversion_failed`)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6426,7 +7500,7 @@
                         }
                     },
                     "503": {
-                        "description": "Server at capacity, retry shortly (`server_at_capacity`)",
+                        "description": "All conversion slots are busy, retry shortly (`server_at_capacity`, with `Retry-After`). Conversions have slots of their own and never take a generation's",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6519,6 +7593,18 @@
                                 "null"
                             ]
                         }
+                    },
+                    {
+                        "name": "X-Litegen-Keep-Outputs",
+                        "in": "header",
+                        "description": "`false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). A request can keep less than its app does, never more; any other value is a 400 `invalid_keep_outputs_header`.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
                     }
                 ],
                 "requestBody": {
@@ -6566,8 +7652,38 @@
                             }
                         }
                     },
+                    "404": {
+                        "description": "`model_not_found`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "409": {
                         "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "`model_retired`: the model is past its retirement; `replaced_by` names its successor",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "A `source_video` or reference generation litegen can't use: unreadable, too large, or a format the model doesn't take.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6662,6 +7778,55 @@
                             "string",
                             "null"
                         ]
+                    }
+                }
+            },
+            "AccessMode": {
+                "type": "string",
+                "description": "How the URLs litegen hands out for stored files work.",
+                "enum": [
+                    "public",
+                    "signed",
+                    "private"
+                ]
+            },
+            "AccessSettings": {
+                "type": "object",
+                "description": "The stored-output settings in force.",
+                "required": [
+                    "mode",
+                    "owner_scope",
+                    "signed_url_ttl_seconds",
+                    "keep_outputs",
+                    "retention_days",
+                    "signed_links"
+                ],
+                "properties": {
+                    "keep_outputs": {
+                        "type": "boolean",
+                        "description": "Whether litegen keeps a copy of each output. `false`: answers carry\nthe vendor's own link (video, 3D) or the image itself, and nothing is\nwritten."
+                    },
+                    "mode": {
+                        "$ref": "#/components/schemas/AccessMode"
+                    },
+                    "owner_scope": {
+                        "$ref": "#/components/schemas/OwnerScope"
+                    },
+                    "retention_days": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "Days after which kept files are deleted; 0 keeps them until deleted.",
+                        "minimum": 0
+                    },
+                    "signed_links": {
+                        "$ref": "#/components/schemas/SignedLinks",
+                        "description": "Who signs a signed link: `store` (the bucket, or litegen's local\nstore) or `litegen` (revocable)."
+                    },
+                    "signed_url_ttl_seconds": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "How long a signed link works, in seconds.",
+                        "minimum": 0
                     }
                 }
             },
@@ -7175,6 +8340,102 @@
                     }
                 }
             },
+            "AppAccessOverrides": {
+                "type": "object",
+                "description": "One app's own settings; `null` uses the gateway's value.",
+                "properties": {
+                    "keep_outputs": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ]
+                    },
+                    "mode": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/AccessMode"
+                            }
+                        ]
+                    },
+                    "owner_scope": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/OwnerScope"
+                            }
+                        ]
+                    },
+                    "retention_days": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "signed_links": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SignedLinks"
+                            }
+                        ]
+                    },
+                    "signed_url_ttl_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    }
+                }
+            },
+            "AppAccessSettings": {
+                "type": "object",
+                "description": "`GET`/`PUT /v1/apps/{app_id}/access`: who may open the app's stored files.",
+                "required": [
+                    "app_id",
+                    "overrides",
+                    "effective"
+                ],
+                "properties": {
+                    "app_id": {
+                        "type": "string"
+                    },
+                    "effective": {
+                        "$ref": "#/components/schemas/AccessSettings",
+                        "description": "What its files follow: its own settings, else the gateway's, else `litegen.yaml`'s."
+                    },
+                    "links_revoked_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "litegen's links to the app's files issued before this time are refused:\nthe latest of the app's revocation and the gateway's."
+                    },
+                    "overrides": {
+                        "$ref": "#/components/schemas/AppAccessOverrides",
+                        "description": "What the app sets itself."
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When the app's own settings last changed; `null` when it has none."
+                    }
+                }
+            },
             "AppModelAccess": {
                 "type": "object",
                 "required": [
@@ -7222,6 +8483,13 @@
                     "configured": {
                         "type": "boolean"
                     },
+                    "credential_mode": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "How litegen reaches the bucket: `access_key` (a key pair) or\n`assume_role` (a cross-account IAM role)."
+                    },
                     "custom_public_url": {
                         "type": [
                             "string",
@@ -7234,6 +8502,27 @@
                             "null"
                         ]
                     },
+                    "external_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The external ID the role's trust policy must require. litegen assigns\nit, one per app; it is shown before a role is saved."
+                    },
+                    "fallback_to_litegen_store": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether litegen's own store keeps the app's files while its bucket\ncan't be reached (default true). With false, they wait for the bucket."
+                    },
+                    "litegen_principal_arn": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "litegen's own AWS principal, which the role must trust; absent when\nlitegen has no AWS identity."
+                    },
                     "path_prefix": {
                         "type": [
                             "string",
@@ -7241,6 +8530,12 @@
                         ]
                     },
                     "region": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "role_arn": {
                         "type": [
                             "string",
                             "null"
@@ -7289,6 +8584,33 @@
                     "updated_at": {
                         "type": "string",
                         "format": "date-time"
+                    }
+                }
+            },
+            "ApproveOAuthRequest": {
+                "type": "object",
+                "description": "The person's approval.",
+                "required": [
+                    "org_id",
+                    "scopes"
+                ],
+                "properties": {
+                    "app_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The app the app acts in; the org's first app when omitted."
+                    },
+                    "org_id": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "A subset of the requested scopes that the person's role can grant."
                     }
                 }
             },
@@ -7365,6 +8687,17 @@
                     "signup_open"
                 ],
                 "properties": {
+                    "mcp": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/McpEndpoints",
+                                "description": "Where MCP clients connect, when this deployment serves MCP."
+                            }
+                        ]
+                    },
                     "password_enabled": {
                         "type": "boolean",
                         "description": "Whether email/password signup + login is enabled."
@@ -7560,6 +8893,62 @@
                     }
                 }
             },
+            "ConnectedApp": {
+                "type": "object",
+                "description": "An app a person signed in to LiteGen with, and what it may do.",
+                "required": [
+                    "id",
+                    "client_id",
+                    "client_name",
+                    "surface",
+                    "scopes",
+                    "org_id",
+                    "created_at"
+                ],
+                "properties": {
+                    "app_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "client_name": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "The grant's id: revoke the app with it."
+                    },
+                    "last_used_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When it last called LiteGen (recorded at most once a minute)."
+                    },
+                    "org_id": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "surface": {
+                        "type": "string",
+                        "description": "The endpoint it may use: `ai` (`/mcp`) or `admin` (`/admin/mcp`)."
+                    }
+                }
+            },
             "CostEstimate": {
                 "type": "object",
                 "description": "Cost estimate returned before generation.",
@@ -7636,7 +9025,7 @@
                     },
                     "scopes": {
                         "type": "string",
-                        "description": "CSV of scopes (default: \"generate,read\")."
+                        "description": "CSV of scopes (default: \"generate,read\"). `generate`: create generations,\nquote costs, and read the model catalog and the key's generations, so a\n`generate` key is an AI-only key. `read`: read the catalog, generations,\nrequest logs, stats, spend, limits and end users. `admin`: manage keys,\nbudgets, end users and settings. A key gets only scopes its creator may\ngrant."
                     },
                     "token_quota": {
                         "type": [
@@ -7727,7 +9116,7 @@
             },
             "CredentialEntry": {
                 "type": "object",
-                "description": "A signing credential set (key_id + key_secret, plus optional region for\nSigV4/TC3) with a weight for round-robin distribution. The signing-scheme\nanalogue of [`ApiKeyEntry`], used by providers like Bedrock, Hunyuan, and\nKling that authenticate with a credential *pair* rather than a bearer key.",
+                "description": "A signing credential set (key_id + key_secret, plus optional region for\nSigV4/TC3) with a weight for round-robin distribution. The signing-scheme\nanalogue of [`ApiKeyEntry`], used by providers like Bedrock and Hunyuan\nthat authenticate with a credential *pair* rather than a bearer key.",
                 "required": [
                     "key_id",
                     "key_secret"
@@ -7735,11 +9124,11 @@
                 "properties": {
                     "key_id": {
                         "type": "string",
-                        "description": "Access key id (SigV4) / secret id (TC3) / access key (Kling)."
+                        "description": "Access key id (SigV4) / secret id (TC3)."
                     },
                     "key_secret": {
                         "type": "string",
-                        "description": "Secret access key (SigV4) / secret key (TC3, Kling). Stored encrypted."
+                        "description": "Secret access key (SigV4) / secret key (TC3). Stored encrypted."
                     },
                     "label": {
                         "type": [
@@ -7753,7 +9142,7 @@
                             "string",
                             "null"
                         ],
-                        "description": "Region (SigV4 / TC3). Omitted for Kling; when absent the provider falls\nback to its configured/default region."
+                        "description": "Region (SigV4 / TC3). When absent the provider falls back to its\nconfigured/default region."
                     },
                     "weight": {
                         "type": "integer",
@@ -7850,6 +9239,76 @@
                         "type": "integer",
                         "format": "int32",
                         "description": "Weight for weighted routing.",
+                        "minimum": 0
+                    }
+                }
+            },
+            "EffectiveBreaker": {
+                "type": "object",
+                "description": "The circuit breaker in force (`GET /v1/admin/settings`).",
+                "required": [
+                    "threshold",
+                    "open_for_seconds"
+                ],
+                "properties": {
+                    "open_for_seconds": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "threshold": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    }
+                }
+            },
+            "EffectiveCache": {
+                "type": "object",
+                "description": "The cache in force (`GET /v1/admin/settings`).",
+                "required": [
+                    "enabled",
+                    "ttl_seconds",
+                    "max_items"
+                ],
+                "properties": {
+                    "enabled": {
+                        "type": "boolean"
+                    },
+                    "max_items": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "ttl_seconds": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    }
+                }
+            },
+            "EffectiveRetries": {
+                "type": "object",
+                "description": "Retries in force (`GET /v1/admin/settings`).",
+                "required": [
+                    "max_retries",
+                    "backoff_ms",
+                    "max_backoff_ms"
+                ],
+                "properties": {
+                    "backoff_ms": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "max_retries": {
+                        "type": "integer",
+                        "format": "int32",
                         "minimum": 0
                     }
                 }
@@ -8071,6 +9530,13 @@
                         ],
                         "description": "Machine-readable reason within the family, e.g. `param_unsupported`,\n`param_enum_mismatch`, `prompt_required`, `ref_role_required`."
                     },
+                    "generation_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "On an image `vendor_timeout` whose job the vendor is still running:\nthe generation litegen delivers it to when it finishes\n(`GET /v1/generations/{id}`, the key's webhook; docs/async-images.md)."
+                    },
                     "message": {
                         "type": "string",
                         "description": "Human-readable; not for matching on \u2014 use `code` and `param`."
@@ -8100,12 +9566,26 @@
                             }
                         ]
                     },
+                    "replaced_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "On `model_retired` (410): the model that replaces the retired one,\nwhen the catalog names one."
+                    },
                     "retryable": {
                         "type": [
                             "boolean",
                             "null"
                         ],
                         "description": "Whether the same request may work later: a vendor's 5xx, 429 or\ntimeout, but not its refusal."
+                    },
+                    "status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`processing`, with `generation_id`: the job runs on."
                     },
                     "type": {
                         "type": "string",
@@ -8176,6 +9656,49 @@
                         ],
                         "description": "URL that receives budget alerts (soft budget crossed, hard budget hit)."
                     },
+                    "cache_enabled": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether image answers are cached. Overrides `cache.enabled`."
+                    },
+                    "cache_max_items": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "How many answers the cache holds, 1 to 1000000. Overrides `cache.max_items`.",
+                        "minimum": 0
+                    },
+                    "cache_ttl_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "How long a cached answer lives, 1 to 604800 s. Overrides `cache.default_ttl_seconds`.",
+                        "minimum": 0
+                    },
+                    "circuit_breaker_open_for_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Seconds an open breaker stays open, 1 to 3600. Overrides `circuit_breaker.open_for_seconds`.",
+                        "minimum": 0
+                    },
+                    "circuit_breaker_threshold": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "Consecutive failures that open a provider's breaker, 1 to 1000. Overrides `circuit_breaker.threshold`.",
+                        "minimum": 0
+                    },
                     "cost_markup_percent": {
                         "type": [
                             "number",
@@ -8198,6 +9721,100 @@
                         ],
                         "format": "double",
                         "description": "Default hard budget (USD) for an end user with no limits of its own."
+                    },
+                    "retry_backoff_ms": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "The longest first wait before a retry, 0 to 60000 ms. Overrides `retries.backoff_ms`.",
+                        "minimum": 0
+                    },
+                    "retry_max_backoff_ms": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "The longest any wait may be, up to 60000 ms. Overrides `retries.max_backoff_ms`.",
+                        "minimum": 0
+                    },
+                    "retry_max_retries": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "Tries after the first for a retryable vendor error, 0 to 5. Overrides `retries.max_retries`.",
+                        "minimum": 0
+                    },
+                    "storage_access_keep_outputs": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether litegen keeps a copy of each output. Overrides `storage_access.keep_outputs`."
+                    },
+                    "storage_access_mode": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/AccessMode",
+                                "description": "How stored outputs are handed out, unless an app says otherwise.\nOverrides `storage_access.mode` in the config."
+                            }
+                        ]
+                    },
+                    "storage_access_owner_scope": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/OwnerScope",
+                                "description": "Which keys may open a stored output. Overrides `storage_access.owner_scope`."
+                            }
+                        ]
+                    },
+                    "storage_access_retention_days": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "Days after which kept files are deleted, 0 to 36500 (0: until deleted).\nOverrides `storage_access.retention_days`.",
+                        "minimum": 0
+                    },
+                    "storage_access_signed_links": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SignedLinks",
+                                "description": "Who signs a signed link: `store` or `litegen`. Overrides `storage_access.signed_links`."
+                            }
+                        ]
+                    },
+                    "storage_access_signed_url_ttl_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "How long a signed link works, 60 to 604800 seconds. Overrides\n`storage_access.signed_url_ttl_seconds`.",
+                        "minimum": 0
+                    },
+                    "vendor_timeout_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Seconds one vendor call may take, 5 to 3600. Overrides `server.vendor_timeout_secs`.",
+                        "minimum": 0
                     }
                 }
             },
@@ -8206,12 +9823,46 @@
                 "description": "Response for `GET /v1/admin/settings`: the stored overrides plus the\nvalues in effect.",
                 "required": [
                     "settings",
-                    "effective_cost_markup_percent"
+                    "effective_cost_markup_percent",
+                    "effective_storage_access",
+                    "effective_cache",
+                    "cache_entries",
+                    "effective_retries",
+                    "effective_vendor_timeout_seconds",
+                    "effective_circuit_breaker"
                 ],
                 "properties": {
+                    "cache_entries": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Answers the cache holds now (on this replica).",
+                        "minimum": 0
+                    },
+                    "effective_cache": {
+                        "$ref": "#/components/schemas/EffectiveCache",
+                        "description": "The cache in force: these settings, else `cache` in `litegen.yaml`."
+                    },
+                    "effective_circuit_breaker": {
+                        "$ref": "#/components/schemas/EffectiveBreaker",
+                        "description": "The circuit breaker in force."
+                    },
                     "effective_cost_markup_percent": {
                         "type": "number",
                         "format": "double"
+                    },
+                    "effective_retries": {
+                        "$ref": "#/components/schemas/EffectiveRetries",
+                        "description": "Retries in force: these settings, else `retries` in `litegen.yaml`."
+                    },
+                    "effective_storage_access": {
+                        "$ref": "#/components/schemas/AccessSettings",
+                        "description": "Who may open stored outputs for an app with no settings of its own:\nthese settings, else `storage_access` in `litegen.yaml`."
+                    },
+                    "effective_vendor_timeout_seconds": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "The vendor call timeout in force, in seconds.",
+                        "minimum": 0
                     },
                     "settings": {
                         "$ref": "#/components/schemas/GatewaySettings"
@@ -8259,6 +9910,21 @@
                             "string",
                             "null"
                         ]
+                    },
+                    "files_deleted_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When litegen deleted this generation's kept files: after its app's\n`retention_days`, or on request. The record stays. Absent while they\nare kept."
+                    },
+                    "files_deleted_reason": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Why they were deleted: `retention` or `deleted`."
                     },
                     "id": {
                         "type": "string",
@@ -8332,6 +9998,14 @@
                         "format": "double",
                         "description": "Videos: length in seconds, when known."
                     },
+                    "expires_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When a signed link stops working (`docs/storage-access.md`); read the\ngeneration again for a fresh one. Absent on every other URL."
+                    },
                     "format": {
                         "type": "string",
                         "description": "Lowercase container or image format, without a dot."
@@ -8365,9 +10039,16 @@
                         "description": "Position in the list; the `{index}` that streams this file.",
                         "minimum": 0
                     },
+                    "kept": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "`false` when litegen kept no copy (`keep_outputs: false`,\ndocs/storage-access.md): the file is the vendor's, and the vendor\ndeletes it on its own schedule. Absent when litegen kept it."
+                    },
                     "kind": {
                         "type": "string",
-                        "description": "`image`, `video`, `mesh`, `texture`, `preview` or `original`. A plain\nstring so a client tolerates a kind added later."
+                        "description": "`image`, `video`, `mesh`, `texture`, `preview`, `original` or\n`package`. A plain string so a client tolerates a kind added later."
                     },
                     "sha256": {
                         "type": [
@@ -8386,7 +10067,7 @@
                     },
                     "url": {
                         "type": "string",
-                        "description": "Where the file is served from: absolute, and litegen's own storage."
+                        "description": "Where the file is served from: absolute; litegen's own storage, or the\nvendor's link when `kept` is false."
                     },
                     "width": {
                         "type": [
@@ -8457,6 +10138,39 @@
                     "transparent",
                     "opaque"
                 ]
+            },
+            "ImageGenerationAccepted": {
+                "type": "object",
+                "description": "The answer to an image request that won't wait for its job\n(`Prefer: respond-async`, or a `wait` the job outlasted): litegen\ndelivers the image to the generation when the vendor finishes\n(docs/async-images.md).",
+                "required": [
+                    "id",
+                    "object",
+                    "status",
+                    "model",
+                    "created"
+                ],
+                "properties": {
+                    "created": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Unix seconds."
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "The generation: `GET /v1/generations/{id}` serves its image once done."
+                    },
+                    "model": {
+                        "type": "string"
+                    },
+                    "object": {
+                        "type": "string",
+                        "description": "Always `image.generation`."
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "`processing`."
+                    }
+                }
             },
             "ImageGenerationRequest": {
                 "allOf": [
@@ -8589,6 +10303,13 @@
                                         "description": "Edit only this rectangle of the `init` image (3D doc \u00a74). A box-native\nmodel receives it as its own box; a mask-only one receives it drawn as\nthe mask. With a `mask` too, the edit area is where they overlap."
                                     }
                                 ]
+                            },
+                            "resolution": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "The output tier, on a model that has tiers: one of its\n`params.resolution` values, on one scale for every vendor (`0.5K`,\n`0.75K`, `1K`, `1.5K`, `2K`, `4K`, about that many thousand pixels a\nside; FLUX 3 Image adds `match_input`, an edit at its reference's\nsize). An exact `size` wins where a model takes both."
                             },
                             "response_format": {
                                 "type": "string"
@@ -8728,6 +10449,14 @@
                             "null"
                         ],
                         "description": "The facing this image shows, from a `directions` request: `south`\n(towards the viewer), `south-east`, `east`, \u2026 (PixelGenie L16)."
+                    },
+                    "expires_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When a signed link stops working (`docs/storage-access.md`); read the\ngeneration again for a fresh one. Absent on every other URL."
                     },
                     "height": {
                         "type": [
@@ -9209,6 +10938,19 @@
                     }
                 }
             },
+            "LinksRevoked": {
+                "type": "object",
+                "description": "What a revocation answers: litegen's links issued before `revoked_at` no\nlonger work. A bucket's own presigned links aren't litegen's: they work\nuntil they expire.",
+                "required": [
+                    "revoked_at"
+                ],
+                "properties": {
+                    "revoked_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
             "LivenessResponse": {
                 "type": "object",
                 "description": "Response for `GET /health/live`.",
@@ -9244,6 +10986,31 @@
                     "black_edits",
                     "transparent_edits"
                 ]
+            },
+            "McpEndpoints": {
+                "type": "object",
+                "description": "The MCP endpoints a deployment serves, for the dashboard's Connect page.",
+                "required": [
+                    "ai_url",
+                    "oauth"
+                ],
+                "properties": {
+                    "admin_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The management endpoint, `{public_base_url}/admin/mcp`, when it is served."
+                    },
+                    "ai_url": {
+                        "type": "string",
+                        "description": "The AI endpoint: `{public_base_url}/mcp`."
+                    },
+                    "oauth": {
+                        "type": "boolean",
+                        "description": "Whether clients can sign in with OAuth (ChatGPT and claude.ai need it)."
+                    }
+                }
             },
             "MediaType": {
                 "type": "string",
@@ -9301,13 +11068,21 @@
             },
             "Model3dAsset": {
                 "type": "object",
-                "description": "One file produced by a 3D generation, re-hosted on litegen storage (the\napp's own bucket when it configured one).\n\nA `completed` generation carries one `mesh` asset for every format in its\n`output_formats` \u2014 never fewer; a missing one fails the generation instead \u2014\nplus whatever textures and previews the vendor returned.",
+                "description": "One file produced by a 3D generation, re-hosted on litegen storage (the\napp's own bucket when it configured one).\n\nA `completed` generation carries one `mesh` asset for every format in its\n`output_formats` \u2014 never fewer; a missing one fails the generation instead \u2014\nplus whatever textures and previews the vendor returned, and, when the\nrequest set `output_packages`, a `package` asset (a zip) for each of those\nformats that is a file and its sidecars, after every other asset.",
                 "required": [
                     "kind",
                     "url",
                     "format"
                 ],
                 "properties": {
+                    "expires_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When a signed link stops working (`docs/storage-access.md`); read the\ngeneration again for a fresh one. Absent on every other URL."
+                    },
                     "format": {
                         "type": "string",
                         "description": "Lowercase container without a dot. Meshes use the `Model3dFormat`\nvocabulary; textures and previews their image format (`png`, `jpg`,\n`webp`). A plain string so a client tolerates a format added later."
@@ -9320,6 +11095,13 @@
                         "format": "int32",
                         "description": "Pixel height, on textures and previews whose vendor reports it.",
                         "minimum": 0
+                    },
+                    "kept": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "`false` when litegen kept no copy (`keep_outputs: false`): the file is\nthe vendor's own, unconverted, and the vendor deletes it on its own\nschedule. Absent when litegen kept it."
                     },
                     "kind": {
                         "$ref": "#/components/schemas/Model3dAssetKind"
@@ -9340,7 +11122,7 @@
                             },
                             {
                                 "$ref": "#/components/schemas/SceneManifest",
-                                "description": "On meshes: what litegen's own reader found in this very file. Never the\nvendor's claims."
+                                "description": "On meshes and packages: what litegen's own reader found in this very\nfile (a package's container read with its sidecars). Never the\nvendor's claims."
                             }
                         ]
                     },
@@ -9362,7 +11144,7 @@
                     },
                     "url": {
                         "type": "string",
-                        "description": "Always absolute: a root-relative path is indistinguishable from an\noutage to a client fetching it from a worker. Meshes live at\n`\u2026/{generation_id}/model.{format}`."
+                        "description": "Always absolute: a root-relative path is indistinguishable from an\noutage to a client fetching it from a worker. Meshes live at\n`\u2026/{generation_id}/model.{format}`, packages at\n`\u2026/{generation_id}/package_{format}.zip`."
                     },
                     "width": {
                         "type": [
@@ -9382,7 +11164,8 @@
                     "mesh",
                     "texture",
                     "preview",
-                    "original"
+                    "original",
+                    "package"
                 ]
             },
             "Model3dConvertFormats": {
@@ -9398,7 +11181,7 @@
                         "items": {
                             "$ref": "#/components/schemas/Model3dFormat"
                         },
-                        "description": "Containers accepted as both `from` and `to`. Every pair converts, in\nboth directions. Grows with litegen's converter, so read it rather than\nhardcoding it; it can be narrower than the `Model3dFormat` vocabulary."
+                        "description": "Containers accepted as both `from` and `to`. Every pair converts, in\nboth directions. Today every `Model3dFormat`; it follows litegen's\nconverter, so read it rather than hardcoding it."
                     },
                     "max_input_bytes": {
                         "type": "integer",
@@ -9407,6 +11190,22 @@
                         "minimum": 0
                     }
                 }
+            },
+            "Model3dDaeMorphs": {
+                "type": "string",
+                "description": "How a Collada (`dae`) file litegen writes stores a mesh's morph targets\n(`dae_morphs`). Collada's morph controllers are read by only some tools, so\nthe caller chooses.",
+                "enum": [
+                    "bake",
+                    "keep"
+                ]
+            },
+            "Model3dFbxColorSpace": {
+                "type": "string",
+                "description": "How a delivered or read FBX stores its material and light colours\n(`fbx_color_space`). FBX does not say, and the tools that read it disagree.",
+                "enum": [
+                    "srgb",
+                    "linear"
+                ]
             },
             "Model3dFormat": {
                 "type": "string",
@@ -9420,8 +11219,17 @@
                     "fbx",
                     "usdz",
                     "usda",
+                    "usdc",
                     "3mf",
                     "dae"
+                ]
+            },
+            "Model3dFormatSource": {
+                "type": "string",
+                "description": "Where a delivered `fbx` or `usdz` comes from (`format_source`).",
+                "enum": [
+                    "native",
+                    "glb"
                 ]
             },
             "Model3dGenerationRequest": {
@@ -9448,6 +11256,50 @@
                                     "null"
                                 ],
                                 "description": "Centre the mesh's bounds on x and z (3D doc \u00a73D). litegen applies it\non delivery, to any model's mesh."
+                            },
+                            "dae_morphs": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dDaeMorphs",
+                                        "description": "How the Collada (`dae`) litegen writes stores a mesh's morph targets,\nwhen litegen writes one for this request (a vendor Collada delivered as\nit is keeps the vendor's): `bake` (the default) applies the targets at\neach node's weights and drops their weight animation, which every\nCollada reader opens; `keep` writes them as `<morph>` controllers with\ntheir weight animation, which SceneKit (and so Xcode) and Godot read,\nwhile three.js's ColladaLoader and assimp refuse the whole file. A\nrequest that keeps nothing (`keep_outputs: false`) can't ask for `keep`:\n`option_needs_keeping`."
+                                    }
+                                ]
+                            },
+                            "fbx_color_space": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dFbxColorSpace",
+                                        "description": "How FBX material and light colours are stored, when litegen reads the\nvendor's FBX or writes one for this request (a vendor FBX delivered as\nit is keeps the vendor's): `srgb` (the default; three.js reads them so)\nor `linear` (Blender, ufbx and assimp read both so, and Unity and Unreal\nmaterial colours). Vertex colours are sRGB either way."
+                                    }
+                                ]
+                            },
+                            "fbx_light_units": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dLightUnits",
+                                        "description": "The units FBX light strengths are stored in, when litegen reads the\nvendor's FBX or writes one for this request (a vendor FBX delivered as\nit is keeps the vendor's units): `photometric` (the default; the\nscene's own, as three.js's FBXLoader and ufbx read them: `Intensity` is\n100 \u00d7 the candela or lux) or `blender` (100 \u00d7 the `energy` Blender's\nown glTF importer gives the same scene's glTF light, so the lights open\nin Blender as bright as the glTF does, and a vendor FBX that Blender\nwrote reads as the glTF light whose import gives that `energy`).\nColours are in `fbx_color_space` either way."
+                                    }
+                                ]
+                            },
+                            "format_source": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dFormatSource",
+                                        "description": "Where a promised `fbx` or `usdz` comes from: `native` (the default)\nasks the vendor for its own export when it offers one, and litegen\nmakes the other containers from that file; `glb` asks for the vendor's\nGLB, which carries the most, and litegen makes them all from it. Either\nway one vendor job is billed."
+                                    }
+                                ]
                             },
                             "fps": {
                                 "type": [
@@ -9491,6 +11343,17 @@
                                 ],
                                 "description": "Paint the source's own UV layout rather than a new one."
                             },
+                            "ktx2_textures": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dKtx2Textures",
+                                        "description": "What delivery does with a KTX2 (Basis Universal) texture, such as the\nimages of a GLB that requires `KHR_texture_basisu`. `png` (the default)\nre-encodes it as PNG in every container, as WebP is, so no delivered\nfile needs an extension to read; the vendor's own file is delivered\nbeside it as `original`. `keep` leaves it as the vendor made it in the\n`glb` and `gltf` containers (byte for byte, through\n`KHR_texture_basisu`, which those files then require: for viewers that\nupload KTX2 to the GPU, such as three.js with KTX2Loader, Babylon.js\nand Godot), and every other container still gets PNG. A request that\nkeeps nothing (`keep_outputs: false`) can't ask for `keep`:\n`option_needs_keeping`. litegen applies it on delivery, to any model's\nmesh."
+                                    }
+                                ]
+                            },
                             "output_format": {
                                 "type": "string",
                                 "description": "Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.",
@@ -9503,6 +11366,7 @@
                                     "fbx",
                                     "usdz",
                                     "usda",
+                                    "usdc",
                                     "3mf",
                                     "dae"
                                 ],
@@ -9517,6 +11381,13 @@
                                     "$ref": "#/components/schemas/Model3dFormat"
                                 },
                                 "description": "Mesh containers to deliver, e.g. `[\"glb\", \"fbx\"]`. A promise, not a\nhint: every format named here is present on a `completed` generation,\nor the generation ends `failed`. Omitted means the model's declared\ndefault, and `[\"glb\"]` when it declares none. Case-insensitive;\nduplicates collapse.\n\nAny set of the containers litegen derives (the model's served\n`derivable_values`) costs one vendor job between them; every other\ncontainer costs one job of its own. A request needing more vendor jobs\nthan the model's `max_items` is refused with `param_too_many`."
+                            },
+                            "output_packages": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Also deliver each requested container that is a file and its\nsidecars (an `obj` with its `.mtl` and textures, a `dae`, `usda` or\n`usdc` with its textures, a `gltf` with its `.bin` and images) as one zip of\nthem: an asset of kind `package` whose `format` is the container\ninside. litegen applies it on delivery, to any model's mesh, and the\n`mesh` assets stay as they are. A container that is one file for this\nmesh gets no package. A request that keeps nothing (`keep_outputs:\nfalse`) can't ask for packages: `option_needs_keeping`."
                             },
                             "pbr": {
                                 "type": [
@@ -9598,6 +11469,39 @@
                                     {
                                         "$ref": "#/components/schemas/Model3dTopology",
                                         "description": "Face topology of the output mesh."
+                                    }
+                                ]
+                            },
+                            "usd_clips": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dUsdClips",
+                                        "description": "Which animation clips the `usda`, `usdc` or `usdz` litegen writes for\nthis request holds (a vendor USD delivered as it is keeps the vendor's):\n`all` keeps every clip as an alternative (a SkelAnimation prim for\neach, chosen by a variant set `Animation`, as Apple's own tooling lays\nthem out), `first` keeps the first and names the rest in the losses.\nUnder `all` every clip's skeletal and blend-shape animation is kept;\nrigid (node) motion is the first clip's only, the other clips' is\nnamed in the losses, and a scene whose clips are all rigid writes as\n`first`.\nUnset is the container's default: `all` for `usda` and `usdc`, `first`\nfor `usdz` until AR Quick Look's behaviour with variants is checked on\na device. A request that keeps nothing (`keep_outputs: false`) can't\nask for `all`: `option_needs_keeping`."
+                                    }
+                                ]
+                            },
+                            "usd_light_units": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dLightUnits",
+                                        "description": "The units USD light strengths are stored in, when litegen reads the\nvendor's `usdz`, `usda` or `usdc` or writes one for this request (one delivered\nas it is keeps the vendor's units): `photometric` (the default;\nUsdLux's own, by the schema) or `blender` (the UsdLux values Blender's\nUSD exporter writes for the `energy` Blender's own\nglTF importer gives the same scene's glTF light, so the lights open in\nBlender as bright as the glTF does, and a vendor USD that Blender wrote\nreads as the glTF light whose import gives that `energy`). A file\nlitegen wrote keeps its exact strengths in `customData`, which wins on\nread under either choice."
+                                    }
+                                ]
+                            },
+                            "usdz_root": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dUsdzRoot",
+                                        "description": "What the root layer of a `usdz` litegen writes for this request is (a\nvendor USDZ delivered as it is keeps the vendor's): `usda` (the\ndefault) is text, which `usdchecker --arkit` accepts and which\n`<model-viewer>` hands to AR Quick Look; `usdc` is the binary crate,\nas Apple's own packagers write it. Either way the root is the\npackage's first entry, 64-byte aligned. A request that keeps nothing\n(`keep_outputs: false`) can't ask for `usdc`: `option_needs_keeping`."
                                     }
                                 ]
                             }
@@ -9693,6 +11597,22 @@
                     "unreal"
                 ]
             },
+            "Model3dKtx2Textures": {
+                "type": "string",
+                "description": "What delivery does with a KTX2 (Basis Universal) texture\n(`ktx2_textures`).",
+                "enum": [
+                    "png",
+                    "keep"
+                ]
+            },
+            "Model3dLightUnits": {
+                "type": "string",
+                "description": "How a delivered or read FBX or USD stores its light strengths\n(`fbx_light_units`, `usd_light_units`). Neither format says which units it\nuses, and Blender reads them in its own units rather than glTF's\nphotometric ones.",
+                "enum": [
+                    "photometric",
+                    "blender"
+                ]
+            },
             "Model3dSkeleton": {
                 "type": "string",
                 "description": "The skeleton a rig is built for (`skeleton`, 3D doc \u00a73B): Tripo's\n`rig_type` values, with its `biped` named `humanoid`.",
@@ -9724,9 +11644,26 @@
                     "quad"
                 ]
             },
+            "Model3dUsdClips": {
+                "type": "string",
+                "description": "Which animation clips a USD file litegen writes holds (`usd_clips`). USD has\none timeline, so a scene with several clips keeps them as alternatives or\nkeeps the first.",
+                "enum": [
+                    "all",
+                    "first"
+                ]
+            },
+            "Model3dUsdzRoot": {
+                "type": "string",
+                "description": "What the root layer of a `usdz` litegen writes is (`usdz_root`). Both pass\n`usdchecker --arkit`, and every USD reader opens either, so the caller\nchooses.",
+                "enum": [
+                    "usda",
+                    "usdc"
+                ]
+            },
             "ModelCapabilities": {
                 "type": "object",
                 "required": [
+                    "task",
                     "supports_text_to_image",
                     "supports_image_to_image"
                 ],
@@ -9886,6 +11823,10 @@
                             "type": "string"
                         }
                     },
+                    "supports_animation": {
+                        "type": "boolean",
+                        "description": "Takes `animations`: one clip per entry, whatever the task (3D doc\n\u00a73C) \u2014 a rig or generate model that returns clips in the same call\nas well as an `animate` one."
+                    },
                     "supports_audio_toggle": {
                         "type": "boolean",
                         "description": "Takes `audio: false` (or `true`) to leave audio out (or in)."
@@ -9922,6 +11863,10 @@
                     "supports_inpainting": {
                         "type": "boolean"
                     },
+                    "supports_joint_naming": {
+                        "type": "boolean",
+                        "description": "Takes `joint_naming` (3D doc \u00a73B)."
+                    },
                     "supports_keep_uvs": {
                         "type": "boolean",
                         "description": "Takes `keep_uvs`."
@@ -9940,6 +11885,10 @@
                     "supports_loop": {
                         "type": "boolean",
                         "description": "Takes `loop: true`."
+                    },
+                    "supports_mask_grow": {
+                        "type": "boolean",
+                        "description": "Takes `mask_grow_px`: litegen widens the mask or region of any model\ntaking one, or asks a vendor that grows its own (3D doc \u00a74)."
                     },
                     "supports_mask_prompt": {
                         "type": "boolean",
@@ -9977,6 +11926,10 @@
                         "type": "boolean",
                         "description": "Serves `POST /v1/images/segmentations` (PixelGenie L7)."
                     },
+                    "supports_skeleton": {
+                        "type": "boolean",
+                        "description": "Takes `skeleton`; `params.skeleton.enum_values` lists what it rigs\n(3D doc \u00a73B)."
+                    },
                     "supports_source_model": {
                         "type": "boolean",
                         "description": "Takes `source_model`: an operation on an existing mesh."
@@ -10009,7 +11962,7 @@
                     },
                     "task": {
                         "$ref": "#/components/schemas/ModelTask",
-                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`. The same value `GET /v1/models/{id}`\nserves as `task`."
+                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`. The same value `GET /v1/models/{id}`\nserves as `task`. Always sent."
                     },
                     "texture_resolutions": {
                         "type": "array",
@@ -10342,7 +12295,7 @@
                     },
                     "task": {
                         "$ref": "#/components/schemas/ModelTask",
-                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`."
+                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`. A row or a runtime model may leave it out\n(`generate`), so it stays optional here: this type is also the admin\nAPI's input."
                     }
                 }
             },
@@ -10427,6 +12380,150 @@
                     "up": {
                         "type": "string",
                         "description": "`+x`, `-x`, `+y`, `-y`, `+z` or `-z`; `source` on an operation that\nkeeps its source's axes."
+                    }
+                }
+            },
+            "OAuthAppChoice": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "name"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    }
+                }
+            },
+            "OAuthClientView": {
+                "type": "object",
+                "description": "The app asking to sign in.",
+                "required": [
+                    "client_id",
+                    "name",
+                    "redirect_host",
+                    "registration"
+                ],
+                "properties": {
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "client_uri": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "logo_uri": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "redirect_host": {
+                        "type": "string",
+                        "description": "The host the browser is sent back to after the decision."
+                    },
+                    "registration": {
+                        "type": "string",
+                        "description": "`cimd`: identified by its metadata document's URL. `dcr`: registered here."
+                    }
+                }
+            },
+            "OAuthOrgChoice": {
+                "type": "object",
+                "description": "An org the person may approve the request in.",
+                "required": [
+                    "id",
+                    "name",
+                    "role",
+                    "apps",
+                    "grantable_scopes"
+                ],
+                "properties": {
+                    "apps": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OAuthAppChoice"
+                        }
+                    },
+                    "grantable_scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "The requested scopes the role can grant: what it could give an API key."
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "The person's role in the org."
+                    }
+                }
+            },
+            "OAuthRedirect": {
+                "type": "object",
+                "description": "Where to send the browser next.",
+                "required": [
+                    "redirect_to"
+                ],
+                "properties": {
+                    "redirect_to": {
+                        "type": "string",
+                        "description": "The app's redirect URI, carrying the code or the error, `state` and `iss`."
+                    }
+                }
+            },
+            "OAuthRequestView": {
+                "type": "object",
+                "description": "A pending sign-in request, as the consent page shows it.",
+                "required": [
+                    "id",
+                    "client",
+                    "surface",
+                    "requested_scopes",
+                    "expires_at",
+                    "orgs"
+                ],
+                "properties": {
+                    "client": {
+                        "$ref": "#/components/schemas/OAuthClientView"
+                    },
+                    "expires_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "orgs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OAuthOrgChoice"
+                        },
+                        "description": "The person's orgs, each with its apps and the requested scopes their\nrole there lets them grant."
+                    },
+                    "requested_scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "The scopes the app asked for, all of one endpoint."
+                    },
+                    "surface": {
+                        "type": "string",
+                        "description": "The endpoint the grant would be for: `ai` (`/mcp`) or `admin` (`/admin/mcp`)."
                     }
                 }
             },
@@ -10570,6 +12667,15 @@
                         "type": "string"
                     }
                 }
+            },
+            "OwnerScope": {
+                "type": "string",
+                "description": "Which API keys pass the owner check for a stored file.",
+                "enum": [
+                    "key",
+                    "app",
+                    "org"
+                ]
             },
             "PaginatedResponse_AuditLogEntry": {
                 "type": "object",
@@ -10724,6 +12830,21 @@
                                         "string",
                                         "null"
                                     ]
+                                },
+                                "files_deleted_at": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "format": "date-time",
+                                    "description": "When litegen deleted this generation's kept files: after its app's\n`retention_days`, or on request. The record stays. Absent while they\nare kept."
+                                },
+                                "files_deleted_reason": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "Why they were deleted: `retention` or `deleted`."
                                 },
                                 "id": {
                                     "type": "string",
@@ -12122,6 +14243,14 @@
                         ],
                         "format": "double"
                     },
+                    "multiply_per_megapixel_above": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Scale the price by the image's `megapixels` over this many, for an\nimage larger than this: a vendor that bills by output size (OpenAI's\nimage tokens) past the size its base price is for."
+                    },
                     "per_item": {
                         "type": [
                             "string",
@@ -12159,7 +14288,7 @@
                     },
                     "when": {
                         "type": "object",
-                        "description": "Request facts the rule needs: a param (as sent, else its default), an\n`extra.<field>`, or a derived fact (`views`, `keyframes`, `animations`\ncounts, `duration_seconds`, `megapixels`), mapped to the value it must\nhave \u2014 or `\"*\"` for any value present.",
+                        "description": "Request facts the rule needs: a param (as sent, else its default), an\n`extra.<field>`, or a derived fact (the `views`, `added_views`,\n`keyframes`, `animations` and `references` counts, `duration_seconds`,\n`megapixels`), each mapped to the value it must have, `\"*\"` for any\nvalue present, or a range a number must fall in, such as\n`{\"gt\": 1.048576, \"lte\": 4.194304}` (`gt`, `gte`, `lt`, `lte`).",
                         "additionalProperties": {},
                         "propertyNames": {
                             "type": "string"
@@ -12206,7 +14335,7 @@
                 "properties": {
                     "auth_scheme": {
                         "type": "string",
-                        "description": "Coarse auth scheme: \"api_key\" | \"aws_sigv4\" | \"tencent_tc3\" | \"kling_jwt\"."
+                        "description": "Coarse auth scheme: \"api_key\" | \"aws_sigv4\" | \"tencent_tc3\"."
                     },
                     "fields": {
                         "type": "array",
@@ -12620,6 +14749,71 @@
                     }
                 }
             },
+            "PutAppAccessRequest": {
+                "type": "object",
+                "description": "`PUT /v1/apps/{app_id}/access`: the app's settings, every one replaced.\nAn omitted or `null` field uses the gateway's value; `{}` clears them all.",
+                "properties": {
+                    "keep_outputs": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "`false` keeps nothing: answers carry the vendor's own link, or the\nimage itself."
+                    },
+                    "mode": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/AccessMode",
+                                "description": "`public`, `signed` or `private`."
+                            }
+                        ]
+                    },
+                    "owner_scope": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/OwnerScope",
+                                "description": "`key`, `app` or `org`."
+                            }
+                        ]
+                    },
+                    "retention_days": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "0 to 36500; 0 keeps files until they are deleted.",
+                        "minimum": 0
+                    },
+                    "signed_links": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SignedLinks",
+                                "description": "`store` or `litegen`."
+                            }
+                        ]
+                    },
+                    "signed_url_ttl_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "60 to 604800.",
+                        "minimum": 0
+                    }
+                },
+                "additionalProperties": false
+            },
             "PutAppStorageRequest": {
                 "type": "object",
                 "required": [
@@ -12642,6 +14836,13 @@
                     "bucket_name": {
                         "type": "string"
                     },
+                    "credential_mode": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`access_key` (default: the key pair above) or `assume_role` (a\ncross-account IAM role, `role_arn`, trusting litegen with the app's\n`external_id`)."
+                    },
                     "custom_public_url": {
                         "type": [
                             "string",
@@ -12654,6 +14855,13 @@
                             "null"
                         ]
                     },
+                    "fallback_to_litegen_store": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether litegen's own store keeps the app's files while its bucket\ncan't be reached (default true). With false, they wait for the bucket."
+                    },
                     "path_prefix": {
                         "type": [
                             "string",
@@ -12665,6 +14873,13 @@
                             "string",
                             "null"
                         ]
+                    },
+                    "role_arn": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`arn:aws:iam::{account}:role/{name}`, with `credential_mode: assume_role`."
                     },
                     "secret_access_key": {
                         "type": [
@@ -12890,6 +15105,14 @@
                         "type": "integer",
                         "format": "int32",
                         "minimum": 0
+                    },
+                    "max_time_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The latest a `keyframe` may sit, for a model with no duration param\nto bound its clip: the longest clip it makes or prices."
                     },
                     "min_count": {
                         "type": "integer",
@@ -13120,6 +15343,17 @@
             "RevokeKeyResponse": {
                 "type": "object",
                 "description": "Response for `DELETE /v1/keys/{id}` and similar revocation endpoints.",
+                "required": [
+                    "revoked"
+                ],
+                "properties": {
+                    "revoked": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "RevokedGrant": {
+                "type": "object",
                 "required": [
                     "revoked"
                 ],
@@ -13425,6 +15659,13 @@
                             "$ref": "#/components/schemas/SceneMaterial"
                         }
                     },
+                    "notes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "What delivery could not keep or do for this file: a texture litegen\ncould not decode, a joint naming the rig could not take, what this\ncontainer cannot hold of the scene. Empty when nothing was lost."
+                    },
                     "oriented_by": {
                         "type": "string",
                         "description": "`vendor` (it arrived so) or `litegen` (litegen turned it)."
@@ -13488,7 +15729,7 @@
                         "items": {
                             "type": "string"
                         },
-                        "description": "`base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`."
+                        "description": "`base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`,\nand the layer maps `clearcoat`, `clearcoat_roughness`,\n`clearcoat_normal`, `transmission`, `volume_thickness`, `specular`,\n`specular_color`, `sheen_color`, `sheen_roughness`, `iridescence`,\n`iridescence_thickness`, `anisotropy`."
                     },
                     "name": {
                         "type": [
@@ -13830,6 +16071,14 @@
                         }
                     }
                 }
+            },
+            "SignedLinks": {
+                "type": "string",
+                "description": "Who signs a signed link.",
+                "enum": [
+                    "store",
+                    "litegen"
+                ]
             },
             "SignupRequest": {
                 "type": "object",
@@ -14330,7 +16579,8 @@
                         "type": [
                             "string",
                             "null"
-                        ]
+                        ],
+                        "description": "Replace the key's scopes: the same values and the same privilege check\nas on create (an unknown scope is a 400, one the caller may not grant a\n403)."
                     },
                     "token_quota": {
                         "type": [
@@ -14709,6 +16959,14 @@
                             "null"
                         ],
                         "description": "Video URL when completed."
+                    },
+                    "video_url_expires_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When `video_url` stops working, if it is a signed link\n(`docs/storage-access.md`); poll again for a fresh one."
                     }
                 }
             },
@@ -14941,6 +17199,10 @@
         {
             "name": "Gateway",
             "description": "Gateway admin: runtime models, provider configs, routing and settings"
+        },
+        {
+            "name": "OAuth",
+            "description": "Sign-in for MCP clients: the consent page's requests and the apps a person has connected"
         }
     ]
 }

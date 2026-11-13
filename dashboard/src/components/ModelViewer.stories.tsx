@@ -2,25 +2,23 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
 import ModelViewer from './ModelViewer';
 import {
-  CORRUPT_MESH, CUBE_MESH, ICOSPHERE_MESH, MISSING_MESH, PREVIEW, STALLED_MESH_URL, fixtureUrl, installStalledMeshRoute,
+  CORRUPT_MESH, CUBE_MESH, ICOSPHERE_MESH, MISSING_MESH, PREVIEW, STALLED_MESH_URL, fixtureUrl, installStalledMeshRoute, viewerFixtureUrl,
 } from '../story-fixtures';
 
 /**
- * The compact `<model-viewer>` wrapper used by Playground grid tiles and the
- * trace panel, and inside the `ModelPreview` inspector.
+ * The compact viewer used by the Playground's compare tiles: the shared
+ * viewer (@litegen/3d-viewer), the same one the 3D converter tool shows,
+ * downloading the mesh itself. Its own states are storied in the package
+ * (Shared/RemoteMeshViewer); these are the dashboard's meshes through the
+ * dashboard's adapter.
  *
- * Not storied: the **bundle-import failure** (`data-reason="import"`). The
- * component imports `@google/model-viewer` with a bare dynamic `import()` and
- * offers no seam to make that fail, and adding a production hook purely for a
- * story is not worth it. The state is exercised instead by the real-browser
- * pass, which blocks the model-viewer chunk request (see the Task 20 report).
- * Likewise the missing-WebGL-2 state (`data-reason="webgl"`), which is probed
- * once per page from the real browser.
+ * Not storied: missing WebGL 2 (`data-reason="webgl"`), probed once per page
+ * from the real browser.
  */
 const meta = {
   title: 'Observability/ModelViewer',
   component: ModelViewer,
-  args: { testId: 'story-viewer', onLoad: fn(), onError: fn(), onRetry: fn() },
+  args: { testId: 'story-viewer', onLoad: fn(), onError: fn() },
   decorators: [Story => <div style={{ maxWidth: 640 }}><Story /></div>],
 } satisfies Meta<typeof ModelViewer>;
 export default meta;
@@ -52,15 +50,22 @@ export const MeshNotFound: Story = {
   args: { src: MISSING_MESH.url, format: 'glb' },
 };
 
-/** A GLB whose JSON chunk is truncated: the file arrives but cannot parse. */
+/** A GLB whose JSON chunk is truncated: the file arrives but cannot parse,
+ *  so only the download link is offered. */
 export const CorruptGlb: Story = {
   args: { src: CORRUPT_MESH.url, format: 'glb' },
 };
 
-/** `<model-viewer>` is glTF-only, so an OBJ is never fetched — straight to
+/** An OBJ result, which `<model-viewer>` could not show: drawn by three.js's
+ *  OBJ loader, as every format litegen delivers is. */
+export const ObjMesh: Story = {
+  args: { src: viewerFixtureUrl('cube.obj'), format: 'obj' },
+};
+
+/** A container the viewer has no loader for: never downloaded, straight to
  *  the download fallback (no Retry: a second attempt cannot help). */
-export const NonGltfFormat: Story = {
-  args: { src: fixtureUrl('does-not-exist/model.obj'), format: 'obj' },
+export const UnknownFormat: Story = {
+  args: { src: fixtureUrl('does-not-exist/model.xyz'), format: 'xyz' },
 };
 
 /** The inspector's light background, applied to the compact viewer. */

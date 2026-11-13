@@ -11,7 +11,9 @@
 //   Stainless-hosted openapi.documented.yml, which 404s since OpenAI moved
 //   SDK generation from Stainless to Castiron and deleted .stats.yml
 //   (openai/openai-python#3599, 2026-08-12); the last Stainless copy is
-//   frozen at 2026-07-31.
+//   frozen at 2026-07-31. Since 2026-11 the file writes one long path as a
+//   YAML explicit key (`? /organization/workload_identity_providers/…`),
+//   which parseYaml reads; api_reference/ holds no JSON twin of it.
 // Mapping mirrors litegen-core/src/providers/image/openai.rs (strip `openai/`).
 // Sora 2 and the Videos API were shut down 2026-09-24 and left the catalog, so
 // video/openai.rs serves no carried model and /videos is no longer read.
@@ -39,6 +41,7 @@ export default {
     {
       key: 'openapi',
       url: 'https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.json',
+      timeoutMs: 180_000, // over 1 MB; raw.githubusercontent.com can be slow
       expect: 'json',
       extract: (spec) => liveModelIds(spec),
       snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: ENDPOINTS, ours }),
@@ -46,6 +49,7 @@ export default {
     {
       key: 'sdk-spec',
       url: 'https://raw.githubusercontent.com/openai/openai-python/main/api_reference/openapi.transformed.yml',
+      timeoutMs: 180_000, // over 1 MB; raw.githubusercontent.com can be slow
       expect: 'text',
       extract: (_text, body) => liveModelIds(parseYaml(body)),
     },

@@ -13,6 +13,7 @@ involved; the files carry no licence beyond litegen's own.
 | `cube_assimp_ascii.fbx` | ASCII FBX 7.5 (`-ffbxa`) | `cube` fixture |
 | `skinned_small_assimp_7500.fbx` | binary FBX 7500 (`-ffbx`) | `skinned_small_source.glb` |
 | `skinned_small_source.glb` | — (our own glTF writer) | `skinned` fixture, reduced |
+| `staged_assimp.fbx` | binary FBX 7500 (`-ffbx`), Assimp 6.0.5 | `staged` fixture, as is |
 
 ## How they were made
 
@@ -23,7 +24,16 @@ assimp export textured.glb      textured_assimp_7500.fbx      -ffbx
 assimp export morph.glb         morph_assimp_ascii.fbx        -ffbxa
 assimp export cube.glb          cube_assimp_ascii.fbx         -ffbxa
 assimp export skinned_small_source.glb skinned_small_assimp_7500.fbx -ffbx
+assimp export staged.glb        staged_assimp.fbx             -ffbx
 ```
+
+`staged.glb` is `fixtures::staged()` written by litegen's own glTF writer
+(`mesh::write_scene(&fixtures::staged(), MeshFormat::Glb,
+WriteOptions::default())`, 4,804 bytes on 2026-11-06), with no wrapper: the
+fixture has three roots, which Assimp keeps under a root of its own. Assimp
+6.0.5 (Homebrew; the file's `Creator` says 6.0.0) wrote `staged_assimp.fbx`
+on 2026-11-06. Running the command again gives the same bytes but for its
+`CreationTimeStamp`.
 
 The sources differ from the fixtures in two ways, each working around an
 Assimp exporter defect so that the FBX carries the fixture faithfully:
@@ -54,4 +64,13 @@ Assimp exporter defect so that the FBX carries the fixture faithfully:
 - the scale animation property spelled `"Lcl Scale"` (the SDK's is
   `"Lcl Scaling"`), and every key's `KeyAttrFlags` 0;
 - colours written as linear values, which this reader (like three.js) decodes
-  as sRGB: material and vertex colours are therefore not compared.
+  as sRGB: material and vertex colours are therefore not compared;
+- lights in its own conventions (`staged_assimp.fbx`): `Color` is the colour
+  times the intensity, `Intensity` is always 1000, `InnerAngle` and
+  `OuterAngle` are the glTF half-angles in degrees, `DecayType` is 0, a
+  point light's range goes on its model as `PBR_LightRange`, and each light
+  model keeps the glTF node's rotation, so FBX's −Y points where glTF's −Z
+  did not; and **no cameras** at all (its exporter's `// TODO: cameras`).
+  `fbx.rs`'s `reads_assimps_lights_under_its_own_conventions` cites the
+  Assimp source for each, and reads the file with
+  `FbxColorSpace::Linear`, since Assimp writes its light colours linear.

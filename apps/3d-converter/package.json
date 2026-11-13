@@ -1,0 +1,41 @@
+{
+  "name": "3d-converter-app",
+  "private": true,
+  "version": "0.0.0",
+  "description": "litegen's browser 3D converter (tools.litegen.ai/3d-converter): built on @litegen/3d-converter, nothing uploaded.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "storybook": "storybook dev -p 6106",
+    "build-storybook": "storybook build -o storybook-static --quiet",
+    "test:stories": "playwright test --project stories",
+    "test:e2e": "playwright test --project e2e",
+    "samples": "node scripts/make-samples.mjs",
+    "contact-sheet": "node scripts/contact-sheet.mjs",
+    "videos": "node scripts/videos.mjs"
+  },
+  "dependencies": {
+    "@litegen/3d-converter": "file:../../packages/3d-converter/js",
+    "@litegen/3d-viewer": "file:../../packages/3d-viewer",
+    "lucide-react": "^1.8.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "three": "0.183.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "@storybook/react-vite": "^10.6.0",
+    "@types/node": "^24.12.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "0.183.1",
+    "@vitejs/plugin-react": "^6.0.1",
+    "storybook": "^10.6.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.4",
+    "vitest": "^4.1.11"
+  }
+}

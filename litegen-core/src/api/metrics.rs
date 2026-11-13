@@ -1,9 +1,13 @@
-/// Prometheus metrics setup and handler.
-///
-/// Initialises a `PrometheusHandle` (without spawning its own HTTP listener)
-/// via `PrometheusBuilder::install_recorder()` and stores it in a process-wide
-/// `OnceLock`.  The axum handler at `GET /metrics` calls `handle.render()` to
-/// produce the standard Prometheus text exposition format.
+//! Prometheus metrics setup and handler.
+//!
+//! Initialises a `PrometheusHandle` (without spawning its own HTTP listener)
+//! via `PrometheusBuilder::install_recorder()` and stores it in a process-wide
+//! `OnceLock`. The router serves [`metrics_handler`] at
+//! `observability.metrics_path` (default `/metrics`) unless
+//! `observability.metrics_enabled` is false, behind a credential that may
+//! read the deployment when `observability.metrics_require_auth` is true. It
+//! calls `handle.render()` to produce the standard Prometheus text exposition
+//! format.
 use std::sync::OnceLock;
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
@@ -27,7 +31,8 @@ pub fn prometheus_handle() -> Option<&'static PrometheusHandle> {
     PROMETHEUS_HANDLE.get()
 }
 
-/// `GET /metrics` — Render all registered metrics in Prometheus text format.
+/// `GET` at `observability.metrics_path` (default `/metrics`): render all
+/// registered metrics in Prometheus text format.
 pub async fn metrics_handler() -> impl axum::response::IntoResponse {
     let body = match PROMETHEUS_HANDLE.get() {
         Some(h) => h.render(),

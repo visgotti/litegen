@@ -123,7 +123,7 @@ A self-hosted deployment needs a public HTTPS address for it: see
 
 ### Toolsets
 
-`/mcp` has up to 22 tools and `/admin/mcp` up to 94; each caller sees the
+`/mcp` has up to 24 tools and `/admin/mcp` up to 98; each caller sees the
 ones their credential can use. Clients that cap tool counts, or that work
 better with fewer tools, can ask for groups with `?toolsets=`:
 

@@ -1,7 +1,9 @@
+import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from dateutil.parser import isoparse
 
 from ..models.generation_status import GenerationStatus
 from ..types import UNSET, Unset
@@ -37,6 +39,9 @@ class VideoGenerationResponse:
             (3D doc §5). Absent on a plain generation.
         usage (Union['UsageInfo', None, Unset]):
         video_url (Union[None, Unset, str]): Video URL when completed.
+        video_url_expires_at (Union[None, Unset, datetime.datetime]): When `video_url` stops working, if it is a signed
+            link
+            (`docs/storage-access.md`); poll again for a fresh one.
     """
 
     created: int
@@ -51,6 +56,7 @@ class VideoGenerationResponse:
     segments: Union[List["VideoSegment"], None, Unset] = UNSET
     usage: Union["UsageInfo", None, Unset] = UNSET
     video_url: Union[None, Unset, str] = UNSET
+    video_url_expires_at: Union[None, Unset, datetime.datetime] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -120,6 +126,14 @@ class VideoGenerationResponse:
         else:
             video_url = self.video_url
 
+        video_url_expires_at: Union[None, Unset, str]
+        if isinstance(self.video_url_expires_at, Unset):
+            video_url_expires_at = UNSET
+        elif isinstance(self.video_url_expires_at, datetime.datetime):
+            video_url_expires_at = self.video_url_expires_at.isoformat()
+        else:
+            video_url_expires_at = self.video_url_expires_at
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -144,6 +158,8 @@ class VideoGenerationResponse:
             field_dict["usage"] = usage
         if video_url is not UNSET:
             field_dict["video_url"] = video_url
+        if video_url_expires_at is not UNSET:
+            field_dict["video_url_expires_at"] = video_url_expires_at
 
         return field_dict
 
@@ -266,6 +282,27 @@ class VideoGenerationResponse:
 
         video_url = _parse_video_url(d.pop("video_url", UNSET))
 
+        def _parse_video_url_expires_at(
+            data: object,
+        ) -> Union[None, Unset, datetime.datetime]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                video_url_expires_at_type_0 = isoparse(data)
+
+                return video_url_expires_at_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, datetime.datetime], data)
+
+        video_url_expires_at = _parse_video_url_expires_at(
+            d.pop("video_url_expires_at", UNSET)
+        )
+
         video_generation_response = cls(
             created=created,
             id=id,
@@ -279,6 +316,7 @@ class VideoGenerationResponse:
             segments=segments,
             usage=usage,
             video_url=video_url,
+            video_url_expires_at=video_url_expires_at,
         )
 
         video_generation_response.additional_properties = d

@@ -27,12 +27,14 @@ use crate::types::*;
 /// body fields are strictly validated. (The long `--resolution` / `--ratio` /
 /// `--duration` spellings this adapter used are no longer documented at all.)
 ///
-/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> — create video task
+/// @see <https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api> — create video task
 ///   Verbatim: "Conventional method (recommended): Pass parameters directly in the request body. This method uses strict validation"
-/// @see <https://docs.byteplus.com/en/docs/ModelArk/1521309> — retrieve task
+/// @see <https://docs.byteplus.com/en/docs/modelark/get-video-generation-task-api> — retrieve task
 ///   (status ∈ queued|running|succeeded|failed|cancelled, and `expired` once
 ///   `execution_expires_after` passes; result at content.video_url)
-///   Verbatim (apidog cross-ref): "POST … /api/v3/contents/generations/tasks ; GET … /api/v3/contents/generations/tasks/{task_id} ; Authorization: Bearer YOUR_ARK_API_KEY"
+///   Verbatim (create page, 2026-11-09): "POST https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks"
+///   Verbatim (retrieve page, 2026-11-09): "GET https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks/{id}";
+///   "This API supports only API Key authentication."
 pub struct ByteDanceVideoProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
@@ -41,15 +43,18 @@ pub struct ByteDanceVideoProvider {
 }
 
 impl ByteDanceVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -89,6 +94,7 @@ impl VideoProvider for ByteDanceVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -136,8 +142,10 @@ impl VideoProvider for ByteDanceVideoProvider {
             }
         }
 
-        let mut body = json!({ "model": native, "content": content });
-        if let Some(res) = extras.resolution.as_deref() {
+        let mut body = json!({ "model": crate::providers::wire_model(self.config.as_ref(), &model.id, &native), "content": content });
+        // The row's default when none is asked (E10): the clip is made at the
+        // resolution it was quoted and charged at, not at Seedance's own.
+        if let Some(res) = extras.resolution.as_deref().or(model.string_default("resolution")) {
             body["resolution"] = Value::String(res.to_string());
         }
         if let Some(ar) = extras.aspect_ratio.as_deref() {
@@ -152,8 +160,9 @@ impl VideoProvider for ByteDanceVideoProvider {
         }
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11).
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "content" | "resolution" | "ratio" | "duration" | "seed")) {
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| matches!(k, "model" | "content" | "resolution" | "ratio" | "duration" | "seed");
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
                 obj.insert(k.clone(), v.clone());
             }
         }
@@ -221,7 +230,8 @@ impl VideoProvider for ByteDanceVideoProvider {
             // `expired`: the task outlived `execution_expires_after` and was
             // terminated — polling it further can never succeed.
             Some("failed") | Some("cancelled") | Some("expired") => GenerationStatus::Failed,
-            _ => GenerationStatus::Processing,
+            Some("queued") | Some("running") => GenerationStatus::Processing,
+            other => return Ok(super::unknown_state("bytedance", other)),
         };
         let video_url = data["content"]["video_url"].as_str().map(String::from);
         // Why a task ended, in BytePlus's words where it gave any: `cancelled`
@@ -353,7 +363,7 @@ mod tests {
     /// "Image-to-video (first and last frames): Two image_url objects must be
     /// provided, and the role field is required." The first frame used to go
     /// out without a role. Seed is a documented Seedance 1.0 pro body field.
-    /// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757>
+    /// @see <https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api>
     #[tokio::test]
     async fn first_and_last_frames_both_carry_roles_and_seed_is_sent() {
         let server = MockServer::start().await;
@@ -386,9 +396,49 @@ mod tests {
         assert_eq!(body["seed"], 42);
     }
 
+    /// E10: a clip asked without a `resolution` is quoted and charged at the
+    /// row's default, so Seedance is sent that default ("Seedance 1.0 pro:
+    /// Default `1080p`", "Dreamina Seedance 2.0 mini: Default `720p`")
+    /// instead of being left to pick its own.
+    /// @see <https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api> (drift snapshot `bytedance/video-api.txt`, 2026-10-30)
+    #[tokio::test]
+    async fn an_unasked_resolution_is_sent_at_the_rows_default() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "cgt-1" }))).mount(&server).await;
+        let provider = make_provider(&server.uri());
+        let mut unasked = make_extras();
+        unasked.resolution = None;
+        let none = || MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        for id in ["bytedance/doubao-seedance-1-0-pro-250528", "bytedance/dreamina-seedance-2-0-mini-260615"] {
+            provider.generate(&ref_schema(id), &make_base("x", id), &unasked, &none()).await.unwrap();
+        }
+        let sent: Vec<Value> =
+            server.received_requests().await.unwrap().iter().map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["resolution"].clone()).collect();
+        assert_eq!(sent, [json!("1080p"), json!("720p")]);
+    }
+
+    /// E4a: where the result goes is litegen's (it polls, then fires the
+    /// key's webhook), so Ark's `callback_url` is never sent; the task's own
+    /// fields still are.
+    #[tokio::test]
+    async fn callback_url_is_never_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "cgt-1" }))).mount(&server).await;
+        let id = "bytedance/doubao-seedance-1-0-pro-250528";
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "callback_url": "https://attacker.example/cb", "watermark": false }));
+        make_provider(&server.uri())
+            .generate(&ref_schema(id), &make_base("x", id), &extras, &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() })
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("callback_url").is_none(), "{body}");
+        assert_eq!(body["watermark"], false, "{body}");
+    }
+
     /// A task that outlives `execution_expires_after` is terminated and marked
     /// `expired`; treating that as still-processing polls until timeout.
-    /// @see <https://docs.byteplus.com/en/docs/ModelArk/1521309>
+    /// @see <https://docs.byteplus.com/en/docs/modelark/get-video-generation-task-api>
     #[tokio::test]
     async fn expired_task_reports_failed() {
         let server = MockServer::start().await;

@@ -2,9 +2,12 @@ models:
   - id: stability/sd3-large
     provider: stability
     media_type: image
-    display_name: Stable Diffusion 3 Large
+    # Runs sd3.5-large (image/stability.rs); the id keeps its old name.
+    display_name: Stable Diffusion 3.5 Large
     description: Latest Stability AI model with excellent prompt adherence.
     docs_url: https://docs.stability.ai/api-reference/generate/stable-diffusion-35
+    # "Stable Diffusion 3.5 Large | … | 6.5" credits; "1 credit = $0.01" → $0.065.
+    # @see https://docs.stability.ai/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.065 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -18,13 +21,24 @@ models:
         allowed: ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"]
         default: "1:1"
       strength: { kind: float, min: 0.0, max: 1.0 }
+      # "cfg_scale … How strictly the diffusion process adheres to the prompt
+      # text" (1-10): "The _Large_ and _Medium_ models use a default of `4`.
+      # The _Turbo_ and _Flash_ model uses a default of `1`."
+      # @see https://api.stability.ai/v2alpha/openapi (/v2beta/stable-image/generate/sd3 cfg_scale, 2026-11-09)
+      guidance_scale: { kind: float, min: 1.0, max: 10.0, default: 4.0 }
+      # "style_preset … Guides the image model towards a particular style"
+      # (the StylePreset enum, the same 17 on every route that takes it).
+      # @see https://api.stability.ai/v2alpha/openapi (StylePreset, 2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
     ref_inputs:
       max_total: 1
       default_role: init
       provider_format: { form: multipart, field_map: { init: image } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [style_preset]
+    extra_allowlist: []
     tags: [text-to-image, image-to-image]
 
   # SD 3.5 Medium on the same /v2beta/stable-image/generate/sd3 route and body
@@ -36,8 +50,8 @@ models:
     media_type: image
     display_name: Stable Diffusion 3.5 Medium
     description: Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of
-    docs_url: https://docs.stability.ai/api-reference/generate/stable-diffusion-35
       prompt accuracy and image quality for fast generation.
+    docs_url: https://docs.stability.ai/api-reference/generate/stable-diffusion-35
     # "`sd3.5-medium` requires 3.5 credits per generation" (the sd3 `model`
     # description); 1 credit = $0.01 (re-read 2026-09-11).
     # @see https://docs.stability.ai/pricing.md
@@ -54,23 +68,37 @@ models:
         allowed: ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"]
         default: "1:1"
       strength: { kind: float, min: 0.0, max: 1.0 }
+      # "cfg_scale … How strictly the diffusion process adheres to the prompt
+      # text" (1-10): "The _Large_ and _Medium_ models use a default of `4`.
+      # The _Turbo_ and _Flash_ model uses a default of `1`."
+      # @see https://api.stability.ai/v2alpha/openapi (/v2beta/stable-image/generate/sd3 cfg_scale, 2026-11-09)
+      guidance_scale: { kind: float, min: 1.0, max: 10.0, default: 4.0 }
+      # "style_preset … Guides the image model towards a particular style"
+      # (the StylePreset enum, the same 17 on every route that takes it).
+      # @see https://api.stability.ai/v2alpha/openapi (StylePreset, 2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
     ref_inputs:
       max_total: 1
       default_role: init
       provider_format: { form: multipart, field_map: { init: image } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [style_preset]
+    extra_allowlist: []
     tags: [text-to-image, image-to-image]
 
   - id: stability/sd3-turbo
     provider: stability
     media_type: image
-    display_name: Stable Diffusion 3 Turbo
-    description: Faster, cheaper SD3 variant.
+    # Runs sd3.5-large-turbo (image/stability.rs); the id keeps its old name.
+    display_name: Stable Diffusion 3.5 Large Turbo
+    description: Faster, cheaper SD 3.5 Large variant.
     docs_url: https://docs.stability.ai/api-reference/generate/stable-diffusion-35
+    # "Stable Diffusion 3.5 Large Turbo | … | 4" credits; "1 credit = $0.01" → $0.04.
+    # @see https://docs.stability.ai/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.04 }
-    capabilities: { text_to_image: true }
+    capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
       # PixelGenie L9: output_format png | jpeg | webp, default png (v2beta).
@@ -83,8 +111,28 @@ models:
         # (https://api.stability.ai/v2alpha/openapi).
         allowed: ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"]
         default: "1:1"
+      # /generate/sd3's `mode: image-to-image` ("requires the `prompt`, `image`,
+      # and `strength` parameters") holds for every model in its enum.
+      strength: { kind: float, min: 0.0, max: 1.0 }
+      # "cfg_scale … How strictly the diffusion process adheres to the prompt
+      # text" (1-10): "The _Large_ and _Medium_ models use a default of `4`.
+      # The _Turbo_ and _Flash_ model uses a default of `1`."
+      # @see https://api.stability.ai/v2alpha/openapi (/v2beta/stable-image/generate/sd3 cfg_scale, 2026-11-09)
+      guidance_scale: { kind: float, min: 1.0, max: 10.0, default: 1.0 }
+      # "style_preset … Guides the image model towards a particular style"
+      # (the StylePreset enum, the same 17 on every route that takes it).
+      # @see https://api.stability.ai/v2alpha/openapi (StylePreset, 2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: []
-    tags: [text-to-image, fast]
+    tags: [text-to-image, image-to-image, fast]
 
   - id: stability/core
     provider: stability
@@ -92,6 +140,8 @@ models:
     display_name: Stable Image Core
     description: Fast, affordable image generation.
     docs_url: https://docs.stability.ai/api-reference/generate/stable-image-core
+    # "Stable Image Core | … | 3" credits; "1 credit = $0.01" → $0.03.
+    # @see https://docs.stability.ai/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.03 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -116,8 +166,10 @@ models:
     display_name: Stable Image Ultra
     description: Highest-quality Stability generation.
     docs_url: https://docs.stability.ai/api-reference/generate/stable-image-ultra
+    # "Stable Image Ultra | … | 8" credits; "1 credit = $0.01" → $0.08.
+    # @see https://docs.stability.ai/pricing.md (2026-11-09)
     pricing: { base_cost_usd: 0.08 }
-    capabilities: { text_to_image: true }
+    capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
       # PixelGenie L9: output_format png | jpeg | webp, default png (v2beta).
@@ -128,8 +180,25 @@ models:
         kind: aspect_ratio
         allowed: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
         default: "1:1"
+      # "image … The image to use as the starting point for the generation",
+      # with "strength … required when `image` is provided" (0-1; litegen sends
+      # 0.5 when none is asked). Image-to-image takes the image's shape.
+      # @see https://api.stability.ai/v2alpha/openapi (/v2beta/stable-image/generate/ultra, 2026-11-09)
+      strength: { kind: float, min: 0.0, max: 1.0 }
+      # "style_preset … Guides the image model towards a particular style"
+      # (the StylePreset enum, the same 17 on every route that takes it).
+      # @see https://api.stability.ai/v2alpha/openapi (StylePreset, 2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: []
-    tags: [text-to-image, premium, photorealistic]
+    tags: [text-to-image, image-to-image, premium, photorealistic]
 
   - id: stability/sdxl
     provider: stability
@@ -147,15 +216,25 @@ models:
     prompt: { required: true, max_length: 2000 }
     params:
       # 3D doc §4: "A mask-only vendor receives the box drawn as a mask".
-      region: { kind: region, input: mask, label: Region, description: The rectangle to edit, sent drawn as the mask. }
+      region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
       negative_prompt: { kind: string, max_length: 2000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       steps: { kind: int, min: 10, max: 50, default: 30 }
+      # `style_preset`, the StylePreset enum (the same 17 values; the v1 schema
+      # gives it no description), on v1 text-to-image, image-to-image and
+      # masking. "Guides the image model towards a particular style" is the v2
+      # spec's wording (https://api.stability.ai/v2alpha/openapi, 2026-11-09).
+      # @see https://docs.stability.ai/api-reference/sdxl-10/text-to-image.md (2026-11-09)
+      # @see https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-prompt.md (2026-11-09)
+      # @see https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-a-mask.md (2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
       guidance_scale: { kind: float, min: 0.0, max: 35.0, default: 7.0 }
       # Image-to-image only, sent inverted as `image_strength` ("Values close
       # to `1` will yield images very similar to the `init_image`"), so 0 keeps
       # the image as it does on sd3; masking takes none.
-      # @see https://docs.stability.ai/openapi-v1.json (2026-10-30)
+      # @see https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-prompt.md (image_strength, 2026-11-09)
       strength: { kind: float, min: 0.0, max: 1.0 }
       # The SDXL 1.0 engine accepts only these eight dimension pairs; 512x512 is
       # not one (https://docs.stability.ai/api-reference/sdxl-10/text-to-image).
@@ -199,10 +278,20 @@ models:
     #   "1 credit equals $0.01" → $0.05.
     pricing: { base_cost_usd: 0.05 }
     capabilities: { text_to_image: false, image_to_image: true, inpainting: true }
-    prompt: { required: true }
+    # Prompt / NegativePrompt: "maxLength": 10000.
+    prompt: { required: true, max_length: 10000 }
     preserves_unmasked: unspecified
     params:
-      negative_prompt: { kind: string }
+      negative_prompt: { kind: string, max_length: 10000 }
+      # "output_format … Dictates the `content-type` of the generated image"
+      # (jpeg | png | webp, default png).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      # "style_preset … Guides the image model towards a particular style"
+      # (the StylePreset enum, the same 17 on every route that takes it).
+      # @see https://api.stability.ai/v2alpha/openapi (StylePreset, 2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
       seed: { kind: seed, min: 0, max: 4294967294 }
       region:
         kind: region
@@ -240,10 +329,16 @@ models:
     capabilities: { image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
-      mask_prompt: { kind: string, max_length: 10000, label: Find, description: What to replace, named (Stability's search_prompt). }
+      mask_prompt: { kind: string, max_length: 10000, label: Find, description: "What to replace, named (Stability's search_prompt)." }
       negative_prompt: { kind: string, max_length: 10000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      # "style_preset … Guides the image model towards a particular style"
+      # (the StylePreset enum, the same 17 on every route that takes it).
+      # @see https://api.stability.ai/v2alpha/openapi (StylePreset, 2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
     ref_inputs:
       max_total: 1
       default_role: init
@@ -282,6 +377,12 @@ models:
         description: Pixels to add to each side (Stability's left, up, right, down).
       seed: { kind: seed, min: 0, max: 4294967294 }
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      # "style_preset … Guides the image model towards a particular style"
+      # (the StylePreset enum, the same 17 on every route that takes it).
+      # @see https://api.stability.ai/v2alpha/openapi (StylePreset, 2026-11-09)
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
     ref_inputs:
       max_total: 1
       default_role: init
@@ -289,6 +390,9 @@ models:
       roles:
         init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [creativity]
+    extra_params:
+      # From Stability's OpenAPI (drift snapshot stability/openapi.txt: allOf 0.2-0.5 and 0-1).
+      creativity: { kind: float, min: 0.2, max: 0.5, default: 0.35 }
     tags: [image-to-image, outpainting]
 
   # PixelGenie L8. Multipart: image (required; jpeg, png or webp, "Every side

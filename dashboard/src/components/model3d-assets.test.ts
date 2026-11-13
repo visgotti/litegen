@@ -1,22 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import type { Generation, Model3dAsset } from '@litegen/sdk';
+import { isViewerFormat } from '@litegen/3d-viewer/helpers';
 import {
   assetsOf,
-  canPreviewMesh,
-  copyToClipboard,
-  loadEventMatches,
-  retrySrc,
   validAssets,
-  classifyViewerError,
-  describeViewerError,
-  matchResourceStatus,
-  formatBytes,
-  formatDimensions,
+  packageDownloads,
+  originalOf,
+  packageLabel,
   isBrowserImage,
   meshOf,
   previewOf,
   texturesOf,
 } from './model3d-assets';
+
+// formatBytes, formatDimensions and copyToClipboard moved to the shared
+// viewer package, with their tests (packages/3d-viewer/src/format.test.ts).
+// The <model-viewer> workarounds (canPreviewMesh, retrySrc,
+// loadEventMatches, classifyViewerError, matchResourceStatus,
+// describeViewerError) went with <model-viewer>: the shared viewer
+// downloads the file itself and knows its HTTP status
+// (packages/3d-viewer/src/viewer/fetch-model.test.ts).
 
 const MESH: Model3dAsset = {
   kind: 'mesh', url: 'https://cdn.example/out/mesh.glb', format: 'glb', size_bytes: 1904, polycount: 12,
@@ -106,62 +109,6 @@ describe('validAssets', () => {
   });
 });
 
-describe('canPreviewMesh', () => {
-  it.each(['glb', 'GLB', 'gltf', 'GlTf'])('%s renders in <model-viewer>', f => {
-    expect(canPreviewMesh(f)).toBe(true);
-  });
-
-  it.each(['obj', 'fbx', 'usdz', 'OBJ'])('%s does not (model-viewer is glTF-only)', f => {
-    expect(canPreviewMesh(f)).toBe(false);
-  });
-
-  it('attempts an unknown (empty) format and lets the viewer decide', () => {
-    expect(canPreviewMesh('')).toBe(true);
-  });
-
-  it.each([7, null, { ext: 'glb' }])('rejects a non-string format (%s) instead of throwing', f => {
-    expect(() => canPreviewMesh(f)).not.toThrow();
-    expect(canPreviewMesh(f)).toBe(false);
-  });
-});
-
-describe('retrySrc', () => {
-  const SRC = 'https://cdn.example/out/mesh.glb?X-Amz-Signature=abc';
-
-  it('is the raw src before any retry', () => {
-    expect(retrySrc(SRC, 0)).toBe(SRC);
-  });
-
-  it('adds a slash-free fragment per attempt, leaving path and query untouched', () => {
-    expect(retrySrc(SRC, 1)).toBe(`${SRC}#retry-1`);
-    expect(retrySrc(SRC, 2)).toBe(`${SRC}#retry-2`);
-    const busted = new URL(retrySrc(SRC, 3));
-    expect(busted.search).toBe('?X-Amz-Signature=abc');
-    expect(busted.hash).not.toContain('/');
-  });
-
-  it('still produces a distinct string when the src already has a fragment', () => {
-    expect(retrySrc('https://x/m.glb#v2', 1)).not.toBe('https://x/m.glb#v2');
-  });
-});
-
-describe('loadEventMatches', () => {
-  const SRC = 'https://cdn.example/new.glb';
-
-  it('accepts the load for the current src', () => {
-    expect(loadEventMatches({ url: SRC }, SRC)).toBe(true);
-  });
-
-  it('rejects a stale load for a src that has since been replaced', () => {
-    expect(loadEventMatches({ url: 'https://cdn.example/old.glb' }, SRC)).toBe(false);
-  });
-
-  it('accepts a detail without a url rather than never settling', () => {
-    expect(loadEventMatches(undefined, SRC)).toBe(true);
-    expect(loadEventMatches({}, SRC)).toBe(true);
-  });
-});
-
 describe('meshOf', () => {
   it('finds the mesh asset', () => {
     expect(meshOf([PREVIEW, MESH, TEXTURE])).toBe(MESH);
@@ -220,42 +167,6 @@ describe('texturesOf', () => {
   });
 });
 
-describe('formatBytes', () => {
-  it.each([
-    [0, '0 B'],
-    [1, '1 B'],
-    [1023, '1023 B'],
-    [1024, '1.0 KB'],
-    [1536, '1.5 KB'],
-    // Rounds up into the next unit rather than printing "1024.0 KB".
-    [1024 * 1024 - 1, '1.0 MB'],
-    [1.5 * 1024 * 1024, '1.5 MB'],
-    [3 * 1024 ** 3, '3.0 GB'],
-  ])('%d -> %s', (n, want) => {
-    expect(formatBytes(n)).toBe(want);
-  });
-
-  it.each([null, undefined, -1, Number.NaN, Number.POSITIVE_INFINITY])('renders %s as a dash', n => {
-    expect(formatBytes(n)).toBe('—');
-  });
-});
-
-describe('formatDimensions', () => {
-  it('formats a bounding box in metres', () => {
-    expect(formatDimensions({ x: 1, y: 1, z: 1 })).toBe('1.00 × 1.00 × 1.00 m');
-    expect(formatDimensions({ x: 2, y: 0.5, z: 1.25 })).toBe('2.00 × 0.50 × 1.25 m');
-  });
-
-  it('does not collapse a millimetre-scale model to zero', () => {
-    expect(formatDimensions({ x: 0.0005, y: 0.001, z: 0 })).toBe('5.0e-4 × 1.0e-3 × 0.00 m');
-  });
-
-  it('renders an unknown box as a dash', () => {
-    expect(formatDimensions(null)).toBe('—');
-    expect(formatDimensions({ x: Number.NaN, y: 1, z: 1 })).toBe('—');
-  });
-});
-
 describe('isBrowserImage', () => {
   it.each(['png', 'jpg', 'JPEG', 'webp', 'gif'])('%s renders in an <img>', f => {
     expect(isBrowserImage(f)).toBe(true);
@@ -266,126 +177,6 @@ describe('isBrowserImage', () => {
   });
 });
 
-describe('describeViewerError', () => {
-  it('explains a load failure', () => {
-    expect(describeViewerError({ type: 'loadfailure' })).toMatch(/could not be loaded/i);
-  });
-
-  it('explains a lost WebGL context', () => {
-    expect(describeViewerError({ type: 'webglcontextlost' })).toMatch(/webgl/i);
-  });
-
-  it('has a generic message for anything else', () => {
-    expect(describeViewerError(undefined)).toMatch(/could not render/i);
-    expect(describeViewerError({ type: 'something-new' })).toMatch(/could not render/i);
-  });
-
-  it('explains a parse failure, overriding the load-failure text', () => {
-    expect(describeViewerError({ type: 'loadfailure' }, 'parse')).toMatch(/isn't a valid gltf/i);
-  });
-});
-
-describe('classifyViewerError', () => {
-  // Both a download failure and a parse failure dispatch the exact same
-  // `detail` in the installed model-viewer 4.3.1 — a generic `loadfailure`
-  // with no way to tell them apart (see the doc comment on the function and
-  // the Task 17B report for the real-browser evidence). responseStatus, read
-  // by the caller from PerformanceResourceTiming for the same request, is
-  // the only signal that discriminates.
-  it('is a download failure when no response was ever observed (404, network error, or no timing entry)', () => {
-    expect(classifyViewerError({ type: 'loadfailure' }, null)).toBe('load');
-  });
-
-  it('is a download failure for a non-2xx/3xx status', () => {
-    expect(classifyViewerError({ type: 'loadfailure' }, 404)).toBe('load');
-    expect(classifyViewerError({ type: 'loadfailure' }, 500)).toBe('load');
-  });
-
-  it('is a download failure for status 0 (the request never got a response)', () => {
-    // three.js's FileLoader (which <model-viewer> uses) fetches in `cors`
-    // mode, so a response that actually reached the app already passed CORS
-    // and reports its real status here even cross-origin — 0 is not "no
-    // Timing-Allow-Origin header", it means the request itself failed
-    // (network error, CORS rejection, or no entry at all).
-    expect(classifyViewerError({ type: 'loadfailure' }, 0)).toBe('load');
-  });
-
-  it('is a parse failure when the bytes were received (2xx/3xx) but the load still failed', () => {
-    expect(classifyViewerError({ type: 'loadfailure' }, 200)).toBe('parse');
-    expect(classifyViewerError({ type: 'loadfailure' }, 304)).toBe('parse');
-  });
-
-  it('is never a parse failure for an unknown or unrelated detail.type, even with a successful status', () => {
-    // e.g. webglcontextlost, which can fire long after a successful load and
-    // would otherwise pick up that load's own (unrelated) 200 timing entry.
-    expect(classifyViewerError({ type: 'webglcontextlost' }, 200)).toBe('load');
-    expect(classifyViewerError({ type: 'something-new' }, 200)).toBe('load');
-    expect(classifyViewerError(undefined, 200)).toBe('load');
-    expect(classifyViewerError(null, 200)).toBe('load');
-  });
-});
-
-describe('matchResourceStatus', () => {
-  const SRC = 'https://cdn.example/out/mesh.glb';
-  const RETRY_SRC = 'https://cdn.example/out/mesh.glb#retry-1';
-
-  it('is null with no entries', () => {
-    expect(matchResourceStatus([], SRC)).toBeNull();
-  });
-
-  it('finds the status of the one matching entry', () => {
-    expect(matchResourceStatus([{ name: SRC, responseStatus: 200 }], SRC)).toBe(200);
-  });
-
-  it('rejects entries for a different URL', () => {
-    expect(matchResourceStatus([{ name: 'https://cdn.example/other.glb', responseStatus: 200 }], SRC)).toBeNull();
-  });
-
-  it('rejects an entry for a different retry attempt of the same mesh', () => {
-    // Chromium retains the #retry-N fragment in a resource-timing entry's
-    // name, so a stale entry from a DIFFERENT attempt at the same mesh must
-    // not match this one — an exact match, not a same-base-URL match.
-    expect(matchResourceStatus([{ name: SRC, responseStatus: 200 }], RETRY_SRC)).toBeNull();
-    expect(matchResourceStatus([{ name: RETRY_SRC, responseStatus: 200 }], SRC)).toBeNull();
-  });
-
-  it('takes the most recent matching entry when there are several', () => {
-    expect(matchResourceStatus(
-      [{ name: SRC, responseStatus: 200 }, { name: SRC, responseStatus: 404 }],
-      SRC,
-    )).toBe(404);
-  });
-
-  it('is null for a matching entry with no responseStatus field (Resource Timing Level 2 unsupported)', () => {
-    expect(matchResourceStatus([{ name: SRC }], SRC)).toBeNull();
-  });
-
-  it('ignores a non-matching entry after a real match rather than overwriting it with null', () => {
-    expect(matchResourceStatus(
-      [{ name: SRC, responseStatus: 200 }, { name: 'https://cdn.example/other.glb' }],
-      SRC,
-    )).toBe(200);
-  });
-});
-
-describe('copyToClipboard', () => {
-  it('reports success when the write resolves', async () => {
-    const writes: string[] = [];
-    const clipboard = { writeText: async (t: string) => { writes.push(t); } };
-    await expect(copyToClipboard('https://x/m.glb', clipboard)).resolves.toBe(true);
-    expect(writes).toEqual(['https://x/m.glb']);
-  });
-
-  it('reports failure without throwing when the clipboard API is missing', async () => {
-    await expect(copyToClipboard('u', undefined)).resolves.toBe(false);
-  });
-
-  it('reports failure without throwing when the write is denied', async () => {
-    const clipboard = { writeText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) };
-    await expect(copyToClipboard('u', clipboard)).resolves.toBe(false);
-  });
-});
-
 describe('meshOf with several containers', () => {
   // A generation can now carry one mesh per requested container, because
   // litegen derives obj/stl/ply locally from a vendor's glb.
@@ -393,8 +184,7 @@ describe('meshOf with several containers', () => {
     ({ kind: 'mesh', url: `https://x/model.${format}`, format }) as Model3dAsset;
 
   it('prefers the glb whatever order the assets arrive in', () => {
-    // The viewer renders glTF only, so taking the first would show
-    // "unsupported format" for a generation that did deliver a good glb.
+    // The same mesh the backend links as result_url, and the richest.
     expect(meshOf([mesh('stl'), mesh('obj'), mesh('glb')])?.format).toBe('glb');
     expect(meshOf([mesh('glb'), mesh('obj')])?.format).toBe('glb');
   });
@@ -403,14 +193,53 @@ describe('meshOf with several containers', () => {
     expect(meshOf([mesh('stl'), mesh('gltf')])?.format).toBe('gltf');
   });
 
-  it('falls back to the first mesh when none can be previewed', () => {
+  it('takes the first mesh the viewer draws when there is no glTF', () => {
+    expect(meshOf([mesh('fbx'), mesh('stl')])?.format).toBe('fbx');
+    // A container the viewer has no loader for is passed over.
+    expect(meshOf([mesh('xyz'), mesh('stl')])?.format).toBe('stl');
+  });
+
+  it('falls back to the first mesh when the viewer draws none of them', () => {
     // Still better than null: the asset table and the download links work even
     // when the viewer cannot render it.
-    expect(meshOf([mesh('fbx'), mesh('stl')])?.format).toBe('fbx');
+    expect(meshOf([mesh('xyz'), mesh('abc')])?.format).toBe('xyz');
   });
 
   it('still backfills from result_url when there are no listed meshes', () => {
     expect(meshOf([], 'https://x/model.glb')?.format).toBe('glb');
     expect(meshOf([])).toBeNull();
+  });
+});
+
+describe('packageDownloads', () => {
+  const pkg = (format: string): Model3dAsset =>
+    ({ kind: 'package', format, url: `https://cdn.test/g/package_${format}.zip` }) as Model3dAsset;
+  const MESH_GLB = { kind: 'mesh', format: 'glb', url: 'https://cdn.test/g/mesh.glb' } as Model3dAsset;
+
+  it('keeps package assets through validation instead of filtering them out', () => {
+    expect(validAssets([MESH_GLB, pkg('obj')])).toEqual([MESH_GLB, pkg('obj')]);
+  });
+
+  it('lists only the packages, in the order the API sent them', () => {
+    expect(packageDownloads([MESH_GLB, pkg('usda'), pkg('obj'), pkg('dae')])).toEqual([pkg('usda'), pkg('obj'), pkg('dae')]);
+    expect(packageDownloads([MESH_GLB])).toEqual([]);
+  });
+
+  it('labels a package by the container inside it', () => {
+    expect(packageLabel(pkg('obj'))).toBe('Download OBJ package (.zip)');
+  });
+
+  it('never offers a package to the mesh viewer', () => {
+    expect(isViewerFormat('zip')).toBe(false);
+  });
+});
+
+describe('original assets', () => {
+  it("keeps the vendor's original file through validation so originalOf finds it", () => {
+    const mesh = { kind: 'mesh', format: 'glb', url: 'https://cdn.test/g/mesh.glb' } as Model3dAsset;
+    const original = { kind: 'original', format: 'fbx', url: 'https://cdn.test/g/original.fbx' } as Model3dAsset;
+    const assets = validAssets([mesh, original]);
+    expect(assets).toEqual([mesh, original]);
+    expect(originalOf(assets)).toEqual(original);
   });
 });

@@ -32,6 +32,7 @@ models:
         values:
           - [512, 512]
           - [1024, 1024]
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
     extra_allowlist: [output_format]
     ref_inputs:
       max_total: 2
@@ -56,7 +57,7 @@ models:
                 extra: None,
                 metadata: None,
             },
-            size: None, aspect_ratio: None, quality: None, style: None,
+            size: None, resolution: None, aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None,
             response_format: "url".into(),
             region: None, mask_grow_px: None, views: None,
@@ -234,6 +235,44 @@ models:
         assert_eq!(err.code, "extra_key_unsupported");
     }
 
+    /// An `extra` key that is one of the model's own params (a caller from
+    /// before it became one, as `background` and `output_format` did) is
+    /// told where it goes now.
+    #[test]
+    fn an_extra_key_that_is_a_param_says_to_send_it_as_one() {
+        use serde_json::json;
+        let r = registry();
+        let m = r.get("t/strict").unwrap();
+        let mut req = img("hi");
+        req.base.extra = Some(json!({ "guidance_scale": 7.5 }));
+        let err = validate_image(m, req).unwrap_err();
+        assert_eq!(err.code, "extra_key_unsupported");
+        assert!(err.message.contains("send it as `guidance_scale`"), "{}", err.message);
+    }
+
+    /// The output tier is one param on one scale for every vendor: checked
+    /// against the model's `resolution` values, and Google's former
+    /// `extra.imageSize` (and any `extra.resolution`) is told where it goes.
+    #[test]
+    fn an_image_resolution_is_one_of_the_models_tiers() {
+        use serde_json::json;
+        let r = registry();
+        let m = r.get("t/strict").unwrap();
+        let mut req = img("hi");
+        req.resolution = Some("2K".into());
+        assert!(validate_image(m, req).is_ok());
+        let mut req = img("hi");
+        req.resolution = Some("2k".into());
+        let err = validate_image(m, req).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("resolution")), "{}", err.message);
+        for extra in [json!({ "imageSize": "2K" }), json!({ "resolution": "2K" })] {
+            let mut req = img("hi");
+            req.base.extra = Some(extra.clone());
+            let err = validate_image(m, req).unwrap_err();
+            assert!(err.message.contains("send it as `resolution`"), "{extra}: {}", err.message);
+        }
+    }
+
     /// Lax mode drops the `extra` keys a model does not allowlist, and says
     /// so, as it does for params. Passed through, they reached the vendor and
     /// could replace what litegen sends: `extra.model` ran a dearer model than
@@ -356,6 +395,24 @@ models:
     capabilities: { text_to_video: true }
     prompt: { required: true, max_length: 100 }
     params: {}
+  - id: v/open-float
+    provider: v
+    media_type: video
+    display_name: OpenFloat
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      duration_seconds: { kind: float, max: 10.0 }
+  - id: v/open-int
+    provider: v
+    media_type: video
+    display_name: OpenInt
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      duration_seconds: { kind: int, max: 10 }
 "#)]).unwrap()
     }
 
@@ -412,6 +469,67 @@ models:
         let err = validate_video(r.get("v/six").unwrap(), req).unwrap_err();
         assert_eq!(err.code, "param_out_of_range");
         assert_eq!(err.param.as_deref(), Some("duration_seconds"));
+    }
+
+    /// A clip of no length, or less, is a bad value in either mode (E1): it
+    /// used to skip every check and be priced at 0 s while the vendor made,
+    /// and billed, its default clip. The open rows have no `min`, so the range
+    /// check alone cannot refuse it there.
+    #[test]
+    fn a_duration_of_zero_or_less_is_refused_in_both_modes() {
+        let r = video_registry();
+        let mut let_through = Vec::new();
+        for model in ["v/six", "v/eight", "v/open-float", "v/open-int"] {
+            for d in [0.0, -0.0, -3.0, -1e300] {
+                for strict in [true, false] {
+                    let mut req = vid_json(model);
+                    req.duration_seconds = Some(d);
+                    req.base.strict = strict;
+                    let out = validate_video(r.get(model).unwrap(), req);
+                    let refused = matches!(&out, Err(e) if e.code == "param_out_of_range" && e.param.as_deref() == Some("duration_seconds"));
+                    if !refused {
+                        let_through.push(format!("{model} {d:?} strict={strict}: {out:?}"));
+                    }
+                }
+            }
+        }
+        assert!(let_through.is_empty(), "{} durations of 0 s or less were not refused:\n{}", let_through.len(), let_through.join("\n"));
+    }
+
+    /// The engine's backstop: a duration of 0 s or less (or not a number)
+    /// never resolves to itself, so a path that skips the validator prices the
+    /// model's default — the clip the vendor makes — never a $0 one.
+    #[test]
+    fn a_non_positive_duration_never_resolves_to_a_clip_of_no_length() {
+        let r = video_registry();
+        let six = r.get("v/six").unwrap();
+        for d in [0.0, -0.0, -3.0, f64::NAN, f64::INFINITY] {
+            let got = resolve_duration_seconds(six, Some(d));
+            assert!(got == 6.0, "v/six with {d} resolved to {got}, not its 6 s default");
+        }
+        let got = resolve_duration_seconds(r.get("v/none").unwrap(), Some(0.0));
+        assert!(got == 5.0, "v/none with 0 resolved to {got}, not the legacy 5 s");
+    }
+
+    /// A model whose listing has no `duration_seconds` takes none (E6): sent
+    /// anyway, it is refused when strict and dropped and named otherwise, like
+    /// every other param the model lacks.
+    #[test]
+    fn a_duration_on_a_model_without_one_is_refused_in_strict_and_dropped_in_lax() {
+        let r = video_registry();
+        let none = r.get("v/none").unwrap();
+        let mut req = vid_json("v/none");
+        req.duration_seconds = Some(7.0);
+        let out = validate_video(none, req);
+        assert!(
+            matches!(&out, Err(e) if e.code == "param_unsupported" && e.param.as_deref() == Some("duration_seconds")),
+            "strict: {out:?}"
+        );
+        let mut req = vid_json("v/none");
+        req.duration_seconds = Some(7.0);
+        req.base.strict = false;
+        let out = validate_video(none, req).expect("lax drops what the model lacks");
+        assert_eq!((out.dropped.clone(), out.request.duration_seconds), (vec!["duration_seconds".to_string()], None), "lax");
     }
 
     // ─── Request-time checks (L13) ───────────────────────────────────────────
@@ -502,6 +620,28 @@ models:
         assert!(validate_image(r.get("c/text-only").unwrap(), img_req("c/text-only", serde_json::json!([]), serde_json::json!({ "n": 1 }))).is_ok());
     }
 
+    /// One submitted job makes one clip, and one is billed (E3): `n` above 1
+    /// was accepted and silently ignored. Refused in both modes, as an image's
+    /// `n` is; 0 is the same as 1.
+    #[test]
+    fn more_than_one_video_per_request_is_refused() {
+        let r = video_registry();
+        let six = r.get("v/six").unwrap();
+        for strict in [true, false] {
+            let mut req = vid_json("v/six");
+            req.base.n = 4;
+            req.base.strict = strict;
+            let out = validate_video(six, req);
+            assert!(matches!(&out, Err(e) if e.code == "param_out_of_range" && e.param.as_deref() == Some("n")), "n: 4, strict={strict}: {out:?}");
+        }
+        for n in [0, 1] {
+            let mut req = vid_json("v/six");
+            req.base.n = n;
+            let out = validate_video(six, req);
+            assert!(out.is_ok(), "n: {n}: {out:?}");
+        }
+    }
+
     #[test]
     fn a_size_the_vendor_cannot_make_is_refused_not_snapped() {
         let r = l13_registry();
@@ -511,6 +651,221 @@ models:
             assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("size")), "{size}: {}", err.message);
         }
         assert!(validate_image(m, img_req("c/text-only", serde_json::json!([]), serde_json::json!({ "size": "2160x3840" }))).is_ok());
+    }
+
+    // ─── A frame image sets the clip's shape (E5) ────────────────────────────
+
+    /// Rows shaped like `c/i2v-only` whose vendor takes no ratio once a frame
+    /// image sets the clip's shape: `f/framed` unless a `reference` image
+    /// rides along (a mode that takes one), `f/always` even then, and
+    /// `f/plain` never (the ratio always applies).
+    fn framed_registry() -> CapabilityRegistry {
+        let row = |id: &str, shape: &str| format!(r#"
+  - id: {id}
+    provider: f
+    media_type: video
+    display_name: Framed
+    pricing: {{ base_cost_usd: 0.1 }}
+    capabilities: {{ text_to_video: true, image_to_video: true }}
+    prompt: {{ required: true }}
+    params:
+      aspect_ratio: {{ kind: aspect_ratio, allowed: ["16:9", "9:16"]{shape} }}
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: {{ form: url }}
+      roles:
+        first_frame: {{ required: false, min_count: 0, max_count: 1 }}
+        last_frame: {{ required: false, min_count: 0, max_count: 1 }}
+        init: {{ required: false, min_count: 0, max_count: 1 }}
+        reference: {{ required: false, min_count: 0, max_count: 1 }}"#);
+        let yaml = format!(
+            "models:{}{}{}\n",
+            row("f/framed", ", frames_set_shape: without_references"),
+            row("f/always", ", frames_set_shape: always"),
+            row("f/plain", ""),
+        );
+        CapabilityRegistry::from_yaml_strs(&[("f.yaml", yaml.as_str())]).unwrap()
+    }
+
+    /// A validated `aspect_ratio` the vendor would not get (E5): the adapter
+    /// left it out of the image-to-video body, so a 9:16 request with a 16:9
+    /// frame came back 16:9 with nothing refused or reported. Refused when
+    /// strict, dropped and named when lax; kept wherever it is sent.
+    #[test]
+    fn a_ratio_a_frame_overrides_is_refused_in_strict_and_dropped_in_lax() {
+        let r = framed_registry();
+        let run = |model: &str, roles: &[Option<&str>], strict: bool| {
+            let refs: Vec<serde_json::Value> = roles
+                .iter()
+                .enumerate()
+                .map(|(i, role)| {
+                    let mut image = serde_json::json!({ "type": "url", "value": format!("https://x/{i}.png") });
+                    if let Some(role) = role {
+                        image["role"] = serde_json::json!(role);
+                    }
+                    image
+                })
+                .collect();
+            let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+                "model": model, "prompt": "a fox", "aspect_ratio": "9:16", "reference_images": refs, "strict": strict,
+            }))
+            .unwrap();
+            validate_video(r.get(model).unwrap(), req)
+        };
+        // Strict: a frame image, named or role-less (its `default_role`), refuses the ratio.
+        for (model, roles) in [
+            ("f/framed", vec![Some("first_frame")]),
+            ("f/framed", vec![None]),
+            ("f/framed", vec![Some("last_frame")]),
+            ("f/framed", vec![Some("init")]),
+            ("f/always", vec![Some("first_frame")]),
+            ("f/always", vec![Some("first_frame"), Some("reference")]),
+        ] {
+            let out = run(model, &roles, true);
+            assert!(
+                matches!(&out, Err(e) if e.code == "param_unsupported" && e.param.as_deref() == Some("aspect_ratio")),
+                "{model} {roles:?} strict: {out:?}"
+            );
+        }
+        // Lax: dropped and named; the image still goes.
+        let out = run("f/framed", &[Some("first_frame")], false).expect("lax drops the ratio");
+        assert_eq!(
+            (out.dropped.clone(), out.request.aspect_ratio.clone(), out.request.base.reference_images.len()),
+            (vec!["aspect_ratio".to_string()], None, 1),
+            "lax"
+        );
+        // Kept where the vendor takes it: no frame, a reference beside the frame, or no rule.
+        for (model, roles) in [
+            ("f/framed", vec![]),
+            ("f/framed", vec![Some("first_frame"), Some("reference")]),
+            ("f/framed", vec![Some("reference")]),
+            ("f/always", vec![Some("reference")]),
+            ("f/plain", vec![Some("first_frame")]),
+        ] {
+            for strict in [true, false] {
+                let out = run(model, &roles, strict);
+                assert!(
+                    matches!(&out, Ok(o) if o.request.aspect_ratio.as_deref() == Some("9:16") && o.dropped.is_empty()),
+                    "{model} {roles:?} strict={strict}: {out:?}"
+                );
+            }
+        }
+    }
+
+    // ─── Fields the request has no name for (E2) ─────────────────────────────
+
+    fn allow_registry() -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("u.yaml", r#"
+models:
+  - id: u/allow
+    provider: u
+    media_type: image
+    display_name: Allow
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+    params: {}
+    extra_allowlist: [user, moderation]
+"#)]).unwrap()
+    }
+
+    fn unknown(
+        m: &ModelSchema,
+        request: &str,
+        top: Vec<(&str, serde_json::Value)>,
+        nested: Vec<&str>,
+        extra: &mut Option<serde_json::Value>,
+        strict: bool,
+    ) -> Result<Vec<String>, ValidationError> {
+        let top = top.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        check_unknown_fields(m, request, top, nested.into_iter().map(str::to_string).collect(), extra, strict)
+    }
+
+    /// Strict refuses a field the request type has no name for, at any depth,
+    /// naming it; lax drops it and names it for `X-Litegen-Dropped-Params`.
+    /// Both used to be ignored, `strict: true` included.
+    #[test]
+    fn an_unknown_field_is_refused_in_strict_and_named_in_lax() {
+        let r = allow_registry();
+        let m = r.get("u/allow").unwrap();
+        let img = "ImageGenerationRequest";
+        let out = unknown(m, img, vec![("colour", serde_json::json!("red"))], vec![], &mut None, true);
+        assert!(matches!(&out, Err(e) if e.code == "param_unsupported" && e.param.as_deref() == Some("colour")), "strict, top level: {out:?}");
+        let out = unknown(m, img, vec![], vec!["reference_images[0].weight"], &mut None, true);
+        assert!(
+            matches!(&out, Err(e) if e.code == "param_unsupported" && e.param.as_deref() == Some("reference_images[0].weight")),
+            "strict, nested: {out:?}"
+        );
+        let out = unknown(m, img, vec![("colour", serde_json::json!("red"))], vec!["reference_images[0].weight"], &mut None, false);
+        assert_eq!(out.ok(), Some(vec!["colour".to_string(), "reference_images[0].weight".to_string()]), "lax names both");
+    }
+
+    /// A field the model passes through (`extra_allowlist`) is forwarded as if
+    /// sent in `extra`, in both modes (E2 ruling a): the OpenAI SDK sends
+    /// `user` at the top level. Sent both ways with different values, strict
+    /// refuses naming both, and lax keeps `extra`'s and names the other.
+    #[test]
+    fn a_field_the_model_passes_through_is_forwarded_as_extra() {
+        let r = allow_registry();
+        let m = r.get("u/allow").unwrap();
+        let img = "ImageGenerationRequest";
+        let user = || vec![("user", serde_json::json!("u1"))];
+        for strict in [true, false] {
+            let mut extra = None;
+            let out = unknown(m, img, user(), vec![], &mut extra, strict);
+            assert_eq!((out.ok(), extra), (Some(vec![]), Some(serde_json::json!({ "user": "u1" }))), "strict={strict}");
+            let mut extra = Some(serde_json::json!({ "user": "u1", "moderation": "low" }));
+            let out = unknown(m, img, user(), vec![], &mut extra, strict);
+            assert_eq!(
+                (out.ok(), extra),
+                (Some(vec![]), Some(serde_json::json!({ "user": "u1", "moderation": "low" }))),
+                "the same value both ways, strict={strict}"
+            );
+        }
+        let mut extra = Some(serde_json::json!({ "user": "u2" }));
+        let out = unknown(m, img, user(), vec![], &mut extra, true);
+        assert!(
+            matches!(&out, Err(e) if e.code == "param_invalid" && e.param.as_deref() == Some("user") && e.message.contains("extra.user")),
+            "strict, two values: {out:?}"
+        );
+        let mut extra = Some(serde_json::json!({ "user": "u2" }));
+        let out = unknown(m, img, user(), vec![], &mut extra, false);
+        assert_eq!((out.ok(), extra), (Some(vec!["user".to_string()]), Some(serde_json::json!({ "user": "u2" }))), "lax keeps extra's value");
+    }
+
+    /// Strict names at most 20 fields and a count (a 25 MiB body of tiny keys
+    /// would make a megabyte error otherwise), with a hint where one fits.
+    #[test]
+    fn a_refusal_names_twenty_fields_and_hints_at_the_right_one() {
+        let r = allow_registry();
+        let m = r.get("u/allow").unwrap();
+        let top: Vec<(String, serde_json::Value)> = (0..25).map(|i| (format!("k{i:02}"), serde_json::json!(1))).collect();
+        let err = check_unknown_fields(m, "ImageGenerationRequest", top, vec![], &mut None, true).unwrap_err();
+        assert!(err.message.contains("k19") && !err.message.contains("k20") && err.message.contains("5 more"), "{}", err.message);
+        let err = unknown(m, "VideoGenerationRequest", vec![("duration", serde_json::json!(10))], vec![], &mut None, true).unwrap_err();
+        assert!(err.message.contains("`duration_seconds`"), "a field it begins: {}", err.message);
+        let err = unknown(m, "VideoGenerationRequest", vec![("durationSeconds", serde_json::json!(10))], vec![], &mut None, true).unwrap_err();
+        assert!(err.message.contains("`duration_seconds`"), "its snake_case form: {}", err.message);
+        let err = unknown(m, "VideoGenerationRequest", vec![("size", serde_json::json!("1024x1024"))], vec![], &mut None, true).unwrap_err();
+        assert!(err.message.contains("an image request field"), "another family's field: {}", err.message);
+    }
+
+    /// One name that is no header value used to delete the whole report
+    /// (N2); a capped list stays visible ASCII, since the MCP note and the
+    /// SDKs read the header with `to_str()`.
+    #[test]
+    fn the_dropped_header_survives_a_name_that_is_no_header_value() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let out = dropped_header(&names(&["fps", "extra.a\u{1}b", "extra.a,b"]));
+        let (name, value) = out.clone().unwrap_or_else(|| panic!("one unsafe name deleted the report: {out:?}"));
+        assert_eq!(name.as_str(), "x-litegen-dropped-params");
+        assert_eq!(value.to_str().ok(), Some("fps,+2 more"));
+        let many: Vec<String> = (0..40).map(|i| format!("p{i:02}")).chain(["extra.h\u{e9}llo".to_string(), "x".repeat(65)]).collect();
+        let (_, value) = dropped_header(&many).expect("a capped header");
+        let text = value.to_str().expect("visible ASCII");
+        assert!(text.starts_with("p00,p01,") && text.ends_with(",p31,+10 more"), "{text}");
+        assert!(dropped_header(&[]).is_none());
     }
 
     // ─── Timed keyframes (3D doc §5) ─────────────────────────────────────────
@@ -570,8 +925,10 @@ models:
     #[test]
     fn a_keyframe_off_the_vendors_grid_is_refused() {
         let r = keyframe_model("any", ", time_step_s: 1.0", "      {}");
-        assert!(validate_video(r.get("k/m").unwrap(), keyframed(&[Some(0.0), Some(2.0), Some(7.0)])).is_ok(), "no duration param: the keyframes make the clip");
-        let err = validate_video(r.get("k/m").unwrap(), keyframed(&[Some(0.0), Some(1.5)])).unwrap_err();
+        // A model without a duration param takes none (E6): its keyframes make the clip.
+        let unbounded = |times: &[Option<f64>]| VideoGenerationRequest { duration_seconds: None, ..keyframed(times) };
+        assert!(validate_video(r.get("k/m").unwrap(), unbounded(&[Some(0.0), Some(2.0), Some(7.0)])).is_ok(), "no duration param: the keyframes make the clip");
+        let err = validate_video(r.get("k/m").unwrap(), unbounded(&[Some(0.0), Some(1.5)])).unwrap_err();
         assert_eq!(err.code, "keyframe_off_grid", "{}", err.message);
     }
 
@@ -835,5 +1192,236 @@ models:
         }))
         .unwrap();
         assert_eq!(validate_video(m, req).unwrap_err().code, "param_enum_mismatch", "a container the model does not take");
+    }
+
+    // ─── A `values` list is enforced on every number param ───────────────────
+
+    fn listed_registry() -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("listed.yaml", r#"
+models:
+  - id: n/img
+    provider: n
+    media_type: image
+    display_name: Img
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      steps: { kind: int, min: 1, max: 50, values: [10, 20] }
+      guidance_scale: { kind: float, min: 1.0, max: 10.0, values: [3.5, 7.0] }
+      strength: { kind: float, min: 0.0, max: 1.0, values: [0.5, 1.0] }
+  - id: n/vid
+    provider: n
+    media_type: video
+    display_name: Vid
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      fps: { kind: int, min: 24, max: 50, values: [24, 25, 48, 50] }
+  - id: n/mesh
+    provider: n
+    media_type: model3d
+    display_name: Mesh
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_3d: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      output_formats: { kind: string_array, enum_values: [glb], max_items: 1, default: [glb] }
+      target_polycount: { kind: int, min: 1000, max: 100000, values: [5000, 10000] }
+      fps: { kind: int, min: 24, max: 60, values: [24, 30] }
+"#)]).unwrap()
+    }
+
+    #[test]
+    fn a_values_list_is_enforced_on_every_number_param() {
+        let r = listed_registry();
+        let img = |field: &str, v: serde_json::Value| -> Result<_, ValidationError> {
+            let req: ImageGenerationRequest = serde_json::from_value(serde_json::json!({ "model": "n/img", "prompt": "a cat", field: v })).unwrap();
+            validate_image(r.get("n/img").unwrap(), req)
+        };
+        for (field, bad, good) in [("steps", serde_json::json!(15), serde_json::json!(20)), ("guidance_scale", serde_json::json!(5.0), serde_json::json!(7.0)), ("strength", serde_json::json!(0.7), serde_json::json!(0.5))] {
+            let err = img(field, bad).unwrap_err();
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some(field)), "{field}: {}", err.message);
+            assert!(img(field, good).is_ok(), "{field}: a listed value passes");
+        }
+
+        let vid = |fps: u32| {
+            let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({ "model": "n/vid", "prompt": "a cat", "fps": fps })).unwrap();
+            validate_video(r.get("n/vid").unwrap(), req)
+        };
+        let err = vid(30).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("fps")), "{}", err.message);
+        assert!(err.message.contains("[24, 25, 48, 50]"), "the error names the values: {}", err.message);
+        assert!(vid(48).is_ok());
+
+        let mesh = |field: &str, v: u32| {
+            let req: Model3dGenerationRequest = serde_json::from_value(serde_json::json!({ "model": "n/mesh", "prompt": "a chair", field: v })).unwrap();
+            validate_model3d(r.get("n/mesh").unwrap(), req)
+        };
+        for (field, bad, good) in [("target_polycount", 7000, 10000), ("fps", 25, 30)] {
+            let err = mesh(field, bad).unwrap_err();
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some(field)), "{field}: {}", err.message);
+            assert!(mesh(field, good).is_ok(), "{field}: a listed value passes");
+        }
+    }
+
+    #[test]
+    fn a_start_frame_row_refuses_init_and_first_frame_together() {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("models");
+        let r = CapabilityRegistry::from_dir(&p).unwrap();
+        let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+            "model": "runway/gen4.5",
+            "prompt": "a drone shot",
+            "reference_images": [
+                { "type": "url", "value": "https://example.test/a.png", "role": "init" },
+                { "type": "url", "value": "https://example.test/b.png", "role": "first_frame" }
+            ]
+        }))
+        .unwrap();
+        let err = validate_video(r.get("runway/gen4.5").unwrap(), req).unwrap_err();
+        assert_eq!(err.code, "ref_total_exceeded", "{}", err.message);
+    }
+
+    /// N4: a string param's `pattern`, and a typed extra's, is enforced: a
+    /// value it does not match is refused (`param_invalid`), in either mode.
+    #[test]
+    fn a_string_must_match_its_pattern() {
+        use serde_json::json;
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/pattern
+    provider: t
+    media_type: image
+    display_name: T
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+    params:
+      style: { kind: string, pattern: "^[a-z]+$" }
+      negative_prompt: { kind: string, pattern: "^[a-z ]*$" }
+    extra_allowlist: [code]
+    extra_params:
+      code: { kind: string, pattern: "^[0-9a-f]{8}$" }
+"#)])
+        .expect("load");
+        let m = r.get("t/pattern").unwrap();
+        for strict in [true, false] {
+            let mut req = img("hi");
+            req.base.strict = strict;
+            req.style = Some("ABC".into());
+            let err = validate_image(m, req).expect_err("style");
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_invalid", Some("style")), "{}", err.message);
+            let mut req = img("hi");
+            req.base.strict = strict;
+            req.base.negative_prompt = Some("NO".into());
+            let err = validate_image(m, req).expect_err("negative_prompt");
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_invalid", Some("negative_prompt")), "{}", err.message);
+            let mut req = img("hi");
+            req.base.strict = strict;
+            req.base.extra = Some(json!({ "code": "xyz" }));
+            let err = validate_image(m, req).expect_err("extra.code");
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_invalid", Some("extra.code")), "{}", err.message);
+        }
+        let mut req = img("hi");
+        req.style = Some("abc".into());
+        req.base.negative_prompt = Some("no blur".into());
+        req.base.extra = Some(json!({ "code": "0a1b2c3d" }));
+        validate_image(m, req).unwrap_or_else(|e| panic!("{}", e.message));
+    }
+
+    /// E4b: a typed extra is checked like a param, in either mode, with
+    /// `param: "extra.<key>"`; an untyped one passes as any JSON, and `null`
+    /// passes as given.
+    #[test]
+    fn a_typed_extra_is_checked_like_a_param() {
+        use serde_json::json;
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/typed
+    provider: t
+    media_type: image
+    display_name: T
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+    extra_allowlist: [safety_tolerance, raw, steps_x, strength_x, styles, controls]
+    extra_params:
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3"], default: "2" }
+      raw: { kind: bool }
+      steps_x: { kind: int, min: 1, max: 50 }
+      strength_x: { kind: float, min: 0, max: 1 }
+      styles: { kind: string_array, enum_values: [a, b], max_items: 1 }
+"#)])
+        .expect("load");
+        let m = r.get("t/typed").unwrap();
+        let check = |extra: serde_json::Value, strict: bool| {
+            let mut req = img("hi");
+            req.base.strict = strict;
+            req.base.extra = Some(extra);
+            validate_image(m, req)
+        };
+        for (extra, code, param) in [
+            (json!({ "safety_tolerance": 2 }), "param_invalid", "extra.safety_tolerance"),
+            (json!({ "safety_tolerance": "9" }), "param_enum_mismatch", "extra.safety_tolerance"),
+            (json!({ "raw": "true" }), "param_invalid", "extra.raw"),
+            (json!({ "steps_x": 99 }), "param_out_of_range", "extra.steps_x"),
+            (json!({ "steps_x": 1.5 }), "param_invalid", "extra.steps_x"),
+            (json!({ "strength_x": 2.0 }), "param_out_of_range", "extra.strength_x"),
+            (json!({ "strength_x": "0.5" }), "param_invalid", "extra.strength_x"),
+            (json!({ "styles": ["c"] }), "param_enum_mismatch", "extra.styles"),
+            (json!({ "styles": ["a", "b"] }), "param_too_many", "extra.styles"),
+            (json!({ "styles": "a" }), "param_invalid", "extra.styles"),
+            (json!({ "styles": [1] }), "param_invalid", "extra.styles"),
+        ] {
+            for strict in [true, false] {
+                let err = check(extra.clone(), strict).expect_err(&extra.to_string());
+                assert_eq!((err.code.as_str(), err.param.as_deref()), (code, Some(param)), "{extra} strict={strict}: {}", err.message);
+            }
+        }
+        for extra in [
+            json!({ "safety_tolerance": "2", "raw": true, "steps_x": 10, "strength_x": 0.5, "styles": ["a"] }),
+            json!({ "controls": { "colors": [[1, 2, 3]] } }),
+            json!({ "safety_tolerance": null }),
+        ] {
+            let out = check(extra.clone(), true).unwrap_or_else(|e| panic!("{extra}: {}", e.message));
+            assert_eq!(out.request.base.extra.as_ref(), Some(&extra), "sent as given");
+        }
+    }
+
+    /// E4a: where a result goes and who sees it are litegen's. The shipped
+    /// rows that once allowlisted a vendor's callback or publish switch refuse
+    /// it when strict, saying why, and drop and name it otherwise.
+    #[test]
+    fn a_caller_cannot_route_results_or_publish_them_through_extra() {
+        use serde_json::json;
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("models");
+        let r = CapabilityRegistry::from_dir(&p).unwrap();
+        let frame = json!([{ "type": "url", "value": "https://example.test/a.png", "role": "first_frame" }]);
+        for (model, key, value, why, refs) in [
+            ("vidu/viduq3-turbo", "callback_url", json!("https://attacker.example/cb"), "webhook", json!([])),
+            ("minimax/MiniMax-Hailuo-2.3", "callback_url", json!("https://attacker.example/cb"), "webhook", json!([])),
+            ("luma/dream-machine", "callback_url", json!("https://attacker.example/cb"), "webhook", json!([])),
+            ("bytedance/doubao-seedance-1-0-pro-250528", "callback_url", json!("https://attacker.example/cb"), "webhook", json!([])),
+            ("leonardo/motion2", "isPublic", json!(true), "access", frame),
+        ] {
+            let req = |strict: bool| -> VideoGenerationRequest {
+                serde_json::from_value(json!({
+                    "model": model, "prompt": "a cat", "strict": strict, "reference_images": refs.clone(), "extra": { key: value.clone() }
+                }))
+                .unwrap()
+            };
+            let err = validate_video(r.get(model).unwrap(), req(true)).expect_err(model);
+            let param = format!("extra.{key}");
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("extra_key_unsupported", Some(param.as_str())), "{model}: {}", err.message);
+            assert!(err.message.contains(why), "{model}: {}", err.message);
+            let out = validate_video(r.get(model).unwrap(), req(false)).expect(model);
+            assert!(out.dropped.contains(&param), "{model}: {:?}", out.dropped);
+            assert!(out.request.base.extra.as_ref().and_then(|e| e.get(key)).is_none(), "{model}: forwarded");
+        }
     }
 }

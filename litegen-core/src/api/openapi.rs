@@ -8,6 +8,7 @@ use utoipa::OpenApi;
         version = env!("CARGO_PKG_VERSION"),
         description = "Universal proxy for AI image, video and 3D model generation."
     ),
+    modifiers(&OpenAllOfMembers),
     paths(
         crate::api::handlers::generate_image,
         crate::api::handlers::segment_image,
@@ -44,6 +45,11 @@ use utoipa::OpenApi;
         crate::api::handlers::get_generation,
         crate::api::handlers::list_generation_assets,
         crate::api::handlers::get_generation_asset,
+        crate::api::handlers::get_signed_generation_asset,
+        crate::api::handlers::revoke_generation_links,
+        crate::api::handlers::delete_generation,
+        crate::api::handlers::orgs::revoke_app_links,
+        crate::api::handlers::management::admin::revoke_links,
         crate::api::handlers::cancel_generation,
         crate::api::handlers::get_log_artifact,
         // Auth — config + password
@@ -100,6 +106,9 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::get_app_storage,
         crate::api::handlers::orgs::put_app_storage,
         crate::api::handlers::orgs::delete_app_storage,
+        // Who may open an app's stored files (docs/storage-access.md)
+        crate::api::handlers::orgs::get_app_access,
+        crate::api::handlers::orgs::put_app_access,
         // Model allowlists (org pool + per-app access)
         crate::api::handlers::orgs::get_org_allowed_models,
         crate::api::handlers::orgs::put_org_allowed_models,
@@ -164,6 +173,7 @@ use utoipa::OpenApi;
         crate::types::BaseGenerationRequest,
         crate::types::ImageGenerationRequest,
         crate::types::ImageGenerationResponse,
+        crate::types::ImageGenerationAccepted,
         crate::types::ImageSegmentationRequest,
         crate::types::ImageSegmentationResponse,
         crate::types::SegmentationPrompt,
@@ -307,6 +317,15 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::TransferOwnerRequest,
         crate::api::handlers::orgs::CreateProviderCredentialRequest,
         crate::api::handlers::orgs::PutAppStorageRequest,
+        // Stored-file access (docs/storage-access.md)
+        crate::access::AccessMode,
+        crate::access::OwnerScope,
+        crate::access::AccessSettings,
+        crate::access::AppAccessOverrides,
+        crate::access::PutAppAccessRequest,
+        crate::access::AppAccessSettings,
+        crate::access::LinksRevoked,
+        crate::access::SignedLinks,
         // Model allowlists (org pool + per-app access)
         crate::types::OrgAllowedModels,
         crate::types::AppModelAccess,
@@ -398,6 +417,241 @@ use utoipa::OpenApi;
 )]
 pub struct ApiDoc;
 
+/// D2: the catalog structs deny unknown fields, which utoipa draws as
+/// `additionalProperties: false`. Right for a plain struct; but a tagged
+/// payload (a `ParamSpec*` beside its `kind`) is drawn as a `$ref` member of
+/// an `allOf`, and closed it would refuse its own tag, so no payload could
+/// pass a strict validator. Every component used that way stays open here;
+/// the server still refuses an unknown key when it reads one.
+struct OpenAllOfMembers;
+
+impl utoipa::Modify for OpenAllOfMembers {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::schema::{AdditionalProperties, Schema};
+        fn members(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    for part in m.get("allOf").and_then(serde_json::Value::as_array).into_iter().flatten() {
+                        if let Some(r) = part.get("$ref").and_then(serde_json::Value::as_str) {
+                            out.insert(r.trim_start_matches("#/components/schemas/").to_string());
+                        }
+                    }
+                    m.values().for_each(|c| members(c, out));
+                }
+                serde_json::Value::Array(a) => a.iter().for_each(|c| members(c, out)),
+                _ => {}
+            }
+        }
+        let mut names = std::collections::BTreeSet::new();
+        members(&serde_json::to_value(&*openapi).unwrap_or_default(), &mut names);
+        let Some(components) = openapi.components.as_mut() else { return };
+        for name in names {
+            if let Some(utoipa::openapi::RefOr::T(Schema::Object(o))) = components.schemas.get_mut(&name) {
+                if matches!(o.additional_properties.as_deref(), Some(AdditionalProperties::FreeForm(false))) {
+                    o.additional_properties = None;
+                }
+            }
+        }
+    }
+}
+
+/// A key a request body sent that its published schema documents no property
+/// for (E2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnknownField {
+    /// Where it sits: `colour`, `reference_images[0].weight`.
+    pub path: String,
+    /// Sent at the top level: `path` is the key itself.
+    pub top_level: bool,
+}
+
+/// The request schemas whose fields the validator knows (E2).
+pub(crate) const REQUEST_SCHEMAS: [&str; 4] =
+    ["ImageGenerationRequest", "VideoGenerationRequest", "Model3dGenerationRequest", "ImageSegmentationRequest"];
+
+/// The published document, built once: what `/openapi.json` serves and the
+/// MCP tools are made from. A field is known when its request schema here
+/// documents it. utoipa derives these schemas from the request types' own
+/// serde attributes (rename, flatten, tag), and the types use no serde
+/// `alias` or custom deserializer, so a documented name is exactly a name
+/// serde reads.
+fn document() -> &'static serde_json::Value {
+    static DOC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    DOC.get_or_init(|| serde_json::to_value(ApiDoc::openapi()).expect("the OpenAPI document serialises"))
+}
+
+/// The top-level property names a request schema documents (E2): one of
+/// [`REQUEST_SCHEMAS`]. Panics on any other name.
+pub(crate) fn request_fields(schema: &str) -> &'static std::collections::BTreeSet<String> {
+    use std::collections::BTreeMap;
+    static FIELDS: std::sync::OnceLock<BTreeMap<&'static str, std::collections::BTreeSet<String>>> = std::sync::OnceLock::new();
+    let all = FIELDS.get_or_init(|| {
+        let doc = document();
+        REQUEST_SCHEMAS
+            .iter()
+            .map(|name| match keys(doc, &doc["components"]["schemas"][*name], None, 0) {
+                Keys::Closed(props) => (*name, props.keys().map(|k| k.to_string()).collect()),
+                _ => panic!("the published {name} is no object with fixed properties"),
+            })
+            .collect()
+    });
+    all.get(schema).unwrap_or_else(|| panic!("{schema} is not one of the request schemas {REQUEST_SCHEMAS:?}"))
+}
+
+/// Every key of `body` that the request schema `schema` (one of
+/// [`REQUEST_SCHEMAS`]) documents no property for, at any depth, depth first
+/// in key order (E2, N6). A key sent as `null` asks for nothing and is not
+/// counted, and free-form objects (`extra`, `metadata`) take any key.
+pub(crate) fn unknown_fields(schema: &str, body: &serde_json::Value) -> Vec<UnknownField> {
+    request_fields(schema); // the same names, and the same panic on a name that is no request
+    let doc = document();
+    let mut out = Vec::new();
+    walk(doc, &doc["components"]["schemas"][schema], body, "", &mut out);
+    out
+}
+
+/// What a schema allows for an object's keys.
+#[derive(Clone)]
+enum Keys<'a> {
+    /// These properties and no others, each with its schema.
+    Closed(std::collections::BTreeMap<&'a str, &'a serde_json::Value>),
+    /// Any key: `additionalProperties`, or a schema that says nothing.
+    Open,
+    /// No object: null, a scalar or an array.
+    NotObject,
+}
+
+/// Past this many `$ref`, `allOf` or `oneOf` steps a schema counts as open,
+/// so a cycle can't loop.
+const MAX_SCHEMA_DEPTH: u8 = 32;
+
+fn deref<'a>(doc: &'a serde_json::Value, mut s: &'a serde_json::Value) -> &'a serde_json::Value {
+    static NULL: serde_json::Value = serde_json::Value::Null;
+    for _ in 0..MAX_SCHEMA_DEPTH {
+        match s.get("$ref").and_then(serde_json::Value::as_str).and_then(|r| r.strip_prefix('#')) {
+            Some(pointer) => s = doc.pointer(pointer).unwrap_or(&NULL),
+            None => break,
+        }
+    }
+    s
+}
+
+/// The keys schema `s` allows on an object. `body`, when given, picks the
+/// variant of a tagged `oneOf` (`SegmentationPrompt`) by its tag, as serde
+/// does; without one, or when no single variant matches, any variant's key
+/// counts.
+fn keys<'a>(doc: &'a serde_json::Value, s: &'a serde_json::Value, body: Option<&serde_json::Map<String, serde_json::Value>>, depth: u8) -> Keys<'a> {
+    use serde_json::Value;
+    if depth >= MAX_SCHEMA_DEPTH {
+        return Keys::Open;
+    }
+    let s = deref(doc, s);
+    if let Some(parts) = s.get("allOf").and_then(Value::as_array) {
+        return union(parts.iter().map(|p| keys(doc, p, body, depth + 1)).collect());
+    }
+    if let Some(variants) = s.get("oneOf").or_else(|| s.get("anyOf")).and_then(Value::as_array) {
+        let views: Vec<Keys> = variants.iter().map(|v| keys(doc, v, body, depth + 1)).collect();
+        if let Some(body) = body {
+            let tagged: Vec<&Keys> = views
+                .iter()
+                .filter(|k| matches!(k, Keys::Closed(props) if props.iter().any(|(name, prop)| tag_of(doc, prop).is_some_and(|t| body.get(*name) == Some(t)))))
+                .collect();
+            if let [only] = tagged.as_slice() {
+                return (*only).clone();
+            }
+        }
+        return union(views);
+    }
+    if s.get("properties").is_some() || type_is(s, "object") {
+        if s.get("additionalProperties").is_some_and(|a| a != &Value::Bool(false)) {
+            return Keys::Open;
+        }
+        let props = s.get("properties").and_then(Value::as_object);
+        return Keys::Closed(props.map(|p| p.iter().map(|(k, v)| (k.as_str(), v)).collect()).unwrap_or_default());
+    }
+    // A schema that names no type, items, enum or const takes any value (`extra`).
+    if ["type", "items", "enum", "const"].iter().all(|k| s.get(k).is_none()) {
+        return Keys::Open;
+    }
+    Keys::NotObject
+}
+
+/// Keys allowed by all of these parts (`allOf`) or any of these variants
+/// (`oneOf`): their properties together; open when one of them is.
+fn union(views: Vec<Keys<'_>>) -> Keys<'_> {
+    let mut out: Option<std::collections::BTreeMap<&str, &serde_json::Value>> = None;
+    for view in views {
+        match view {
+            Keys::Open => return Keys::Open,
+            Keys::Closed(props) => out.get_or_insert_with(Default::default).extend(props),
+            Keys::NotObject => {}
+        }
+    }
+    out.map_or(Keys::NotObject, Keys::Closed)
+}
+
+/// A property that takes exactly one value (a tagged variant's `type`).
+fn tag_of<'a>(doc: &'a serde_json::Value, prop: &'a serde_json::Value) -> Option<&'a serde_json::Value> {
+    let prop = deref(doc, prop);
+    match prop.get("enum").and_then(serde_json::Value::as_array).map(Vec::as_slice) {
+        Some([only]) => Some(only),
+        _ => prop.get("const"),
+    }
+}
+
+fn type_is(s: &serde_json::Value, wanted: &str) -> bool {
+    match s.get("type") {
+        Some(serde_json::Value::String(t)) => t == wanted,
+        Some(serde_json::Value::Array(ts)) => ts.iter().any(|t| t == wanted),
+        _ => false,
+    }
+}
+
+/// The schema of an array's items, through `$ref`, `allOf` and `oneOf`.
+fn items<'a>(doc: &'a serde_json::Value, s: &'a serde_json::Value, depth: u8) -> Option<&'a serde_json::Value> {
+    if depth >= MAX_SCHEMA_DEPTH {
+        return None;
+    }
+    let s = deref(doc, s);
+    if let Some(item) = s.get("items") {
+        return Some(item);
+    }
+    ["allOf", "oneOf", "anyOf"]
+        .iter()
+        .filter_map(|k| s.get(*k).and_then(serde_json::Value::as_array))
+        .flatten()
+        .find_map(|part| items(doc, part, depth + 1))
+}
+
+fn walk(doc: &serde_json::Value, schema: &serde_json::Value, body: &serde_json::Value, path: &str, out: &mut Vec<UnknownField>) {
+    match body {
+        serde_json::Value::Object(map) => {
+            let Keys::Closed(props) = keys(doc, schema, Some(map), 0) else { return };
+            let mut names: Vec<&String> = map.keys().collect();
+            names.sort();
+            for name in names {
+                let value = &map[name];
+                if value.is_null() {
+                    continue;
+                }
+                let at = if path.is_empty() { name.clone() } else { format!("{path}.{name}") };
+                match props.get(name.as_str()) {
+                    Some(child) => walk(doc, child, value, &at, out),
+                    None => out.push(UnknownField { path: at, top_level: path.is_empty() }),
+                }
+            }
+        }
+        serde_json::Value::Array(list) => {
+            if let Some(item) = items(doc, schema, 0) {
+                for (i, value) in list.iter().enumerate() {
+                    walk(doc, item, value, &format!("{path}[{i}]"), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! What the generated document promises the SDK generators. Both SDKs are
@@ -433,7 +687,7 @@ mod tests {
         let s = &d["components"]["schemas"];
         assert_eq!(
             s["Model3dFormat"]["enum"],
-            json!(["glb", "gltf", "obj", "stl", "ply", "fbx", "usdz", "usda", "3mf", "dae"]),
+            json!(["glb", "gltf", "obj", "stl", "ply", "fbx", "usdz", "usda", "usdc", "3mf", "dae"]),
         );
         assert_eq!(s["Model3dTopology"]["enum"], json!(["triangle", "quad"]));
         assert_eq!(s["Model3dSymmetry"]["enum"], json!(["off", "auto", "on"]));
@@ -595,6 +849,17 @@ mod tests {
     }
 
     #[test]
+    fn packages_are_a_request_field_an_asset_kind_and_a_named_refusal() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["Model3dGenerationRequest"];
+        assert!(mentions(property(req, "output_packages"), "boolean"), "{}", property(req, "output_packages"));
+        assert!(mentions(&s["Model3dAssetKind"], "\"package\""), "{}", s["Model3dAssetKind"]);
+        let refusals = d["paths"]["/v1/models3d/generations"]["post"]["responses"]["400"]["description"].as_str().unwrap_or("");
+        assert!(refusals.contains("option_needs_keeping"), "{refusals}");
+    }
+
+    #[test]
     fn texture_remesh_and_segment_document_their_params_and_the_parts() {
         let d = doc();
         let s = &d["components"]["schemas"];
@@ -676,6 +941,64 @@ mod tests {
         assert!(mentions(property(caps, "keyframe_timing"), "#/components/schemas/KeyframeTiming"), "{}", property(caps, "keyframe_timing"));
         for f in ["timing", "time_step_s"] {
             property(&s["RefRoleSpec"], f);
+        }
+    }
+
+    /// D2: the catalog's schemas say what the server enforces, a key they do
+    /// not name is refused (`POST /v1/admin/models`), and the served
+    /// `status` is documented.
+    #[test]
+    fn the_catalog_schemas_refuse_unknown_fields() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        for name in [
+            "ModelSchema", "CapabilityModelPricing", "ModelCapabilityFlags", "PromptSpec", "RefInputSpec", "RefRoleSpec",
+            "NativeOrientation", "AnimationPresetSpec", "TextToMotionSpec",
+        ] {
+            assert_eq!(s[name]["additionalProperties"], json!(false), "{name}: {}", s[name]);
+        }
+        assert!(mentions(property(&s["ModelSchema"], "status"), "#/components/schemas/ModelStatus"), "{}", s["ModelSchema"]);
+    }
+
+    /// E4b: a model's extras carry their types, and the request's `extra`
+    /// says where to find them.
+    #[test]
+    fn the_catalog_types_extras_and_the_request_points_to_them() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        property(&s["ModelSchema"], "extra_params");
+        let extra = property(&s["BaseGenerationRequest"], "extra");
+        for needle in ["extra_allowlist", "extra_params", "webhook"] {
+            assert!(mentions(&extra["description"], needle), "{needle}: {extra}");
+        }
+    }
+
+    /// D2: a schema drawn as a `$ref` member of an `allOf` (a tagged
+    /// `ParamSpec` payload beside its `kind`) stays open, or a strict
+    /// validator would refuse the tag against it and no payload could pass.
+    #[test]
+    fn a_schema_used_inside_an_allof_stays_open_to_its_siblings() {
+        fn refs_in_all_of(v: &Value, out: &mut Vec<String>) {
+            match v {
+                Value::Object(m) => {
+                    for part in m.get("allOf").and_then(Value::as_array).into_iter().flatten() {
+                        if let Some(r) = part["$ref"].as_str() {
+                            out.push(r.trim_start_matches("#/components/schemas/").to_string());
+                        }
+                    }
+                    m.values().for_each(|c| refs_in_all_of(c, out));
+                }
+                Value::Array(a) => a.iter().for_each(|c| refs_in_all_of(c, out)),
+                _ => {}
+            }
+        }
+        let d = doc();
+        let mut members = Vec::new();
+        refs_in_all_of(&d, &mut members);
+        assert!(members.iter().any(|m| m == "ParamSpecRegion"), "{members:?}");
+        for name in members {
+            let schema = &d["components"]["schemas"][&name];
+            assert_ne!(schema["additionalProperties"], json!(false), "{name} is closed: {schema}");
         }
     }
 
@@ -810,7 +1133,7 @@ mod tests {
     fn a_3d_asset_documents_its_manifest_and_the_original_kind() {
         let d = doc();
         let s = &d["components"]["schemas"];
-        assert_eq!(s["Model3dAssetKind"]["enum"], json!(["mesh", "texture", "preview", "original"]));
+        assert_eq!(s["Model3dAssetKind"]["enum"], json!(["mesh", "texture", "preview", "original", "package"]));
         assert!(mentions(property(&s["Model3dAsset"], "scene"), "#/components/schemas/SceneManifest"), "{}", s["Model3dAsset"]);
         for (schema, field) in [
             ("SceneManifest", "front"), ("SceneManifest", "oriented_by"), ("SceneManifest", "extensions_used"),
@@ -823,6 +1146,37 @@ mod tests {
         for field in ["up", "front", "evidence"] {
             property(&s["NativeOrientation"], field);
         }
+    }
+
+    /// litegen makes one image, clip or mesh per request (E3): the shared
+    /// request schema says so, so a generated client can refuse `n: 2` itself.
+    #[test]
+    fn n_is_documented_as_one_output_per_request() {
+        let d = doc();
+        let n = property(&d["components"]["schemas"]["BaseGenerationRequest"], "n");
+        assert_eq!(n["maximum"], json!(1), "{n}");
+    }
+
+    /// A clip lasts more than 0 s (E1, N5): the published request says so, so
+    /// a generated client can refuse 0 or below itself, as the server does.
+    #[test]
+    fn duration_seconds_is_documented_above_zero() {
+        let d = doc();
+        let duration = property(&d["components"]["schemas"]["VideoGenerationRequest"], "duration_seconds");
+        assert_eq!(duration["exclusiveMinimum"], json!(0), "{duration}");
+    }
+
+    /// A model listing says when a frame image sets the clip's shape (E5), so
+    /// a client can hide the ratio control instead of sending a ratio the
+    /// server refuses. Guards the published name and values of the field.
+    #[test]
+    fn a_ratio_spec_says_when_a_frame_sets_the_shape() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(s["FramesSetShape"]["enum"], json!(["always", "without_references"]), "{}", s["FramesSetShape"]);
+        let field = property(&s["ParamSpecAspectRatio"], "frames_set_shape");
+        assert!(mentions(field, "#/components/schemas/FramesSetShape"), "{field}");
+        assert!(!mentions(&s["ParamSpecAspectRatio"]["required"], "frames_set_shape"), "optional: {}", s["ParamSpecAspectRatio"]);
     }
 
     #[test]
@@ -866,9 +1220,173 @@ mod tests {
     #[test]
     fn every_generation_post_documents_the_dropped_params_header() {
         let d = doc();
-        for path in ["/v1/images/generations", "/v1/videos/generations", "/v1/models3d/generations"] {
-            let h = &d["paths"][path]["post"]["responses"]["200"]["headers"]["X-Litegen-Dropped-Params"];
-            assert!(h.is_object(), "{path} does not document X-Litegen-Dropped-Params");
+        for (path, status) in [
+            ("/v1/images/generations", "200"),
+            ("/v1/videos/generations", "200"),
+            ("/v1/models3d/generations", "200"),
+            ("/v1/images/cost", "200"),
+            ("/v1/videos/cost", "200"),
+            ("/v1/models3d/cost", "200"),
+            ("/v1/images/segmentations", "200"),
+            ("/v1/images/generations", "202"),
+        ] {
+            let h = &d["paths"][path]["post"]["responses"][status]["headers"]["X-Litegen-Dropped-Params"];
+            assert!(h.is_object(), "{path} {status} does not document X-Litegen-Dropped-Params");
         }
+    }
+
+    /// What the validator counts as a known field (E2): exactly the
+    /// properties each published request schema documents, through the
+    /// `allOf` and `$ref` a flattened base makes.
+    #[test]
+    fn request_fields_are_the_documented_properties() {
+        use super::request_fields;
+        let video = request_fields("VideoGenerationRequest");
+        for f in ["duration_seconds", "loop", "n", "strict", "extra", "metadata", "reference_images"] {
+            assert!(video.contains(f), "video lacks {f}: {video:?}");
+        }
+        assert!(!video.contains("duration") && !video.contains("size"), "{video:?}");
+        let image = request_fields("ImageGenerationRequest");
+        assert!(image.contains("size") && image.contains("response_format"), "{image:?}");
+        let mesh = request_fields("Model3dGenerationRequest");
+        assert!(mesh.contains("output_format") && mesh.contains("ground"), "{mesh:?}");
+        let seg: Vec<&str> = request_fields("ImageSegmentationRequest").iter().map(String::as_str).collect();
+        assert_eq!(seg, ["image", "metadata", "model", "prompts", "strict"]);
+    }
+
+    /// Unknown keys are found at any depth (N6) and named by their path;
+    /// `extra` and `metadata` are free-form, and a key sent as `null` asks
+    /// for nothing.
+    #[test]
+    fn unknown_fields_are_found_inside_the_requests_objects() {
+        use super::{unknown_fields, UnknownField};
+        let at = |path: &str, top_level: bool| UnknownField { path: path.to_string(), top_level };
+        let body = json!({
+            "model": "m", "prompt": "p", "duration": 10, "colour": null, "aspect_ratio": null,
+            "reference_images": [{ "type": "url", "value": "u" }, { "type": "url", "value": "u", "weight": 2 }],
+            "time_range": { "start_s": 0, "end_s": 1, "stop_s": 2 },
+            "extra": { "anything": { "goes": 1 } }, "metadata": { "k": "v" },
+        });
+        assert_eq!(
+            unknown_fields("VideoGenerationRequest", &body),
+            vec![at("duration", true), at("reference_images[1].weight", false), at("time_range.stop_s", false)]
+        );
+        let mesh = json!({ "model": "m", "animations": [{ "name": "walk", "duration": 2 }] });
+        assert_eq!(unknown_fields("Model3dGenerationRequest", &mesh), vec![at("animations[0].duration", false)]);
+        let seg = json!({ "model": "m", "image": "x", "prompts": [{ "type": "point", "x": 1, "y": 2, "label": 1, "radius": 3 }], "prompt": "cat" });
+        assert_eq!(unknown_fields("ImageSegmentationRequest", &seg), vec![at("prompt", true), at("prompts[0].radius", false)]);
+    }
+
+    /// Segmentation takes `strict` like every other generation request (E2,
+    /// N3) and says it refuses an unknown field with `param_unsupported`.
+    #[test]
+    fn segmentation_documents_strict_and_its_refusal() {
+        let d = doc();
+        let s = &d["components"]["schemas"]["ImageSegmentationRequest"];
+        assert!(s["properties"].get("strict").is_some_and(|p| mentions(p, "boolean")), "{s}");
+        assert_eq!(s["required"], json!(["model", "image", "prompts"]));
+        let bad = &d["paths"]["/v1/images/segmentations"]["post"]["responses"]["400"]["description"];
+        assert!(mentions(bad, "param_unsupported"), "{bad}");
+    }
+    #[test]
+    fn stored_file_access_is_documented() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let path = &d["paths"]["/v1/apps/{app_id}/access"];
+        assert!(path["get"].is_object() && path["put"].is_object(), "{path}");
+        assert_eq!(s["AccessMode"]["enum"], json!(["public", "signed", "private"]));
+        assert_eq!(s["OwnerScope"]["enum"], json!(["key", "app", "org"]));
+        for f in ["app_id", "overrides", "effective", "updated_at"] {
+            property(&s["AppAccessSettings"], f);
+        }
+        for f in ["mode", "owner_scope", "signed_url_ttl_seconds", "keep_outputs", "retention_days", "signed_links"] {
+            property(&s["PutAppAccessRequest"], f);
+            property(&s["AppAccessOverrides"], f);
+            property(&s["AccessSettings"], f);
+        }
+        assert!(mentions(property(&s["PutAppAccessRequest"], "mode"), "#/components/schemas/AccessMode"));
+        for schema in ["GenerationAsset", "Model3dAsset", "ImageResult"] {
+            property(&s[schema], "expires_at");
+        }
+        property(&s["VideoGenerationResponse"], "video_url_expires_at");
+        assert!(mentions(property(&s["AccessSettings"], "signed_links"), "#/components/schemas/SignedLinks"));
+        for f in [
+            "storage_access_mode", "storage_access_owner_scope", "storage_access_signed_url_ttl_seconds",
+            "storage_access_keep_outputs", "storage_access_retention_days", "storage_access_signed_links",
+        ] {
+            property(&s["GatewaySettings"], f);
+        }
+        property(&s["GatewaySettingsView"], "effective_storage_access");
+    }
+    /// Late and async images (docs/async-images.md): the 202 a caller gets
+    /// for `Prefer: respond-async`, the header that asks for it, and the
+    /// generation a late 504 names.
+    #[test]
+    fn async_images_are_documented() {
+        let d = doc();
+        let post = &d["paths"]["/v1/images/generations"]["post"];
+        let accepted = &post["responses"]["202"];
+        assert!(mentions(accepted, "#/components/schemas/ImageGenerationAccepted"), "{accepted}");
+        for h in ["Location", "Preference-Applied"] {
+            assert!(accepted["headers"][h].is_object(), "the 202 documents {h}");
+        }
+        assert!(
+            post["parameters"].as_array().is_some_and(|ps| ps.iter().any(|p| p["name"] == "Prefer" && p["in"] == "header")),
+            "the Prefer header is documented"
+        );
+        let s = &d["components"]["schemas"];
+        for f in ["id", "object", "status", "model", "created"] {
+            property(&s["ImageGenerationAccepted"], f);
+        }
+        for f in ["generation_id", "status"] {
+            property(&s["ErrorDetail"], f);
+        }
+    }
+
+    /// A retired model's 410 names its replacement; an unknown one is a 404;
+    /// a listed model's `task` is always sent.
+    #[test]
+    fn retired_models_and_model_tasks_are_documented() {
+        let d = doc();
+        for path in ["/v1/images/generations", "/v1/videos/generations", "/v1/models3d/generations", "/v1/images/segmentations"] {
+            let responses = &d["paths"][path]["post"]["responses"];
+            for status in ["404", "410"] {
+                assert!(responses[status].is_object(), "{path} documents {status}");
+            }
+        }
+        assert!(d["paths"]["/v1/models/{id}"]["get"]["responses"]["410"].is_object());
+        let s = &d["components"]["schemas"];
+        property(&s["ErrorDetail"], "replaced_by");
+        // Listed models always carry their task; a ModelSchema is also the
+        // admin API's input, where task may be left out (generate).
+        let required = |schema: &str| s[schema]["required"].as_array().cloned().unwrap_or_default();
+        assert!(required("ModelCapabilities").iter().any(|r| r == "task"), "{:?}", required("ModelCapabilities"));
+        assert!(!required("ModelSchema").iter().any(|r| r == "task"), "{:?}", required("ModelSchema"));
+    }
+    #[test]
+    fn gateway_settings_are_documented() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        for f in [
+            "cache_enabled", "cache_ttl_seconds", "cache_max_items", "cache_max_bytes",
+            "retry_max_retries", "retry_backoff_ms", "retry_max_backoff_ms",
+            "vendor_timeout_seconds", "circuit_breaker_threshold", "circuit_breaker_open_for_seconds",
+        ] {
+            property(&s["GatewaySettings"], f);
+        }
+        for f in ["effective_cache", "cache_entries", "effective_retries", "effective_vendor_timeout_seconds", "effective_circuit_breaker"] {
+            property(&s["GatewaySettingsView"], f);
+        }
+        for (schema, fields) in [
+            ("EffectiveCache", &["enabled", "ttl_seconds", "max_items", "max_bytes"][..]),
+            ("EffectiveRetries", &["max_retries", "backoff_ms", "max_backoff_ms"][..]),
+            ("EffectiveBreaker", &["threshold", "open_for_seconds"][..]),
+        ] {
+            for f in fields {
+                property(&s[schema], f);
+            }
+        }
+        let h = &d["paths"]["/v1/images/generations"]["post"]["responses"]["200"]["headers"]["X-Litegen-Cache"];
+        assert!(h.is_object(), "the image answer documents X-Litegen-Cache");
     }
 }

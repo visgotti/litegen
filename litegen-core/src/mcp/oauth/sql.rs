@@ -458,10 +458,19 @@ macro_rules! impl_mcp_oauth_store {
                 let spent = now - KEEP_SPENT;
                 let mut removed = 0;
                 // Grants whose org or app was deleted: refused already, now gone.
-                for table in ["mcp_oauth_tokens WHERE grant_id", "mcp_oauth_grants WHERE id"] {
-                    let sql = $sql(&format!("DELETE FROM {table} IN ({ORPHANED_GRANTS})"));
-                    removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
-                }
+                let sql = $sql(&format!("DELETE FROM mcp_oauth_grants WHERE id IN ({ORPHANED_GRANTS})"));
+                removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
+                // Then every token whose grant is gone, and not only those
+                // grants' tokens. Tokens have no foreign key, and a purge
+                // running at the same time may have deleted a grant between
+                // this purge's two steps, so matching tokens through their
+                // grants missed some for good. Such a token is refused already:
+                // using or refreshing it needs its grant.
+                let sql = $sql(
+                    "DELETE FROM mcp_oauth_tokens WHERE NOT EXISTS \
+                     (SELECT 1 FROM mcp_oauth_grants g WHERE g.id = mcp_oauth_tokens.grant_id)",
+                );
+                removed += sqlx::query(&sql).execute(self.pool()).await?.rows_affected();
                 let sql = $sql("DELETE FROM mcp_oauth_requests WHERE expires_at < ?");
                 removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
                 let sql = $sql("DELETE FROM mcp_oauth_tokens WHERE expires_at < ? OR revoked_at < ?");

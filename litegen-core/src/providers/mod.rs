@@ -49,6 +49,74 @@ pub fn inject_trace_headers(req: reqwest::RequestBuilder) -> reqwest::RequestBui
 }
 
 #[cfg(test)]
+mod error_class_tests {
+    use super::ProviderError;
+
+    fn failed(status: Option<u16>, retryable: bool) -> ProviderError {
+        ProviderError::RequestFailed { message: "x".into(), status_code: status, provider_error: None, retryable }
+    }
+
+    fn refusals() -> Vec<ProviderError> {
+        vec![
+            ProviderError::InvalidRequest("x".into()),
+            ProviderError::ModelNotSupported { model: "m".into(), provider: "p".into() },
+            ProviderError::PricingUnavailable { provider: "p".into(), model: "m".into(), reason: "r".into() },
+            ProviderError::NotConfigured("p".into()),
+        ]
+    }
+
+    /// E9: an adapter's verdict before any call is told apart from anything
+    /// the vendor answered.
+    #[test]
+    fn a_refusal_before_any_call_is_told_apart_from_a_vendors_answer() {
+        for e in refusals() {
+            assert!(e.before_any_call(), "{e}");
+        }
+        let rate_limited = ProviderError::RateLimited { provider: "p".into(), retry_after_ms: 1, message: "m".into(), provider_error: None };
+        for e in [failed(Some(400), false), failed(Some(500), true), failed(None, true), ProviderError::Timeout { timeout_ms: 1 }, rate_limited] {
+            assert!(!e.before_any_call(), "{e}");
+        }
+    }
+
+    /// E9: what counts toward a deployment's circuit breaker: the deployment
+    /// being unwell, never the caller's own request being refused, and a
+    /// 401 or 403 only when the platform's own credential got it (a 429 and
+    /// a 402 too, since 2026-11-12: the next test).
+    #[test]
+    fn only_an_unwell_deployment_counts_toward_its_breaker() {
+        for e in [failed(Some(500), true), failed(Some(503), true), failed(Some(408), true), failed(None, true), ProviderError::Timeout { timeout_ms: 1 }] {
+            assert!(e.says_the_deployment_is_unhealthy(true) && e.says_the_deployment_is_unhealthy(false), "{e}");
+        }
+        for s in [401, 403] {
+            assert!(failed(Some(s), false).says_the_deployment_is_unhealthy(true), "{s} to the platform's key");
+            assert!(!failed(Some(s), false).says_the_deployment_is_unhealthy(false), "{s} to a tenant's own key");
+        }
+        let mut refused = vec![failed(Some(400), false), failed(Some(404), false), failed(Some(422), false), failed(None, false)];
+        refused.extend(refusals());
+        for e in refused {
+            assert!(!e.says_the_deployment_is_unhealthy(true), "{e}");
+        }
+    }
+
+    /// Ruled 2026-11-12 (handlers review should-fix 1): a 429 (or
+    /// `RateLimited`) and a 402 say the deployment is unwell only to the
+    /// platform's own credential, as a 401 or 403 does since E9. A tenant out
+    /// of rate limit or credit on its own key says nothing about the provider
+    /// for every other tenant. A timeout or a 5xx still counts for both.
+    #[test]
+    fn a_tenants_rate_limit_or_unpaid_key_does_not_count_toward_the_breaker() {
+        let rate_limited = ProviderError::RateLimited { provider: "p".into(), retry_after_ms: 1, message: "m".into(), provider_error: None };
+        for e in [failed(Some(429), true), rate_limited, failed(Some(402), false), failed(Some(401), false), failed(Some(403), false)] {
+            assert!(e.says_the_deployment_is_unhealthy(true), "{e} to the platform's key");
+            assert!(!e.says_the_deployment_is_unhealthy(false), "{e} to a tenant's own key");
+        }
+        for e in [failed(Some(500), true), failed(Some(503), true), failed(Some(408), true), failed(None, true), ProviderError::Timeout { timeout_ms: 1 }] {
+            assert!(e.says_the_deployment_is_unhealthy(true) && e.says_the_deployment_is_unhealthy(false), "{e}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod trace_tests {
     use super::inject_trace_headers;
 
@@ -178,6 +246,162 @@ impl ProviderInstanceConfig {
     }
 }
 
+impl ProviderInstanceConfig {
+    /// The id the vendor gets for catalog model `model_id`, when the operator
+    /// mapped it (`model_mapping`): keyed by the catalog id
+    /// (`bfl/flux-pro-1.1`), else by the id without its provider prefix
+    /// (`flux-pro-1.1`). The catalog row still decides params, price and
+    /// request shape; only the string the vendor reads changes.
+    pub fn mapped_model(&self, model_id: &str) -> Option<&str> {
+        self.model_mapping
+            .get(model_id)
+            .or_else(|| model_id.split_once('/').and_then(|(_, bare)| self.model_mapping.get(bare)))
+            .map(String::as_str)
+            .filter(|m| !m.trim().is_empty())
+    }
+}
+
+/// The model id the vendor gets for catalog model `model_id`: the operator's
+/// mapping (`model_mapping`, see [`ProviderInstanceConfig::mapped_model`]),
+/// else the adapter's own `native` id. Behavior (endpoint, params) stays the
+/// row's; only the string on the wire changes.
+pub(crate) fn wire_model<'a>(config: Option<&'a ProviderInstanceConfig>, model_id: &str, native: &'a str) -> &'a str {
+    config.and_then(|c| c.mapped_model(model_id)).unwrap_or(native)
+}
+
+/// The fields of a request's `extra` an adapter may send: every key of the
+/// object except those `owned` names (fields the adapter sets itself from
+/// canonical params, so `extra` cannot replace them: rule 11) and those
+/// litegen keeps for itself ([`crate::capabilities::gateway_owned_extra`]:
+/// where the vendor sends or stores a result, and whether it publishes it).
+/// Every adapter that merges `extra` goes through here (E4a), so neither a
+/// row, a runtime model nor an adapter's own list can hand a vendor callback
+/// to a caller. The validator has already dropped every key the row does not
+/// allowlist.
+pub fn extra_fields<F: Fn(&str) -> bool>(
+    extra: Option<&serde_json::Value>,
+    owned: F,
+) -> impl Iterator<Item = (&String, &serde_json::Value)> {
+    extra
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(move |(k, _)| !owned(k) && crate::capabilities::gateway_owned_extra(k).is_none())
+}
+
+#[cfg(test)]
+mod extra_fields_tests {
+    use serde_json::json;
+
+    /// E4a: the adapter's own fields and litegen's are never sent; any
+    /// other key is, with its value as given.
+    #[test]
+    fn extra_sends_neither_the_adapters_fields_nor_litegens() {
+        let extra = json!({ "model": "dearer", "callback_url": "https://x", "isPublic": true, "storageUri": "gs://b", "watermark": false });
+        let sent: Vec<(&String, &serde_json::Value)> = super::extra_fields(Some(&extra), |k| k == "model").collect();
+        assert_eq!(sent, [(&"watermark".to_string(), &json!(false))]);
+        assert_eq!(super::extra_fields(Some(&json!("not an object")), |_| false).count(), 0);
+        assert_eq!(super::extra_fields(None, |_| false).count(), 0);
+    }
+}
+
+/// Vendors (or single rows) whose API takes no model id: litegen picks the
+/// endpoint (or action) per row, so nothing on the wire names a model that
+/// `model_mapping` could replace.
+pub const NO_MODEL_ID: &[(&str, &str)] = &[
+    ("ideogram", "the endpoint (/v1/ideogram-v3/generate, /v1/ideogram-v4/generate) and rendering_speed pick the model"),
+    ("pixellab", "one endpoint per model (/create-image-pixflux)"),
+    ("hunyuan", "Tencent Cloud's X-TC-Action names the job type (SubmitHunyuanImageJob, SubmitHunyuanToVideoJob…)"),
+    ("recraft/remove-background", "POST /images/removeBackground takes only the image"),
+];
+
+/// Headers a default on every request would break: the framing and
+/// hop-by-hop headers reqwest and the vendor's server work out per request.
+const RESERVED_EXTRA_HEADERS: &[&str] = &[
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "upgrade",
+    "te",
+    "trailer",
+    "proxy-authorization",
+    "proxy-connection",
+];
+
+/// Why one of the operator's `extra_headers` can't be sent, if it can't.
+fn extra_header_problem(name: &str, value: &str) -> Option<String> {
+    if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+        return Some(format!("extra header '{name}' is not a valid HTTP header name"));
+    }
+    if RESERVED_EXTRA_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+        return Some(format!("extra header '{name}' can't be set: it is worked out per request"));
+    }
+    if reqwest::header::HeaderValue::from_str(value).is_err() {
+        return Some(format!("extra header '{name}' has a value that is not valid HTTP"));
+    }
+    None
+}
+
+/// The operator's `extra_headers`, refused when any can't be sent: not
+/// valid HTTP, or a framing or hop-by-hop header. Startup and the admin
+/// API both use it, so a bad header is reported, never sent.
+pub fn check_extra_headers(headers: &HashMap<String, String>) -> Result<(), String> {
+    let mut problems: Vec<String> = headers.iter().filter_map(|(k, v)| extra_header_problem(k, v)).collect();
+    problems.sort();
+    if problems.is_empty() { Ok(()) } else { Err(problems.join("; ")) }
+}
+
+/// The client for a vendor's API: a total `timeout`, and the operator's
+/// `extra_headers` on every request it makes. A header a request sets itself
+/// (auth, `content-type`) wins over one of the same name, so these add to a
+/// request and never replace its auth. Result downloads use a separate
+/// client and never carry them. A header that can't be sent is skipped with
+/// a warning; startup and the admin API refuse it before it gets here.
+///
+/// It is the process's one client for this timeout and header set
+/// ([`crate::util::http_clients`], P8): every adapter configured alike (a
+/// global instance, one built for a single call on an org's own key, the
+/// poller's for one row) sends through one connection pool, and a skipped
+/// header is warned about once, when the client is built.
+pub fn api_client(timeout: std::time::Duration, extra_headers: &HashMap<String, String>) -> reqwest::Client {
+    let key = crate::util::http_clients::ClientKey::Api { timeout, headers: headers_digest(extra_headers) };
+    crate::util::http_clients::shared(key, || {
+        let mut defaults = reqwest::header::HeaderMap::new();
+        for (name, value) in extra_headers {
+            if let Some(problem) = extra_header_problem(name, value) {
+                tracing::warn!(header = %name, "{problem}; not sent");
+                continue;
+            }
+            if let (Ok(n), Ok(v)) = (
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                reqwest::header::HeaderValue::from_str(value),
+            ) {
+                defaults.insert(n, v);
+            }
+        }
+        reqwest::Client::builder().timeout(timeout).default_headers(defaults).build().expect("failed to build HTTP client")
+    })
+}
+
+/// A digest of `headers`' names and values, in name order, each one
+/// length-prefixed so no two different sets digest alike: the key of
+/// [`api_client`]'s shared client, holding no copy of a header secret.
+fn headers_digest(headers: &HashMap<String, String>) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut pairs: Vec<(&String, &String)> = headers.iter().collect();
+    pairs.sort();
+    let mut hasher = Sha256::new();
+    for (name, value) in pairs {
+        for part in [name.as_bytes(), value.as_bytes()] {
+            hasher.update((part.len() as u64).to_le_bytes());
+            hasher.update(part);
+        }
+    }
+    hasher.finalize().into()
+}
+
 /// Health check result for a provider.
 #[derive(Debug, Clone)]
 pub struct HealthCheckResult {
@@ -200,10 +424,16 @@ pub enum ProviderError {
         retryable: bool,
     },
 
-    #[error("Rate limited by {provider}: retry after {retry_after_ms}ms")]
+    /// A vendor's 429 that said when to come back (`Retry-After`): litegen
+    /// waits at least that long before trying again, or doesn't retry when it
+    /// is longer than the longest backoff (`docs/gateway-settings.md`).
+    #[error("{message}")]
     RateLimited {
         provider: String,
         retry_after_ms: u64,
+        /// The vendor's own words, as a `RequestFailed`'s.
+        message: String,
+        provider_error: Option<serde_json::Value>,
     },
 
     #[error("Request timed out after {timeout_ms}ms")]
@@ -236,6 +466,37 @@ impl ProviderError {
             Self::InvalidRequest(_) => false,
         }
     }
+
+    /// Whether this is the adapter's verdict before anything was sent to the
+    /// vendor (E9): a request it can't send (`InvalidRequest`), a model it
+    /// doesn't serve, a price it can't work out, or no credential it can use.
+    /// The caller's (or the operator's) to fix; nothing was billed.
+    pub fn before_any_call(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidRequest(_) | Self::ModelNotSupported { .. } | Self::PricingUnavailable { .. } | Self::NotConfigured(_)
+        )
+    }
+
+    /// Whether this failure says the deployment itself is unwell, so it
+    /// counts toward its circuit breaker (E9): no answer, a timeout, a 5xx or
+    /// a 408, and a 401, 402, 403 or 429 (`RateLimited` too) to the
+    /// platform's own credential (`platform_credential`). Never a refusal of
+    /// one request (another 4xx, a verdict such as moderation, the adapter's
+    /// own refusal before any call), and never a key, credit or rate-limit
+    /// refusal of a tenant's own key (ruled 2026-11-12 for 402 and 429): one
+    /// tenant's requests must not cut a provider off for every tenant.
+    pub fn says_the_deployment_is_unhealthy(&self, platform_credential: bool) -> bool {
+        match self {
+            Self::Timeout { .. } => true,
+            Self::RateLimited { .. } => platform_credential,
+            Self::RequestFailed { status_code: Some(s), .. } => {
+                *s >= 500 || *s == 408 || (platform_credential && matches!(s, 401 | 402 | 403 | 429))
+            }
+            Self::RequestFailed { status_code: None, retryable, .. } => *retryable,
+            Self::NotConfigured(_) | Self::ModelNotSupported { .. } | Self::PricingUnavailable { .. } | Self::InvalidRequest(_) => false,
+        }
+    }
 }
 
 /// Where an adapter that submits a job and then waits for it records the
@@ -245,22 +506,106 @@ impl ProviderError {
 /// sent again, since the vendor may bill it, and a timeout reports its id.
 /// Adapters whose call is a single request-response leave it empty.
 #[derive(Debug, Clone, Default)]
-pub struct VendorJobSink(Arc<std::sync::Mutex<Option<String>>>);
+pub struct VendorJobSink(Arc<std::sync::Mutex<Option<RecordedJob>>>);
+
+/// A vendor job's id, and the state a late look resumes it from.
+type RecordedJob = (String, Option<serde_json::Value>);
 
 impl VendorJobSink {
     /// The vendor accepted job `id`.
     pub fn record(&self, id: impl Into<String>) {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id.into());
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some((id.into(), None));
+    }
+
+    /// The vendor accepted job `id`, which [`ImageProvider::poll_job`] can
+    /// ask about again with `resume` (BFL's regional polling URL).
+    pub fn record_resumable(&self, id: impl Into<String>, resume: serde_json::Value) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some((id.into(), Some(resume)));
     }
 
     /// The job id recorded since the last [`clear`](Self::clear), if any.
     pub fn get(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|(id, _)| id.clone())
+    }
+
+    /// What [`record_resumable`](Self::record_resumable) kept, if anything.
+    pub fn resume(&self) -> Option<serde_json::Value> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|(_, r)| r.clone())
     }
 
     /// Forget the recorded id, before a fresh attempt.
     pub fn clear(&self) {
         *self.0.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+}
+
+/// One look at an image job the vendor accepted (late delivery,
+/// docs/superpowers/specs/2026-11-03-delivery-and-billing-design.md).
+#[derive(Debug)]
+pub enum ImageJobPoll {
+    /// Still queued or running.
+    Running,
+    /// Finished: the image, built as `generate` would have returned it.
+    Done(GenerationOutput),
+    /// The vendor's verdict: it failed, with its reason.
+    Failed(String),
+}
+
+tokio::task_local! {
+    /// When litegen stops waiting for the vendor call running in this task.
+    static CALL_DEADLINE: std::time::Instant;
+    /// How long the caller waits for an image job before litegen answers that
+    /// it is still running (`Prefer: wait`, `respond-async`).
+    static CALL_WAIT: std::time::Duration;
+}
+
+/// Run `call` for a caller that waits at most `wait` for an image job: the
+/// router's deadline is the sooner of this and the vendor timeout, and a job
+/// still running then is delivered later (late delivery).
+pub async fn with_wait<F: std::future::Future>(wait: std::time::Duration, call: F) -> F::Output {
+    CALL_WAIT.scope(wait, call).await
+}
+
+/// The wait [`with_wait`] set for this task, if any.
+pub fn call_wait() -> Option<std::time::Duration> {
+    CALL_WAIT.try_with(|w| *w).ok()
+}
+
+/// Run `call` knowing litegen stops waiting for it at `deadline`: an adapter
+/// that polls for its result keeps asking until then ([`PollBudget`]), so a
+/// longer vendor timeout (`docs/gateway-settings.md`) reaches a slow job.
+pub async fn with_deadline<F: std::future::Future>(deadline: std::time::Instant, call: F) -> F::Output {
+    CALL_DEADLINE.scope(deadline, call).await
+}
+
+/// How long an adapter that polls for its result goes on: until litegen
+/// stops waiting for the call ([`with_deadline`]), or for `default` when it
+/// is called without one (directly, in tests).
+pub struct PollBudget {
+    until: std::time::Instant,
+    interval: std::time::Duration,
+}
+
+impl PollBudget {
+    pub fn new(default: std::time::Duration, interval: std::time::Duration) -> Self {
+        let until = CALL_DEADLINE.try_with(|d| *d).unwrap_or_else(|_| std::time::Instant::now() + default);
+        Self { until, interval }
+    }
+
+    /// Wait one interval, never past the deadline. False once out of time,
+    /// at once when the deadline has already passed.
+    pub async fn next(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now >= self.until {
+            return false;
+        }
+        tokio::time::sleep(self.interval.min(self.until - now)).await;
+        true
+    }
+
+    /// The whole budget, for an error that reports it.
+    pub fn total_ms(&self, started: std::time::Instant) -> u64 {
+        self.until.saturating_duration_since(started).as_millis() as u64
     }
 }
 
@@ -291,6 +636,9 @@ pub struct ImageExtras {
     pub directions: Option<u32>,
     pub size: Option<String>,
     pub aspect_ratio: Option<String>,
+    /// The output tier on litegen's scale (`1K`, `2K`, …), checked against the
+    /// model's `resolution` values; each adapter maps it to its vendor's name.
+    pub resolution: Option<String>,
     pub quality: Option<String>,
     pub style: Option<String>,
     pub steps: Option<u32>,
@@ -404,9 +752,20 @@ pub trait ImageProvider: Send + Sync {
     /// Lightweight health check (validate credentials, check connectivity).
     async fn health_check(&self) -> HealthCheckResult;
 
-    /// Map an internal model ID to the provider's native model ID.
-    fn map_model_id(&self, model: &str, mapping: &HashMap<String, String>) -> String {
-        mapping.get(model).cloned().unwrap_or_else(|| model.to_string())
+    /// Whether `model`'s jobs can be asked about again after the call that
+    /// submitted them returned ([`poll_job`](Self::poll_job)): true for an
+    /// adapter whose vendor runs jobs and records them in `extras.vendor_job`.
+    fn resumable(&self, _model: &ModelSchema) -> bool {
+        false
+    }
+
+    /// One look at job `job` of catalog model `model` (and the `resume` state
+    /// it was recorded with):
+    /// running, done (the image `generate` would have returned), or failed.
+    /// A transient failure is a retryable `Err`.
+    async fn poll_job(&self, model: &str, job: &str, resume: Option<&serde_json::Value>) -> Result<ImageJobPoll, ProviderError> {
+        let _ = (job, resume);
+        Err(ProviderError::InvalidRequest(format!("'{model}' jobs can't be resumed")))
     }
 
     /// Promptable segmentation (PixelGenie L7): the vendor's masks for what
@@ -458,6 +817,17 @@ pub trait VideoProvider: Send + Sync {
     /// Poll the status of an in-flight generation.
     async fn poll_status(&self, handle: &VideoGenerationHandle) -> Result<VideoGenerationPollResult, ProviderError>;
 
+    /// [`poll_status`](Self::poll_status), asking `gate` once the vendor says
+    /// the video is ready and before downloading it. On [`Fetch::StandAside`]
+    /// it downloads nothing and reports the job still processing. An adapter
+    /// that hands over the video's bytes (it downloads them in its poll)
+    /// overrides this; the default never asks, and the caller claims after
+    /// the poll, before it downloads the video from its link.
+    async fn poll_status_gated(&self, handle: &VideoGenerationHandle, gate: &dyn FetchGate) -> Result<VideoGenerationPollResult, ProviderError> {
+        let _ = gate;
+        self.poll_status(handle).await
+    }
+
     async fn estimate_cost(
         &self,
         model: &ModelSchema,
@@ -465,6 +835,14 @@ pub trait VideoProvider: Send + Sync {
     ) -> Result<CostEstimate, ProviderError>;
 
     async fn health_check(&self) -> HealthCheckResult;
+
+    /// Whether `model`'s finished video comes with a public link litegen can
+    /// hand out when the app keeps nothing (docs/storage-access.md). False
+    /// for a vendor that returns bytes, or a link only it can read: such a
+    /// request is refused before the vendor runs.
+    fn hands_out_links(&self, _model: &ModelSchema) -> bool {
+        true
+    }
 
     /// Ask the vendor to stop a job the caller cancelled (L18). The row is
     /// already `cancelled`; this decides whether the VENDOR keeps working (and
@@ -544,6 +922,39 @@ pub struct Model3dExtras {
     pub animations: Vec<AnimationClip>,
     /// Frames per second of the delivered clips.
     pub fps: Option<u32>,
+    /// How FBX material and light colours are stored
+    /// (`types::Model3dFbxColorSpace`), applied by litegen on delivery.
+    pub fbx_color_space: Option<crate::types::Model3dFbxColorSpace>,
+    /// The units FBX light strengths are stored in
+    /// (`types::Model3dLightUnits`), applied by litegen on delivery.
+    pub fbx_light_units: Option<crate::types::Model3dLightUnits>,
+    /// The units USD light strengths are stored in
+    /// (`types::Model3dLightUnits`), applied by litegen on delivery.
+    pub usd_light_units: Option<crate::types::Model3dLightUnits>,
+    /// How a Collada file stores a mesh's morph targets
+    /// (`types::Model3dDaeMorphs`), applied by litegen on delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dae_morphs: Option<crate::types::Model3dDaeMorphs>,
+    /// What the root layer of a usdz litegen writes is
+    /// (`types::Model3dUsdzRoot`), applied by litegen on delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usdz_root: Option<crate::types::Model3dUsdzRoot>,
+    /// Which clips a USD file litegen writes holds (`types::Model3dUsdClips`),
+    /// applied by litegen on delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usd_clips: Option<crate::types::Model3dUsdClips>,
+    /// Where a promised fbx or usdz comes from: the adapter asks the vendor
+    /// for its own export (`native`, the default) or its GLB (`glb`) — see
+    /// `model3d_convert::asks_vendor_for`.
+    pub format_source: Option<crate::types::Model3dFormatSource>,
+    /// Also deliver each requested container's package (the file and its
+    /// sidecars) as a zip (`output_packages`), applied by litegen on delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_packages: Option<bool>,
+    /// What delivery does with a KTX2 texture (`ktx2_textures`), applied by
+    /// litegen on delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ktx2_textures: Option<crate::types::Model3dKtx2Textures>,
     /// Vendor fields the canonical vocabulary does not cover, bounded by the
     /// model's `extra_allowlist` in strict mode. An adapter must never let one
     /// overwrite a field it derived from a canonical param above.
@@ -642,6 +1053,13 @@ pub struct SourceInput {
     /// The axis a litegen generation's delivered mesh faces, from its
     /// manifest (`+z`, or `unverified`); `None` for a file of the caller's own.
     pub front: Option<String>,
+    /// The joint naming the source's rig was delivered in (3D doc §3B),
+    /// from the plan its row recorded: the source's own, or for an
+    /// animation the rig it animated. `None` for the vendor's names, for a
+    /// file of the caller's own, and for a row whose plan is missing or
+    /// does not read. An animation of the source that names none is
+    /// delivered in it too (`DeliveryPlan::for_request`).
+    pub joint_naming: Option<String>,
     /// Where the adapter says how it sent the source.
     pub delivered: Arc<std::sync::Mutex<Option<SourceDelivery>>>,
 }
@@ -678,6 +1096,10 @@ pub struct Model3dFile {
     /// On delivered meshes: what litegen measured in them
     /// (`proxy::model3d_deliver`). Adapters leave it `None`.
     pub manifest: Option<crate::types::SceneManifest>,
+    /// The vendor URL the bytes were downloaded from, which is what a
+    /// generation that keeps nothing hands out (`keep_outputs: false`).
+    /// `None` for bytes no URL serves, such as a file litegen derived.
+    pub source_url: Option<String>,
 }
 
 /// Handle returned when a 3D generation is started (for polling).
@@ -728,6 +1150,45 @@ pub struct Model3dGenerationPollResult {
     pub next_stage: Option<String>,
 }
 
+/// What an observer of a finished job may do with its files: download them
+/// (it delivers the job), or stand aside (another observer does). Asked for
+/// 3D files and for a finished video alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fetch {
+    /// Download them. `waited` is how long the observer waited for the
+    /// right: an adapter whose links expire reads them again after
+    /// [`REFRESH_LINKS_AFTER`].
+    Go { waited: std::time::Duration },
+    /// Another observer delivers the job: download nothing, and report it
+    /// still processing, short of done, with no files and no error.
+    StandAside,
+}
+
+/// Asked by an adapter once its vendor says a job finished, before it
+/// downloads anything: whether this observer delivers the job. Only one
+/// observer of a finished job (a client's poll or the poller, on any
+/// replica) downloads its files; the server's delivery claim answers
+/// (`proxy::delivery_lease::DeliveryGate`). An adapter asks once per poll.
+#[async_trait]
+pub trait FetchGate: Send + Sync {
+    async fn ask(&self) -> Fetch;
+}
+
+/// A gate that always says go, at once: what a plain `poll_status` uses.
+pub struct AlwaysFetch;
+
+#[async_trait]
+impl FetchGate for AlwaysFetch {
+    async fn ask(&self) -> Fetch {
+        Fetch::Go { waited: std::time::Duration::ZERO }
+    }
+}
+
+/// An adapter that waited at least this long for its gate reads the job's
+/// links again before downloading: a vendor's signed links can expire while
+/// the poller waits for a delivery slot.
+pub const REFRESH_LINKS_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The core trait for 3D model (mesh) generation providers.
 ///
 /// Async submit + poll, mirroring [`VideoProvider`], with one deliberate
@@ -756,6 +1217,21 @@ pub trait Model3dProvider: Send + Sync {
         &self,
         handle: &Model3dGenerationHandle,
     ) -> Result<Model3dGenerationPollResult, ProviderError>;
+
+    /// [`poll_status`](Self::poll_status), asking `gate` once the vendor says
+    /// the job finished and before downloading any of its files. On
+    /// [`Fetch::StandAside`] it downloads nothing and reports the job still
+    /// processing. An adapter that downloads overrides this, and its
+    /// `poll_status` asks [`AlwaysFetch`]. The default never asks: the caller
+    /// then claims after the poll.
+    async fn poll_status_gated(
+        &self,
+        handle: &Model3dGenerationHandle,
+        gate: &dyn FetchGate,
+    ) -> Result<Model3dGenerationPollResult, ProviderError> {
+        let _ = gate;
+        self.poll_status(handle).await
+    }
 
     async fn estimate_cost(
         &self,
@@ -836,12 +1312,36 @@ pub fn may_resend_after(e: &reqwest::Error, billed: bool) -> bool {
     e.is_connect() || (!billed && e.is_timeout())
 }
 
+/// A vendor's 429 that says how long to wait (`Retry-After`), as
+/// `RateLimited`, so the retry waits at least that long
+/// (docs/gateway-settings.md). `None` for any other answer, which the caller
+/// turns into its own error. Read `retry_after_ms` from the response's
+/// headers before its body.
+pub(crate) fn rate_limited(
+    vendor: &str,
+    status: reqwest::StatusCode,
+    retry_after_ms: Option<u64>,
+    message: &str,
+    provider_error: Option<&serde_json::Value>,
+) -> Option<ProviderError> {
+    match (status.as_u16(), retry_after_ms) {
+        (429, Some(retry_after_ms)) => Some(ProviderError::RateLimited {
+            provider: vendor.to_string(),
+            retry_after_ms,
+            message: message.to_string(),
+            provider_error: provider_error.cloned(),
+        }),
+        _ => None,
+    }
+}
+
 /// A vendor's JSON answer, judged by its status before its body (PixelGenie
 /// L15): a 5xx — often a gateway's page that is not JSON —, a 408 or a 429
 /// turned the call away and may be sent again; any other error status is the
 /// vendor's own refusal, its body kept as `provider_error` when it is JSON.
 pub(crate) async fn read_vendor_json(resp: reqwest::Response, vendor: &str) -> Result<serde_json::Value, ProviderError> {
     let status = resp.status();
+    let retry_after_ms = retry_after_ms(resp.headers());
     let text = resp.text().await.map_err(|e| ProviderError::RequestFailed {
         message: format!("{vendor}'s answer could not be read: {e}"),
         status_code: Some(status.as_u16()),
@@ -851,6 +1351,14 @@ pub(crate) async fn read_vendor_json(resp: reqwest::Response, vendor: &str) -> R
     let body = serde_json::from_str::<serde_json::Value>(&text).ok();
     if !status.is_success() {
         let shown = body.as_ref().map(|b| b.to_string()).unwrap_or_else(|| text.chars().take(200).collect());
+        if let (429, Some(retry_after_ms)) = (status.as_u16(), retry_after_ms) {
+            return Err(ProviderError::RateLimited {
+                provider: vendor.to_string(),
+                retry_after_ms,
+                message: format!("{vendor} answered HTTP 429: {shown}"),
+                provider_error: body,
+            });
+        }
         return Err(ProviderError::RequestFailed {
             message: format!("{vendor} answered HTTP {}: {shown}", status.as_u16()),
             status_code: Some(status.as_u16()),
@@ -864,6 +1372,106 @@ pub(crate) async fn read_vendor_json(resp: reqwest::Response, vendor: &str) -> R
         provider_error: None,
         retryable: false,
     })
+}
+
+/// How long a vendor asked to be left alone (`Retry-After`, RFC 9110 §10.2.3):
+/// seconds, or an HTTP date (a date already past is 0). `None` when absent or
+/// unreadable.
+pub(crate) fn retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds.saturating_mul(1000));
+    }
+    let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    Some((at.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_milliseconds().max(0) as u64)
+}
+
+#[cfg(test)]
+mod poll_budget_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    async fn rounds(mut budget: PollBudget) -> u32 {
+        let mut n = 0;
+        while budget.next().await {
+            n += 1;
+        }
+        n
+    }
+
+    #[tokio::test]
+    async fn the_poll_budget_ends_at_the_deadline_or_the_default() {
+        // litegen's deadline for the call wins over the adapter's own budget.
+        let started = Instant::now();
+        // Bounded: a budget that ignored the deadline would wait out its hour.
+        let n = tokio::time::timeout(
+            Duration::from_secs(2),
+            with_deadline(Instant::now() + Duration::from_millis(100), async {
+                rounds(PollBudget::new(Duration::from_secs(3600), Duration::from_millis(30))).await
+            }),
+        )
+        .await
+        .expect("polled past the deadline");
+        assert!((3..=5).contains(&n), "{n} rounds");
+        assert!(started.elapsed() < Duration::from_millis(400), "ended at the deadline: {:?}", started.elapsed());
+
+        // A deadline already past: not one round, not one interval's wait.
+        let started = Instant::now();
+        let n = tokio::time::timeout(
+            Duration::from_secs(2),
+            with_deadline(Instant::now(), async { rounds(PollBudget::new(Duration::from_secs(3600), Duration::from_secs(2))).await }),
+        )
+        .await
+        .expect("waited although the deadline had passed");
+        assert_eq!(n, 0);
+        assert!(started.elapsed() < Duration::from_millis(100));
+
+        // Called directly, with no deadline: the adapter's own budget.
+        let started = Instant::now();
+        let n = rounds(PollBudget::new(Duration::from_millis(100), Duration::from_millis(30))).await;
+        assert!((3..=5).contains(&n), "{n} rounds");
+        assert!(started.elapsed() < Duration::from_millis(400));
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+
+    fn answer(status: u16, retry_after: Option<String>) -> reqwest::Response {
+        let mut b = axum::http::Response::builder().status(status);
+        if let Some(v) = retry_after {
+            b = b.header("retry-after", v);
+        }
+        reqwest::Response::from(b.body(r#"{"error":{"message":"slow down"}}"#).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_429_with_retry_after_is_rate_limited_in_seconds_or_a_date() {
+        match read_vendor_json(answer(429, Some("2".into())), "acme").await {
+            Err(ProviderError::RateLimited { retry_after_ms, message, provider_error, .. }) => {
+                assert_eq!(retry_after_ms, 2000);
+                assert!(message.contains("429") && message.contains("slow down"), "{message}");
+                assert_eq!(provider_error, Some(serde_json::json!({ "error": { "message": "slow down" } })), "the vendor's body is kept");
+            }
+            other => panic!("{other:?}"),
+        }
+        // An HTTP date, a few seconds out.
+        let at = (chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc2822().replace("+0000", "GMT");
+        match read_vendor_json(answer(429, Some(at)), "acme").await {
+            Err(ProviderError::RateLimited { retry_after_ms, .. }) => assert!((1000..=3000).contains(&retry_after_ms), "{retry_after_ms}"),
+            other => panic!("{other:?}"),
+        }
+        // A date already past waits nothing; a 429 without one, or a 503, stays a plain refusal.
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc2822().replace("+0000", "GMT");
+        assert!(matches!(read_vendor_json(answer(429, Some(past)), "acme").await, Err(ProviderError::RateLimited { retry_after_ms: 0, .. })));
+        for (status, header) in [(429, None), (503, Some("2".to_string())), (429, Some("soon".to_string()))] {
+            assert!(
+                matches!(read_vendor_json(answer(status, header.clone()), "acme").await, Err(ProviderError::RequestFailed { retryable: true, .. })),
+                "{status} {header:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -933,7 +1541,7 @@ pub fn build_cost_estimate(
         base_cost_usd,
         markup_usd,
         total_cost_usd,
-        tokens_required: usd_to_tokens(total_cost_usd, 0.001),
+        tokens_required: usd_to_tokens(total_cost_usd, crate::types::generation::USD_PER_TOKEN),
         cost_source,
         breakdown,
     }
@@ -956,17 +1564,29 @@ use std::sync::Arc;
 static POOL_CURSORS: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<u64, Arc<AtomicUsize>>>> =
     std::sync::OnceLock::new();
 
+/// Test only: how many shared rotation cursors the process holds.
+#[cfg(test)]
+fn pool_cursor_count() -> usize {
+    POOL_CURSORS.get().map_or(0, |m| m.read().unwrap().len())
+}
+
+/// How many rotation cursors the process keeps before it drops the ones no
+/// pool holds (registry NEW 2): one per distinct key pool otherwise piled up
+/// for the life of the process, an org's own keys included.
+const MAX_POOL_CURSORS: usize = 1024;
+
 fn shared_cursor(fingerprint: u64) -> Arc<AtomicUsize> {
     let map = POOL_CURSORS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
     if let Some(c) = map.read().unwrap().get(&fingerprint) {
         return Arc::clone(c);
     }
-    Arc::clone(
-        map.write()
-            .unwrap()
-            .entry(fingerprint)
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0))),
-    )
+    let mut cursors = map.write().unwrap();
+    if cursors.len() >= MAX_POOL_CURSORS && !cursors.contains_key(&fingerprint) {
+        // A pool in use holds its cursor, so it keeps its place; an idle
+        // one starts its rotation again at its first key.
+        cursors.retain(|_, c| Arc::strong_count(c) > 1);
+    }
+    Arc::clone(cursors.entry(fingerprint).or_insert_with(|| Arc::new(AtomicUsize::new(0))))
 }
 
 fn hash_with<F: FnOnce(&mut std::collections::hash_map::DefaultHasher)>(tag: &str, f: F) -> u64 {
@@ -1116,4 +1736,124 @@ pub fn parse_api_keys(raw: &str) -> Vec<crate::types::ApiKeyEntry> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod instance_config_tests {
+    use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn mapping(pairs: &[(&str, &str)]) -> ProviderInstanceConfig {
+        ProviderInstanceConfig {
+            model_mapping: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mapped_model_matches_the_catalog_id_then_the_bare_id() {
+        let full = mapping(&[("bfl/flux-pro-1.1", "flux-pro-1.1-finetuned"), ("flux-pro-1.1", "bare-loses")]);
+        assert_eq!(full.mapped_model("bfl/flux-pro-1.1"), Some("flux-pro-1.1-finetuned"), "the catalog id wins");
+        let bare = mapping(&[("flux-dev", "my-flux")]);
+        assert_eq!(bare.mapped_model("bfl/flux-dev"), Some("my-flux"), "the id without its provider prefix");
+        assert_eq!(bare.mapped_model("flux-dev"), Some("my-flux"));
+        assert_eq!(bare.mapped_model("bfl/flux-pro"), None);
+        assert_eq!(ProviderInstanceConfig::default().mapped_model("bfl/flux-dev"), None);
+    }
+
+    #[tokio::test]
+    async fn api_client_sends_extra_headers_and_a_request_header_wins() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+        let headers: HashMap<String, String> =
+            [("cf-aig-authorization", "Bearer gw"), ("Authorization", "Bearer from-config")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        let client = api_client(std::time::Duration::from_secs(30), &headers);
+        client.get(server.uri()).header("Authorization", "Bearer from-request").send().await.unwrap();
+        let got = &server.received_requests().await.unwrap()[0];
+        assert_eq!(got.headers.get("cf-aig-authorization").unwrap(), "Bearer gw");
+        let auth: Vec<_> = got.headers.get_all("authorization").iter().collect();
+        assert_eq!(auth, vec!["Bearer from-request"], "a header the request sets wins, once");
+    }
+
+    /// P8: adapters configured alike share one client, so one pool: two asked
+    /// for with the same timeout and headers reach the vendor over one
+    /// connection. Another header set is another client, with its headers.
+    #[tokio::test]
+    async fn adapters_configured_alike_share_one_client() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let echo = axum::Router::new().route(
+            "/",
+            axum::routing::get(|h: axum::http::HeaderMap| async move { h.get("x-tenant").and_then(|v| v.to_str().ok()).unwrap_or("").to_string() }),
+        );
+        let (base, accepted) = crate::util::counting_vendor(echo).await;
+        let set = |v: &str| -> HashMap<String, String> { [("x-tenant".to_string(), v.to_string())].into_iter().collect() };
+        let timeout = std::time::Duration::from_secs(30);
+        for _ in 0..2 {
+            let got = api_client(timeout, &set("a")).get(format!("{base}/")).send().await.unwrap().text().await.unwrap();
+            assert_eq!(got, "a");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(accepted.load(SeqCst), 1, "two clients configured alike shared one connection");
+        let got = api_client(timeout, &set("b")).get(format!("{base}/")).send().await.unwrap().text().await.unwrap();
+        assert_eq!(got, "b", "another header set gets its own client, with its own headers");
+        assert_eq!(accepted.load(SeqCst), 2);
+    }
+
+    /// The shared client's key covers header names and values, framed, so
+    /// two different sets (a secret's value, a split moved between name and
+    /// value) never share a client; the order of the set doesn't matter.
+    #[test]
+    fn the_header_digest_frames_names_and_values() {
+        let set = |pairs: &[(&str, &str)]| -> HashMap<String, String> { pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        assert_ne!(headers_digest(&set(&[("k", "secret-1")])), headers_digest(&set(&[("k", "secret-2")])));
+        assert_ne!(headers_digest(&set(&[("a", "bc")])), headers_digest(&set(&[("ab", "c")])));
+        assert_ne!(headers_digest(&set(&[])), headers_digest(&set(&[("", "")])));
+        assert_eq!(headers_digest(&set(&[("a", "1"), ("b", "2")])), headers_digest(&set(&[("b", "2"), ("a", "1")])));
+    }
+
+    /// Registry NEW 2 (code review 2026-11-11): the shared rotation cursors
+    /// are bounded. Every distinct key pool (one per org's stored key, with
+    /// hosted BYO) added one for the life of the process. A pool still in use
+    /// keeps its place in the rotation across the pruning.
+    #[test]
+    fn the_shared_rotation_cursors_are_bounded_and_a_live_pool_keeps_its_place() {
+        let pool = |keys: &[&str]| ApiKeyPool::shared(keys.iter().map(|k| crate::types::ApiKeyEntry { key: k.to_string(), weight: 1, label: None }).collect());
+        let live = pool(&["new2-live-a", "new2-live-b"]);
+        assert_eq!(live.next(), "new2-live-a");
+        for i in 0..3000 {
+            let _ = pool(&[&format!("new2-gone-{i}")]);
+        }
+        let n = pool_cursor_count();
+        assert!(n <= 1025, "the process holds {n} rotation cursors after 3000 one-off pools");
+        assert_eq!(pool(&["new2-live-a", "new2-live-b"]).next(), "new2-live-b", "a pool in use kept its place in the rotation");
+        drop(live);
+    }
+
+    #[test]
+    fn check_extra_headers_refuses_invalid_and_framing_headers() {
+        let one = |k: &str, v: &str| -> HashMap<String, String> { [(k.to_string(), v.to_string())].into_iter().collect() };
+        assert!(check_extra_headers(&one("Helicone-Auth", "Bearer x")).is_ok());
+        assert!(check_extra_headers(&HashMap::new()).is_ok());
+        for (k, v) in [
+            ("bad header", "x"),
+            ("x-ok", "line\r\nbreak"),
+            ("Host", "evil.example"),
+            ("content-length", "5"),
+            ("Transfer-Encoding", "chunked"),
+            ("connection", "close"),
+            ("keep-alive", "1"),
+            ("upgrade", "h2c"),
+            ("te", "trailers"),
+            ("trailer", "x"),
+            ("proxy-authorization", "Basic x"),
+            ("proxy-connection", "close"),
+        ] {
+            let err = check_extra_headers(&one(k, v)).expect_err(k);
+            assert!(err.contains(k.trim()), "{err} names {k}");
+        }
+    }
 }

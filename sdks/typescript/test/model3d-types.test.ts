@@ -1,10 +1,14 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
+  ConvertModel3dOptions,
   Model3dAsset,
+  Model3dDaeMorphs,
   Model3dFormat,
   Model3dGenerationRequest,
   Model3dSymmetry,
   Model3dTopology,
+  Model3dUsdClips,
+  Model3dUsdzRoot,
   ParamSpecStringArray,
   ModelInfo,
   ModelSchema,
@@ -29,7 +33,7 @@ describe("3D vocabulary types", () => {
     // Every container any 3D model can deliver — a vendor's own, or one litegen
     // converts to locally. A change here is a vocabulary change: update both.
     expectTypeOf<Model3dFormat>().toEqualTypeOf<
-      "glb" | "gltf" | "obj" | "stl" | "ply" | "fbx" | "usdz" | "usda" | "3mf" | "dae"
+      "glb" | "gltf" | "obj" | "stl" | "ply" | "fbx" | "usdz" | "usda" | "usdc" | "3mf" | "dae"
     >();
     expectTypeOf<Model3dTopology>().toEqualTypeOf<"triangle" | "quad">();
     expectTypeOf<Model3dSymmetry>().toEqualTypeOf<"off" | "auto" | "on">();
@@ -41,7 +45,8 @@ describe("3D vocabulary types", () => {
       | "multiview" | "background_swap" | "extend" | "retake" | "video_edit"
     >();
     expectTypeOf<ModelSchema["task"]>().toEqualTypeOf<ModelTask | undefined>();
-    expectTypeOf<ModelInfo["capabilities"]["task"]>().toEqualTypeOf<ModelTask | undefined>();
+    // A listed model always carries its task; a schema may be an admin input.
+    expectTypeOf<ModelInfo["capabilities"]["task"]>().toEqualTypeOf<ModelTask>();
   });
 
   it("types an operation's source_model", () => {
@@ -74,7 +79,7 @@ describe("3D vocabulary types", () => {
 
   it("exposes the asset kinds as constants matching the schema", () => {
     expectTypeOf<Model3dAssetKind>().toEqualTypeOf<Model3dAsset["kind"]>();
-    expect(Object.values(Model3dAssetKind)).toEqual(["mesh", "texture", "preview", "original"]);
+    expect(Object.values(Model3dAssetKind)).toEqual(["mesh", "texture", "preview", "original", "package"]);
   });
 
   it("types an animate request's clips", () => {
@@ -96,6 +101,27 @@ describe("3D vocabulary types", () => {
       joint_naming: "vrm",
     };
     expect(rig.skeleton).toBe("humanoid");
+  });
+
+  it("types the Collada morph choice, on a request and on convert", () => {
+    expectTypeOf<Model3dDaeMorphs>().toEqualTypeOf<"bake" | "keep">();
+    expectTypeOf<Model3dGenerationRequest["dae_morphs"]>().toEqualTypeOf<Model3dDaeMorphs | null | undefined>();
+    expectTypeOf<ConvertModel3dOptions["daeMorphs"]>().toEqualTypeOf<Model3dDaeMorphs | undefined>();
+    const keep: Model3dGenerationRequest = { model: "meshy/meshy-6", prompt: "a fox", output_formats: ["dae"], dae_morphs: "keep" };
+    expect(keep.dae_morphs).toBe("keep");
+  });
+
+  it("types the USD choices, on a request and on convert", () => {
+    expectTypeOf<Model3dUsdzRoot>().toEqualTypeOf<"usda" | "usdc">();
+    expectTypeOf<Model3dUsdClips>().toEqualTypeOf<"all" | "first">();
+    expectTypeOf<Model3dGenerationRequest["usdz_root"]>().toEqualTypeOf<Model3dUsdzRoot | null | undefined>();
+    expectTypeOf<Model3dGenerationRequest["usd_clips"]>().toEqualTypeOf<Model3dUsdClips | null | undefined>();
+    expectTypeOf<ConvertModel3dOptions["usdzRoot"]>().toEqualTypeOf<Model3dUsdzRoot | undefined>();
+    expectTypeOf<ConvertModel3dOptions["usdClips"]>().toEqualTypeOf<Model3dUsdClips | undefined>();
+    const crate: Model3dGenerationRequest = {
+      model: "meshy/meshy-6", prompt: "a fox", output_formats: ["usdz", "usdc"], usdz_root: "usdc", usd_clips: "all",
+    };
+    expect([crate.usdz_root, crate.usd_clips]).toEqual(["usdc", "all"]);
   });
 
   it("types a mesh's manifest and a model's proven orientation", () => {

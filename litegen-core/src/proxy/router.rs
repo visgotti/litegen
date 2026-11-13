@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use crate::proxy::cache::{CacheOutcome, CachePolicy};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -12,33 +13,88 @@ use crate::proxy::materializer::MaterializedRequest;
 use crate::proxy::registry::ProviderRegistry;
 use crate::proxy::storage::ImageStore;
 use crate::types::*;
+// USD per internal token, the one rate: every `UsageInfo` the router mints,
+// submit and poll alike, converts at the rate a row answer uses, or the same
+// generation would quote two different token counts.
+use crate::types::generation::USD_PER_TOKEN;
+// Now in types (engine boundary, D4); kept at this path for its callers.
+pub use crate::types::generation::enforce_requested_formats;
+// Now in util (engine boundary, D6); kept at this path for its callers.
+pub use crate::util::content::{image_content_type, sha256_hex};
 
 /// Maximum number of latency samples retained per provider.
 const LATENCY_HISTORY_CAP: usize = 16;
 
-/// USD per internal token. Kept next to the async job maps because every
-/// `UsageInfo` the router mints — submit and poll alike — must convert at the
-/// same rate, or the same generation would quote two different token counts.
-const USD_PER_TOKEN: f64 = 0.001;
+/// How long the router keeps a submitted video or 3D job in memory. The poller
+/// reaps a generation still active after 2 hours, so a job older than this has
+/// a terminal row and nothing left to poll it through.
+const JOB_MAX_AGE_SECS: i64 = 3 * 60 * 60;
 
-/// How long the router keeps a submitted 3D job in memory. The poller reaps a
-/// generation still active after 2 hours, so a job older than this has a
-/// terminal row and nothing left to poll it through.
-const MODEL3D_JOB_MAX_AGE_SECS: i64 = 3 * 60 * 60;
-
-/// An in-flight async job plus the `usage` triple quoted when it was submitted.
+/// An in-flight video job, with the provider instance that took it and the
+/// `usage` triple quoted when it was submitted.
 ///
-/// The consumer contract reads `usage` off the POLL response, not the submit
-/// response (a client that submits and polls from different processes only ever
-/// sees the poll). Carrying the submit-time triple alongside the handle lets
-/// every poll report the identical `cost_usd` / `tokens` / `cost_source` the
-/// submit quoted and the generations row persisted, with no DB round trip and
-/// no dependence on the row insert (which the submit handler spawns) having
-/// landed yet.
+/// - **`provider`:** an org's own key when it brought one, which a client's
+///   poll must use too (the platform's key knows nothing of the job). As
+///   `Model3dJob.provider`.
+/// - **`usage`:** the consumer contract reads it off the POLL response, not
+///   the submit response (a client that submits and polls from different
+///   processes only ever sees the poll). Carrying the submit-time triple lets
+///   every poll report the identical `cost_usd` / `tokens` / `cost_source`
+///   the submit quoted and the generations row persisted, with no DB round
+///   trip and no dependence on the row insert (which the submit handler
+///   spawns) having landed yet.
 #[derive(Clone)]
-struct TrackedJob<H> {
-    handle: H,
+struct VideoJob {
+    handle: VideoGenerationHandle,
     usage: Option<UsageInfo>,
+    provider: Arc<dyn crate::providers::VideoProvider>,
+    /// When it was submitted (tokio's clock, so tests can age it): a job past
+    /// [`JOB_MAX_AGE_SECS`] is let go at the next submit.
+    submitted: tokio::time::Instant,
+}
+
+/// A submitted video: the provider's name, its handle, and the instance that took it.
+type SubmittedVideo = (String, VideoGenerationHandle, Arc<dyn crate::providers::VideoProvider>);
+
+/// The calling org's own provider credentials (BYO) for one request, each
+/// under the provider it was stored for.
+///
+/// A request reaches a vendor directly (the model's provider) or through a
+/// model route's deployments, which may name other providers. Each gets only
+/// the credential the org stored for its own provider, or none, and then the
+/// platform's key, as a direct request to that provider would (registry
+/// BYO-ROUTE, code review 2026-11-11). `Debug` names the providers only:
+/// the credentials are secrets.
+#[derive(Clone, Default)]
+pub struct OrgCredentials(HashMap<String, ProviderCredentials>);
+
+impl OrgCredentials {
+    /// One provider's credential, as a direct request resolves it.
+    pub fn of(provider: &str, creds: Option<ProviderCredentials>) -> Self {
+        let mut all = Self::default();
+        if let Some(c) = creds {
+            all.insert(provider, c);
+        }
+        all
+    }
+
+    /// Add the org's credential for `provider`.
+    pub fn insert(&mut self, provider: &str, creds: ProviderCredentials) {
+        self.0.insert(provider.to_string(), creds);
+    }
+
+    /// The org's credential for `provider`, if it stored one.
+    pub fn get(&self, provider: &str) -> Option<ProviderCredentials> {
+        self.0.get(provider).cloned()
+    }
+}
+
+impl std::fmt::Debug for OrgCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut providers: Vec<&str> = self.0.keys().map(String::as_str).collect();
+        providers.sort_unstable();
+        f.debug_tuple("OrgCredentials").field(&providers).finish()
+    }
 }
 
 /// An in-flight 3D job.
@@ -79,16 +135,38 @@ pub struct ProxyRouter {
     /// Per-provider latency history (recent samples in ms), capped at LATENCY_HISTORY_CAP.
     latency_history: Arc<tokio::sync::RwLock<HashMap<String, VecDeque<u64>>>>,
     /// In-flight video generation jobs, keyed by the locally-generated `litegen-vid-...` ID.
-    video_jobs: Arc<tokio::sync::RwLock<HashMap<String, TrackedJob<VideoGenerationHandle>>>>,
+    video_jobs: Arc<tokio::sync::RwLock<HashMap<String, VideoJob>>>,
     /// In-flight 3D generation jobs, keyed by the local `litegen-3d-...` ID.
     model3d_jobs: Arc<tokio::sync::RwLock<HashMap<String, Model3dJob>>>,
     /// Storage for re-hosted 3D assets (S3 when configured, local otherwise).
     pub model3d_store: Arc<dyn crate::proxy::storage::ImageStorage>,
+    /// Signs links to litegen's own stored files (`docs/storage-access.md`),
+    /// keyed from the secrets key when it is set, otherwise from the key stored
+    /// once in `server_secrets`. `new` builds a placeholder (keyed from the
+    /// config's secrets key, or randomly without one) that `main` replaces
+    /// through `with_link_signer` with the signer
+    /// `access::signing::link_signer_for` picks.
+    pub link_signer: Arc<crate::access::signing::LinkSigner>,
     /// Circuit breaker tracking consecutive failures per provider.
     pub circuit_breaker: Arc<CircuitBreaker>,
     /// Settings changed at runtime through the management API. Each set field
     /// overrides the matching `config` value for every request that follows.
     overrides: std::sync::RwLock<RuntimeOverrides>,
+    /// The cache, retry, timeout and breaker settings in force, recomputed
+    /// whenever the overrides change (`docs/gateway-settings.md`).
+    settings: std::sync::RwLock<crate::management::settings::EffectiveSettings>,
+    /// Bumped by every change of the overrides, so a settings refresh can
+    /// tell a save landed while it was reading the database.
+    overrides_version: std::sync::atomic::AtomicU64,
+    /// The Redis several replicas share, when one is set (`docs/scaling.md`).
+    shared: Option<Arc<crate::shared::SharedRedis>>,
+    /// Which stored runtime models and provider configs this replica has
+    /// applied, so a refresh can tell what changed in the database.
+    applied_runtime: std::sync::Mutex<crate::management::runtime::AppliedRuntime>,
+    /// Test only: a refresh's sync of a part stops right after its database
+    /// read (see [`Self::pause_next_sync`]).
+    #[cfg(test)]
+    sync_pauses: std::sync::Mutex<HashMap<&'static str, Arc<crate::proxy::cache::LookupPause>>>,
 }
 
 /// Runtime overrides of [`AppConfig`] values, set through `/v1/admin/*`.
@@ -119,6 +197,9 @@ impl ProxyRouter {
             &config.image_storage,
             &config.server.public_base_url(),
         );
+        let link_signer = Arc::new(crate::access::signing::LinkSigner::from_secrets_key(config.secrets_key.as_deref()));
+        let settings = crate::management::settings::effective(&config, &Default::default());
+        cache.reconfigure(settings.cache);
         Self {
             registry,
             cache,
@@ -128,8 +209,94 @@ impl ProxyRouter {
             video_jobs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             model3d_jobs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             model3d_store,
+            link_signer,
             circuit_breaker: cb,
             overrides: std::sync::RwLock::new(RuntimeOverrides::default()),
+            settings: std::sync::RwLock::new(settings),
+            overrides_version: std::sync::atomic::AtomicU64::new(0),
+            shared: None,
+            applied_runtime: std::sync::Mutex::new(Default::default()),
+            #[cfg(test)]
+            sync_pauses: Default::default(),
+        }
+    }
+
+    /// Share state with the other replicas through `shared`.
+    pub fn with_shared(mut self, shared: Arc<crate::shared::SharedRedis>) -> Self {
+        // The breaker's streaks move to Redis. Called right after `new`, so the
+        // settings are the config's; gateway settings reconfigure it later.
+        self.circuit_breaker = Arc::new(CircuitBreaker::with_store(
+            self.config.circuit_breaker.threshold,
+            std::time::Duration::from_secs(self.config.circuit_breaker.open_for_seconds),
+            Arc::new(crate::shared::provider_breaker::RedisBreakerStore::new(shared.clone())),
+        ));
+        // The cache gets a shared tier behind its own memory.
+        self.cache.attach_shared(shared.clone());
+        self.shared = Some(shared);
+        self
+    }
+
+    /// Sign and verify links with `signer`, not the one `new` made from the
+    /// config's secrets key. Called right after `new`, before the router is
+    /// shared: `main` passes the key `access::signing::link_signer_for` picks,
+    /// which may be the one stored in the database.
+    pub fn with_link_signer(mut self, signer: Arc<crate::access::signing::LinkSigner>) -> Self {
+        self.link_signer = signer;
+        self
+    }
+
+    /// The Redis shared with the other replicas; `None` is a single replica.
+    pub fn shared(&self) -> Option<&Arc<crate::shared::SharedRedis>> {
+        self.shared.as_ref()
+    }
+
+    /// Test only: the next refresh's sync of `part` (`"runtime_models"` or
+    /// `"model_states"`) stops right after its database read, and says so on
+    /// `reached`. Per router, so tests running side by side don't trip each
+    /// other.
+    #[cfg(test)]
+    pub(crate) fn pause_next_sync(&self, part: &'static str) -> Arc<crate::proxy::cache::LookupPause> {
+        let pause = Arc::new(crate::proxy::cache::LookupPause { reached: tokio::sync::Notify::new(), resume: tokio::sync::Notify::new() });
+        self.sync_pauses.lock().unwrap().insert(part, pause.clone());
+        pause
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_after_sync_read(&self, part: &'static str) {
+        let pause = self.sync_pauses.lock().unwrap().remove(part);
+        if let Some(pause) = pause {
+            pause.reached.notify_one();
+            pause.resume.notified().await;
+        }
+    }
+
+    /// What this replica has applied of the stored runtime models and provider
+    /// configs (`management::runtime::refresh`). Never hold it across an await.
+    pub(crate) fn applied_runtime(&self) -> std::sync::MutexGuard<'_, crate::management::runtime::AppliedRuntime> {
+        self.applied_runtime.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The cache, retry, timeout and breaker settings in force.
+    pub fn settings(&self) -> crate::management::settings::EffectiveSettings {
+        *self.settings.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// After attempt `attempt` (counted from 0, at most `max_retries` more
+    /// follow) failed with `err`: whether to try again, having waited as the
+    /// retry settings say (`retry_delay`). `may_resend` decides whether at all.
+    async fn wait_to_retry(&self, attempt: u32, max_retries: u32, err: &ProviderError, vendor_accepted: bool) -> bool {
+        if attempt >= max_retries || !may_resend(err, vendor_accepted) {
+            return false;
+        }
+        match retry_delay(attempt + 1, err, &self.settings().retries, rand::random()) {
+            Some(wait) => {
+                if !wait.is_zero() {
+                    info!(wait_ms = wait.as_millis() as u64, "waiting before a retry");
+                    tokio::time::sleep(wait).await;
+                }
+                true
+            }
+            None => false,
         }
     }
 
@@ -140,7 +307,40 @@ impl ProxyRouter {
 
     /// Replace the runtime overrides; applies to every request that follows.
     pub fn set_overrides(&self, overrides: RuntimeOverrides) {
-        *self.overrides.write().unwrap_or_else(|p| p.into_inner()) = overrides;
+        self.apply_overrides(None, overrides);
+    }
+
+    /// How many times the overrides have changed.
+    pub fn overrides_version(&self) -> u64 {
+        self.overrides_version.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// [`Self::set_overrides`], unless they changed since `version` was read:
+    /// a refresh whose database read raced a save never undoes the save.
+    /// Whether it applied.
+    pub fn set_overrides_unless_changed(&self, version: u64, overrides: RuntimeOverrides) -> bool {
+        self.apply_overrides(Some(version), overrides)
+    }
+
+    fn apply_overrides(&self, expected: Option<u64>, overrides: RuntimeOverrides) -> bool {
+        use std::sync::atomic::Ordering;
+        let settings = crate::management::settings::effective(&self.config, &overrides.gateway);
+        let previous = {
+            let mut guard = self.overrides.write().unwrap_or_else(|p| p.into_inner());
+            if expected.is_some_and(|v| v != self.overrides_version.load(Ordering::SeqCst)) {
+                return false;
+            }
+            *guard = overrides;
+            self.overrides_version.fetch_add(1, Ordering::SeqCst);
+            std::mem::replace(&mut *self.settings.write().unwrap_or_else(|p| p.into_inner()), settings)
+        };
+        if settings.cache != previous.cache {
+            self.cache.reconfigure(settings.cache);
+        }
+        if settings.breaker != previous.breaker {
+            self.circuit_breaker.reconfigure(settings.breaker.threshold, settings.breaker.open_for);
+        }
+        true
     }
 
     /// The markup in effect: the runtime override, else the config value.
@@ -199,43 +399,70 @@ impl ProxyRouter {
     /// If a model route is configured, it dispatches through the route's strategy
     /// (fallback, weighted_round_robin, lowest_cost, lowest_latency). Otherwise,
     /// falls back to single-provider direct dispatch using schema.provider.
-    #[tracing::instrument(
-        // `app_creds` carries decrypted BYO provider secrets — see the note on
-        // `generate_model3d`; an instrumented argument becomes a span attribute.
-        skip(self, schema, base, extras, materialized, app_creds, app_store),
-        fields(model = %schema.id, provider = %schema.provider)
-    )]
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_image(
         &self,
         schema: &ModelSchema,
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
-        app_creds: Option<ProviderCredentials>,
+        app_creds: OrgCredentials,
         app_store: Option<Arc<dyn ImageStore>>,
         // Tenant scope for the cache key (app id, falling back to org id). The
         // cache is process-global, so this prevents cross-tenant cache hits.
         tenant: Option<&str>,
     ) -> Result<ImageGenerationResponse, ProxyError> {
-        let start = Instant::now();
+        self.generate_image_cached(schema, base, extras, materialized, app_creds, app_store, tenant, CachePolicy::default())
+            .await
+            .map(|(response, _)| response)
+    }
 
-        // 1. Check cache
-        if let Some(cached) = self.cache.get_image(tenant, &schema.id, base, extras, materialized).await {
-            info!(model = %schema.id, "Cache hit for image generation");
-            return Ok(cached);
+    /// [`Self::generate_image`], as far as `policy` (the request's
+    /// `Cache-Control`) lets the cache act, and what the cache did.
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        // `app_creds` carries decrypted BYO provider secrets — see the note on
+        // `generate_model3d`; an instrumented argument becomes a span attribute.
+        skip(self, schema, base, extras, materialized, app_creds, app_store, policy),
+        fields(model = %schema.id, provider = %schema.provider)
+    )]
+    pub async fn generate_image_cached(
+        &self,
+        schema: &ModelSchema,
+        base: &BaseGenerationRequest,
+        extras: &ImageExtras,
+        materialized: &MaterializedRequest,
+        app_creds: OrgCredentials,
+        app_store: Option<Arc<dyn ImageStore>>,
+        tenant: Option<&str>,
+        policy: CachePolicy,
+    ) -> Result<(ImageGenerationResponse, CacheOutcome), ProxyError> {
+        let start = Instant::now();
+        let route = self.find_model_route(&schema.id);
+
+        // 1. Check cache: on for this model as its route says, else as the
+        //    gateway's settings say (`docs/gateway-settings.md`).
+        let (cache_on, _) = self.cache_for(route.as_ref());
+        let mut outcome = CacheOutcome::Bypass;
+        if cache_on && policy.lookup {
+            if let Some(cached) = self.cache.get_image(tenant, &schema.id, base, extras, materialized).await {
+                info!(model = %schema.id, "Cache hit for image generation");
+                return Ok((cached, CacheOutcome::Hit));
+            }
+            outcome = CacheOutcome::Miss;
         }
 
         // 2. Find a route or use single-provider direct dispatch
-        let (provider_name, output) = if let Some(route) = self.find_model_route(&schema.id) {
+        let (provider_name, output) = if let Some(route) = route {
             self.execute_route_image(schema, base, extras, materialized, &route, app_creds).await?
         } else {
             // Direct dispatch: use schema.provider
             let provider = self.registry
-                .image_provider_for_request(&schema.provider, app_creds)
+                .image_provider_for_request(&schema.provider, app_creds.get(&schema.provider))
                 .await
-                .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+                .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
 
-            let max_retries = 2u32;
+            let max_retries = self.settings().retries.max_retries;
             let mut last_error: Option<ProviderError> = None;
             let mut output: Option<GenerationOutput> = None;
 
@@ -249,9 +476,13 @@ impl ProxyRouter {
                 }
                 extras.vendor_job.clear();
                 let attempt_start = Instant::now();
+                let limit = self.settings().vendor_timeout;
+                // A caller that asked to wait less (`Prefer: wait`,
+                // `respond-async`) hears back sooner; the job goes on.
+                let deadline = attempt_start + crate::providers::call_wait().map_or(limit, |w| w.min(limit));
                 match tokio::time::timeout(
-                    self.config.server.vendor_timeout(),
-                    provider.generate(schema, base, extras, materialized),
+                    limit,
+                    crate::providers::with_deadline(deadline, provider.generate(schema, base, extras, materialized)),
                 ).await {
                     Ok(Ok(o)) => {
                         self.record_latency(&schema.provider, attempt_start.elapsed().as_millis() as u64).await;
@@ -266,9 +497,9 @@ impl ProxyRouter {
                         });
                     }
                     Ok(Err(e)) => {
-                        let resend = may_resend(&e, extras.vendor_job.get().is_some());
+                        let again = self.wait_to_retry(attempt, max_retries, &e, extras.vendor_job.get().is_some()).await;
                         last_error = Some(e);
-                        if !resend { break; }
+                        if !again { break; }
                     }
                 }
             }
@@ -320,10 +551,17 @@ impl ProxyRouter {
             metadata: None,
         };
 
-        // 4. Store in cache
-        self.cache
-            .put_image(tenant, &schema.id, base, extras, materialized, &response)
-            .await;
+        // 4. Store in cache, if it is still on: the cache may have been
+        //    turned off (or the route changed) while the vendor worked, and
+        //    an answer that comes back after a switch-off must not be kept,
+        //    or a later switch-on would serve it. The time to live in force
+        //    now applies to what is stored now.
+        if cache_on && policy.store {
+            let (still_on, ttl) = self.cache_for(self.find_model_route(&schema.id).as_ref());
+            if still_on {
+                self.cache.put_image(tenant, &schema.id, base, extras, materialized, &response, ttl).await;
+            }
+        }
 
         info!(
             model = %schema.id,
@@ -332,7 +570,7 @@ impl ProxyRouter {
             "Image generation completed"
         );
 
-        Ok(response)
+        Ok((response, outcome))
     }
 
     /// Promptable segmentation (PixelGenie L7): the vendor's masks, each made
@@ -349,15 +587,16 @@ impl ProxyRouter {
             .registry
             .image_provider_for_request(&schema.provider, app_creds)
             .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
         let mut last_error: Option<ProviderError> = None;
         let mut vendor_masks = None;
-        for attempt in 0..=2u32 {
+        let max_retries = self.settings().retries.max_retries;
+        for attempt in 0..=max_retries {
             if attempt > 0 {
                 info!(provider = %schema.provider, attempt, "Retrying segmentation");
             }
             let attempt_start = Instant::now();
-            match tokio::time::timeout(self.config.server.vendor_timeout(), provider.segment(schema, input)).await {
+            match tokio::time::timeout(self.settings().vendor_timeout, provider.segment(schema, input)).await {
                 Ok(Ok(m)) => {
                     self.record_latency(&schema.provider, attempt_start.elapsed().as_millis() as u64).await;
                     vendor_masks = Some(m);
@@ -367,9 +606,9 @@ impl ProxyRouter {
                     return Err(ProxyError::VendorTimeout { model: schema.id.clone(), provider: schema.provider.clone(), vendor_job_id: None });
                 }
                 Ok(Err(e)) => {
-                    let resend = may_resend(&e, false);
+                    let again = self.wait_to_retry(attempt, max_retries, &e, false).await;
                     last_error = Some(e);
-                    if !resend {
+                    if !again {
                         break;
                     }
                 }
@@ -419,7 +658,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         route: &ModelRoute,
-        app_creds: Option<ProviderCredentials>,
+        app_creds: OrgCredentials,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         match route.strategy {
             RoutingStrategy::Fallback => {
@@ -445,9 +684,9 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
+        app_creds: OrgCredentials,
     ) -> Result<(String, GenerationOutput), ProxyError> {
-        let mut last_error: Option<ProviderError> = None;
+        let mut attempts = Attempts::default();
 
         for deployment in deployments {
             // ── Circuit breaker: skip provider if breaker is open ──
@@ -456,16 +695,22 @@ impl ProxyRouter {
                     provider = %deployment.provider,
                     "Circuit breaker open — skipping deployment"
                 );
-                last_error = Some(ProviderError::NotConfigured(deployment.provider.clone()));
+                attempts.skipped(&deployment.provider, "circuit open");
                 continue;
             }
 
-            let provider = match self.registry.image_provider_for_request(&deployment.provider, app_creds.clone()).await {
+            // The org's credential for this deployment's own provider, never
+            // another vendor's; none, and the platform's key, as a direct
+            // request to that provider would (BYO-ROUTE). A 401, 402, 403 or
+            // 429 says the deployment is unwell only to the platform's own
+            // credential, never to a tenant's (E9).
+            let creds = app_creds.get(&deployment.provider);
+            let platform_credential = creds.is_none();
+            let provider = match self.registry.image_provider_for_request(&deployment.provider, creds).await {
                 Some(p) => p,
                 None => {
                     warn!(provider = %deployment.provider, "Image provider not configured, skipping deployment");
-                    // Treat missing provider as a non-retryable skip
-                    last_error = Some(ProviderError::NotConfigured(deployment.provider.clone()));
+                    attempts.skipped(&deployment.provider, "not configured");
                     continue;
                 }
             };
@@ -482,7 +727,10 @@ impl ProxyRouter {
                 let attempt_start = Instant::now();
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(deployment.timeout_seconds),
-                    provider.generate(schema, base, extras, materialized),
+                    crate::providers::with_deadline(
+                        attempt_start + std::time::Duration::from_secs(deployment.timeout_seconds),
+                        provider.generate(schema, base, extras, materialized),
+                    ),
                 ).await {
                     Ok(Ok(output)) => {
                         self.record_latency(&deployment.provider, attempt_start.elapsed().as_millis() as u64).await;
@@ -511,15 +759,17 @@ impl ProxyRouter {
                             retryable = e.is_retryable(),
                             "Image provider error"
                         );
-                        self.circuit_breaker.record_failure(&deployment.provider).await;
+                        if e.says_the_deployment_is_unhealthy(platform_credential) {
+                            self.circuit_breaker.record_failure(&deployment.provider).await;
+                        }
                         if let Some(job) = extras.vendor_job.get() {
                             // The vendor took the job: no other deployment may
                             // be sent it too.
                             return Err(failure(&schema.id, &deployment.provider, Some(e), Some(job)));
                         }
-                        let resend = may_resend(&e, false);
-                        last_error = Some(e);
-                        if !resend {
+                        let again = self.wait_to_retry(attempt, deployment.max_retries, &e, false).await;
+                        attempts.failed(&deployment.provider, e);
+                        if !again {
                             break; // Skip to next deployment
                         }
                     }
@@ -527,7 +777,7 @@ impl ProxyRouter {
             }
         }
 
-        Err(failure(&schema.id, &schema.provider, last_error, None))
+        Err(attempts.into_error(&schema.id))
     }
 
     /// Weighted round-robin across deployments: pick a deployment by weight hash,
@@ -539,7 +789,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
+        app_creds: OrgCredentials,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         if deployments.is_empty() {
             return Err(ProxyError::NoDeployments { model: schema.id.clone() });
@@ -583,14 +833,14 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
+        app_creds: OrgCredentials,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         let mut cost_sorted: Vec<(f64, &Deployment)> = Vec::new();
         // Build a minimal ImageGenerationRequest for cost estimation
         let dummy_req = ImageGenerationRequest {
             base: base.clone(),
             size: extras.size.clone(),
-            aspect_ratio: extras.aspect_ratio.clone(),
+            resolution: None, aspect_ratio: extras.aspect_ratio.clone(),
             quality: extras.quality.clone(),
             style: extras.style.clone(),
             steps: extras.steps,
@@ -605,7 +855,7 @@ impl ProxyRouter {
             palette: None, directions: None,
         };
         for d in deployments {
-            let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
+            let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.get(&d.provider)).await {
                 p.estimate_cost(schema, &dummy_req)
                     .await
                     .map(|c| c.total_cost_usd)
@@ -629,7 +879,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
+        app_creds: OrgCredentials,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         let mut lat_sorted: Vec<(u64, &Deployment)> = Vec::new();
         for d in deployments {
@@ -658,19 +908,19 @@ impl ProxyRouter {
         base: &BaseGenerationRequest,
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
-        app_creds: Option<ProviderCredentials>,
+        app_creds: OrgCredentials,
     ) -> Result<VideoGenerationResponse, ProxyError> {
         // Find route or use direct dispatch
-        let (provider_name, handle) = if let Some(route) = self.find_model_route(&schema.id) {
+        let (provider_name, handle, provider) = if let Some(route) = self.find_model_route(&schema.id) {
             self.execute_route_video(schema, base, extras, materialized, &route, app_creds).await?
         } else {
             // Direct dispatch
             let provider = self.registry
-                .video_provider_for_request(&schema.provider, app_creds)
+                .video_provider_for_request(&schema.provider, app_creds.get(&schema.provider))
                 .await
-                .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+                .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
 
-            let max_retries = 2u32;
+            let max_retries = self.settings().retries.max_retries;
             let mut last_error: Option<ProviderError> = None;
             let mut handle: Option<VideoGenerationHandle> = None;
 
@@ -684,7 +934,7 @@ impl ProxyRouter {
                 }
                 let attempt_start = Instant::now();
                 match tokio::time::timeout(
-                    self.config.server.vendor_timeout(),
+                    self.settings().vendor_timeout,
                     provider.generate(schema, base, extras, materialized),
                 ).await {
                     Ok(Ok(h)) => {
@@ -702,15 +952,15 @@ impl ProxyRouter {
                         });
                     }
                     Ok(Err(e)) => {
-                        let resend = may_resend(&e, false);
+                        let again = self.wait_to_retry(attempt, max_retries, &e, false).await;
                         last_error = Some(e);
-                        if !resend { break; }
+                        if !again { break; }
                     }
                 }
             }
 
             let h = handle.ok_or_else(|| failure(&schema.id, &schema.provider, last_error, None))?;
-            (schema.provider.clone(), h)
+            (schema.provider.clone(), h, provider)
         };
 
         // Build cost from schema pricing. This path submits exactly one
@@ -728,12 +978,23 @@ impl ProxyRouter {
         });
 
         let local_id = format!("litegen-vid-{}", uuid::Uuid::new_v4());
-        self.video_jobs.write().await.insert(
-            local_id.clone(),
-            TrackedJob { handle, usage: usage_info.clone() },
-        );
+        {
+            let mut jobs = self.video_jobs.write().await;
+            // As for 3D jobs: a client's GET on this replica, a cancel, or
+            // this replica's poller ending the job lets it go; one ended
+            // elsewhere (another replica, a webhook-only caller's job polled
+            // by another replica's poller) would stay here, provider instance
+            // and all, until a restart. Past the reap age no observer needs it.
+            let max_age = std::time::Duration::from_secs(JOB_MAX_AGE_SECS as u64);
+            jobs.retain(|_, j| j.submitted.elapsed() < max_age);
+            jobs.insert(
+                local_id.clone(),
+                VideoJob { handle, usage: usage_info.clone(), provider, submitted: tokio::time::Instant::now() },
+            );
+        }
 
         Ok(VideoGenerationResponse {
+            video_url_expires_at: None,
             id: local_id,
             status: GenerationStatus::Pending,
             model: schema.id.clone(),
@@ -750,7 +1011,7 @@ impl ProxyRouter {
     }
 
     /// Look up an in-flight video generation by local ID and poll its provider.
-    #[tracing::instrument(skip(self, app_store), fields(id = %id))]
+    #[tracing::instrument(skip(self, app_store, db), fields(id = %id))]
     /// Poll an in-flight video by local id. A finished video is re-hosted in
     /// the same call (`rehost_video`), into the app's own bucket when it has
     /// one, so the answer names litegen's copy; the second value is what its
@@ -761,45 +1022,79 @@ impl ProxyRouter {
         id: &str,
         app_store: Option<Arc<dyn crate::proxy::storage::ImageStorage>>,
         app_prefix: Option<&str>,
+        keep: bool,
+        db: &Arc<dyn crate::db::DatabaseStore>,
     ) -> Result<(VideoGenerationResponse, Option<serde_json::Value>), ProxyError> {
+        // Nothing here writes the outcome, so the claim goes at once.
+        self.get_video_status_claimed(id, app_store, app_prefix, keep, db).await.map(|(resp, assets, _claim)| (resp, assets))
+    }
+
+    /// [`get_video_status`](Self::get_video_status), also handing back the
+    /// claim when this call kept the finished video. The caller holds it until
+    /// it has written the outcome to the row, so no other observer keeps the
+    /// video again in between. Without the claim, a finished video is
+    /// reported still processing and nothing is downloaded or kept.
+    #[allow(clippy::type_complexity)]
+    pub async fn get_video_status_claimed(
+        &self,
+        id: &str,
+        app_store: Option<Arc<dyn crate::proxy::storage::ImageStorage>>,
+        app_prefix: Option<&str>,
+        keep: bool,
+        db: &Arc<dyn crate::db::DatabaseStore>,
+    ) -> Result<(VideoGenerationResponse, Option<serde_json::Value>, Option<crate::proxy::delivery_lease::DeliveryClaim>), ProxyError> {
         let job = {
             let jobs = self.video_jobs.read().await;
             jobs.get(id).cloned()
         };
-        let TrackedJob { handle, usage } =
+        let VideoJob { handle, usage, provider, .. } =
             job.ok_or_else(|| ProxyError::NotFound(format!("video job '{}' not found", id)))?;
 
-        let provider = self.registry
-            .video_provider_for(&handle.provider)
-            .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(handle.provider.clone()))?;
-
-        let poll = provider.poll_status(&handle).await.map_err(|e| ProxyError::ProviderError {
-            provider: handle.provider.clone(),
-            error: e.to_string(),
-            retryable: e.is_retryable(),
-        })?;
-
-        let (video_url, assets) = if poll.status == GenerationStatus::Completed {
-            let stored = rehost_video(
-                app_store.as_ref().unwrap_or(&self.model3d_store),
-                app_prefix,
-                id,
-                poll.video_data.clone(),
-                poll.video_url.as_deref(),
-                poll.content_type.as_deref(),
-            )
+        let (mut poll, claim) = poll_video_claimed(&provider, &handle, keep, db, id, crate::proxy::delivery_lease::Observer::Client)
             .await
             .map_err(|e| ProxyError::ProviderError {
                 provider: handle.provider.clone(),
-                error: format!("the video finished but could not be kept: {e}"),
-                retryable: true,
+                error: e.to_string(),
+                retryable: e.is_retryable(),
             })?;
-            (Some(stored.url), Some(serde_json::json!({ "assets": [stored.asset] })))
+
+        let (video_url, assets) = if poll.status == GenerationStatus::Completed {
+            // The bytes move on: no copy of a video that may be 1 GiB.
+            let data = poll.video_data.take();
+            let keeping = rehost_video(
+                app_store.as_ref().unwrap_or(&self.model3d_store),
+                app_prefix,
+                id,
+                data,
+                poll.video_url.as_deref(),
+                poll.content_type.as_deref(),
+                keep,
+                !self.config.storage_access.unchecked_vendor_hosts,
+            );
+            let stored = match claim.as_ref() {
+                Some(claim) => claim.renewing_while(keeping).await,
+                None => keeping.await,
+            };
+            match stored {
+                Ok(stored) => (Some(stored.url), Some(serde_json::json!({ "assets": [stored.asset] }))),
+                // Nothing to keep: the generation has failed, decided now.
+                Err(RehostError::Permanent(why)) => {
+                    poll.status = GenerationStatus::Failed;
+                    poll.error = Some(format!("the video finished but could not be kept: {why}"));
+                    (None, None)
+                }
+                Err(RehostError::Transient(why)) => {
+                    return Err(ProxyError::ProviderError {
+                        provider: handle.provider.clone(),
+                        error: format!("the video finished but could not be kept yet: {why}"),
+                        retryable: true,
+                    });
+                }
+            }
         } else {
             (poll.video_url.clone(), None)
         };
-        let media = assets.as_ref().and_then(|a| crate::types::VideoMedia::from_assets(a));
+        let media = assets.as_ref().and_then(crate::types::VideoMedia::from_assets);
 
         if matches!(
             poll.status,
@@ -810,6 +1105,7 @@ impl ProxyRouter {
 
         Ok((
             VideoGenerationResponse {
+                video_url_expires_at: None,
                 id: id.to_string(),
                 status: poll.status,
                 model: handle.model.clone(),
@@ -826,6 +1122,7 @@ impl ProxyRouter {
                 metadata: None,
             },
             assets,
+            claim,
         ))
     }
 
@@ -844,8 +1141,8 @@ impl ProxyRouter {
             .registry
             .model3d_provider_for_request(&schema.provider, app_creds)
             .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
-        let limit = self.config.server.vendor_timeout();
+            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
+        let limit = self.settings().vendor_timeout;
         match tokio::time::timeout(limit, provider.preflight(schema, extras)).await {
             Ok(Ok(p)) => Ok(p),
             Ok(Err(e)) => Err(ProxyError::PreflightFailed {
@@ -881,13 +1178,27 @@ impl ProxyRouter {
         materialized: &MaterializedRequest,
         app_creds: Option<ProviderCredentials>,
     ) -> Result<Model3dGenerationResponse, ProxyError> {
+        self.generate_model3d_keeping(schema, base, extras, materialized, app_creds, true).await
+    }
+
+    /// [`generate_model3d`](Self::generate_model3d), keeping the outputs or,
+    /// with `keep` false, handing out the vendor's own files (`keep_outputs`).
+    pub async fn generate_model3d_keeping(
+        &self,
+        schema: &ModelSchema,
+        base: &BaseGenerationRequest,
+        extras: &Model3dExtras,
+        materialized: &MaterializedRequest,
+        app_creds: Option<ProviderCredentials>,
+        keep: bool,
+    ) -> Result<Model3dGenerationResponse, ProxyError> {
         let provider = self
             .registry
             .model3d_provider_for_request(&schema.provider, app_creds)
             .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
 
-        let max_retries = 2u32;
+        let max_retries = self.settings().retries.max_retries;
         let mut last_error: Option<ProviderError> = None;
         let mut handle: Option<Model3dGenerationHandle> = None;
 
@@ -896,8 +1207,9 @@ impl ProxyRouter {
                 info!(provider = %schema.provider, attempt, "Retrying 3D generation");
             }
             let attempt_start = Instant::now();
+            let limit = self.settings().vendor_timeout;
             match tokio::time::timeout(
-                std::time::Duration::from_secs(120),
+                limit,
                 provider.generate(schema, base, extras, materialized),
             )
             .await
@@ -908,16 +1220,18 @@ impl ProxyRouter {
                     break;
                 }
                 Ok(Err(e)) => {
-                    let retryable = e.is_retryable();
+                    // Never after the adapter's own timeout either (`may_resend`):
+                    // the vendor may have queued the job.
+                    let again = self.wait_to_retry(attempt, max_retries, &e, false).await;
                     last_error = Some(e);
-                    if !retryable { break; }
+                    if !again { break; }
                 }
                 Err(_) => {
                     // A queue submit is not idempotent: dropping the future does
                     // not withdraw a job the vendor may already have accepted,
                     // so re-POSTing here can queue (and bill) a second and a
                     // third job that nothing ever tracks or cancels.
-                    last_error = Some(ProviderError::Timeout { timeout_ms: 120_000 });
+                    last_error = Some(ProviderError::Timeout { timeout_ms: limit.as_millis() as u64 });
                     break;
                 }
             }
@@ -948,20 +1262,24 @@ impl ProxyRouter {
         let created = chrono::Utc::now().timestamp();
         {
             let mut jobs = self.model3d_jobs.write().await;
-            // Only a client GET that itself observes completion (or a cancel)
-            // removes a job; one the poller finishes for a webhook-only caller
-            // would otherwise stay here, provider instance and all, until a
-            // restart. Past the poller's 2 h reap age no observer can need it.
-            jobs.retain(|_, j| created - j.created < MODEL3D_JOB_MAX_AGE_SECS);
+            // A client GET that itself observes completion, a cancel, or this
+            // replica's poller ending the job removes it; one ended on another
+            // replica would otherwise stay here, provider instance and all,
+            // until a restart. Past the poller's 2 h reap age no observer can
+            // need it.
+            jobs.retain(|_, j| created - j.created < JOB_MAX_AGE_SECS);
             jobs.insert(
                 local_id.clone(),
                 Model3dJob {
                     handle,
                     usage: usage_info.clone(),
-                    delivery: crate::proxy::model3d_deliver::DeliveryPlan::for_request(
-                        schema,
-                        &Model3dExtras { output_formats: requested_formats.clone(), ..extras.clone() },
-                    ),
+                    delivery: crate::proxy::model3d_deliver::DeliveryPlan {
+                        keep_nothing: !keep,
+                        ..crate::proxy::model3d_deliver::DeliveryPlan::for_request(
+                            schema,
+                            &Model3dExtras { output_formats: requested_formats.clone(), ..extras.clone() },
+                        )
+                    },
                     provider,
                     created,
                 },
@@ -999,6 +1317,21 @@ impl ProxyRouter {
         app_prefix: Option<&str>,
         db: &Arc<dyn crate::db::DatabaseStore>,
     ) -> Result<Model3dGenerationResponse, ProxyError> {
+        // Nothing here writes the outcome, so the claim goes at once.
+        self.get_model3d_status_claimed(id, app_store, app_prefix, db).await.map(|(resp, _claim)| resp)
+    }
+
+    /// [`get_model3d_status`](Self::get_model3d_status), also handing back the
+    /// delivery claim when this call delivered the job. The caller holds it
+    /// until it has written the outcome to the row, so no other observer
+    /// delivers the job again in between.
+    pub async fn get_model3d_status_claimed(
+        &self,
+        id: &str,
+        app_store: Option<Arc<dyn crate::proxy::storage::ImageStorage>>,
+        app_prefix: Option<&str>,
+        db: &Arc<dyn crate::db::DatabaseStore>,
+    ) -> Result<(Model3dGenerationResponse, Option<crate::proxy::delivery_lease::DeliveryClaim>), ProxyError> {
         let job = {
             let jobs = self.model3d_jobs.read().await;
             jobs.get(id).cloned()
@@ -1007,8 +1340,11 @@ impl ProxyRouter {
             job.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
         let requested_formats = delivery.requested_formats.clone();
 
-        // The instance that submitted the job — see `Model3dJob`.
-        let mut poll = provider.poll_status(&handle).await.map_err(|e| ProxyError::ProviderError {
+        // The instance that submitted the job — see `Model3dJob`. An adapter
+        // that downloads a finished job's files asks the gate first, so only
+        // the observer that delivers the job downloads them.
+        let gate = crate::proxy::delivery_lease::DeliveryGate::new(db, id, crate::proxy::delivery_lease::Observer::Client);
+        let mut poll = provider.poll_status_gated(&handle, &gate).await.map_err(|e| ProxyError::ProviderError {
             provider: handle.provider.clone(),
             error: e.to_string(),
             retryable: e.is_retryable(),
@@ -1025,24 +1361,62 @@ impl ProxyRouter {
             }
         }
 
+        // A finished job is delivered by one observer: this one only if it
+        // claims the delivery. Otherwise it reports the job still processing,
+        // and the holder's terminal write answers the next poll. The adapter
+        // asked the gate before downloading; one that never asks (it
+        // downloads nothing) is claimed for here, after the poll.
+        let claim = match gate.into_outcome() {
+            crate::proxy::delivery_lease::GateState::Claimed(claim) => Some(claim),
+            crate::proxy::delivery_lease::GateState::Refused => {
+                crate::proxy::model3d_deliver::stand_aside(&mut poll);
+                None
+            }
+            crate::proxy::delivery_lease::GateState::NotAsked if crate::proxy::model3d_deliver::needs_delivery(&poll) => {
+                let claim = crate::proxy::delivery_lease::claim_delivery(db, id, crate::proxy::delivery_lease::Observer::Client).await;
+                if claim.is_none() {
+                    crate::proxy::model3d_deliver::stand_aside(&mut poll);
+                }
+                claim
+            }
+            crate::proxy::delivery_lease::GateState::NotAsked => None,
+        };
+
         // Normalise, measure and fill in the promised containers BEFORE
         // rehost, so a delivered file is stored and served like a native one:
         // the step the poller runs too, so whichever observer wins the race
         // produces the same assets.
+        let keep = !delivery.keep_nothing;
         crate::proxy::model3d_deliver::deliver_poll(&mut poll, delivery, id).await;
+        // Keeping nothing: the vendor's own files are the answer, or there is none.
+        let handed_out = if !keep && poll.status == GenerationStatus::Completed {
+            match keep_nothing_model3d_assets(&poll.files) {
+                Ok(a) => Some(a),
+                Err(why) => {
+                    poll.status = GenerationStatus::Failed;
+                    poll.error = Some(why);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let is_terminal = matches!(
             poll.status,
             GenerationStatus::Completed | GenerationStatus::Failed | GenerationStatus::Cancelled
         );
-        let files = poll.files.clone();
+        // The files move on to the store: no copy of what may be 128 MiB each.
+        let files = std::mem::take(&mut poll.files);
 
         // Re-host in the same call that saw completion — provider URLs expire.
-        let assets = if poll.status == GenerationStatus::Completed && !files.is_empty() {
+        let assets = if let Some(a) = handed_out {
+            a
+        } else if poll.status == GenerationStatus::Completed && !files.is_empty() {
             rehost_model3d_files(
                 app_store.as_ref().unwrap_or(&self.model3d_store),
                 app_prefix,
                 id,
-                &files,
+                files,
             )
                 .await
                 .map_err(|e| ProxyError::ProviderError {
@@ -1072,7 +1446,7 @@ impl ProxyRouter {
             metadata: None,
         };
         enforce_requested_formats(&mut resp, &requested_formats);
-        Ok(resp)
+        Ok((resp, claim))
     }
 
     /// Drop an in-flight 3D job WITHOUT polling it, handing back what is needed
@@ -1126,7 +1500,7 @@ impl ProxyRouter {
     /// * `app_creds` resolves the provider the same way `generate_model3d`
     ///   does, so a single-tenant install whose 3D vendor key is stored as an
     ///   ORG credential (no platform default) gets an estimate instead of a
-    ///   424 for a model it can generate with.
+    ///   `provider_not_configured` for a model it can generate with.
     /// * the configured markup is applied, so the estimate matches what the
     ///   generation actually bills.
     #[tracing::instrument(skip(self, schema, request, app_creds), fields(model = %schema.id))]
@@ -1140,7 +1514,7 @@ impl ProxyRouter {
             .registry
             .model3d_provider_for_request(&schema.provider, app_creds)
             .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
         let mut est = provider.estimate_cost(schema, request).await.map_err(|e| {
             ProxyError::ProviderError {
                 provider: schema.provider.clone(),
@@ -1161,8 +1535,8 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         route: &ModelRoute,
-        app_creds: Option<ProviderCredentials>,
-    ) -> Result<(String, VideoGenerationHandle), ProxyError> {
+        app_creds: OrgCredentials,
+    ) -> Result<SubmittedVideo, ProxyError> {
         match route.strategy {
             RoutingStrategy::Fallback => {
                 self.fallback_video(schema, base, extras, materialized, &route.deployments, app_creds).await
@@ -1187,9 +1561,9 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
-    ) -> Result<(String, VideoGenerationHandle), ProxyError> {
-        let mut last_error: Option<ProviderError> = None;
+        app_creds: OrgCredentials,
+    ) -> Result<SubmittedVideo, ProxyError> {
+        let mut attempts = Attempts::default();
 
         for deployment in deployments {
             // ── Circuit breaker: skip provider if breaker is open ──
@@ -1198,15 +1572,19 @@ impl ProxyRouter {
                     provider = %deployment.provider,
                     "Circuit breaker open — skipping video deployment"
                 );
-                last_error = Some(ProviderError::NotConfigured(deployment.provider.clone()));
+                attempts.skipped(&deployment.provider, "circuit open");
                 continue;
             }
 
-            let provider = match self.registry.video_provider_for_request(&deployment.provider, app_creds.clone()).await {
+            // This deployment's own provider's credential only (BYO-ROUTE),
+            // and the breaker judged by it (E9): see `fallback_image`.
+            let creds = app_creds.get(&deployment.provider);
+            let platform_credential = creds.is_none();
+            let provider = match self.registry.video_provider_for_request(&deployment.provider, creds).await {
                 Some(p) => p,
                 None => {
                     warn!(provider = %deployment.provider, "Video provider not configured, skipping deployment");
-                    last_error = Some(ProviderError::NotConfigured(deployment.provider.clone()));
+                    attempts.skipped(&deployment.provider, "not configured");
                     continue;
                 }
             };
@@ -1227,7 +1605,7 @@ impl ProxyRouter {
                     Ok(Ok(handle)) => {
                         self.record_latency(&deployment.provider, attempt_start.elapsed().as_millis() as u64).await;
                         self.circuit_breaker.record_success(&deployment.provider).await;
-                        return Ok((deployment.provider.clone(), handle));
+                        return Ok((deployment.provider.clone(), handle, provider));
                     }
                     // A submit that timed out may have been accepted: neither
                     // this deployment nor the next is sent it again.
@@ -1245,10 +1623,12 @@ impl ProxyRouter {
                             error = %e,
                             "Video provider error"
                         );
-                        self.circuit_breaker.record_failure(&deployment.provider).await;
-                        let resend = may_resend(&e, false);
-                        last_error = Some(e);
-                        if !resend {
+                        if e.says_the_deployment_is_unhealthy(platform_credential) {
+                            self.circuit_breaker.record_failure(&deployment.provider).await;
+                        }
+                        let again = self.wait_to_retry(attempt, deployment.max_retries, &e, false).await;
+                        attempts.failed(&deployment.provider, e);
+                        if !again {
                             break;
                         }
                     }
@@ -1256,7 +1636,7 @@ impl ProxyRouter {
             }
         }
 
-        Err(failure(&schema.id, &schema.provider, last_error, None))
+        Err(attempts.into_error(&schema.id))
     }
 
     /// Weighted round-robin for video deployments.
@@ -1267,8 +1647,8 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
-    ) -> Result<(String, VideoGenerationHandle), ProxyError> {
+        app_creds: OrgCredentials,
+    ) -> Result<SubmittedVideo, ProxyError> {
         if deployments.is_empty() {
             return Err(ProxyError::NoDeployments { model: schema.id.clone() });
         }
@@ -1308,8 +1688,8 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
-    ) -> Result<(String, VideoGenerationHandle), ProxyError> {
+        app_creds: OrgCredentials,
+    ) -> Result<SubmittedVideo, ProxyError> {
         let dummy_req = VideoGenerationRequest {
             base: base.clone(),
             duration_seconds: Some(extras.duration_seconds),
@@ -1321,7 +1701,7 @@ impl ProxyRouter {
         };
         let mut cost_sorted: Vec<(f64, &Deployment)> = Vec::new();
         for d in deployments {
-            let cost = if let Some(p) = self.registry.video_provider_for_request(&d.provider, app_creds.clone()).await {
+            let cost = if let Some(p) = self.registry.video_provider_for_request(&d.provider, app_creds.get(&d.provider)).await {
                 p.estimate_cost(schema, &dummy_req)
                     .await
                     .map(|c| c.total_cost_usd)
@@ -1344,8 +1724,8 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
-        app_creds: Option<ProviderCredentials>,
-    ) -> Result<(String, VideoGenerationHandle), ProxyError> {
+        app_creds: OrgCredentials,
+    ) -> Result<SubmittedVideo, ProxyError> {
         let mut lat_sorted: Vec<(u64, &Deployment)> = Vec::new();
         for d in deployments {
             let avg = self.avg_latency(&d.provider).await;
@@ -1369,7 +1749,7 @@ impl ProxyRouter {
         let provider = self.registry
             .image_provider_for_request(&schema.provider, app_creds)
             .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
 
         let mut est = provider
             .estimate_cost(schema, request)
@@ -1395,7 +1775,7 @@ impl ProxyRouter {
         let provider = self.registry
             .video_provider_for_request(&schema.provider, app_creds)
             .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
 
         let mut est = provider
             .estimate_cost(schema, request)
@@ -1435,7 +1815,33 @@ impl ProxyRouter {
         self.registry.video_provider_for(name).await.is_some()
     }
 
+    /// The providers of the model route that serves `model`, each once, or
+    /// none when no route does: the handlers resolve the org's credential
+    /// for each one (BYO-ROUTE).
+    pub fn route_providers(&self, model: &str) -> Vec<String> {
+        let mut providers: Vec<String> = self
+            .find_model_route(model)
+            .map(|r| r.deployments.into_iter().map(|d| d.provider).collect())
+            .unwrap_or_default();
+        providers.sort();
+        providers.dedup();
+        providers
+    }
+
     // ─── Helpers ────────────────────────────────────────────────────────
+
+    /// Whether the cache is on for a model whose route (if any) is `route`,
+    /// and the time to live of what it stores: as the route says, else as the
+    /// gateway's settings say (`docs/gateway-settings.md`).
+    fn cache_for(&self, route: Option<&ModelRoute>) -> (bool, std::time::Duration) {
+        match route.and_then(|r| r.cache.as_ref()) {
+            Some(c) => (c.enabled, std::time::Duration::from_secs(c.ttl_seconds)),
+            None => {
+                let settings = self.settings().cache;
+                (settings.enabled, settings.ttl)
+            }
+        }
+    }
 
     fn find_model_route(&self, model: &str) -> Option<ModelRoute> {
         for route_cfg in &self.model_routes() {
@@ -1498,6 +1904,9 @@ fn price_estimate(
     est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
 }
 
+/// Whether a `model_routes` pattern names `model`: `*` names every model,
+/// `<prefix>/*` every model under that prefix, anything else the one id
+/// (case-insensitively).
 fn route_matches(pattern: &str, model: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -1546,6 +1955,7 @@ async fn build_image_results(
             .ok()
             .and_then(|r| r.into_dimensions().ok());
         results.push(ImageResult {
+            expires_at: None,
             url,
             b64_json,
             revised_prompt: revised_prompt.clone(),
@@ -1587,22 +1997,6 @@ async fn preserve_output(mut output: GenerationOutput, p: crate::proxy::preserve
     })
 }
 
-/// An image's content type read from its first bytes (PixelGenie L9): PNG,
-/// JPEG, WebP or GIF, else `None` and the adapter's label stands.
-pub fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else {
-        None
-    }
-}
-
 /// Upload every file a 3D provider returned to litegen storage and describe them
 /// as `Model3dAsset`s.
 ///
@@ -1618,56 +2012,94 @@ pub fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
 /// whose extensions already distinguish them, and suffixing the second to
 /// `model_1.fbx` would break the documented `model.<ext>` promise for every
 /// container but the first one the adapter happened to push.
+/// A generation that keeps nothing hands out the vendor's own files: each one's
+/// `source_url`, unconverted, as a `kept: false` asset. A file with no http(s)
+/// link (bytes alone) has nothing to hand out, so the generation fails.
+pub fn keep_nothing_model3d_assets(files: &[crate::providers::Model3dFile]) -> Result<Vec<Model3dAsset>, String> {
+    files
+        .iter()
+        .map(|f| {
+            let url = f
+                .source_url
+                .as_deref()
+                .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+                .ok_or_else(|| {
+                    let what = match f.kind {
+                        Model3dAssetKind::Mesh => "mesh",
+                        Model3dAssetKind::Texture => "texture",
+                        Model3dAssetKind::Preview => "preview",
+                        Model3dAssetKind::Original => "original file",
+                        Model3dAssetKind::Package => "package",
+                    };
+                    format!("this generation keeps nothing (keep_outputs: false), and the vendor's {what} came without an http(s) link to hand out")
+                })?;
+            Ok(Model3dAsset {
+                expires_at: None,
+                kind: f.kind,
+                url: url.to_string(),
+                format: crate::proxy::storage::sanitize_model3d_format(&f.format),
+                size_bytes: None,
+                polycount: f.polycount,
+                width: f.width,
+                height: f.height,
+                sha256: None,
+                scene: None,
+                kept: false,
+            })
+        })
+        .collect()
+}
+
 pub async fn rehost_model3d_files(
     store: &Arc<dyn crate::proxy::storage::ImageStorage>,
     path_prefix: Option<&str>,
     generation_id: &str,
-    files: &[crate::providers::Model3dFile],
+    files: Vec<crate::providers::Model3dFile>,
 ) -> Result<Vec<Model3dAsset>, crate::proxy::storage::ImageStoreError> {
     use crate::proxy::storage::{model3d_asset_key, model3d_content_type, sanitize_model3d_format};
 
-    let mut seen: HashMap<(&'static str, String), u32> = HashMap::new();
+    let mut seen: HashMap<(String, String), u32> = HashMap::new();
     let mut assets = Vec::with_capacity(files.len());
 
     for f in files {
-        let stem: &'static str = match f.kind {
-            Model3dAssetKind::Mesh => "model",
-            Model3dAssetKind::Texture => "texture",
-            Model3dAssetKind::Preview => "preview",
-            Model3dAssetKind::Original => "original",
-        };
         // The vendor's spelling reaches a storage key and a public URL, so it is
         // normalised here rather than trusted.
         let format = sanitize_model3d_format(&f.format);
-        let n = seen.entry((stem, format.clone())).or_insert(0);
-        let name = if *n == 0 { stem.to_string() } else { format!("{stem}_{n}") };
+        // The stored file's name and extension.
+        let (stem, ext): (String, String) = match f.kind {
+            Model3dAssetKind::Mesh => ("model".into(), format.clone()),
+            Model3dAssetKind::Texture => ("texture".into(), format.clone()),
+            Model3dAssetKind::Preview => ("preview".into(), format.clone()),
+            Model3dAssetKind::Original => ("original".into(), format.clone()),
+            // A zip of the container and its sidecars: `package_obj.zip`.
+            Model3dAssetKind::Package => (format!("package_{format}"), "zip".into()),
+        };
+        let n = seen.entry((stem.clone(), ext.clone())).or_insert(0);
+        let name = if *n == 0 { stem } else { format!("{stem}_{n}") };
         *n += 1;
 
-        let key = model3d_asset_key(path_prefix, generation_id, &name, &format);
+        let key = model3d_asset_key(path_prefix, generation_id, &name, &ext);
+        // Measured first: the bytes then move into the store, never copied.
+        let (size, sha256) = (f.bytes.len() as u64, sha256_hex(&f.bytes));
         let url = store
-            .put(&key, &bytes::Bytes::from(f.bytes.clone()), model3d_content_type(&format, &f.content_type))
+            .put(&key, &bytes::Bytes::from(f.bytes), model3d_content_type(&ext, &f.content_type))
             .await?;
 
         assets.push(Model3dAsset {
+            expires_at: None,
             kind: f.kind,
             url,
             format,
-            size_bytes: Some(f.bytes.len() as u64),
+            size_bytes: Some(size),
             polycount: f.polycount,
             width: f.width,
             height: f.height,
-            sha256: Some(sha256_hex(&f.bytes)),
-            scene: f.manifest.clone(),
+            sha256: Some(sha256),
+            scene: f.manifest,
+            kept: true,
         });
     }
     Ok(assets)
-}
-
-/// Lowercase hex SHA-256: what every stored asset reports, so a client can
-/// check what it downloaded.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 /// How a stored video was named, and what a generation row records about it.
@@ -1679,10 +2111,140 @@ pub struct StoredVideo {
 /// Largest vendor video litegen downloads to keep.
 const MAX_VIDEO_BYTES: usize = 1024 * 1024 * 1024;
 
+/// Why a finished video could not be kept, and whether trying again could help.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RehostError {
+    /// The vendor handed over nothing litegen can keep: no bytes and no URL, a
+    /// URL that isn't public http(s), one that answers 4xx (gone, or needing
+    /// the vendor's key), or a file over litegen's limit. The generation has
+    /// failed; asking again changes nothing.
+    Permanent(String),
+    /// A passing failure: the URL's host could not be looked up, the download
+    /// broke off, the host answered 5xx, 408 or 429, or litegen's own store
+    /// failed. The next poll tries again.
+    Transient(String),
+}
+
+impl std::fmt::Display for RehostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RehostError::Permanent(why) | RehostError::Transient(why) => f.write_str(why),
+        }
+    }
+}
+
+/// A failed download of the vendor's video, classified.
+fn download_failure(e: crate::util::ssrf::CappedDownloadError) -> RehostError {
+    use crate::util::ssrf::CappedDownloadError;
+    match e {
+        CappedDownloadError::Transport(why) => RehostError::Transient(format!("download failed: {why}")),
+        CappedDownloadError::Status(status) if status.is_client_error() && !matches!(status.as_u16(), 408 | 429) => {
+            RehostError::Permanent(format!("download answered HTTP {status}"))
+        }
+        CappedDownloadError::Status(status) => RehostError::Transient(format!("download answered HTTP {status}")),
+        CappedDownloadError::TooLarge { .. } => RehostError::Permanent("the video is larger than litegen keeps".into()),
+    }
+}
+
+/// The container a video's link or label names: its path's extension, else
+/// its content type, else mp4.
+fn video_format_of(url: &str, content_type: Option<&str>) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    let ext = path.rsplit_once('/').map_or(path, |(_, last)| last).rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    match (ext.as_deref(), content_type.and_then(|c| c.split(';').next()).map(str::trim)) {
+        (Some("webm"), _) | (_, Some("video/webm")) => "webm",
+        (Some("mov"), _) | (_, Some("video/quicktime")) => "mov",
+        (Some("gif"), _) | (_, Some("image/gif")) => "gif",
+        _ => "mp4",
+    }
+}
+
+/// The client a vendor's video or file is downloaded with: one for the
+/// process (its resolver holds no state; its pool is keyed by host). Public
+/// addresses only, no redirects, no proxy; a transfer may run 600 s, and one
+/// silent for 60 s is cut off.
+pub(crate) fn vendor_download_client() -> reqwest::Client {
+    static CLIENT: once_cell::sync::Lazy<reqwest::Client> = once_cell::sync::Lazy::new(|| {
+        crate::util::ssrf::public_only_download_client(std::time::Duration::from_secs(600), std::time::Duration::from_secs(60))
+    });
+    CLIENT.clone()
+}
+
+/// What an observer without the claim reports for a finished video: still
+/// processing, short of done, with no link, no bytes and no error.
+fn stand_aside_video(poll: &mut crate::providers::VideoGenerationPollResult) {
+    poll.status = GenerationStatus::Processing;
+    poll.progress = poll.progress.min(99);
+    poll.video_url = None;
+    poll.video_data = None;
+    poll.error = None;
+}
+
+/// Poll a video job as `observer` (the client's poll or the poller) and, for
+/// a finished video that is kept, claim the right to keep it before any of it
+/// is downloaded: an adapter that downloads in its poll (Veo, Bedrock, Sora)
+/// asks the gate; for one that names a link, the claim is taken here, after
+/// the poll and before [`rehost_video`] downloads it. An observer without the
+/// claim stands aside. Keeping nothing (`keep` false) claims nothing: the
+/// vendor's link is handed out and nothing is downloaded.
+///
+/// A claim the poller waited [`REFRESH_LINKS_AFTER`](crate::providers::REFRESH_LINKS_AFTER)
+/// or more for reads the job again, since a vendor's link (Replicate's) can
+/// expire while it waits.
+pub(crate) async fn poll_video_claimed(
+    provider: &Arc<dyn crate::providers::VideoProvider>,
+    handle: &VideoGenerationHandle,
+    keep: bool,
+    db: &Arc<dyn crate::db::DatabaseStore>,
+    id: &str,
+    observer: crate::proxy::delivery_lease::Observer,
+) -> Result<(crate::providers::VideoGenerationPollResult, Option<crate::proxy::delivery_lease::DeliveryClaim>), ProviderError> {
+    use crate::proxy::delivery_lease::{claim_video_delivery, DeliveryGate, GateState};
+    if !keep {
+        return Ok((provider.poll_status(handle).await?, None));
+    }
+    let gate = DeliveryGate::for_video(db, id, observer);
+    let mut poll = provider.poll_status_gated(handle, &gate).await?;
+    let claim = match gate.into_outcome() {
+        GateState::Claimed(claim) => Some(claim),
+        GateState::Refused => None,
+        GateState::NotAsked if poll.status == GenerationStatus::Completed => {
+            let started = tokio::time::Instant::now();
+            let claim = claim_video_delivery(db, id, observer).await;
+            if claim.is_some() && poll.video_data.is_none() && started.elapsed() >= crate::providers::REFRESH_LINKS_AFTER {
+                match provider.poll_status(handle).await {
+                    Ok(again) if again.status == GenerationStatus::Completed => poll = again,
+                    _ => {}
+                }
+            }
+            claim
+        }
+        GateState::NotAsked => None,
+    };
+    if claim.is_none() && poll.status == GenerationStatus::Completed {
+        stand_aside_video(&mut poll);
+    }
+    Ok((poll, claim))
+}
+
 /// Keep a finished video on litegen storage (PixelGenie L3): the vendor's own
 /// URL may expire within the hour (Replicate), need the vendor's key (Veo),
 /// or vanish with the job. Uses the bytes the adapter already downloaded when
-/// it has them, else fetches `url`, which must be a public http(s) URL.
+/// it has them (moved into the store, hashed and probed on a blocking
+/// thread), else fetches `url`, which must be a public http(s) URL: streamed
+/// to a spool file (the store's [`spool_dir`](crate::proxy::storage::ImageStorage::spool_dir),
+/// else [`video_spool_dir`](crate::proxy::storage::video_spool_dir)), hashed
+/// as it arrives, probed from disk and handed to the store from there, so a
+/// video of up to 1 GiB costs a chunk of memory. Every local disk failure is
+/// passing (the next poll tries again).
+///
+/// With `keep` false (`keep_outputs: false`), hand out the vendor's own link
+/// and store nothing. A video that came back as bytes alone has no link to
+/// hand out, so keeping nothing fails it.
+///
+/// `public_only` is false only where `storage_access.unchecked_vendor_hosts`
+/// says so (a test's vendor on loopback): the link is then not checked.
+#[allow(clippy::too_many_arguments)]
 pub async fn rehost_video(
     store: &Arc<dyn crate::proxy::storage::ImageStorage>,
     path_prefix: Option<&str>,
@@ -1690,97 +2252,143 @@ pub async fn rehost_video(
     data: Option<Vec<u8>>,
     url: Option<&str>,
     content_type: Option<&str>,
-) -> Result<StoredVideo, String> {
-    let (bytes, ct) = match data {
-        Some(b) => (b, content_type.unwrap_or("video/mp4").to_string()),
-        None => {
-            let url = url.ok_or("the vendor returned neither the video nor its URL")?;
-            crate::util::ssrf::validate_public_url(url).await?;
-            let client = crate::util::ssrf::no_redirect_download_client(
-                std::time::Duration::from_secs(600),
-                std::time::Duration::from_secs(60),
-            );
-            use crate::util::ssrf::CappedDownloadError;
-            let (bytes, ct) = match crate::util::ssrf::download_capped(&client, url, MAX_VIDEO_BYTES as u64).await {
-                Ok(got) => got,
-                Err(CappedDownloadError::Transport(why)) => return Err(format!("download failed: {why}")),
-                Err(CappedDownloadError::Status(status)) => return Err(format!("download answered HTTP {status}")),
-                Err(CappedDownloadError::TooLarge { .. }) => return Err("the video is larger than litegen keeps".into()),
-            };
-            let ct = ct.or_else(|| content_type.map(str::to_string)).unwrap_or_else(|| "video/mp4".into());
-            (bytes, ct)
-        }
-    };
-    let format = match ct.split(';').next().unwrap_or("").trim() {
+    keep: bool,
+    public_only: bool,
+) -> Result<StoredVideo, RehostError> {
+    if !keep {
+        let url = url
+            .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+            .ok_or_else(|| RehostError::Permanent(
+                "this generation keeps nothing (keep_outputs: false), and the vendor returned no http(s) link to the video to hand out".into(),
+            ))?;
+        return Ok(StoredVideo {
+            asset: GenerationAsset {
+                expires_at: None,
+                index: 0,
+                kind: "video".into(),
+                format: video_format_of(url, content_type).into(),
+                url: url.to_string(),
+                size_bytes: None,
+                sha256: None,
+                width: None,
+                height: None,
+                duration_s: None,
+                fps: None,
+                has_audio: None,
+                kept: false,
+            },
+            url: url.to_string(),
+        });
+    }
+    let format_of = |ct: &str| match ct.split(';').next().unwrap_or("").trim() {
         "image/gif" => "gif",
         "video/webm" => "webm",
         "video/quicktime" => "mov",
         _ => "mp4",
     };
-    let key = format!(
-        "{}/{generation_id}/video.{format}",
-        path_prefix.unwrap_or(crate::proxy::storage::VIDEO_PATH_PREFIX).trim_matches('/')
-    );
-    // What came back, read from the bytes (PixelGenie L10).
-    let media = crate::proxy::video_probe::probe(&bytes);
-    let url = store
-        .put(&key, &bytes::Bytes::from(bytes.clone()), crate::proxy::storage::model3d_content_type(format, &ct))
-        .await
-        .map_err(|e| format!("could not store the video: {e}"))?;
-    Ok(StoredVideo {
-        asset: GenerationAsset {
-            index: 0,
-            kind: "video".into(),
-            format: format.into(),
-            url: url.clone(),
-            size_bytes: Some(bytes.len() as u64),
-            sha256: Some(sha256_hex(&bytes)),
-            width: media.width,
-            height: media.height,
-            duration_s: media.duration_s,
-            fps: media.fps,
-            has_audio: media.has_audio,
-        },
-        url,
+    let key_of = |format: &str| {
+        format!("{}/{generation_id}/video.{format}", path_prefix.unwrap_or(crate::proxy::storage::VIDEO_PATH_PREFIX).trim_matches('/'))
+    };
+    let Some(bytes) = data else {
+        let url = url.ok_or_else(|| RehostError::Permanent("the vendor returned neither the video nor its URL".into()))?;
+        if public_only {
+            crate::util::ssrf::check_public_url(url).await.map_err(|e| match e {
+                // A resolver blip, not a verdict on the video: as the 3D download.
+                crate::util::ssrf::UrlCheckError::Lookup(why) => RehostError::Transient(format!("the video's host could not be looked up: {why}")),
+                crate::util::ssrf::UrlCheckError::Refused(why) => RehostError::Permanent(why),
+            })?;
+        }
+        // Streamed to a spool file on disk, hashed as it arrives, then handed
+        // to the store from there: the video is never held in memory.
+        let spool = SpoolFile::create(store.spool_dir().unwrap_or_else(crate::proxy::storage::video_spool_dir)).await?;
+        let mut file = tokio::fs::File::create(&spool.0)
+            .await
+            .map_err(|e| RehostError::Transient(format!("could not open a spool file in {}: {e}", spool.dir().display())))?;
+        let got = crate::util::ssrf::download_to_file(&vendor_download_client(), url, MAX_VIDEO_BYTES as u64, &mut file)
+            .await
+            .map_err(download_failure)?;
+        drop(file);
+        let ct = got.content_type.or_else(|| content_type.map(str::to_string)).unwrap_or_else(|| "video/mp4".into());
+        let format = format_of(&ct);
+        let path = spool.0.clone();
+        let media = tokio::task::spawn_blocking(move || crate::proxy::video_probe::probe_file(&path))
+            .await
+            .map_err(|e| RehostError::Transient(format!("could not read the video: {e}")))?;
+        let url = store
+            .put_file(&key_of(format), &spool.0, crate::proxy::storage::model3d_content_type(format, &ct))
+            .await
+            .map_err(|e| RehostError::Transient(format!("could not store the video: {e}")))?;
+        return Ok(StoredVideo { asset: kept_video_asset(format, &url, got.len, got.sha256, media), url });
+    };
+    let ct = content_type.unwrap_or("video/mp4").to_string();
+    let format = format_of(&ct);
+    let key = key_of(format);
+    // What came back, read from the bytes (PixelGenie L10), and its hash: on
+    // a blocking thread, since a video may be 1 GiB. The bytes then move into
+    // the store, never copied.
+    let (bytes, sha256, media) = tokio::task::spawn_blocking(move || {
+        let sha256 = sha256_hex(&bytes);
+        let media = crate::proxy::video_probe::probe(&bytes);
+        (bytes, sha256, media)
     })
+    .await
+    .map_err(|e| RehostError::Transient(format!("could not read the video: {e}")))?;
+    let size = bytes.len() as u64;
+    let url = store
+        .put(&key, &bytes::Bytes::from(bytes), crate::proxy::storage::model3d_content_type(format, &ct))
+        .await
+        .map_err(|e| RehostError::Transient(format!("could not store the video: {e}")))?;
+    Ok(StoredVideo { asset: kept_video_asset(format, &url, size, sha256, media), url })
 }
 
-/// Demote a `completed` 3D response that is missing a container the caller was
-/// promised.
-///
-/// A partial delivery is a failure, not a degraded success: the caller asked for
-/// `["glb", "fbx"]` because something downstream needs the fbx, and reporting
-/// `completed` would bill them for a result they cannot use. Assets are cleared
-/// for the same reason the mesh guard clears them — a failed generation must not
-/// look half-usable.
-///
-/// This runs at EVERY observer of completion. There are three
-/// (`get_model3d_status` here, the poller, and `model3d_response_from_row`), and
-/// a check in fewer than all of them means the observer that wins the race
-/// decides whether the generation succeeded.
-pub fn enforce_requested_formats(resp: &mut Model3dGenerationResponse, requested: &[String]) {
-    if resp.status != GenerationStatus::Completed {
-        return;
+/// What a generation row records about a video litegen kept.
+fn kept_video_asset(format: &str, url: &str, size: u64, sha256: String, media: crate::types::VideoMedia) -> GenerationAsset {
+    GenerationAsset {
+        expires_at: None,
+        index: 0,
+        kind: "video".into(),
+        format: format.into(),
+        url: url.to_string(),
+        size_bytes: Some(size),
+        sha256: Some(sha256),
+        width: media.width,
+        height: media.height,
+        duration_s: media.duration_s,
+        fps: media.fps,
+        has_audio: media.has_audio,
+        kept: true,
     }
-    let delivered = resp.delivered_formats();
-    // No mesh at all is the mesh guard's diagnosis, not this one. Both are true
-    // of an empty result, but "reported success without a mesh asset" says what
-    // actually happened; "did not return glb" reads as a format quibble about a
-    // generation that produced nothing. Leaving it to the caller-side guard also
-    // keeps that error string — which consumers match on — stable.
-    if delivered.is_empty() {
-        return;
+}
+
+/// A file a kept video waits in between its download and the store
+/// (`litegen-video-<uuid>.part` in the spool), removed when dropped: on every
+/// path, a failure included. After a rename into place there is nothing left
+/// to remove. A crash leaves it to `proxy::storage::sweep_spool`.
+struct SpoolFile(std::path::PathBuf);
+
+impl SpoolFile {
+    async fn create(dir: std::path::PathBuf) -> Result<Self, RehostError> {
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| RehostError::Transient(format!("could not make the spool directory {}: {e}", dir.display())))?;
+        let name = format!(
+            "{}{}{}",
+            crate::proxy::storage::SPOOL_FILE_PREFIX,
+            uuid::Uuid::new_v4().simple(),
+            crate::proxy::storage::SPOOL_FILE_SUFFIX
+        );
+        Ok(Self(dir.join(name)))
     }
-    let missing = crate::types::missing_model3d_formats(requested, &delivered);
-    if missing.is_empty() {
-        return;
+
+    fn dir(&self) -> &std::path::Path {
+        self.0.parent().unwrap_or(&self.0)
     }
-    resp.status = GenerationStatus::Failed;
-    resp.error = Some(format!(
-        "provider did not return the requested format(s): {}",
-        missing.join(", ")
-    ));
-    resp.assets.clear();
+}
+
+impl Drop for SpoolFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 // ─── Proxy Error ────────────────────────────────────────────────────────────
@@ -1790,17 +2398,29 @@ pub enum ProxyError {
     #[error("Model not found: {model}")]
     ModelNotFound { model: String },
 
-    #[error("Provider not configured: {0}")]
-    ProviderNotConfigured(String),
+    /// The provider has no usable credential: no instance at all, or the
+    /// adapter's own verdict on the one it has (`detail`, e.g. Kling's "store
+    /// a Kling API key instead").
+    #[error("Provider not configured: {provider}{}", detail.as_ref().map(|d| format!(" ({d})")).unwrap_or_default())]
+    ProviderNotConfigured { provider: String, detail: Option<String> },
 
     #[error("No deployments configured for model: {model}")]
     NoDeployments { model: String },
 
-    #[error("All deployments failed for model {model}: {last_error:?}")]
+    /// No deployment of a route was asked (every breaker open, every
+    /// provider missing): `last_error` says why each was skipped.
+    #[error("All deployments failed for model {model}{}", last_error.as_ref().map(|e| format!(": {e}")).unwrap_or_default())]
     AllDeploymentsFailed {
         model: String,
         last_error: Option<String>,
     },
+
+    /// The adapter refused the request before calling its vendor (E9): a
+    /// combination the vendor can't make, a model it doesn't serve, a price
+    /// it can't work out. The caller's to change; nothing was sent, so
+    /// nothing was billed and an `Idempotency-Key` isn't spent.
+    #[error("{message}")]
+    Refused { model: String, provider: String, message: String },
 
     #[error("Provider {provider} error: {error}")]
     ProviderError {
@@ -1859,13 +2479,19 @@ pub enum ProxyError {
 }
 
 impl ProxyError {
+    /// `provider` has no instance this request can use.
+    pub fn not_configured(provider: &str) -> Self {
+        Self::ProviderNotConfigured { provider: provider.to_string(), detail: None }
+    }
+
     pub fn status_code(&self) -> u16 {
         match self {
             Self::ModelNotFound { .. } => 404,
             // The model's provider has no usable credential (no per-app BYO key and
-            // no platform default). This is a client/config problem, not a transient
-            // outage — surface a 424 rather than a 5xx so callers don't blindly retry.
-            Self::ProviderNotConfigured(_) => 424,
+            // no platform default): a configuration problem, not a transient outage,
+            // so not retryable. The documented BYO answer (README), the same 400
+            // the handlers give when they notice it first (E8).
+            Self::ProviderNotConfigured { .. } | Self::Refused { .. } => 400,
             Self::NoDeployments { .. } => 503,
             Self::AllDeploymentsFailed { .. } => 502,
             Self::ProviderError { retryable, .. } | Self::PreflightFailed { retryable, .. } => {
@@ -1891,7 +2517,7 @@ impl ProxyError {
             Self::VendorRejected { .. } => false,
             Self::ProviderError { retryable, .. } | Self::PreflightFailed { retryable, .. } => *retryable,
             Self::NoDeployments { .. } | Self::AllDeploymentsFailed { .. } | Self::Internal(_) => true,
-            Self::ModelNotFound { .. } | Self::ProviderNotConfigured(_) | Self::NotFound(_) => false,
+            Self::ModelNotFound { .. } | Self::ProviderNotConfigured { .. } | Self::Refused { .. } | Self::NotFound(_) => false,
         }
     }
 
@@ -1901,7 +2527,9 @@ impl ProxyError {
     /// spend the key.
     pub fn reached_vendor(&self) -> bool {
         match self {
-            Self::ModelNotFound { .. } | Self::ProviderNotConfigured(_) | Self::NoDeployments { .. } => false,
+            Self::ModelNotFound { .. } | Self::ProviderNotConfigured { .. } | Self::NoDeployments { .. } => false,
+            // The adapter's own verdict, before anything was sent (E9).
+            Self::Refused { .. } => false,
             // Built only when no deployment was asked: every circuit open,
             // every provider missing.
             Self::AllDeploymentsFailed { .. } | Self::PreflightFailed { .. } => false,
@@ -1924,7 +2552,7 @@ impl VendorError {
     fn from_provider(err: &ProviderError) -> Self {
         let (status, body, fallback) = match err {
             ProviderError::RequestFailed { status_code, provider_error, message, .. } => (*status_code, provider_error.clone(), message.clone()),
-            ProviderError::RateLimited { .. } => (Some(429), None, err.to_string()),
+            ProviderError::RateLimited { provider_error, message, .. } => (Some(429), provider_error.clone(), message.clone()),
             other => (None, None, other.to_string()),
         };
         let body = body.unwrap_or(serde_json::Value::Null);
@@ -1953,12 +2581,23 @@ impl VendorError {
 
 /// The error a caller sees once every attempt has failed (PixelGenie L15): a
 /// vendor's 4xx is its refusal, a 5xx or a dropped connection its failure, a
-/// timeout a timeout, and a refusal before any call stays the adapter's.
+/// timeout a timeout. The adapter's own refusal before any call (E9) is the
+/// caller's to fix, [`ProxyError::Refused`], or the provider's missing
+/// credential, [`ProxyError::ProviderNotConfigured`] with the adapter's
+/// advice: neither reached a vendor. Once the vendor took a job, though, any
+/// error is a vendor attempt that names it: the job may still bill.
 fn failure(model: &str, provider: &str, last: Option<ProviderError>, vendor_job_id: Option<String>) -> ProxyError {
     let Some(err) = last else {
         return ProxyError::AllDeploymentsFailed { model: model.to_string(), last_error: None };
     };
     let (model, provider) = (model.to_string(), provider.to_string());
+    if err.before_any_call() && vendor_job_id.is_none() {
+        return match err {
+            ProviderError::NotConfigured(detail) => ProxyError::ProviderNotConfigured { provider, detail: Some(detail) },
+            ProviderError::InvalidRequest(message) => ProxyError::Refused { model, provider, message },
+            other => ProxyError::Refused { model, provider, message: other.to_string() },
+        };
+    }
     match &err {
         ProviderError::Timeout { .. } => ProxyError::VendorTimeout { model, provider, vendor_job_id },
         ProviderError::RequestFailed { status_code: Some(s), .. } if (400..500).contains(s) && !matches!(s, 408 | 429) => {
@@ -1988,11 +2627,608 @@ fn may_resend(err: &ProviderError, vendor_accepted: bool) -> bool {
     err.is_retryable() && !vendor_accepted && !matches!(err, ProviderError::Timeout { .. })
 }
 
+/// How long to wait before retry `retry` (counted from 1) of a call that
+/// failed with `err` (`docs/gateway-settings.md`): a random share (`jitter`,
+/// 0 to 1) of `min(max_backoff, backoff · 2^(retry−1))`, "full jitter", and
+/// never less than the vendor's `Retry-After`. `None`: don't retry, as the
+/// vendor asked for longer than the longest wait; the caller backs off
+/// instead of litegen holding the request open.
+fn retry_delay(retry: u32, err: &ProviderError, settings: &crate::management::settings::RetrySettings, jitter: f64) -> Option<std::time::Duration> {
+    let doubling = 2u32.saturating_pow(retry.saturating_sub(1).min(31));
+    let cap = settings.backoff.saturating_mul(doubling).min(settings.max_backoff);
+    let wait = cap.mul_f64(jitter.clamp(0.0, 1.0));
+    match err {
+        ProviderError::RateLimited { retry_after_ms, .. } => {
+            let floor = std::time::Duration::from_millis(*retry_after_ms);
+            (floor <= settings.max_backoff).then(|| wait.max(floor))
+        }
+        _ => Some(wait),
+    }
+}
+
+/// What a route's deployments did, for the error a caller sees when none
+/// made the result (E9): which were skipped and why, the last failure that
+/// reached a vendor, and the last refusal before any call.
+#[derive(Default)]
+struct Attempts {
+    skipped: Vec<String>,
+    last_reached: Option<(String, ProviderError)>,
+    last_refused: Option<(String, ProviderError)>,
+}
+
+impl Attempts {
+    fn skipped(&mut self, provider: &str, why: &str) {
+        self.skipped.push(format!("{provider}: {why}"));
+    }
+
+    fn failed(&mut self, provider: &str, err: ProviderError) {
+        let slot = if err.before_any_call() { &mut self.last_refused } else { &mut self.last_reached };
+        *slot = Some((provider.to_string(), err));
+    }
+
+    /// A vendor attempt wins over a later deployment's refusal: it may have
+    /// billed, so the caller's key must record it. With no attempt at all
+    /// (every breaker open, every provider missing), a retryable 502 that
+    /// reached no vendor.
+    fn into_error(self, model: &str) -> ProxyError {
+        match self.last_reached.or(self.last_refused) {
+            Some((provider, err)) => failure(model, &provider, Some(err), None),
+            None => ProxyError::AllDeploymentsFailed {
+                model: model.to_string(),
+                last_error: (!self.skipped.is_empty()).then(|| self.skipped.join("; ")),
+            },
+        }
+    }
+}
+
 /// `last_error`'s text, naming the vendor job when one was accepted.
 fn with_vendor_job(error: String, vendor_job_id: Option<String>) -> String {
     match vendor_job_id {
         Some(j) => format!("{error} (vendor job {j})"),
         None => error,
+    }
+}
+
+#[cfg(test)]
+mod rehost_tests {
+    use super::*;
+    use crate::proxy::storage::{ImageStorage, LocalModel3dStorage};
+    use crate::util::ssrf::CappedDownloadError;
+
+    /// Review 2026-11-11 P4: a video kept from its link reports the hash and
+    /// the media of what was stored, and leaves no spool file behind.
+    #[tokio::test]
+    async fn a_kept_video_reports_the_hash_and_media_of_what_was_stored() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let gif = crate::providers::video::visual_mock::generate_sprite_gif(2.0, 4, true);
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_raw(gif.clone(), "image/gif")).mount(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(dir.path(), "https://h".into()));
+        let url = format!("{}/v.gif", server.uri());
+        let Ok(kept) = rehost_video(&store, None, "g", None, Some(&url), None, true, false).await else { panic!("kept") };
+        assert_eq!(kept.url, "https://h/v1/models3d/assets/litegen/video/g/video.gif");
+        let a = &kept.asset;
+        assert_eq!((a.format.as_str(), a.size_bytes, a.kept), ("gif", Some(gif.len() as u64), true));
+        assert_eq!(a.sha256.as_deref(), Some(sha256_hex(&gif).as_str()));
+        let media = crate::proxy::video_probe::probe(&gif);
+        assert_eq!((a.width, a.height, a.duration_s, a.fps, a.has_audio), (media.width, media.height, media.duration_s, media.fps, media.has_audio));
+        assert!(a.duration_s.is_some(), "the media was read: {a:?}");
+        assert_eq!(std::fs::read(dir.path().join("litegen/video/g/video.gif")).unwrap(), gif);
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("litegen/.spool")).unwrap().flatten().collect();
+        assert!(left.is_empty(), "the spool file is gone: {left:?}");
+
+        // A download that fails leaves nothing in the spool either.
+        let gone = format!("{}/missing", MockServer::start().await.uri());
+        assert!(rehost_video(&store, None, "g2", None, Some(&gone), None, true, false).await.is_err());
+        assert_eq!(std::fs::read_dir(dir.path().join("litegen/.spool")).unwrap().count(), 0);
+    }
+
+    /// A store that counts what it keeps, by bytes or by file.
+    struct Counting {
+        inner: Arc<dyn ImageStorage>,
+        puts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ImageStorage for Counting {
+        async fn put(&self, key: &str, bytes: &bytes::Bytes, content_type: &str) -> Result<String, crate::proxy::storage::ImageStoreError> {
+            self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put(key, bytes, content_type).await
+        }
+        async fn put_file(&self, key: &str, path: &std::path::Path, content_type: &str) -> Result<String, crate::proxy::storage::ImageStoreError> {
+            self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put_file(key, path, content_type).await
+        }
+        async fn delete(&self, key: &str) -> Result<(), crate::proxy::storage::ImageStoreError> {
+            self.inner.delete(key).await
+        }
+    }
+
+    /// Review 2026-11-11 P4: the client's poll and the poller both see the
+    /// video finish; one of them keeps it, and the row completes.
+    #[tokio::test]
+    async fn two_observers_keep_a_finished_video_exactly_once() {
+        use crate::providers::VideoProvider;
+        let db: Arc<dyn crate::db::DatabaseStore> = Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let mut mock = crate::providers::video::mock::MockVideoProvider::new();
+        mock.configure(crate::providers::ProviderInstanceConfig::default());
+        let provider: Arc<dyn VideoProvider> = Arc::new(mock);
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.register_mock_video(provider.clone()).await;
+        let router = ProxyRouter::new(
+            registry.clone(),
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(crate::config::AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        );
+        let id = "g-vid-twice";
+        let handle = VideoGenerationHandle { provider_job_id: "mock-video-job-1".into(), provider: "mock".into(), model: "mock/video-gen".into() };
+        router.video_jobs.write().await.insert(id.into(), VideoJob { handle, usage: None, provider, submitted: tokio::time::Instant::now() });
+        db.insert_generation(id, None, "mock/video-gen", "mock", "video", Some("mock-video-job-1"), 0.0, None, None).await.unwrap();
+        let counting = Arc::new(Counting {
+            inner: Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://h".into())),
+            puts: Default::default(),
+        });
+        let store: Arc<dyn ImageStorage> = counting.clone();
+
+        let (client, _) = tokio::join!(
+            router.get_video_status_claimed(id, Some(store.clone()), None, true, &db),
+            crate::proxy::poller::poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store),
+        );
+        let (client, assets, claim) = client.expect("the client's poll answers");
+        if client.status == GenerationStatus::Completed {
+            // The client won: its handler writes the outcome while it holds
+            // the claim, as here.
+            assert!(claim.is_some());
+            db.update_generation_if_active(id, "completed", 100, client.video_url.as_deref(), None, Some(chrono::Utc::now()), assets.as_ref())
+                .await
+                .unwrap();
+        } else {
+            assert_eq!(client.status, GenerationStatus::Processing, "{client:?}");
+            assert!(client.video_url.is_none());
+        }
+        drop(claim);
+        assert_eq!(counting.puts.load(std::sync::atomic::Ordering::SeqCst), 1, "one observer kept the video");
+        let row = db.get_generation(id).await.unwrap().unwrap();
+        assert_eq!(row.status, GenerationStatus::Completed, "{:?}", row.error_message);
+    }
+
+    #[test]
+    fn download_failures_are_permanent_or_transient() {
+        let permanent = |e: CappedDownloadError| matches!(download_failure(e), RehostError::Permanent(_));
+        assert!(permanent(CappedDownloadError::Status(reqwest::StatusCode::NOT_FOUND)), "gone");
+        assert!(permanent(CappedDownloadError::Status(reqwest::StatusCode::FORBIDDEN)), "needs the vendor's key");
+        assert!(permanent(CappedDownloadError::TooLarge { bytes: 9, max: 1 }));
+        assert!(!permanent(CappedDownloadError::Status(reqwest::StatusCode::SERVICE_UNAVAILABLE)));
+        assert!(!permanent(CappedDownloadError::Status(reqwest::StatusCode::TOO_MANY_REQUESTS)));
+        assert!(!permanent(CappedDownloadError::Status(reqwest::StatusCode::REQUEST_TIMEOUT)));
+        assert!(!permanent(CappedDownloadError::Transport("connection reset".into())));
+    }
+
+    #[tokio::test]
+    async fn keeping_nothing_hands_out_the_vendor_link_and_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(dir.path(), "http://127.0.0.1:4000".into()));
+        let url = "https://cdn.vendor.example/out/clip.webm?sig=abc";
+        let Ok(kept) = rehost_video(&store, None, "g", None, Some(url), Some("video/webm"), false, true).await else { panic!("a link to hand out") };
+        assert_eq!((kept.url.as_str(), kept.asset.url.as_str()), (url, url));
+        assert!(!kept.asset.kept, "litegen kept no copy");
+        assert_eq!(kept.asset.format, "webm");
+        assert!(kept.asset.size_bytes.is_none() && kept.asset.sha256.is_none(), "nothing was read");
+        // Bytes and a link: the link, and still nothing written.
+        let Ok(kept) = rehost_video(&store, None, "g", Some(b"GIF89a".to_vec()), Some("https://cdn.vendor.example/a"), Some("image/gif"), false, true).await else { panic!("the link") };
+        assert_eq!(kept.asset.format, "gif");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing written");
+    }
+
+    #[tokio::test]
+    async fn keeping_nothing_fails_a_video_without_an_http_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(dir.path(), "http://127.0.0.1:4000".into()));
+        match rehost_video(&store, None, "g", Some(b"GIF89a".to_vec()), None, Some("image/gif"), false, true).await {
+            Err(RehostError::Permanent(why)) => assert!(why.contains("keeps nothing"), "{why}"),
+            Err(RehostError::Transient(why)) => panic!("transient: {why}"),
+            Ok(_) => panic!("bytes alone have no link to hand out"),
+        }
+        for url in [Some("javascript:alert(1)"), Some("/mock/video/1"), None] {
+            assert!(matches!(rehost_video(&store, None, "g", None, url, None, false, true).await, Err(RehostError::Permanent(_))), "{url:?}");
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing written");
+    }
+
+    #[tokio::test]
+    async fn nothing_to_keep_or_a_refused_url_is_permanent_and_a_lookup_or_store_failure_transient() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(dir.path(), "http://127.0.0.1:4000".into()));
+        for (url, what) in [(None, "no video, no URL"), (Some("http://127.0.0.1:9/v.mp4"), "a private URL"), (Some("ftp://example.com/v.mp4"), "not http")] {
+            assert!(matches!(rehost_video(&store, None, "g", None, url, None, true, true).await, Err(RehostError::Permanent(_))), "{what}");
+        }
+        // A host that can't be looked up right now is a passing failure (a DNS
+        // blip), not a verdict on the video: `.invalid` never resolves (RFC 6761).
+        assert!(
+            matches!(rehost_video(&store, None, "g", None, Some("https://video.invalid/v.mp4"), None, true, true).await, Err(RehostError::Transient(_))),
+            "a failed lookup is retried"
+        );
+        // litegen's own store failing is litegen's problem, not the video's.
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let broken: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(&file, "http://127.0.0.1:4000".into()));
+        assert!(matches!(
+            rehost_video(&broken, None, "g", Some(b"GIF89a".to_vec()), None, Some("image/gif"), true, true).await,
+            Err(RehostError::Transient(_))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod overrides_tests {
+    use super::*;
+    use crate::config::{AppConfig, CacheGlobalConfig};
+    use crate::proxy::storage::LocalStore;
+
+    fn router() -> ProxyRouter {
+        ProxyRouter::new(
+            Arc::new(ProviderRegistry::new()),
+            Arc::new(GenerationCache::new(&CacheGlobalConfig::default())),
+            Arc::new(AppConfig::default()),
+            Arc::new(LocalStore),
+        )
+    }
+
+    /// Every signing and verifying path reads `router.link_signer`, so the
+    /// signer `with_link_signer` installs is the one they use.
+    #[test]
+    fn with_link_signer_replaces_the_signer() {
+        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [5u8; 32]);
+        let signer = Arc::new(crate::access::signing::LinkSigner::from_secrets_key(Some(&key)));
+        let r = router().with_link_signer(signer.clone());
+        assert!(Arc::ptr_eq(&r.link_signer, &signer));
+        assert_eq!(r.link_signer.sign("k", 1), signer.sign("k", 1));
+        assert!(r.link_signer.persistent());
+    }
+
+    fn with_retries(n: u32) -> RuntimeOverrides {
+        RuntimeOverrides {
+            model_routes: None,
+            gateway: crate::management::types::GatewaySettings { retry_max_retries: Some(n), ..Default::default() },
+        }
+    }
+
+    /// A settings refresh read the database before a save landed: its stale
+    /// read must not undo the save (`docs/gateway-settings.md`).
+    #[test]
+    fn a_refresh_that_raced_a_save_does_not_undo_it() {
+        let r = router();
+        let read_at = r.overrides_version();
+        r.set_overrides(with_retries(4)); // the save, landing mid-refresh
+        assert!(!r.set_overrides_unless_changed(read_at, with_retries(0)), "the stale read is dropped");
+        assert_eq!(r.settings().retries.max_retries, 4);
+        let now = r.overrides_version();
+        assert!(r.set_overrides_unless_changed(now, with_retries(1)), "an up-to-date read applies");
+        assert_eq!(r.settings().retries.max_retries, 1);
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    /// E8: a provider with no usable credential is the documented 400
+    /// `provider_not_configured` (README, the BYO contract), wherever it is
+    /// noticed: the router used to answer 424.
+    #[test]
+    fn provider_not_configured_is_the_documented_400() {
+        assert_eq!(ProxyError::not_configured("x").status_code(), 400);
+    }
+
+    /// E9: an adapter's refusal before any call is the caller's to fix: a
+    /// 400 that reached no vendor, so it spends no `Idempotency-Key`.
+    #[test]
+    fn a_refusal_before_any_call_is_not_a_vendor_attempt() {
+        for err in [ProviderError::InvalidRequest("x".into()), ProviderError::ModelNotSupported { model: "m".into(), provider: "p".into() }] {
+            let e = failure("m", "p", Some(err), None);
+            assert!(!e.reached_vendor(), "{e}");
+            assert_eq!(e.status_code(), 400, "{e}");
+            assert!(!e.retryable(), "{e}");
+        }
+    }
+
+    /// A job the vendor took can still bill: a refusal after it stays a
+    /// vendor attempt, and names the job.
+    #[test]
+    fn a_refusal_after_the_vendor_took_the_job_still_names_it() {
+        let e = failure("m", "p", Some(ProviderError::InvalidRequest("x".into())), Some("job-1".into()));
+        assert!(e.reached_vendor(), "{e}");
+        assert!(e.to_string().contains("job-1"), "{e}");
+    }
+
+    /// E9: an adapter that finds no usable credential at call time is the
+    /// provider's `provider_not_configured`, naming the provider and keeping
+    /// the adapter's advice. It used to be a 400 `invalid_request_error`
+    /// that spent the key.
+    #[test]
+    fn a_missing_credential_is_provider_not_configured() {
+        let advice = "kling: this credential is an access/secret key pair, which works only on Kling's legacy API; store a Kling API key instead";
+        let e = failure("m", "kling", Some(ProviderError::NotConfigured(advice.into())), None);
+        assert!(!e.reached_vendor(), "{e}");
+        match e {
+            ProxyError::ProviderNotConfigured { provider, detail } => assert_eq!((provider.as_str(), detail.as_deref()), ("kling", Some(advice))),
+            other => panic!("not provider_not_configured: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod breaker_credential_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// E9: a 401 or 403 counts toward a deployment's breaker only when the
+    /// call used the platform's own credential. A tenant's own revoked key
+    /// must not cut the provider off for every tenant.
+    #[tokio::test]
+    async fn a_tenants_refused_key_does_not_open_the_breaker_for_everyone() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/flux/dev"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({ "detail": "Invalid key" })))
+            .mount(&server)
+            .await;
+        let mut config = crate::config::AppConfig::default();
+        config.providers.insert(
+            "fal".into(),
+            serde_json::from_value(serde_json::json!({ "api_key": "operator-key", "api_base": server.uri() })).unwrap(),
+        );
+        config.model_routes = vec![crate::config::ModelRouteConfig {
+            model: "fal/flux-dev".into(),
+            deployments: vec![crate::config::DeploymentConfig { provider: "fal".into(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 }],
+            strategy: Some("fallback".into()),
+            cache: None,
+        }];
+        config.circuit_breaker = crate::config::CircuitBreakerConfig { threshold: 1, open_for_seconds: 60 };
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.init_from_config(&config).await;
+        let router = ProxyRouter::new(
+            registry,
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(config),
+            Arc::new(crate::proxy::storage::LocalStore),
+        );
+        let mut models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        models.pop();
+        models.push("models");
+        let schema = crate::capabilities::CapabilityRegistry::from_dir(&models).unwrap().get("fal/flux-dev").unwrap().clone();
+        let base = crate::types::BaseGenerationRequest {
+            prompt: "a lighthouse".into(),
+            model: "fal/flux-dev".into(),
+            n: 1,
+            negative_prompt: None,
+            seed: None,
+            reference_images: vec![],
+            strict: true,
+            extra: None,
+            metadata: None,
+        };
+        let extras = ImageExtras {
+            vendor_job: Default::default(),
+            size: None,
+            resolution: None,
+            aspect_ratio: None,
+            quality: None,
+            style: None,
+            steps: None,
+            guidance_scale: None,
+            strength: None,
+            response_format: "url".to_string(),
+            edit: None,
+            views: Vec::new(),
+            extra: None,
+            output_format: None,
+            background: None,
+            expand: None,
+            layout: None,
+            mask_prompt: None,
+            preserve_unmasked: None,
+            feather_px: None,
+            palette: None,
+            directions: None,
+        };
+        let materialized = MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() };
+        let tenants_key = ProviderCredentials { api_key: Some("a-tenants-revoked-key".into()), ..Default::default() };
+
+        let refused = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::of("fal", Some(tenants_key)), None, None).await;
+        assert!(refused.is_err(), "the vendor refused the tenant's key");
+        assert!(!router.circuit_breaker.is_open("fal").await, "one tenant's revoked key opened the breaker for every tenant");
+
+        let refused = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await;
+        assert!(refused.is_err(), "the vendor refused the platform's key");
+        assert!(router.circuit_breaker.is_open("fal").await, "a refused platform key counts toward the breaker");
+    }
+
+    /// A router whose route for `model` tries `deployments` in order, once
+    /// each, over the providers `providers` (name, config) registered as the
+    /// platform's, with a breaker that opens after `threshold` failures.
+    async fn routed(model: &str, deployments: &[&str], providers: &[(&str, serde_json::Value)], threshold: u32) -> ProxyRouter {
+        let mut config = crate::config::AppConfig::default();
+        for (name, cfg) in providers {
+            config.providers.insert(name.to_string(), serde_json::from_value(cfg.clone()).unwrap());
+        }
+        config.model_routes = vec![crate::config::ModelRouteConfig {
+            model: model.into(),
+            deployments: deployments
+                .iter()
+                .map(|p| crate::config::DeploymentConfig { provider: p.to_string(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 })
+                .collect(),
+            strategy: Some("fallback".into()),
+            cache: None,
+        }];
+        config.circuit_breaker = crate::config::CircuitBreakerConfig { threshold, open_for_seconds: 60 };
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.init_from_config(&config).await;
+        ProxyRouter::new(
+            registry,
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(config),
+            Arc::new(crate::proxy::storage::LocalStore),
+        )
+    }
+
+    /// One `fal/flux-dev` image through `router` on `creds`.
+    async fn flux_dev(router: &ProxyRouter, creds: OrgCredentials) -> Result<ImageGenerationResponse, ProxyError> {
+        let mut models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        models.pop();
+        models.push("models");
+        let schema = crate::capabilities::CapabilityRegistry::from_dir(&models).unwrap().get("fal/flux-dev").unwrap().clone();
+        let base: BaseGenerationRequest = serde_json::from_value(serde_json::json!({ "prompt": "a lighthouse", "model": "fal/flux-dev" })).unwrap();
+        let extras = ImageExtras {
+            vendor_job: Default::default(),
+            size: None, resolution: None, aspect_ratio: None, quality: None, style: None, steps: None,
+            guidance_scale: None, strength: None, response_format: "b64_json".to_string(),
+            edit: None, views: Vec::new(), extra: None, output_format: None, background: None,
+            expand: None, layout: None, mask_prompt: None, preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
+        };
+        let materialized = MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() };
+        router.generate_image(&schema, &base, &extras, &materialized, creds, None, None).await
+    }
+
+    /// The `Authorization` each request to `server` carried, in order.
+    async fn authorizations(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|r| r.headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string())
+            .collect()
+    }
+
+    fn key(k: &str) -> ProviderCredentials {
+        ProviderCredentials { api_key: Some(k.into()), ..Default::default() }
+    }
+
+    /// BYO-ROUTE (code review 2026-11-11, security): a route's deployment
+    /// gets the org's credential for its own provider only. The credential
+    /// resolved for the model's provider (fal here) went to every
+    /// deployment, so a route that sends a fal model to OpenAI sent the
+    /// org's fal key to OpenAI.
+    #[tokio::test]
+    async fn a_routes_deployment_gets_only_its_own_providers_org_key() {
+        let openai = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "created": 1, "data": [{ "b64_json": "aW1n" }] })))
+            .mount(&openai)
+            .await;
+        let platform = serde_json::json!({ "api_key": "platform-openai-key", "api_base": format!("{}/v1", openai.uri()) });
+        let router = routed("fal/flux-dev", &["openai"], &[("openai", platform)], 5).await;
+        // The org stored a fal key only: the OpenAI deployment runs on the
+        // platform's OpenAI key, as a direct OpenAI request would.
+        let r = flux_dev(&router, OrgCredentials::of("fal", Some(key("org-fal-key")))).await;
+        assert!(r.is_ok(), "{:?}", r.err());
+        // With an OpenAI key of its own stored too, on that one.
+        let mut both = OrgCredentials::of("fal", Some(key("org-fal-key")));
+        both.insert("openai", key("org-openai-key"));
+        let r = flux_dev(&router, both).await;
+        assert!(r.is_ok(), "{:?}", r.err());
+        let sent = authorizations(&openai).await;
+        assert!(!sent.iter().any(|a| a.contains("org-fal-key")), "the org's fal key reached the route's OpenAI deployment: {sent:?}");
+        assert_eq!(sent, ["Bearer platform-openai-key", "Bearer org-openai-key"]);
+    }
+
+    /// BYO-ROUTE with E9: whether a deployment's 401 counts toward its
+    /// breaker is judged by the credential that deployment used. A tenant's
+    /// revoked OpenAI key on a route's OpenAI deployment must not open that
+    /// breaker for every tenant, though the model's own provider (fal) would
+    /// run on the platform's key.
+    #[tokio::test]
+    async fn a_tenants_revoked_key_on_a_routes_deployment_does_not_open_its_breaker() {
+        let openai = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/images/generations"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({ "error": { "message": "Incorrect API key provided" } })))
+            .mount(&openai)
+            .await;
+        let platform = serde_json::json!({ "api_key": "platform-openai-key", "api_base": format!("{}/v1", openai.uri()) });
+        let router = routed("fal/flux-dev", &["openai"], &[("openai", platform)], 1).await;
+        let r = flux_dev(&router, OrgCredentials::of("openai", Some(key("org-revoked-openai-key")))).await;
+        assert!(r.is_err(), "the vendor refused the tenant's key");
+        assert!(!router.circuit_breaker.is_open("openai").await, "one tenant's revoked key on a route's deployment opened its breaker for every tenant");
+        assert_eq!(authorizations(&openai).await, ["Bearer org-revoked-openai-key"], "the deployment ran on the org's own OpenAI key");
+        // The platform's own key refused still counts, as for a direct request.
+        let r = flux_dev(&router, OrgCredentials::default()).await;
+        assert!(r.is_err(), "the vendor refused the platform's key");
+        assert!(router.circuit_breaker.is_open("openai").await, "a refused platform key counts toward the breaker");
+    }
+
+    /// Ruled 2026-11-12 (handlers review should-fix 1): a vendor's 429 counts
+    /// toward the breaker only when the call used the platform's credential,
+    /// as a 401 or 403 does since E9. A tenant spending its own key's rate
+    /// limit says nothing about the provider for everyone else.
+    #[tokio::test]
+    async fn a_tenants_429s_leave_the_breaker_closed_and_the_platforms_open_it() {
+        let fal = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/flux/dev"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({ "detail": "Rate limit exceeded" })))
+            .mount(&fal)
+            .await;
+        let platform = serde_json::json!({ "api_key": "operator-key", "api_base": fal.uri() });
+        let router = routed("fal/flux-dev", &["fal"], &[("fal", platform)], 2).await;
+        for i in 0..2 {
+            let r = flux_dev(&router, OrgCredentials::of("fal", Some(key("a-tenants-key")))).await;
+            assert!(r.is_err(), "call {i}: the vendor rate-limited the tenant's key");
+        }
+        assert!(!router.circuit_breaker.is_open("fal").await, "two 429s to one tenant's own key opened the breaker for every tenant");
+        for i in 0..2 {
+            let r = flux_dev(&router, OrgCredentials::default()).await;
+            assert!(r.is_err(), "call {i}: the vendor rate-limited the platform's key");
+        }
+        assert!(router.circuit_breaker.is_open("fal").await, "the platform's key rate-limited counts toward the breaker");
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use crate::management::settings::RetrySettings;
+    use std::time::Duration;
+
+    fn settings() -> RetrySettings {
+        RetrySettings { max_retries: 5, backoff: Duration::from_millis(500), max_backoff: Duration::from_secs(3) }
+    }
+
+    fn refused() -> ProviderError {
+        ProviderError::RequestFailed { message: "busy".into(), status_code: Some(503), provider_error: None, retryable: true }
+    }
+
+    fn limited(ms: u64) -> ProviderError {
+        ProviderError::RateLimited { provider: "acme".into(), retry_after_ms: ms, message: "slow down".into(), provider_error: None }
+    }
+
+    #[test]
+    fn the_backoff_grows_with_full_jitter_up_to_the_ceiling() {
+        let s = settings();
+        // At full jitter the wait is the cap itself: the first backoff, doubled each retry, capped.
+        let caps: Vec<_> = (1..=5).map(|n| retry_delay(n, &refused(), &s, 1.0)).collect();
+        let ms = |v: u64| Some(Duration::from_millis(v));
+        assert_eq!(caps, vec![ms(500), ms(1000), ms(2000), ms(3000), ms(3000)]);
+        // Jitter spreads each wait over 0 to its cap.
+        assert_eq!(retry_delay(2, &refused(), &s, 0.0), ms(0));
+        assert_eq!(retry_delay(2, &refused(), &s, 0.5), ms(500));
+        assert_eq!(retry_delay(40, &refused(), &s, 1.0), ms(3000), "no overflow far out");
+    }
+
+    #[test]
+    fn retry_after_is_a_floor_and_past_the_ceiling_ends_the_retries() {
+        let s = settings();
+        let ms = |v: u64| Some(Duration::from_millis(v));
+        assert_eq!(retry_delay(1, &limited(1200), &s, 0.0), ms(1200), "the vendor's wait beats a short jitter");
+        assert_eq!(retry_delay(3, &limited(100), &s, 1.0), ms(2000), "the backoff beats a short Retry-After");
+        assert_eq!(retry_delay(1, &limited(3000), &s, 0.0), ms(3000), "exactly the ceiling is waited for");
+        assert_eq!(retry_delay(1, &limited(3001), &s, 0.0), None, "longer than the ceiling: not retried");
     }
 }
 
@@ -2017,7 +3253,25 @@ mod model3d_router_tests {
             width: None,
             height: None,
             manifest: None,
+            source_url: None,
         }
+    }
+
+    #[test]
+    fn keeping_nothing_lists_the_vendors_3d_files_and_refuses_one_without_a_link() {
+        let mut mesh = mesh_file();
+        mesh.source_url = Some("https://cdn.vendor.example/a/model.GLB?sig=1".into());
+        let mut preview = preview_file();
+        preview.source_url = Some("https://cdn.vendor.example/a/preview.png".into());
+        let assets = keep_nothing_model3d_assets(&[mesh.clone(), preview]).expect("both have links");
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].url, "https://cdn.vendor.example/a/model.GLB?sig=1");
+        assert_eq!(assets[0].format, "glb", "the format is normalised, the link is not");
+        assert!(assets.iter().all(|a| !a.kept && a.size_bytes.is_none() && a.sha256.is_none() && a.scene.is_none()));
+        mesh.source_url = None;
+        assert!(keep_nothing_model3d_assets(&[mesh.clone()]).unwrap_err().contains("keeps nothing"));
+        mesh.source_url = Some("javascript:alert(1)".into());
+        assert!(keep_nothing_model3d_assets(&[mesh]).is_err(), "only http(s) links are handed out");
     }
 
     fn preview_file() -> Model3dFile {
@@ -2030,7 +3284,90 @@ mod model3d_router_tests {
             width: Some(512),
             height: Some(512),
             manifest: None,
+            source_url: None,
         }
+    }
+
+    /// A router whose job `id` is the finished Tripo rig of
+    /// `TripoModel3dProvider::finished_rig_for_tests`, with its row in `db`.
+    async fn tripo_job(
+        db: &Arc<dyn crate::db::DatabaseStore>,
+        tripo: crate::providers::model3d::tripo::TripoModel3dProvider,
+        id: &str,
+    ) -> (Arc<crate::proxy::registry::ProviderRegistry>, ProxyRouter) {
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        let provider: Arc<dyn crate::providers::Model3dProvider> = Arc::new(tripo);
+        registry.register_mock_model3d(provider.clone()).await;
+        let router = ProxyRouter::new(
+            registry.clone(),
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(crate::config::AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        );
+        router.model3d_jobs.write().await.insert(id.to_string(), Model3dJob {
+            handle: Model3dGenerationHandle {
+                provider_job_id: "rig-1".into(),
+                provider: "mock".into(),
+                model: "tripo/rig".into(),
+                stage_context: Some(serde_json::json!({ "task_id": "rig-1" })),
+            },
+            usage: None,
+            delivery: crate::proxy::model3d_deliver::DeliveryPlan::default(),
+            provider,
+            created: chrono::Utc::now().timestamp(),
+        });
+        db.insert_generation(id, None, "tripo/rig", "mock", "model3d", Some("rig-1"), 0.0, None, None).await.unwrap();
+        (registry, router)
+    }
+
+    fn local_store() -> Arc<dyn crate::proxy::storage::ImageStorage> {
+        Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://assets.test".into()))
+    }
+
+    /// Review 2026-11-11 P5: a client's poll that does not hold the delivery
+    /// downloads nothing.
+    #[tokio::test]
+    async fn a_client_poll_downloads_nothing_while_another_observer_delivers() {
+        use crate::providers::model3d::tripo::TripoModel3dProvider;
+        let db: Arc<dyn crate::db::DatabaseStore> = Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let (server, tripo) = TripoModel3dProvider::finished_rig_for_tests().await;
+        let (_registry, router) = tripo_job(&db, tripo, "g-tripo").await;
+        assert!(db.lease_generation_work("g-tripo", "delivery", "elsewhere", chrono::Duration::minutes(5)).await.unwrap());
+
+        let resp = router.get_model3d_status("g-tripo", Some(local_store()), None, &db).await.unwrap();
+        assert_eq!(resp.status, GenerationStatus::Processing, "{resp:?}");
+        let n = TripoModel3dProvider::rig_downloads_for_tests(&server).await;
+        assert_eq!(n, 0, "the mesh was downloaded {n} time(s) while another observer held the delivery");
+    }
+
+    /// Review 2026-11-11 P5: the client's poll and the poller both see the job
+    /// finish; only the one that delivers it downloads it.
+    #[tokio::test]
+    async fn a_finished_job_is_downloaded_once_by_the_observer_that_delivers_it() {
+        use crate::providers::model3d::tripo::TripoModel3dProvider;
+        let db: Arc<dyn crate::db::DatabaseStore> = Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let (server, tripo) = TripoModel3dProvider::finished_rig_for_tests().await;
+        let (registry, router) = tripo_job(&db, tripo, "g-tripo").await;
+        let store = local_store();
+
+        let (client, _) = tokio::join!(
+            router.get_model3d_status_claimed("g-tripo", Some(store.clone()), None, &db),
+            crate::proxy::poller::poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store),
+        );
+        let (client, claim) = client.expect("the client's poll answers");
+        if client.status == GenerationStatus::Completed {
+            // The client won: its handler writes the outcome while it holds
+            // the claim, as here.
+            let url = client.mesh().map(|m| m.url.clone());
+            db.update_generation_if_active("g-tripo", "completed", 100, url.as_deref(), None, Some(chrono::Utc::now()), None)
+                .await
+                .unwrap();
+        }
+        drop(claim);
+        let n = TripoModel3dProvider::rig_downloads_for_tests(&server).await;
+        assert_eq!(n, 1, "the finished job's mesh was downloaded {n} times; only the observer that delivers it should");
+        let row = db.get_generation("g-tripo").await.unwrap().unwrap();
+        assert_eq!(row.status, GenerationStatus::Completed, "{:?}", row.error_message);
     }
 
     #[tokio::test]
@@ -2038,7 +3375,7 @@ mod model3d_router_tests {
         let store: Arc<dyn crate::proxy::storage::ImageStorage> =
             Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://cdn.example.com".into()));
 
-        let assets = rehost_model3d_files(&store, None, "litegen-3d-42", &[mesh_file(), preview_file()])
+        let assets = rehost_model3d_files(&store, None, "litegen-3d-42", vec![mesh_file(), preview_file()])
             .await
             .unwrap();
 
@@ -2066,7 +3403,7 @@ mod model3d_router_tests {
         let mut a = preview_file();
         a.format = "png".into();
         let b = preview_file();
-        let assets = rehost_model3d_files(&store, None, "litegen-3d-7", &[mesh_file(), a, b]).await.unwrap();
+        let assets = rehost_model3d_files(&store, None, "litegen-3d-7", vec![mesh_file(), a, b]).await.unwrap();
         let urls: Vec<&str> = assets.iter().map(|x| x.url.as_str()).collect();
         assert_eq!(urls.len(), 3);
         assert_eq!(
@@ -2080,8 +3417,32 @@ mod model3d_router_tests {
     async fn rehost_honours_a_per_app_path_prefix() {
         let store: Arc<dyn crate::proxy::storage::ImageStorage> =
             Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://cdn.example.com".into()));
-        let assets = rehost_model3d_files(&store, Some("tenant-9/meshes"), "g1", &[mesh_file()]).await.unwrap();
+        let assets = rehost_model3d_files(&store, Some("tenant-9/meshes"), "g1", vec![mesh_file()]).await.unwrap();
         assert!(assets[0].url.contains("/tenant-9/meshes/g1/model.glb"), "got {}", assets[0].url);
+    }
+
+    /// A package is stored as `package_<container>.zip`, beside the mesh of
+    /// the same container, and lists the container as its format.
+    #[tokio::test]
+    async fn rehost_stores_a_package_as_a_zip_named_for_its_container() {
+        let store: Arc<dyn crate::proxy::storage::ImageStorage> =
+            Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://cdn.example.com".into()));
+        let mut obj = mesh_file();
+        obj.format = "obj".into();
+        let package = |format: &str| Model3dFile {
+            kind: Model3dAssetKind::Package,
+            format: format.into(),
+            content_type: "application/zip".into(),
+            bytes: b"PK\x03\x04 a zip".to_vec(),
+            ..mesh_file()
+        };
+        let assets = rehost_model3d_files(&store, None, "g3", vec![obj, package("obj"), package("dae")]).await.unwrap();
+        let urls: Vec<&str> = assets.iter().map(|a| a.url.as_str()).collect();
+        assert!(urls[0].ends_with("/g3/model.obj"), "{urls:?}");
+        assert!(urls[1].ends_with("/g3/package_obj.zip"), "{urls:?}");
+        assert!(urls[2].ends_with("/g3/package_dae.zip"), "{urls:?}");
+        assert_eq!((assets[1].kind, assets[1].format.as_str()), (Model3dAssetKind::Package, "obj"));
+        assert_eq!(assets[1].sha256.as_deref(), Some(sha256_hex(b"PK\x03\x04 a zip").as_str()));
     }
 
     // ─── The instance that submitted a job is the one that polls it ─────────
@@ -2135,7 +3496,7 @@ mod model3d_router_tests {
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
             animations: Vec::new(), fps: None,
-            skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
             texture_resolution: None, keep_uvs: None,
             ground: None, center: None,
         };
@@ -2261,7 +3622,7 @@ mod model3d_router_tests {
             pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: crate::capabilities::PromptSpec { required: true, min_length: None, max_length: None },
-            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         };
         let base = crate::types::BaseGenerationRequest {
@@ -2274,7 +3635,7 @@ mod model3d_router_tests {
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
             animations: Vec::new(), fps: None,
-            skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
             texture_resolution: None, keep_uvs: None,
             ground: None, center: None,
         };
@@ -2354,7 +3715,7 @@ mod model3d_router_tests {
             pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: Default::default(),
             prompt: crate::capabilities::PromptSpec { required: false, min_length: None, max_length: None },
-            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         };
         let extras = crate::providers::Model3dExtras {
@@ -2363,7 +3724,7 @@ mod model3d_router_tests {
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
             animations: Vec::new(), fps: None,
-            skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
             texture_resolution: None, keep_uvs: None,
             ground: None, center: None,
         };

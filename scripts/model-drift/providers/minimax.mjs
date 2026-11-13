@@ -30,6 +30,8 @@ export default {
     'minimax/S2V-01': 'S2V-01',
     'minimax/MiniMax-H3': 'MiniMax-H3',
     'minimax/MiniMax-H3-Max': 'MiniMax-H3-Max',
+    'minimax/MiniMax-H3-Highspeed': 'MiniMax-H3-Highspeed',
+    'minimax/MiniMax-H3-Lite': 'MiniMax-H3-Lite',
   },
   sources: [
     page('text-to-image', 'image-generation-t2i', '/v1/image_generation'),

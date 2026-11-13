@@ -1,7 +1,9 @@
 // Vidu — the docs site serves a markdown twin of every page (`<page>.md`,
 // indexed by llms.txt). Sources: the Model Map's video tables (the lineup, with
-// resolution/duration per model), and the endpoint pages for the four endpoints
-// our adapter routes between. Since 2026-10 the API reference has one page per
+// resolution/duration per model; `typings: false`, since naming a model in a
+// lineup says nothing about the request it takes), and the endpoint pages for
+// the four endpoints our adapter routes between, which are every model's
+// typings. Since 2026-10 the API reference has one page per
 // model family and endpoint (`video-models/<family>/<endpoint>.md`), holding one
 // operation (a fenced `POST /ent/v2/<endpoint>` block and its body table) per
 // model. Ids come from table structure only: the Model Map's header rows, and
@@ -141,10 +143,16 @@ const endpoint = (family, slug) => ({
 });
 
 // The families whose pages exist for each endpoint (vidu-q4-preview has no
-// text-to-video or start-end-to-video page). vidu2.0 has no endpoint page at
-// all any more; only the Model Map lists it. A new family or page shows up as
-// a changed `pages` snapshot.
+// text-to-video or start-end-to-video page; vidu2.0 has no text-to-video, as
+// the Model Map says). vidu2.0's pages are
+// video-models/vidu-2-0/{image-to-video,start-end-to-video,reference-to-video}.md,
+// each a `POST /ent/v2/<endpoint>` operation whose `model` row and example send
+// `vidu2.0` (answering 200, 2026-11-11). llms.txt does not list them (checked
+// 2026-11-09 and 2026-11-11), so a moved vidu2.0 page fails its source rather
+// than showing up in the `pages` snapshot. A new family or page shows up as a
+// changed `pages` snapshot.
 const FAMILY_PAGES = {
+  'vidu-2-0': ['image-to-video', 'start-end-to-video', 'reference-to-video'],
   'vidu-q4-preview': ['image-to-video', 'reference-to-video'],
   'vidu-q3': Object.keys(ENDPOINTS),
   'vidu-q2': Object.keys(ENDPOINTS),
@@ -160,12 +168,21 @@ export default {
     'vidu/viduq3-turbo': 'viduq3-turbo',
     'vidu/viduq3-pro': 'viduq3-pro',
     'vidu/viduq2-pro-fast': 'viduq2-pro-fast',
+    'vidu/viduq4-preview': 'viduq4-preview',
+    'vidu/viduq3': 'viduq3',
+    'vidu/viduq3-mix': 'viduq3-mix',
+    'vidu/viduq3-pro-fast': 'viduq3-pro-fast',
+    'vidu/viduq2': 'viduq2',
+    'vidu/viduq2-turbo': 'viduq2-turbo',
+    'vidu/viduq1-classic': 'viduq1-classic',
   },
   sources: [
     {
       key: 'model-map',
       url: `${DOCS}/overview/model-map.md`,
       expect: 'text',
+      // The lineup: a model named here is listed, not typed. Its endpoint pages are its typings.
+      typings: false,
       extract: (_md, body) => videoTables(body).flatMap((t) => t[0].slice(1)),
       // Every row but the prose one (Description, renamed Introduction in
       // 2026-10): resolution, frame rate, duration, and which endpoints each
@@ -190,13 +207,7 @@ export default {
     // docs restructure both have their own reference2video operation
     // (video-models/vidu-q3/reference-to-video.md), so the premise of the skip
     // no longer holds — re-decide.
-    { id: 'viduq3-drama', reason: 'skipped 2026-09-11: then in the Model Map only (now documented on reference2video)' },
-    { id: 'viduq3-ad', reason: 'skipped 2026-09-11: then in the Model Map only (now documented on reference2video)' },
-    { id: 'viduq3', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
-    { id: 'viduq3-mix', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
-    { id: 'viduq3-pro-fast', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
-    { id: 'viduq2', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
-    { id: 'viduq2-turbo', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
-    { id: 'viduq1-classic', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
+    { id: 'viduq3-drama', reason: 'skipped 2026-11-03: documented on reference2video, but the pricing page lists no price for it' },
+    { id: 'viduq3-ad', reason: 'skipped 2026-11-03: documented on reference2video, but the pricing page lists no price for it' },
   ],
 };

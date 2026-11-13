@@ -1,47 +1,65 @@
 // Fal.ai video generation provider
 // API Reference: https://fal.ai/docs/documentation/model-apis/inference/queue
 // Queue API: POST https://queue.fal.run/{endpoint} → poll status → fetch result
-// Carried models: LTX Video and LTX-2.3
+// Carried models: LTX Video, LTX-2.3, and FLUX 3 video (standard, drafts, Max)
 
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::capabilities::ModelSchema;
-use crate::proxy::materializer::{MaterializedRequest, MaterializedRefForm};
+use crate::proxy::materializer::{MaterializedRef, MaterializedRequest, MaterializedRefForm};
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig,
     CancelOutcome, VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
 };
 use crate::providers::model3d::fal::{
-    fal_error_message, needs_retry, platform_key_check, queue_app, same_origin_url, transient, QueueReply, DEFAULT_PLATFORM_BASE,
+    fal_error_message, needs_retry, platform_key_check, queue_app, same_origin_url, transient, QueueReply,
 };
 use crate::types::*;
 
 /// What litegen itself sends in a submit body; `extra` cannot replace it.
-const OWNED_FIELDS: &[&str] = &["prompt", "duration", "resolution", "fps", "aspect_ratio", "seed", "image_url"];
+const OWNED_FIELDS: &[&str] = &[
+    "prompt", "duration", "resolution", "fps", "aspect_ratio", "seed", "image_url", "start_image_url", "end_image_url",
+    "keyframes",
+];
+
+/// FLUX 3's clip lengths: "duration … 5 … 20", in whole seconds.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/keyframes-to-video> (2026-11-04)
+const FLUX_3_SECONDS: &[u32] = &[5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+
+/// FLUX 3's keyframe clock.
+/// @see <https://docs.bfl.ml/cookbook/video_start_from_images.md> — Verbatim: "`frame_index` is a
+///   position at 24 fps, so frame 0 opens the clip" and "Every `frame_index` must fit within
+///   `duration × 24`, and all must be unique." (2026-11-04)
+const FLUX_3_FPS: u32 = 24;
 
 /// Fal.ai video generation provider.
 ///
-/// Routes to model-specific Fal endpoints for LTX Video and LTX-2.3.
+/// Routes to model-specific Fal endpoints for LTX Video, LTX-2.3 and FLUX 3.
 ///
 /// @see <https://fal.ai/docs/documentation/model-apis/inference/queue> — Verbatim: "The request
 ///   moves through three states before completion" (`IN_QUEUE`, `IN_PROGRESS`, `COMPLETED`); an
 ///   `error` is "present only if the request failed (only when `COMPLETED`)"
-/// @see <https://fal.ai/models> — per-model API pages documenting each endpoint's input schema
+/// @see <https://fal.ai/explore> — the model index (fal.ai/models 308-redirects here;
+///   2026-11-09): per-model API pages documenting each endpoint's input schema
 pub struct FalVideoProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
 }
 
 /// What a given fal endpoint's input schema actually accepts.
 ///
 /// fal endpoints are per-model, and their schemas differ sharply — sending a
-/// field the schema does not define is not harmless. `fal-ai/stable-video` has
-/// no `prompt` at all; only the Kling and LTX-2.3 endpoints take `duration`;
-/// only LTX-2.3 takes `aspect_ratio`, `resolution` and `fps`.
+/// field the schema does not define is not harmless. LTX Video's base endpoint
+/// takes no `duration` or `aspect_ratio`; LTX-2.3 and FLUX 3 take both, only
+/// LTX-2.3 takes `fps`, and FLUX 3's drafts take no `resolution`. FLUX 3 also
+/// has first-last and keyframe endpoints, each with its own image fields.
 ///
 /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={id}>
 ///   — each endpoint publishes its own OpenAPI document.
@@ -51,6 +69,18 @@ struct EndpointSpec {
     /// Endpoint used when a reference image is supplied, if the model has a
     /// distinct image-to-video variant.
     image_to_video: &'static str,
+    /// The endpoint a first and a last frame go to, as `start_image_url` and
+    /// `end_image_url`. `None` when the model has none.
+    first_last_to_video: Option<&'static str>,
+    /// Whether `image_to_video` takes a last frame, as `end_image_url`.
+    end_image_on_image_to_video: bool,
+    /// The endpoint keyframes go to, as `keyframes` `[{frame_index,
+    /// image_url}]` counted at `keyframe_fps`. `None` when the model has none.
+    keyframes_to_video: Option<&'static str>,
+    keyframe_fps: u32,
+    /// The resolutions fal prices on the first-last and keyframe endpoints,
+    /// when fewer than on text and image. Empty when they are the same.
+    framed_resolutions: &'static [&'static str],
     supports_prompt: bool,
     supports_duration: bool,
     supports_aspect_ratio: bool,
@@ -65,15 +95,53 @@ struct EndpointSpec {
     fps_values: &'static [u32],
 }
 
+/// The frames a request sends, as the fields of the endpoint it goes to.
+enum Frames {
+    None,
+    /// `image_url`, plus `end_image_url` where image-to-video takes a last frame.
+    Image { first: String, last: Option<String> },
+    /// `start_image_url` and `end_image_url`.
+    FirstLast { first: String, last: String },
+    /// `keyframes`: `(frame_index, image_url)`, in frame order.
+    Keyframes(Vec<(u32, String)>),
+}
+
+impl Frames {
+    fn write(self, body: &mut Value) {
+        match self {
+            Frames::None => {}
+            Frames::Image { first, last } => {
+                body["image_url"] = Value::String(first);
+                if let Some(last) = last {
+                    body["end_image_url"] = Value::String(last);
+                }
+            }
+            Frames::FirstLast { first, last } => {
+                body["start_image_url"] = Value::String(first);
+                body["end_image_url"] = Value::String(last);
+            }
+            Frames::Keyframes(pinned) => {
+                body["keyframes"] = Value::Array(
+                    pinned.into_iter().map(|(frame_index, image_url)| json!({ "frame_index": frame_index, "image_url": image_url })).collect(),
+                );
+            }
+        }
+    }
+}
+
 impl FalVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(600), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::model3d::fal::fal_auth(),
         }
     }
 
@@ -96,14 +164,6 @@ impl FalVideoProvider {
             .trim_end_matches('/')
     }
 
-    /// fal's Platform API, which the health check reads.
-    fn platform_base(&self) -> &str {
-        self.config
-            .as_ref()
-            .and_then(|c| c.options.as_ref())
-            .and_then(|o| o["platform_api_base"].as_str())
-            .unwrap_or(DEFAULT_PLATFORM_BASE)
-    }
 
     /// A submitted job's status, result and cancel URLs: the ones fal answered
     /// with when they are on the configured base — the key travels with each
@@ -141,6 +201,11 @@ impl FalVideoProvider {
             "fal/ltx-2.3" => EndpointSpec {
                 text_to_video: "fal-ai/ltx-2.3/text-to-video",
                 image_to_video: "fal-ai/ltx-2.3/image-to-video",
+                first_last_to_video: None,
+                end_image_on_image_to_video: false,
+                keyframes_to_video: None,
+                keyframe_fps: 0,
+                framed_resolutions: &[],
                 supports_prompt: true,
                 supports_duration: true,
                 supports_aspect_ratio: true,
@@ -153,6 +218,11 @@ impl FalVideoProvider {
             "fal/video" => EndpointSpec {
                 text_to_video: "fal-ai/ltx-video",
                 image_to_video: "fal-ai/ltx-video/image-to-video",
+                first_last_to_video: None,
+                end_image_on_image_to_video: false,
+                keyframes_to_video: None,
+                keyframe_fps: 0,
+                framed_resolutions: &[],
                 supports_prompt: true,
                 supports_duration: false,
                 supports_aspect_ratio: false,
@@ -160,7 +230,133 @@ impl FalVideoProvider {
                 supports_resolution: false,
                 fps_values: &[],
             },
+            // FLUX 3 video (Black Forest Labs). Text, a first frame, first and
+            // last frames, and keyframes each have their own endpoint, and
+            // every one takes prompt, duration (5-20), resolution,
+            // aspect_ratio and generate_audio, with no seed. fal prices the
+            // first-last and keyframe endpoints at "$0.17 per second … at
+            // 720p, and $0.29 per second at 1080p" only.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/text-to-video> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/first-last-frame-to-video> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/keyframes-to-video> (2026-11-04)
+            // @see <https://fal.ai/models/blackforestlabs/flux-3/first-last-frame-to-video/llms.txt> (2026-11-04)
+            "fal/flux-3-video" => EndpointSpec {
+                text_to_video: "blackforestlabs/flux-3/text-to-video",
+                image_to_video: "blackforestlabs/flux-3/image-to-video",
+                first_last_to_video: Some("blackforestlabs/flux-3/first-last-frame-to-video"),
+                end_image_on_image_to_video: false,
+                keyframes_to_video: Some("blackforestlabs/flux-3/keyframes-to-video"),
+                keyframe_fps: FLUX_3_FPS,
+                framed_resolutions: &["720p", "1080p"],
+                supports_prompt: true,
+                supports_duration: true,
+                supports_aspect_ratio: true,
+                duration_values: FLUX_3_SECONDS,
+                supports_resolution: true,
+                fps_values: &[],
+            },
+            // FLUX 3 drafts: the same four endpoints' /draft twins, "draft
+            // video (720p)", with no `resolution` field.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/text-to-video/draft> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/keyframes-to-video/draft> (2026-11-04)
+            "fal/flux-3-video-draft" => EndpointSpec {
+                text_to_video: "blackforestlabs/flux-3/text-to-video/draft",
+                image_to_video: "blackforestlabs/flux-3/image-to-video/draft",
+                first_last_to_video: Some("blackforestlabs/flux-3/first-last-frame-to-video/draft"),
+                end_image_on_image_to_video: false,
+                keyframes_to_video: Some("blackforestlabs/flux-3/keyframes-to-video/draft"),
+                keyframe_fps: FLUX_3_FPS,
+                framed_resolutions: &[],
+                supports_prompt: true,
+                supports_duration: true,
+                supports_aspect_ratio: true,
+                duration_values: FLUX_3_SECONDS,
+                supports_resolution: false,
+                fps_values: &[],
+            },
+            // FLUX 3 Max has no first-last endpoint: image-to-video takes the
+            // last frame as `end_image_url` ("string | null"). It is 720p |
+            // 1080p, priced on every endpoint, and takes a `seed`.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3-max/image-to-video> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3-max/keyframes-to-video> (2026-11-04)
+            "fal/flux-3-max-video" => EndpointSpec {
+                text_to_video: "blackforestlabs/flux-3-max/text-to-video",
+                image_to_video: "blackforestlabs/flux-3-max/image-to-video",
+                first_last_to_video: None,
+                end_image_on_image_to_video: true,
+                keyframes_to_video: Some("blackforestlabs/flux-3-max/keyframes-to-video"),
+                keyframe_fps: FLUX_3_FPS,
+                framed_resolutions: &[],
+                supports_prompt: true,
+                supports_duration: true,
+                supports_aspect_ratio: true,
+                duration_values: FLUX_3_SECONDS,
+                supports_resolution: true,
+                fps_values: &[],
+            },
             _ => return None,
+        })
+    }
+
+    /// A reference as a URL fal can fetch: its URL, or its bytes as a data URI.
+    fn image_url(r: &MaterializedRef) -> Option<String> {
+        match &r.form {
+            MaterializedRefForm::Url(u) => Some(u.clone()),
+            MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+            _ => None,
+        }
+    }
+
+    /// The endpoint a request goes to, chosen by its frames: keyframes, a
+    /// first and a last frame, one image, or none. What the model's endpoints
+    /// can't take, or fal doesn't price, is refused here, before anything is
+    /// sent.
+    fn route(model: &str, spec: &EndpointSpec, extras: &VideoExtras, materialized: &MaterializedRequest) -> Result<(&'static str, Frames), ProviderError> {
+        let refuse = |why: String| ProviderError::InvalidRequest(format!("{model}: {why}"));
+        let keyframes: Vec<&MaterializedRef> = materialized.refs.iter().filter(|r| r.role == "keyframe").collect();
+        let last = materialized.refs.iter().filter(|r| r.role == "last_frame").find_map(Self::image_url);
+        // The start frame is any other image: `first_frame`, or `init` on the
+        // rows that took one before first_frame existed.
+        let first = materialized.refs.iter().filter(|r| r.role != "keyframe" && r.role != "last_frame").find_map(Self::image_url);
+        // fal prices FLUX 3's first-last and keyframe endpoints at fewer
+        // resolutions than text and image.
+        let priced = |endpoint: &'static str| match extras.resolution.as_deref() {
+            Some(r) if !spec.framed_resolutions.is_empty() && !spec.framed_resolutions.contains(&r) => Err(refuse(format!(
+                "fal prices first-last and keyframe videos at {} only, not {r}",
+                spec.framed_resolutions.join(" and ")
+            ))),
+            _ => Ok(endpoint),
+        };
+        if !keyframes.is_empty() {
+            let endpoint = spec.keyframes_to_video.ok_or_else(|| refuse("takes no keyframes".into()))?;
+            if first.is_some() || last.is_some() {
+                return Err(refuse("keyframes don't mix with a first or last frame: send those as keyframes at 0 s and at the end".into()));
+            }
+            let mut pinned = Vec::with_capacity(keyframes.len());
+            for r in keyframes {
+                let t = r.time_s.ok_or_else(|| refuse("every keyframe needs time_s".into()))?;
+                let url = Self::image_url(r).ok_or_else(|| refuse("a keyframe must be an image URL or bytes".into()))?;
+                // The nearest frame on the vendor's clock; the validator keeps
+                // each time within the clip.
+                pinned.push(((t.max(0.0) * f64::from(spec.keyframe_fps)).round() as u32, url));
+            }
+            pinned.sort_by_key(|(frame, _)| *frame);
+            if let Some(w) = pinned.windows(2).find(|w| w[0].0 == w[1].0) {
+                return Err(refuse(format!("two keyframes fall on frame {} at {} fps", w[0].0, spec.keyframe_fps)));
+            }
+            return Ok((priced(endpoint)?, Frames::Keyframes(pinned)));
+        }
+        if let Some(last) = last {
+            let first = first.ok_or_else(|| refuse("a last frame needs a first frame".into()))?;
+            if spec.end_image_on_image_to_video {
+                return Ok((spec.image_to_video, Frames::Image { first, last: Some(last) }));
+            }
+            let endpoint = spec.first_last_to_video.ok_or_else(|| refuse("takes no last frame".into()))?;
+            return Ok((priced(endpoint)?, Frames::FirstLast { first, last }));
+        }
+        Ok(match first {
+            Some(first) => (spec.image_to_video, Frames::Image { first, last: None }),
+            None => (spec.text_to_video, Frames::None),
         })
     }
 
@@ -196,6 +392,7 @@ impl VideoProvider for FalVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -222,19 +419,10 @@ impl VideoProvider for FalVideoProvider {
         let spec = Self::resolve_spec(&model.id)
             .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
 
-        // Reference image (init role, URL form preferred by Fal).
-        let image_url: Option<String> = materialized.refs.iter().find_map(|r| match &r.form {
-            MaterializedRefForm::Url(u) => Some(u.clone()),
-            MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
-            _ => None,
-        });
-
-        // Pick the endpoint that actually accepts an image when one is present.
-        let endpoint = if image_url.is_some() {
-            spec.image_to_video
-        } else {
-            spec.text_to_video
-        };
+        // The endpoint that takes these frames, and the frames as its fields.
+        let (endpoint, frames) = Self::route(&model.id, &spec, extras, materialized)?;
+        // fal names the model by its endpoint: a mapping replaces the path.
+        let endpoint = crate::providers::wire_model(self.config.as_ref(), &model.id, endpoint);
         let url = format!("{}/{}", self.api_base(), endpoint);
 
         let mut body = json!({});
@@ -251,7 +439,9 @@ impl VideoProvider for FalVideoProvider {
         }
 
         if spec.supports_resolution {
-            if let Some(r) = extras.resolution.as_deref() {
+            // The row's default when none is asked (E10): the clip is made at
+            // the resolution it was quoted and charged at, not at fal's own.
+            if let Some(r) = extras.resolution.as_deref().or(model.string_default("resolution")) {
                 body["resolution"] = Value::String(r.to_string());
             }
         }
@@ -272,17 +462,13 @@ impl VideoProvider for FalVideoProvider {
             body["seed"] = json!(seed);
         }
 
-        if let Some(u) = image_url {
-            body["image_url"] = Value::String(u);
-        }
+        frames.write(&mut body);
 
         // `extra` adds the endpoint's own knobs; it cannot replace a field
         // litegen sets (rule 11), which lax mode would otherwise let it.
-        if let (Some(Value::Object(extra_map)), Some(body_obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in extra_map {
-                if !OWNED_FIELDS.contains(&k.as_str()) {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let Some(body_obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L10: audio on or off, where the endpoint takes it.
@@ -293,7 +479,7 @@ impl VideoProvider for FalVideoProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .post(&url)
-                .header("Authorization", format!("Key {api_key}"))
+                .authorized(&self.auth, &api_key)?
                 .header("Content-Type", "application/json")
                 .json(&body),
         )
@@ -315,8 +501,12 @@ impl VideoProvider for FalVideoProvider {
             retryable: false,
         })?;
         if !reply.status.is_success() {
+            let message = format!("Fal video API error: {}", reply.describe());
+            if let Some(e) = reply.rate_limited(&message) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
-                message: format!("Fal video API error: {}", reply.describe()),
+                message,
                 status_code: Some(reply.status.as_u16()),
                 retryable: retry.unwrap_or_else(|| transient(reply.status)),
                 provider_error: reply.json,
@@ -379,7 +569,7 @@ impl VideoProvider for FalVideoProvider {
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .get(&status_url)
-                .header("Authorization", format!("Key {api_key}")),
+                .authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -394,7 +584,9 @@ impl VideoProvider for FalVideoProvider {
         let status = match data["status"].as_str() {
             Some("COMPLETED") => GenerationStatus::Completed,
             Some("IN_PROGRESS") => GenerationStatus::Processing,
-            _ => GenerationStatus::Pending,
+            // fal's queue enum is closed: IN_QUEUE | IN_PROGRESS | COMPLETED.
+            Some("IN_QUEUE") => GenerationStatus::Pending,
+            other => return Ok(super::unknown_state("fal", other)),
         };
         if status != GenerationStatus::Completed {
             return Ok(VideoGenerationPollResult {
@@ -417,7 +609,7 @@ impl VideoProvider for FalVideoProvider {
         let result_resp = crate::providers::inject_trace_headers(
             self.client
                 .get(&response_url)
-                .header("Authorization", format!("Key {api_key}")),
+                .authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -496,7 +688,7 @@ impl VideoProvider for FalVideoProvider {
         let job: Value = serde_json::from_str(&handle.provider_job_id).unwrap_or_default();
         let (_, _, url) = self.queue_urls(&job);
         let resp = crate::providers::inject_trace_headers(
-            self.client.put(&url).header("Authorization", format!("Key {api_key}")),
+            self.client.put(&url).authorized(&self.auth, &api_key)?,
         )
         .send()
         .await
@@ -533,7 +725,7 @@ impl VideoProvider for FalVideoProvider {
         let Ok(api_key) = self.api_key() else {
             return HealthCheckResult { healthy: false, message: "No API key".into(), latency_ms: None };
         };
-        platform_key_check(&self.client, self.platform_base(), &api_key).await
+        platform_key_check(&self.client, crate::providers::model3d::fal::platform_base_for(self.config.as_ref()).as_deref(), self.api_base(), &api_key).await
     }
 }
 
@@ -1066,6 +1258,191 @@ mod tests {
             p.configure(ProviderInstanceConfig { api_key: "test-key".into(), options: Some(json!({ "platform_api_base": server.uri() })), ..Default::default() });
             assert_eq!(p.health_check().await.healthy, healthy, "{status}");
         }
+    }
+
+    /// A reference of `role` by URL, at `time_s` for a keyframe.
+    fn frame(role: &str, url: &str, time_s: Option<f64>) -> crate::proxy::materializer::MaterializedRef {
+        crate::proxy::materializer::MaterializedRef {
+            role: role.to_string(),
+            form: crate::proxy::materializer::MaterializedRefForm::Url(url.to_string()),
+            time_s,
+        }
+    }
+
+    fn with_refs(refs: Vec<crate::proxy::materializer::MaterializedRef>) -> crate::proxy::materializer::MaterializedRequest {
+        crate::proxy::materializer::MaterializedRequest { refs, cleanup: crate::proxy::materializer::Cleanup::empty() }
+    }
+
+    /// Each request's JSON body, by the path it was sent to.
+    fn body_at(received: &[wiremock::Request], at: &str) -> Value {
+        serde_json::from_slice(&received.iter().find(|r| r.url.path() == at).unwrap_or_else(|| panic!("no call to {at}")).body).unwrap()
+    }
+
+    /// FLUX 3 video on fal picks its endpoint from the frames:
+    /// - none: `…/text-to-video`;
+    /// - a first frame: `…/image-to-video`, as `image_url`;
+    /// - a first and a last frame: `…/first-last-frame-to-video`, as
+    ///   `start_image_url` and `end_image_url`;
+    /// - keyframes: `…/keyframes-to-video`, as `{frame_index, image_url}`
+    ///   ("a position at 24 fps"), in time order.
+    ///
+    /// Duration goes as an integer and audio as `generate_audio`.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/first-last-frame-to-video> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/keyframes-to-video> (2026-11-04)
+    /// @see <https://docs.bfl.ml/cookbook/video_start_from_images.md> (2026-11-04)
+    #[tokio::test]
+    async fn flux_3_video_on_fal_picks_its_endpoint_from_the_frames() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "r" }))).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let id = "fal/flux-3-video";
+        let schema = ref_schema(id);
+        let mut e = make_extras();
+        e.duration_seconds = 10.0;
+        e.resolution = Some("1080p".into());
+        e.aspect_ratio = Some("21:9".into());
+        e.audio = Some(false);
+        e.extra = Some(json!({ "safety_tolerance": 4 }));
+        p.generate(&schema, &make_base("a canyon", id), &e, &empty_materialized()).await.expect("text-to-video");
+        let first = || frame("first_frame", "https://cdn.example/a.png", None);
+        p.generate(&schema, &make_base("a canyon", id), &make_extras(), &with_refs(vec![first()])).await.expect("image-to-video");
+        p.generate(&schema, &make_base("a canyon", id), &make_extras(), &with_refs(vec![frame("last_frame", "https://cdn.example/z.png", None), first()])).await.expect("first-last");
+        let keyframes = vec![
+            frame("keyframe", "https://cdn.example/k3.png", Some(5.0)),
+            frame("keyframe", "https://cdn.example/k1.png", Some(0.0)),
+            frame("keyframe", "https://cdn.example/k2.png", Some(2.5)),
+        ];
+        p.generate(&schema, &make_base("a canyon", id), &make_extras(), &with_refs(keyframes)).await.expect("keyframes");
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 4);
+        let t2v = body_at(&received, "/blackforestlabs/flux-3/text-to-video");
+        assert_eq!(t2v["duration"], json!(10), "an integer: {t2v}");
+        assert_eq!((t2v["resolution"].as_str(), t2v["aspect_ratio"].as_str()), (Some("1080p"), Some("21:9")), "{t2v}");
+        assert_eq!((&t2v["generate_audio"], &t2v["safety_tolerance"]), (&json!(false), &json!(4)), "{t2v}");
+        assert!(t2v.get("seed").is_none() && t2v.get("image_url").is_none(), "{t2v}");
+        assert_eq!(body_at(&received, "/blackforestlabs/flux-3/image-to-video")["image_url"], "https://cdn.example/a.png");
+        let flf = body_at(&received, "/blackforestlabs/flux-3/first-last-frame-to-video");
+        assert_eq!((flf["start_image_url"].as_str(), flf["end_image_url"].as_str()), (Some("https://cdn.example/a.png"), Some("https://cdn.example/z.png")), "{flf}");
+        assert!(flf.get("image_url").is_none(), "{flf}");
+        let kf = body_at(&received, "/blackforestlabs/flux-3/keyframes-to-video");
+        assert_eq!(
+            kf["keyframes"],
+            json!([
+                { "frame_index": 0, "image_url": "https://cdn.example/k1.png" },
+                { "frame_index": 60, "image_url": "https://cdn.example/k2.png" },
+                { "frame_index": 120, "image_url": "https://cdn.example/k3.png" },
+            ]),
+            "{kf}"
+        );
+        assert!(kf.get("image_url").is_none() && kf.get("start_image_url").is_none(), "{kf}");
+    }
+
+    /// Requests FLUX 3's endpoints don't take, or fal doesn't price, are
+    /// refused before any call:
+    /// - 1440p or 2160p with a last frame or keyframes (those endpoints price
+    ///   "720p, and … 1080p" only);
+    /// - a last frame without a first;
+    /// - keyframes mixed with a first or last frame;
+    /// - two keyframes on one frame;
+    /// - a length that isn't a whole number of seconds.
+    #[tokio::test]
+    async fn flux_3_video_on_fal_refuses_what_its_endpoints_do_not_take() {
+        let server = MockServer::start().await;
+        let p = make_provider(&server.uri());
+        let id = "fal/flux-3-video";
+        let schema = ref_schema(id);
+        let at = |r: &str| {
+            let mut e = make_extras();
+            e.resolution = Some(r.into());
+            e
+        };
+        let first_last = || with_refs(vec![frame("first_frame", "https://cdn.example/a.png", None), frame("last_frame", "https://cdn.example/z.png", None)]);
+        let mut odd = make_extras();
+        odd.duration_seconds = 7.5;
+        let cases = vec![
+            ("2160p with a last frame", at("2160p"), first_last()),
+            ("1440p with keyframes", at("1440p"), with_refs(vec![frame("keyframe", "https://cdn.example/k.png", Some(0.0))])),
+            ("a last frame alone", make_extras(), with_refs(vec![frame("last_frame", "https://cdn.example/z.png", None)])),
+            ("keyframes with a first frame", make_extras(), with_refs(vec![frame("first_frame", "https://cdn.example/a.png", None), frame("keyframe", "https://cdn.example/k.png", Some(2.0))])),
+            ("two keyframes on one frame", make_extras(), with_refs(vec![frame("keyframe", "https://cdn.example/k1.png", Some(1.0)), frame("keyframe", "https://cdn.example/k2.png", Some(1.01))])),
+            ("7.5 s", odd, empty_materialized()),
+        ];
+        for (case, e, refs) in cases {
+            let err = p.generate(&schema, &make_base("a canyon", id), &e, &refs).await.expect_err(case);
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{case}: {err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing was sent");
+    }
+
+    /// FLUX 3 Max on fal has no first-last endpoint. Its image-to-video takes
+    /// the last frame as `end_image_url`, keyframes go to
+    /// `…/flux-3-max/keyframes-to-video`, and it takes a `seed`.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3-max/image-to-video> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3-max/keyframes-to-video> (2026-11-04)
+    #[tokio::test]
+    async fn flux_3_max_video_on_fal_sends_its_last_frame_to_image_to_video() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "r" }))).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let id = "fal/flux-3-max-video";
+        let schema = ref_schema(id);
+        let mut base = make_base("a canyon", id);
+        base.seed = Some(42);
+        let mut e = make_extras();
+        e.extra = Some(json!({ "reasoning_level": "low" }));
+        let ends = with_refs(vec![frame("first_frame", "https://cdn.example/a.png", None), frame("last_frame", "https://cdn.example/z.png", None)]);
+        p.generate(&schema, &base, &e, &ends).await.expect("image-to-video");
+        p.generate(&schema, &make_base("a canyon", id), &make_extras(), &with_refs(vec![frame("keyframe", "https://cdn.example/k.png", Some(0.0))])).await.expect("keyframes");
+        p.generate(&schema, &make_base("a canyon", id), &make_extras(), &empty_materialized()).await.expect("text-to-video");
+        let received = server.received_requests().await.unwrap();
+        let i2v = body_at(&received, "/blackforestlabs/flux-3-max/image-to-video");
+        assert_eq!((i2v["image_url"].as_str(), i2v["end_image_url"].as_str()), (Some("https://cdn.example/a.png"), Some("https://cdn.example/z.png")), "{i2v}");
+        assert_eq!((&i2v["seed"], &i2v["reasoning_level"], &i2v["duration"]), (&json!(42), &json!("low"), &json!(5)), "{i2v}");
+        assert_eq!(body_at(&received, "/blackforestlabs/flux-3-max/keyframes-to-video")["keyframes"], json!([{ "frame_index": 0, "image_url": "https://cdn.example/k.png" }]));
+        assert!(body_at(&received, "/blackforestlabs/flux-3-max/text-to-video").get("image_url").is_none());
+    }
+
+    /// E10: a clip asked without a `resolution` is quoted and charged at the
+    /// row's default, so fal is sent that default (LTX-2.3's text-to-video:
+    /// `"resolution": { "default": "1080p", "enum": ["1080p", "1440p", "2160p"] }`;
+    /// FLUX 3 Video's row says 720p) instead of being left to pick its own.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/text-to-video> (drift snapshot `fal/carried-video.txt`, 2026-10-31)
+    #[tokio::test]
+    async fn an_unasked_resolution_is_sent_at_the_rows_default() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "r" }))).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let mut ltx = ltx23_extras();
+        ltx.resolution = None;
+        p.generate(&ref_schema(LTX23), &make_base("a canyon", LTX23), &ltx, &empty_materialized()).await.expect("ltx-2.3");
+        let flux = "fal/flux-3-video";
+        p.generate(&ref_schema(flux), &make_base("a canyon", flux), &make_extras(), &empty_materialized()).await.expect("flux-3-video");
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(body_at(&received, "/fal-ai/ltx-2.3/text-to-video")["resolution"], "1080p");
+        assert_eq!(body_at(&received, "/blackforestlabs/flux-3/text-to-video")["resolution"], "720p");
+    }
+
+    /// FLUX 3 drafts on fal go to the four `/draft` twins, which take no
+    /// `resolution` (a draft is 720p).
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/text-to-video/draft> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/first-last-frame-to-video/draft> (2026-11-04)
+    #[tokio::test]
+    async fn flux_3_video_drafts_on_fal_take_the_draft_endpoints() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "r" }))).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let id = "fal/flux-3-video-draft";
+        let schema = ref_schema(id);
+        let mut e = make_extras();
+        e.resolution = Some("720p".into());
+        p.generate(&schema, &make_base("a canyon", id), &e, &empty_materialized()).await.expect("text-to-video");
+        let ends = with_refs(vec![frame("first_frame", "https://cdn.example/a.png", None), frame("last_frame", "https://cdn.example/z.png", None)]);
+        p.generate(&schema, &make_base("a canyon", id), &make_extras(), &ends).await.expect("first-last");
+        let received = server.received_requests().await.unwrap();
+        let t2v = body_at(&received, "/blackforestlabs/flux-3/text-to-video/draft");
+        assert!(t2v.get("resolution").is_none(), "{t2v}");
+        assert_eq!(t2v["duration"], json!(5), "{t2v}");
+        assert_eq!(body_at(&received, "/blackforestlabs/flux-3/first-last-frame-to-video/draft")["end_image_url"], "https://cdn.example/z.png");
     }
 
     /// F10: no arm serves an endpoint the catalog does not carry.

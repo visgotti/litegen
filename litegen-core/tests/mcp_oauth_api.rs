@@ -1,7 +1,6 @@
 //! OAuth 2.1 for the MCP endpoints, over the real route table: discovery
 //! documents, client registration, consent, tokens, and OAuth callers.
 
-#[allow(dead_code)]
 mod harness;
 mod mcp_support;
 
@@ -427,6 +426,78 @@ async fn authorize_error_redirect_has_iss() {
         assert_eq!(params["iss"], BASE, "{location}");
         assert_eq!(params["state"], "st-1", "{location}");
         assert!(params.contains_key("error_description"), "{location}");
+    }
+}
+
+/// A client registered with `redirect` as its only redirect URI: its id.
+async fn register_redirect(app: &axum::Router, redirect: &str) -> String {
+    let (status, client) = post_json(app, "/oauth/register", json!({ "redirect_uris": [redirect], "client_name": "Web client" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    client["client_id"].as_str().unwrap().to_string()
+}
+
+/// RFC 9700 §4.11.2: before anyone has signed in or seen anything, an error
+/// goes back automatically only to a redirect URI LiteGen trusts. Anyone may
+/// register a client with any `https` URI, so otherwise a link to LiteGen's
+/// own `/oauth/authorize` with a broken parameter would bounce the browser
+/// from LiteGen's origin to the attacker's site. LiteGen shows a page
+/// instead, naming the problem and where the app's link leads.
+#[tokio::test]
+async fn a_pre_consent_error_never_bounces_the_browser_to_an_https_client() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let landing = "https://phish.example/landing";
+    let client = register_redirect(&app, landing).await;
+    let base = with(with(authorize_query(&client), "redirect_uri", Some(landing)), "state", Some("\"><script>alert(1)</script>"));
+    for (query, error) in [
+        (with(base.clone(), "response_type", Some("token")), "unsupported_response_type"),
+        (with(base.clone(), "code_challenge", None), "invalid_request"),
+        (with(base.clone(), "scope", Some("ai:read admin:read")), "invalid_scope"),
+        (with(base.clone(), "resource", Some("https://evil.example/mcp")), "invalid_target"),
+    ] {
+        let (status, location, body) = authorize(&app, &query).await;
+        assert_eq!((status, location.as_deref()), (StatusCode::BAD_REQUEST, None), "{error}: {body}");
+        assert!(body.contains(error), "the page names the error: {body}");
+        assert!(body.contains("phish.example"), "and where the app's link leads: {body}");
+        assert!(!body.contains("<script>"), "the app's state is escaped: {body}");
+        // The person may still hand the app its error, by choice.
+        let href = body.split("href=\"").nth(1).and_then(|rest| rest.split('"').next()).expect("a link back");
+        let back = href.replace("&amp;", "&");
+        assert!(back.starts_with(&format!("{landing}?error={error}&")), "{href}");
+        let params = query_of(&back);
+        assert_eq!((params["state"].as_str(), params["iss"].as_str()), ("\"><script>alert(1)</script>", BASE), "{back}");
+    }
+}
+
+/// Loopback redirect URIs (native apps, RFC 8252) and hosts the operator lists
+/// in `mcp.oauth.trusted_redirect_hosts` still get their errors back at once.
+/// The list matches a host exactly, ignoring case and port, so a host that
+/// merely starts or ends with a listed one doesn't.
+#[tokio::test]
+async fn trusted_redirect_uris_get_their_errors_back_automatically() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, |c| {
+        public(c);
+        c.mcp.oauth.trusted_redirect_hosts = vec![" Claude.AI ".into()];
+    })
+    .await;
+    for (redirect, trusted) in [
+        ("https://claude.ai/api/mcp/auth_callback", true),
+        ("https://CLAUDE.ai:8443/cb", true),
+        ("https://localhost/cb", true),
+        ("http://127.0.0.1:6274/oauth/callback", true),
+        ("https://claude.ai.evil.example/cb", false),
+        ("https://sub.claude.ai/cb", false),
+        ("https://evil.example/claude.ai", false),
+    ] {
+        let client = register_redirect(&app, redirect).await;
+        let query = with(with(authorize_query(&client), "redirect_uri", Some(redirect)), "response_type", Some("token"));
+        let (status, location, body) = authorize(&app, &query).await;
+        if trusted {
+            assert_eq!(status, StatusCode::FOUND, "{redirect}: {body}");
+            let location = location.expect("a redirect");
+            assert_eq!(query_of(&location)["error"], "unsupported_response_type", "{location}");
+        } else {
+            assert_eq!((status, location), (StatusCode::BAD_REQUEST, None), "{redirect}");
+        }
     }
 }
 

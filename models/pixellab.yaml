@@ -19,7 +19,10 @@ models:
     docs_url: https://api.pixellab.ai/v2/redoc#operation/generate_image_pixflux_create_image_pixflux_post
     # "$0.008–0.013" a call by size (PixelLab's own estimates, PixelGenie
     # research 2026-10-30); the dearest is billed until the size curve is
-    # read from a billed run (unverified).
+    # read from a billed run. Unverified: PixelLab publishes no pixflux price
+    # (llms.txt and openapi.json, read 2026-11-09, name none; the spec's only
+    # dollar figures are on other endpoints). Only a billed call reports it, in
+    # the response's `usage.usd`, which the adapter keeps as `vendor_usd`.
     pricing: { base_cost_usd: 0.013 }
     capabilities: { text_to_image: true, native_pixel_art: true }
     prompt: { required: true, max_length: 2000 }
@@ -30,4 +33,12 @@ models:
       seed: { kind: seed, min: 0, max: 2147483647 }
       guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 8.0 }
     extra_allowlist: [outline, shading, detail, view, direction, isometric]
+    extra_params:
+      # From PixelLab's OpenAPI (drift snapshot pixellab/openapi.txt).
+      outline: { kind: string, enum_values: ["single color black outline", "single color outline", "selective outline", "lineless"] }
+      shading: { kind: string, enum_values: ["flat shading", "basic shading", "medium shading", "detailed shading", "highly detailed shading"] }
+      detail: { kind: string, enum_values: ["low detail", "medium detail", "highly detailed"] }
+      view: { kind: string, enum_values: ["side", "low top-down", "high top-down"] }
+      direction: { kind: string, enum_values: ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"] }
+      isometric: { kind: bool, default: false }
     tags: [text-to-image, pixel-art]

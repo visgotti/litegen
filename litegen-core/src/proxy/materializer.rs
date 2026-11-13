@@ -213,7 +213,8 @@ impl Materializer {
             // @see <https://fal.ai/docs/documentation/model-apis/fal-cdn> (data URIs)
             (RefImageKind::Base64, RefProviderFormat::Url) => {
                 let raw = strip_data_prefix(&r.value);
-                let bytes = B64.decode(raw).map_err(|e| MaterializeError::Decode(e.to_string()))?;
+                // Up to 25 MiB decoded: off the async workers (P15).
+                let bytes = crate::util::blocking::cpu_heavy(raw.len(), || B64.decode(raw)).map_err(|e| MaterializeError::Decode(e.to_string()))?;
                 if data_uri {
                     // The URI carries the caller's text, already in the form a
                     // data URI needs.
@@ -224,7 +225,8 @@ impl Materializer {
             }
             (RefImageKind::Base64, RefProviderFormat::Multipart(crate::capabilities::RefProviderFormatMultipart { field_map })) => {
                 let raw = strip_data_prefix(&r.value);
-                let bytes = B64.decode(raw).map_err(|e| MaterializeError::Decode(e.to_string()))?;
+                // Up to 25 MiB decoded: off the async workers (P15).
+                let bytes = crate::util::blocking::cpu_heavy(raw.len(), || B64.decode(raw)).map_err(|e| MaterializeError::Decode(e.to_string()))?;
                 let fname = field_map.get(role).cloned()
                     .ok_or_else(|| MaterializeError::Ref(format!("no field_map entry for role '{}'", role)))?;
                 Ok(MaterializedRefForm::MultipartField { field_name: fname, bytes: bytes.into(), content_type: "application/octet-stream".into() })
@@ -356,11 +358,11 @@ pub fn base64_data_uri(b64: &str, hint: Option<&str>) -> String {
 
 /// Adapter that wraps the existing storage backend with the TempStorage trait.
 pub struct StorageAdapter {
-    inner: Arc<dyn crate::proxy::storage::ImageStorage>,
+    inner: Arc<dyn crate::store::ImageStorage>,
 }
 
 impl StorageAdapter {
-    pub fn new(inner: Arc<dyn crate::proxy::storage::ImageStorage>) -> Self {
+    pub fn new(inner: Arc<dyn crate::store::ImageStorage>) -> Self {
         Self { inner }
     }
 }

@@ -3,21 +3,27 @@
 // supported-models table is gone; model ids now live on per-model cards and
 // provider pages.
 //
-// We carry no Bedrock model: Nova Canvas and Nova Reel, the only two, reached
+// We carry Stability AI's three text-to-image models on Bedrock (since
+// 2026-11-04) and Luma Ray 2 (since 2026-11-10, beside luma/ray-2 under the
+// hub-route policy); models/bedrock.yaml. Nova Canvas and Nova Reel reached
 // end of life on 2026-09-30 and left the catalog (their sources went with
-// them). The definition stays so a Nova successor or a Bedrock-hosted model
-// worth an AWS-billed route still surfaces as new. The sources are:
+// them). The sources are:
 //   lifecycle        index: our models' Legacy/EOL rows, under the section
 //                    they sit in (scheduled EOL vs reached EOL)
 //   stability        Bedrock's Stable Image services (edit/upscale tools)
 //   stability-*      the cards of the Stability text-to-image models Bedrock
-//                    hosts (their ids are on no shared page)
-//   luma             the Luma video model Bedrock hosts
+//                    hosts (their ids are on no shared page): lifecycle and
+//                    the In-Region endpoint row
+//   params-*         each model's request/response page (the typings: its
+//                    parameter bullets, which the adapter's body follows)
+//   luma             the Luma video model Bedrock hosts: its request
+//                    fields (the typings video/bedrock.rs follows)
+//   luma-ray2        Ray 2's card: lifecycle and the In-Region endpoint row
 //   cards            index: image/video model cards in "Models at a glance",
 //                    so a new card (e.g. a Nova Canvas successor) shows up
 // Mapping mirrors litegen-core/src/providers/image/bedrock.rs (InvokeModel URL
-// path) and video/bedrock.rs (StartAsyncInvoke body `modelId`): strip `bedrock/`.
-// Both adapters still build only the Nova request body.
+// path, `stability_model`) and video/bedrock.rs (`resolve_model`, the async
+// invoke's modelId): strip `bedrock/`.
 
 const GUIDE = 'https://docs.aws.amazon.com/bedrock/latest/userguide';
 
@@ -108,9 +114,27 @@ const STABILITY_TOOL_IDS = [
   'stability.stable-style-transfer-v1:0',
 ];
 
+/** A Stability request/response page: the model ids in its samples, and its parameter bullets as the snapshot. */
+const params = (key, slug) => ({
+  key,
+  url: `${GUIDE}/${slug}.md`,
+  expect: 'text',
+  extract: /\b(stability\.[a-z0-9-]+-v\d+:\d+)/g,
+  snapshot: (md) => {
+    const lines = md.split('\n').filter((l) => /^\s*\+ \*\*[\w\\]+\*\*/.test(l) || /^\s*\*\*[\w\\]+\*\* \(Required\)/.test(l)).map((l) => l.trim());
+    if (lines.length === 0) throw new Error('no parameter bullets (+ **name** …) — the page was restructured');
+    return lines.join('\n') + '\n';
+  },
+});
+
 export default {
   provider: 'bedrock',
-  models: {},
+  models: {
+    'bedrock/stability.sd3-5-large-v1:0': 'stability.sd3-5-large-v1:0',
+    'bedrock/stability.stable-image-core-v1:1': 'stability.stable-image-core-v1:1',
+    'bedrock/stability.stable-image-ultra-v1:1': 'stability.stable-image-ultra-v1:1',
+    'bedrock/luma.ray-v2:0': 'luma.ray-v2:0',
+  },
   sources: [
     {
       key: 'lifecycle',
@@ -133,12 +157,13 @@ export default {
     card('stability-sd3-5-large', 'stability-ai-stable-diffusion-3-5-large'),
     card('stability-image-core', 'stability-ai-stable-image-core-1-0'),
     card('stability-image-ultra', 'stability-ai-stable-image-ultra-1-0'),
-    {
-      key: 'luma',
-      url: `${GUIDE}/model-parameters-luma.md`,
-      expect: 'text',
-      extract: /\b(luma\.[a-z0-9-]+-v\d+:\d+)/g,
-    },
+    params('params-sd3-5-large', 'model-parameters-diffusion-3-5-large'),
+    params('params-image-core', 'model-parameters-diffusion-stable-image-core-text-image-request-response'),
+    params('params-image-ultra', 'model-parameters-diffusion-stable-ultra-text-image-request-response'),
+    // Luma Ray 2's request fields: the `**Fields**` bullets and the keyframe
+    // bullets ("+ **prompt** – (string) …", "+ **frame0** – …").
+    { ...params('luma', 'model-parameters-luma'), extract: /\b(luma\.[a-z0-9-]+-v\d+:\d+)/g },
+    card('luma-ray2', 'luma-ai-ray2'),
     {
       key: 'cards',
       index: true,
@@ -152,7 +177,6 @@ export default {
       id,
       reason: 'Bedrock EOL 2026-09-30 ("Models that have reached EOL"); removed from the catalog 2026-10-12',
     })),
-    { id: 'luma.ray-v2:0', reason: 'skipped 2026-09-11: Luma Ray 2 is carried direct from Luma (models/luma.yaml)' },
     ...STABILITY_TOOL_IDS.map((id) => ({ id, reason: STABILITY_TOOLS })),
   ],
 };

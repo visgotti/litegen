@@ -36,8 +36,10 @@ Meshy and Rodin return separate PBR maps, which become `Texture` files.
 - Auth: `Authorization: Bearer`. Self-serve, but API access may need the Pro
   tier (the docs disagree).
 - Text-to-3D is **two-stage**: `mode: "preview"`, then `mode: "refine"` with
-  `preview_task_id`, at `POST /openapi/v2/text-to-3d`. This hits the
-  multi-stage gap (see SKILL.md).
+  `preview_task_id`, at `POST /openapi/v2/text-to-3d`. Build it on the stage
+  plumbing: the poll that sees the preview finish returns `next_stage`, and
+  `start_stage` makes the billed refine call (SKILL.md, "Multi-stage and
+  synchronous vendors").
 - Image-to-3D is single-stage (`POST /openapi/v1/image-to-3d`,
   `should_texture`). Multi-image takes 1–4 views.
 - *Unverified*: whether text-to-3D is on v2 and image-to-3D on v1. Settle it
@@ -137,8 +139,8 @@ has no API).
 This is the landscape doc's order, as of 2026-09-12:
 
 1. fal (done).
-2. **Meshy**, the only natural bundle vendor. It needs the multi-stage
-   decision for text-to-3D.
+2. **Meshy**, the only natural bundle vendor. Rig and animate are wired;
+   its two-stage text-to-3D can use `next_stage` / `start_stage`.
 3. **Stability**: the key is already in hand, but it needs the sync shim.
 4. Tripo direct, only if billing for per-format conversion is acceptable.
 5. Rodin direct last, because of the $1,152-a-year floor.

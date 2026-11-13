@@ -1,17 +1,24 @@
 # Single-domain Caddyfile for the private litegen.visgotti.com instance.
 # Selected via LITEGEN_CADDYFILE=Caddyfile.visgotti in .env.deploy.visgotti.
 # Caddy terminates TLS (automatic Let's Encrypt) and serves one host:
-#   litegen.visgotti.com → dashboard SPA (/srv/app) + API reverse-proxied under /api
+#   litegen.visgotti.com → dashboard SPA (/srv/app) + API reverse-proxied under /api,
+#   plus the MCP OAuth discovery routes at the root (as deploy/Caddyfile has them)
 # (No landing site — this is a personal single-tenant instance.)
-{
-    email jvisgotti@gmail.com
-}
-
 litegen.visgotti.com {
+    # MCP OAuth discovery at the root, where clients derive it from the
+    # endpoint URL (RFC 9728 / RFC 8414): /.well-known/oauth-protected-resource/api/mcp
+    # and /.well-known/oauth-authorization-server/api. Not stripped.
+    handle /.well-known/oauth-* {
+        reverse_proxy litegen:4000
+    }
     handle_path /api/* {
         reverse_proxy litegen:4000
     }
     handle {
+        # The MCP OAuth consent page grants apps access: no other site may frame it.
+        @consent path /oauth/consent
+        header @consent Content-Security-Policy "frame-ancestors 'none'"
+        header @consent X-Frame-Options "DENY"
         root * /srv/app
         try_files {path} /index.html
         file_server

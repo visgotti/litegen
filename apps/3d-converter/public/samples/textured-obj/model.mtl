@@ -1,0 +1,29 @@
+# exported by litegen mesh conversion
+
+newmtl box_mat
+Kd 1 1 1
+Ka 0 0 0
+Ks 0.22091636 0.22091636 0.22091636
+Ns 1000
+Pr 0
+Pm 0
+illum 2
+map_Kd textures/texture_0.png
+
+newmtl wedge_mat
+Kd 0.9 0.3 0.1
+Ka 0 0 0
+Ks 0.1333515 0.1333515 0.1333515
+Ns 399.9999
+Pr 0.3675445
+Pm 0
+illum 2
+
+newmtl panel_mat
+Kd 1 1 1
+Ka 0 0 0
+Ks 0.0861042 0.0861042 0.0861042
+Ns 199.99998
+Pr 0.5527864
+Pm 0
+illum 2

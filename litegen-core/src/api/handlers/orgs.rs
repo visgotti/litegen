@@ -23,7 +23,7 @@ use crate::types::{
     OrgAllowedModels, ProviderCredentialInfo, Role, SetAppModelAccessRequest,
     SetOrgAllowedModelsRequest,
 };
-use crate::util::slug::{slugify, unique_org_slug};
+use crate::management::slug::{slugify, unique_org_slug};
 
 // ─── Error helpers (mirror users.rs `err`) ─────────────────────────────────────
 
@@ -98,7 +98,7 @@ pub(crate) fn log_org_audit(
 }
 
 // ─── Slug helpers ──────────────────────────────────────────────────────────────
-// `slugify` and `unique_org_slug` live in `crate::util::slug` and are shared
+// `slugify` and `unique_org_slug` live in `crate::management::slug` and are shared
 // with `auth_password.rs`. Only the per-org app-slug helper remains here
 // because it scopes uniqueness to a single org via `list_apps_for_org`.
 
@@ -299,6 +299,14 @@ pub async fn create_org(
     if ctx.oauth_grant_id.is_some() {
         return forbidden("an app connected through OAuth acts only in the organization it was approved for");
     }
+    // Single-tenant: a new org is the deployment's to make. Its maker owns
+    // it, keys and apps included, so a viewer or member making one would
+    // hold more than their role in the deployment gives them.
+    if state.mode == crate::config::Mode::SingleTenant {
+        if let Err(resp) = crate::api::handlers::management::require_gateway_admin(&state, &ctx) {
+            return resp;
+        }
+    }
 
     let name = body.name.trim().to_string();
     if name.is_empty() {
@@ -471,8 +479,14 @@ pub async fn delete_org(
     if let Err(resp) = require_member_perm(&state, &ctx, &id, Permission::OrgDelete).await {
         return resp;
     }
+    // Read before the rows go: its apps' files in litegen's own store go with it.
+    let kept = state.db.generations_with_kept_files("org", &id).await.unwrap_or_else(|e| {
+        tracing::warn!(org_id = %id, error = %e, "could not list a deleted org's files; they stay until the store's own retention");
+        Vec::new()
+    });
     match state.db.delete_organization(&id).await {
         Ok(true) => {
+            crate::api::handlers::delete_files_in_litegens_store(&state, kept);
             log_org_audit(&state, &ctx, &id, "org.delete", "organization", &id);
             StatusCode::NO_CONTENT.into_response()
         }
@@ -668,6 +682,20 @@ pub async fn remove_member(
     match state.db.remove_org_member(&id, &user_id).await {
         Ok(()) => {
             log_org_audit(&state, &ctx, &id, "org.member.remove", "membership", &user_id);
+            // Single-tenant: an account with no membership left holds nothing,
+            // so its sessions end now rather than idling until they expire.
+            // (Generating also needs an org: `check_generation_principal`.)
+            if state.mode == crate::config::Mode::SingleTenant {
+                match state.db.list_orgs_for_user(&user_id).await {
+                    Ok(orgs) if orgs.is_empty() => {
+                        if let Err(e) = state.db.delete_user_sessions(&user_id, None).await {
+                            tracing::warn!(user_id = %user_id, error = %e, "removed member's sessions could not be ended");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(user_id = %user_id, error = %e, "could not tell whether a removed member has another membership"),
+                }
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => internal_error(&e.to_string()),
@@ -698,7 +726,26 @@ pub async fn transfer_owner(
     if let Err(resp) = require_member_perm(&state, &ctx, &id, Permission::OrgTransferOwner).await {
         return resp;
     }
-    match state.db.transfer_org_owner(&id, &body.new_owner_user_id).await {
+    // Single-tenant: the default org's Owner is the deployment's, which the
+    // account role records too (`/v1/users/transfer-owner`); both move together.
+    let deployment = state.mode == crate::config::Mode::SingleTenant && id == crate::api::middleware::DEFAULT_ORG_ID;
+    if deployment {
+        // As `/v1/users/transfer-owner`: an Owner no one can sign in as
+        // would leave the deployment without one.
+        match state.db.get_user_by_id(&body.new_owner_user_id).await {
+            Ok(Some(u)) if !u.is_active => {
+                return err(StatusCode::BAD_REQUEST, "user_inactive", "Cannot transfer ownership to an inactive user");
+            }
+            Ok(_) => {}
+            Err(e) => return internal_error(&e.to_string()),
+        }
+    }
+    let moved = if deployment {
+        state.db.transfer_deployment_owner(&id, &body.new_owner_user_id).await
+    } else {
+        state.db.transfer_org_owner(&id, &body.new_owner_user_id).await
+    };
+    match moved {
         Ok(()) => {
             log_org_audit(&state, &ctx, &id, "org.transfer_owner", "organization", &body.new_owner_user_id);
             StatusCode::NO_CONTENT.into_response()
@@ -882,8 +929,14 @@ pub async fn delete_app(
     if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::AppDelete).await {
         return resp;
     }
+    // Read before the rows go: its files in litegen's own store go with it.
+    let kept = state.db.generations_with_kept_files("app", &app_id).await.unwrap_or_else(|e| {
+        tracing::warn!(app_id = %app_id, error = %e, "could not list a deleted app's files; they stay until the store's own retention");
+        Vec::new()
+    });
     match state.db.delete_application(&app_id).await {
         Ok(true) => {
+            crate::api::handlers::delete_files_in_litegens_store(&state, kept);
             log_org_audit(&state, &ctx, &org_id, "org.app.delete", "application", &app_id);
             StatusCode::NO_CONTENT.into_response()
         }
@@ -1066,9 +1119,22 @@ pub struct PutAppStorageRequest {
     /// Write-only.
     #[serde(default)]
     pub secret_access_key: Option<String>,
+    /// `access_key` (default: the key pair above) or `assume_role` (a
+    /// cross-account IAM role, `role_arn`, trusting litegen with the app's
+    /// `external_id`).
+    #[serde(default)]
+    pub credential_mode: Option<String>,
+    /// `arn:aws:iam::{account}:role/{name}`, with `credential_mode: assume_role`.
+    #[serde(default)]
+    pub role_arn: Option<String>,
+    /// Whether litegen's own store keeps the app's files while its bucket
+    /// can't be reached (default true). With false, they wait for the bucket.
+    #[serde(default)]
+    pub fallback_to_litegen_store: Option<bool>,
 }
 
 fn app_storage_info_from_row(row: crate::types::AppStorageRow) -> crate::types::AppStorageInfo {
+    let role = row.credential_mode.as_deref() == Some("assume_role");
     crate::types::AppStorageInfo {
         configured: true,
         backend: Some(row.backend),
@@ -1079,7 +1145,32 @@ fn app_storage_info_from_row(row: crate::types::AppStorageRow) -> crate::types::
         path_prefix: row.path_prefix,
         access_key_id_hint: row.access_key_id_hint,
         updated_at: Some(row.updated_at),
+        credential_mode: Some(if role { "assume_role" } else { "access_key" }.into()),
+        role_arn: row.role_arn,
+        external_id: None,
+        litegen_principal_arn: None,
+        fallback_to_litegen_store: Some(row.fallback_to_litegen_store.unwrap_or(true)),
     }
+}
+
+/// The role details every storage answer carries: the app's external ID (its
+/// role's trust policy must require it) and litegen's own principal.
+async fn with_role_details(state: &AppState, app_id: &str, mut info: crate::types::AppStorageInfo) -> crate::types::AppStorageInfo {
+    info.external_id = state.secrets_key.map(|k| crate::proxy::aws_sts::external_id(&k, app_id));
+    let aws = &state.router.config.aws;
+    info.litegen_principal_arn = match aws.principal_arn.clone() {
+        Some(arn) => Some(arn),
+        // Only an identity the operator configured is asked: never whatever
+        // credentials happen to be on the machine.
+        None if aws.access_key_id.is_some() || aws.sts_endpoint.is_some() => {
+            tokio::time::timeout(std::time::Duration::from_secs(5), crate::proxy::aws_sts::caller_arn(aws))
+                .await
+                .ok()
+                .and_then(Result::ok)
+        }
+        None => None,
+    };
+    info
 }
 
 /// GET /v1/apps/{app_id}/storage — read BYO storage config (storage_cred:read). No secret.
@@ -1105,24 +1196,192 @@ pub async fn get_app_storage(
     if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::StorageCredRead).await {
         return resp;
     }
-    match state.db.get_app_storage(&app_id).await {
-        Ok(Some(row)) => (StatusCode::OK, Json(app_storage_info_from_row(row))).into_response(),
-        Ok(None) => (
-            StatusCode::OK,
-            Json(crate::types::AppStorageInfo {
-                configured: false,
-                backend: None,
-                bucket_name: None,
-                region: None,
-                endpoint_url: None,
-                custom_public_url: None,
-                path_prefix: None,
-                access_key_id_hint: None,
-                updated_at: None,
-            }),
-        )
-            .into_response(),
-        Err(e) => internal_error(&e.to_string()),
+    let info = match state.db.get_app_storage(&app_id).await {
+        Ok(Some(row)) => app_storage_info_from_row(row),
+        Ok(None) => crate::types::AppStorageInfo {
+            configured: false,
+            backend: None,
+            bucket_name: None,
+            region: None,
+            endpoint_url: None,
+            custom_public_url: None,
+            path_prefix: None,
+            access_key_id_hint: None,
+            updated_at: None,
+            credential_mode: None,
+            role_arn: None,
+            external_id: None,
+            litegen_principal_arn: None,
+            fallback_to_litegen_store: None,
+        },
+        Err(e) => return internal_error(&e.to_string()),
+    };
+    (StatusCode::OK, Json(with_role_details(&state, &app_id, info).await)).into_response()
+}
+
+/// The app's stored-file access settings, as `GET` and `PUT` answer them.
+async fn app_access_view(state: &AppState, app_id: &str) -> Result<crate::access::AppAccessSettings, Response> {
+    let row = state.db.get_app_file_access(app_id).await.map_err(|e| internal_error(&e.to_string()))?;
+    let effective = crate::access::effective(&state.router.config.storage_access, &state.router.overrides().gateway, row.as_ref());
+    // No generation is named "", so this is the gateway's and the app's.
+    let links_revoked_at = state.db.links_revoked_at(Some(app_id), "").await.map_err(|e| internal_error(&e.to_string()))?;
+    Ok(crate::access::AppAccessSettings {
+        app_id: app_id.to_string(),
+        overrides: crate::access::AppAccessOverrides::of(row.as_ref()),
+        effective: effective.into(),
+        updated_at: row.map(|r| r.updated_at),
+        links_revoked_at,
+    })
+}
+
+/// POST /v1/apps/{app_id}/access/revoke-links — end every litegen link to the app's files.
+#[utoipa::path(
+    post,
+    path = "/v1/apps/{app_id}/access/revoke-links",
+    params(("app_id" = String, Path, description = "Application ID")),
+    responses(
+        (status = 200, description = "litegen's links to the app's files issued before `revoked_at` no longer work. A bucket's own presigned links work until they expire.", body = crate::access::LinksRevoked),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 404, description = "No such app", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
+pub async fn revoke_app_links(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+) -> Response {
+    let (_, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::StorageCredWrite).await {
+        return resp;
+    }
+    let at = crate::access::revocation_time();
+    if let Err(e) = state.db.revoke_links("app", &app_id, at).await {
+        return internal_error(&e.to_string());
+    }
+    log_org_audit(&state, &ctx, &org_id, "app.access.revoke_links", "application", &app_id);
+    (StatusCode::OK, Json(crate::access::LinksRevoked { revoked_at: at })).into_response()
+}
+
+/// GET /v1/apps/{app_id}/access — who may open the app's stored files
+/// (`docs/storage-access.md`): its own settings and the ones in force.
+#[utoipa::path(
+    get,
+    path = "/v1/apps/{app_id}/access",
+    params(("app_id" = String, Path, description = "Application ID")),
+    responses(
+        (status = 200, description = "The app's own settings and the ones its files follow", body = crate::access::AppAccessSettings),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 404, description = "No such app", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
+pub async fn get_app_access(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+) -> Response {
+    let (_, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::StorageCredRead).await {
+        return resp;
+    }
+    match app_access_view(&state, &app_id).await {
+        Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+        Err(resp) => resp,
+    }
+}
+
+/// PUT /v1/apps/{app_id}/access — replace the app's stored-file access
+/// settings. An omitted or `null` field uses the gateway's value.
+#[utoipa::path(
+    put,
+    path = "/v1/apps/{app_id}/access",
+    params(("app_id" = String, Path, description = "Application ID")),
+    request_body = crate::access::PutAppAccessRequest,
+    responses(
+        (status = 200, description = "Stored; the app's own settings and the ones its files now follow", body = crate::access::AppAccessSettings),
+        (status = 400, description = "invalid_mode, invalid_owner_scope or invalid_ttl", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 404, description = "No such app", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
+pub async fn put_app_access(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+    Json(body): Json<crate::access::PutAppAccessRequest>,
+) -> Response {
+    let (_, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::StorageCredWrite).await {
+        return resp;
+    }
+    if let Some(Err(e)) = body.mode.as_deref().map(str::parse::<crate::access::AccessMode>) {
+        return err(StatusCode::BAD_REQUEST, "invalid_mode", &e);
+    }
+    if let Some(Err(e)) = body.owner_scope.as_deref().map(str::parse::<crate::access::OwnerScope>) {
+        return err(StatusCode::BAD_REQUEST, "invalid_owner_scope", &e);
+    }
+    if body.signed_url_ttl_seconds.is_some_and(|t| !crate::access::ttl_in_range(t)) {
+        let msg = format!(
+            "signed_url_ttl_seconds must be between {} and {} seconds",
+            crate::access::MIN_SIGNED_URL_TTL_SECONDS,
+            crate::access::MAX_SIGNED_URL_TTL_SECONDS,
+        );
+        return err(StatusCode::BAD_REQUEST, "invalid_ttl", &msg);
+    }
+    let keep_outputs = match body.keep_outputs {
+        None => None,
+        Some(serde_json::Value::Bool(b)) => Some(b),
+        Some(other) => {
+            return err(StatusCode::BAD_REQUEST, "invalid_keep_outputs", &format!("keep_outputs must be true or false, not {other}"));
+        }
+    };
+    if body.retention_days.is_some_and(|d| !crate::access::retention_in_range(d)) {
+        let msg = format!("retention_days must be between 0 and {} days; 0 keeps files until they are deleted", crate::access::MAX_RETENTION_DAYS);
+        return err(StatusCode::BAD_REQUEST, "invalid_retention", &msg);
+    }
+    if let Some(Err(e)) = body.signed_links.as_deref().map(str::parse::<crate::access::SignedLinks>) {
+        return err(StatusCode::BAD_REQUEST, "invalid_signed_links", &e);
+    }
+    let nothing_set = body.mode.is_none()
+        && body.owner_scope.is_none()
+        && body.signed_url_ttl_seconds.is_none()
+        && keep_outputs.is_none()
+        && body.retention_days.is_none()
+        && body.signed_links.is_none();
+    let written = if nothing_set {
+        state.db.delete_app_file_access(&app_id).await.map(|_| ())
+    } else {
+        state
+            .db
+            .put_app_file_access(&crate::types::AppFileAccessUpsert {
+                app_id: app_id.clone(),
+                mode: body.mode,
+                owner_scope: body.owner_scope,
+                signed_url_ttl_seconds: body.signed_url_ttl_seconds,
+                keep_outputs,
+                retention_days: body.retention_days,
+                signed_links: body.signed_links,
+            })
+            .await
+    };
+    if let Err(e) = written {
+        return internal_error(&e.to_string());
+    }
+    log_org_audit(&state, &ctx, &org_id, "app.access.update", "application", &app_id);
+    match app_access_view(&state, &app_id).await {
+        Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+        Err(resp) => resp,
     }
 }
 
@@ -1183,9 +1442,58 @@ pub async fn put_app_storage(
         .unwrap_or("us-east-1")
         .to_string();
 
+    // Hosted mode: a tenant names this bucket, and litegen sends it signed
+    // requests from inside the deployment, so they must go to a public
+    // address and no field may steer them elsewhere (SSRF). `app_bucket`
+    // checks again at every use; a single-tenant operator may use an
+    // internal store, as with webhooks.
+    if super::tenant_bucket_of(&state).checks_hosts() {
+        use crate::proxy::storage::TenantBucketError;
+        let endpoint = body.endpoint_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        match crate::proxy::storage::check_tenant_bucket(&bucket_name, &region, endpoint).await {
+            // A host that doesn't resolve yet isn't refused: every use checks it.
+            Ok(()) | Err(TenantBucketError::Lookup(_)) => {}
+            Err(TenantBucketError::Bucket(why)) => return err(StatusCode::BAD_REQUEST, "invalid_bucket", &why),
+            Err(TenantBucketError::Region(why)) => return err(StatusCode::BAD_REQUEST, "invalid_region", &why),
+            Err(TenantBucketError::Endpoint(why)) => {
+                return err(StatusCode::BAD_REQUEST, "invalid_storage_endpoint", &format!("the storage endpoint is not allowed: {why}"));
+            }
+        }
+    }
+
+    let role_mode = match body.credential_mode.as_deref().map(str::trim) {
+        None | Some("") | Some("access_key") => false,
+        Some("assume_role") => true,
+        Some(other) => {
+            return err(StatusCode::BAD_REQUEST, "invalid_credential_mode", &format!("credential_mode must be access_key or assume_role, not {other:?}"));
+        }
+    };
+    let role_arn = if role_mode {
+        let arn = body.role_arn.as_deref().map(str::trim).unwrap_or("");
+        if !crate::proxy::aws_sts::is_role_arn(arn) {
+            return err(StatusCode::BAD_REQUEST, "invalid_role_arn", "role_arn must name an IAM role: arn:aws:iam::{12-digit account}:role/{name}");
+        }
+        // Proven before it is saved: litegen assumes the role once, with the
+        // app's external ID, so a trust policy that refuses shows up now.
+        let external = crate::proxy::aws_sts::external_id(&secrets_key, &app_id);
+        if let Err(e) = crate::proxy::aws_sts::assumed_credentials(&state.router.config.aws, arn, &external, &crate::proxy::aws_sts::session_name(&app_id)).await {
+            return err(StatusCode::BAD_REQUEST, "assume_role_failed", &format!("litegen could not assume {arn} with the app's external ID {external}: {e}"));
+        }
+        Some(arn.to_string())
+    } else {
+        None
+    };
+
     let ak = body.access_key_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let sk = body.secret_access_key.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let (secret_ciphertext, secret_nonce, access_key_id_hint) = match (ak, sk) {
+    let (secret_ciphertext, secret_nonce, access_key_id_hint) = if role_mode {
+        // A role needs no secret; the column holds an empty one.
+        match crate::auth::secrets::encrypt(&secrets_key, b"{}") {
+            Ok((ct, nonce)) => (ct, nonce, None),
+            Err(e) => return internal_error(&e),
+        }
+    } else {
+        match (ak, sk) {
         (Some(ak), Some(sk)) => {
             let plaintext = match serde_json::to_vec(
                 &serde_json::json!({ "access_key_id": ak, "secret_access_key": sk }),
@@ -1205,8 +1513,16 @@ pub async fn put_app_storage(
             (ct, nonce, hint)
         }
         (None, None) => match state.db.get_app_storage(&app_id).await {
-            Ok(Some(existing)) => {
+            // A role's empty secret is no key pair to keep.
+            Ok(Some(existing)) if existing.credential_mode.as_deref() != Some("assume_role") => {
                 (existing.secret_ciphertext, existing.secret_nonce, existing.access_key_id_hint)
+            }
+            Ok(Some(_)) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "credentials_required",
+                    "access_key_id and secret_access_key are required to leave a role for a key pair",
+                );
             }
             Ok(None) => {
                 return err(
@@ -1224,6 +1540,7 @@ pub async fn put_app_storage(
                 "provide both access_key_id and secret_access_key, or neither",
             );
         }
+        }
     };
 
     let input = crate::types::AppStorageUpsert {
@@ -1237,13 +1554,16 @@ pub async fn put_app_storage(
         access_key_id_hint,
         secret_ciphertext,
         secret_nonce,
+        credential_mode: role_mode.then(|| "assume_role".to_string()),
+        role_arn,
+        fallback_to_litegen_store: body.fallback_to_litegen_store,
     };
     if let Err(e) = state.db.upsert_app_storage(&input).await {
         return internal_error(&e.to_string());
     }
 
     match state.db.get_app_storage(&app_id).await {
-        Ok(Some(row)) => (StatusCode::OK, Json(app_storage_info_from_row(row))).into_response(),
+        Ok(Some(row)) => (StatusCode::OK, Json(with_role_details(&state, &app_id, app_storage_info_from_row(row)).await)).into_response(),
         Ok(None) => internal_error("storage config vanished after write"),
         Err(e) => internal_error(&e.to_string()),
     }

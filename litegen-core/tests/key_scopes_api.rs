@@ -2,7 +2,6 @@
 //! create and on edit), and what each scope opens. A `generate` key is an
 //! AI-only key; `read` adds the management reads; `admin` the management writes.
 
-#[allow(dead_code)]
 mod harness;
 
 use std::sync::Arc;

@@ -203,4 +203,15 @@ describe('N images in Compare mode', () => {
       ['mock/mesh-3d#0', { model: 'mock/mesh-3d' }],
     ]);
   });
+
+  it('give a fixed seed one step per copy, within the model\'s range: N copies of one seed are one image billed N times', () => {
+    const image = (seed: number | undefined, seedMax?: number) => ({
+      modelId: 'mock/visual-image-gen', mediaType: 'image' as const, seedMax,
+      request: seed === undefined ? { model: 'mock/visual-image-gen' } : { model: 'mock/visual-image-gen', seed },
+    });
+    const seeds = (jobs: Array<{ request: object }>) => jobs.map(j => (j.request as { seed?: number }).seed);
+    expect(seeds(fanOutJobs([image(7)], 3))).toEqual([7, 8, 9]);
+    expect(seeds(fanOutJobs([image(7, 8)], 3))).toEqual([7, 8, 0]);
+    expect(seeds(fanOutJobs([image(undefined)], 2))).toEqual([undefined, undefined]);
+  });
 });

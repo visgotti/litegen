@@ -118,6 +118,7 @@ export default {
     'recraft/recraftv3_vector': 'recraftv3_vector',
     'recraft/recraftv2': 'recraftv2',
     'recraft/recraftv4_1': 'recraftv4_1',
+    'recraft/recraftv4_1_flash': 'recraftv4_1_flash',
     'recraft/recraftv4_1_pro': 'recraftv4_1_pro',
     'recraft/recraftv4_1_vector': 'recraftv4_1_vector',
     'recraft/recraftv4_1_pro_vector': 'recraftv4_1_pro_vector',

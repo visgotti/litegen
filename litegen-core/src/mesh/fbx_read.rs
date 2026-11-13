@@ -17,17 +17,83 @@
 //! pre/post rotation, rotation order, inherit type), geometric transforms
 //! (baked into the geometry that has them, never into children), polygon
 //! meshes with normals, tangents, every UV set, vertex colours and per-polygon
-//! materials, Phong/Lambert materials (plus Stingray, 3ds Max Physical and 3ds
-//! Max PBR properties when present), embedded or sidecar textures, skin clusters,
+//! materials, line geometry (below), Phong/Lambert materials (plus Stingray,
+//! Arnold/Standard Surface, 3ds Max Physical, OpenPBR and 3ds Max PBR
+//! properties when
+//! present, with their layers), embedded or sidecar textures, skin clusters,
 //! blend shapes (an in-between shape becomes a target of its own, weighted
-//! piecewise-linearly from its channel's weight), and the active animation
-//! stack's transform and blend-shape curves. Warned about and left out:
-//! cameras and lights (as empty nodes), NURBS and line geometry, other
-//! animation stacks and layers, animated properties the scene does not
-//! model, texture slots with no metallic-roughness equivalent. Refused:
+//! piecewise-linearly from its channel's weight), the active animation
+//! stack's transform and blend-shape curves, and the lights and cameras the
+//! models place (below). Warned about and left out: camera switchers and
+//! stereo camera rigs (as empty nodes), area and volume lights, a non-black
+//! ambient light (`GlobalSettings` `AmbientColor`, Ruling R15), NURBS,
+//! patches and curves, other animation stacks and layers, animated properties
+//! the scene does not model (a light's or camera's own curves among them),
+//! texture slots with no metallic-roughness equivalent. Refused:
 //! indices out of range, arrays that disagree with their mapping, a cyclic
 //! hierarchy — anything that would otherwise become a plausible but wrong
 //! model.
+//!
+//! # Line geometry
+//!
+//! A `Geometry` of subclass `Line` reads as a lines primitive: `Points` (three
+//! doubles each) and `PointsIndex`, whose entries run through the points in
+//! strips, a negative entry `-(e + 1)` naming point `e` and ending its strip
+//! as `PolygonVertexIndex` ends a polygon. A strip of c points is c - 1
+//! segments and none joins two strips; a strip of one point is nothing. A
+//! trailing strip with no end stops at the array's end, with no closing
+//! segment (Ruling I10-R10: assimp wraps it back to the first index, the FBX
+//! SDK always ends a strip). Points no segment names are not carried. The
+//! model's geometric transform and first material apply, as to a mesh; the
+//! geometry's layer elements are not read. A model's several geometries keep
+//! the first, a `Line` counting as one. Nothing is read as a point
+//! primitive: FBX has no point-cloud class, and the writer holds neither
+//! points nor lines (`fbx::capabilities`), so `fbx::read`, the flat
+//! triangle-only path, finds a file of lines empty. Sources: assimp v6.0.5
+//! `code/AssetLib/FBX/FBXMeshGeometry.cpp` L716-728 and `FBXConverter.cpp`
+//! L1030-1068, and the FBX SDK's `FbxLine`
+//! (https://help.autodesk.com/cloudhelp/2020/ENU/FBX-API-Reference/cpp_ref/class_fbx_line.html).
+//!
+//! # Material layers
+//!
+//! Arnold's aiStandardSurface and Maya's Standard Surface, 3ds Max's
+//! Physical Material and 3ds Max's OpenPBR material are read for glTF's
+//! clearcoat, transmission, ior, specular, sheen and iridescence layers.
+//! `LayerNames` lists each family's properties, which are those of real
+//! exports in ufbx v0.23.1's test data, and the sources of their meanings
+//! and units. A layer is read when its weight is above 0 (a Standard Surface
+//! thin film, which has none, when its thickness is), so a material at its
+//! family's defaults reads none. Specular is the exception: it is read when
+//! its weight is other than 1, glTF's default, 0 included (Ruling A24f). An
+//! ior at glTF's 1.5 or at the family's documented default reads as unset,
+//! as exporter defaults do in the OBJ and Collada readers, so a default
+//! material gains no `KHR_materials_ior`: Standard Surface's 1.52
+//! (`reference/standard_surface.osl` L162 at Autodesk/standard-surface
+//! v1.0.1.1, and Maya's own default in ufbx's
+//! `data/maya_arnold_textures_7500_ascii.fbx`), 3ds Max Physical's 1.52 (the
+//! MAXScript reference's Physical_Material `trans_ior`) and OpenPBR's 1.5
+//! (OpenPBR v1.1.1, `specular_ior`). A value outside its glTF field's range
+//! is left out with a warning, never clamped. Warned about and left out,
+//! since glTF has no slot of the same meaning:
+//! - anisotropy (each family's anisotropic roughness differs from glTF's);
+//! - a solid surface's refraction, absorption and dispersion (glTF's volume
+//!   needs a thickness, which none of them stores; a thin-walled or opaque
+//!   surface renders no dispersion, so it says nothing of it);
+//! - a transmission roughness of its own, Standard Surface's
+//!   `transmissionExtraRoughness` other than 0 and 3ds Max Physical's
+//!   unlocked `trans_roughness` other than the roughness (glTF's
+//!   transmission takes the base roughness);
+//! - OpenPBR's fuzz (a different model from glTF's sheen);
+//! - a coat's colour other than white, its anisotropy, and an ior other
+//!   than 1.5 and the family's default (Physical 1.52, `coat_ior`; OpenPBR
+//!   1.6);
+//! - what a coat does to the layers under it, other than the family's
+//!   default: Standard Surface's `coatAffectColor` and
+//!   `coatAffectRoughness` (0), Physical's `coat_affect_color` and
+//!   `coat_affect_roughness` (0.5) and OpenPBR's `coat_darkening` (1);
+//! - the specular colours and OpenPBR's specular weight;
+//! - a transmission tint other than the base colour glTF tints with;
+//! - textures on layer properties.
 //!
 //! # Curves
 //!
@@ -40,8 +106,86 @@
 //! and MotionBuilder. Cubic segments are resampled into linear keys: at
 //! least `RESAMPLE_HZ`, halving any piece whose chord strays from the curve
 //! by more than `RESAMPLE_TOLERANCE` of the curve's range.
+//!
+//! A material's notes quote its name clipped to `MAX_QUOTED_NAME`
+//! characters (Ruling A45).
+//!
+//! # Lights and cameras
+//!
+//! A model's `NodeAttribute` of class `Light` or `Camera` (the attribute's
+//! class decides, as ufbx and Blender read it: ufbx.c L14996-L14999 at
+//! v0.23.1, import_fbx.py L3340-L3364 at Blender 5.2.3) becomes a scene
+//! light or camera, read once however many models place it, on the model's
+//! node, whose frame loses FBX's turn (`fbx::Turn`, `fbx::reframe`). A model
+//! that also holds a mesh or a skin joint, or holds a light and a camera,
+//! keeps those (the camera rather than the light if it is a `Camera` model)
+//! and gives the other a child node of its own, `{model}_light` or
+//! `{model}_camera`, which carries the turn back. Only a model's first light
+//! and first camera are read. Properties come from the attribute, then its
+//! class's `PropertyTemplate` (`FbxLight`, `FbxCamera`), as Blender's
+//! importer looks them up (import_fbx.py L3222-L3244); where neither says,
+//! ufbx's defaults hold. Each rule is ufbx's reading (Blender 5.2's default
+//! FBX importer is ufbx):
+//!
+//! - **Lights** (ufbx.c L23047-L23065): `LightType` 0 point, 1 directional,
+//!   2 spot; `Color` in the caller's `FbxColorSpace`, as material colours
+//!   (Ruling R14): decoded from sRGB by default, as three.js reads it
+//!   (`FBXLoader.js` L1196 at r183), and past 1 unclamped
+//!   ([`light_color`]), or taken as linear, as Blender (import_fbx.py
+//!   L2250), ufbx and assimp read it; `Intensity` divided by 100 ("FBX
+//!   seems to store intensities 100x"), as Blender's importer divides it
+//!   too (L2251). Blender takes the quotient as its own radiometric watts,
+//!   though, where its glTF importer converts candela and lux at 683 lm/W
+//!   (`fbx_write`'s light notes cite it), so with `LightUnits::Photometric`,
+//!   the default, a light Blender exported reads here about 54× (point,
+//!   spot) or 683× (sun) dimmer than the same light through glTF: Ruling
+//!   R28's export brought `staged`'s 3 lux sun back as 0.0044. With
+//!   `ReadOptions::fbx_light_units` = `LightUnits::Blender`, `Intensity` /
+//!   100 is read as that `energy`, and the light is the candela or lux whose
+//!   glTF import gives it (`scene::from_blender_energy`), whatever the cone.
+//!   No exposure is read: Blender's exporter bakes 2^exposure into
+//!   `Intensity` and writes none, and its importer reads none. A candela or
+//!   lux past f32 is dropped with the warning an `Intensity` past f32 gets
+//!   under `Photometric`. A spot's `InnerAngle`, else `HotSpot`,
+//!   and `OuterAngle`, else `ConeAngle`, else `Cone angle`, are full cones
+//!   in degrees, so halved (Blender writes `spot_size`, the full cone,
+//!   export_fbx_bin.py L624-L626). A cone past 180°, wider than a
+//!   hemisphere, is read as a point light, warned (Ruling R32). A colour
+//!   past 1 has its brightest component moved into the intensity (Ruling
+//!   R8); a hard edge is softened (`Light::soften_hard_edge`, Ruling R5).
+//!   The range is the SDK's far attenuation, `FarAttenuationEnd` while
+//!   `EnableFarAttenuation` is on (the names assimp's FBX document lists with
+//!   the SDK's defaults, FBXDocument.h L315-L317 at v6.0.5; neither ufbx nor
+//!   Blender reads a range), in file units, and a directional light's is
+//!   ignored with a warning, as glTF's reader ignores one. A stated
+//!   `DecayType` other than 2, quadratic, is warned about: the scene's lights
+//!   fall off with the inverse square. Area and volume lights (`LightType` 3
+//!   and 4) are dropped with a warning.
+//! - **Cameras** (ufbx.c L23087-L23253): `CameraProjectionType` 0 perspective,
+//!   1 orthographic; the aspect ratio from `AspectWidth` and `AspectHeight`
+//!   under `AspectRatioMode`, else the film's; the film gate (`FilmWidth`,
+//!   `FilmHeight`, `FilmSqueezeRatio`, `ApertureFormat`) fitted by `GateFit`;
+//!   yfov by `ApertureMode` ([`perspective_yfov`]). `NearPlane` and `FarPlane`
+//!   are in file units. An orthographic view is 30 × `OrthoZoom` file units
+//!   across its gate fit (ufbx.c L21353-L21357, L23109), except in a file
+//!   Blender wrote, where `OrthoZoom` is Blender's `ortho_scale`, the extent
+//!   in metres ([`blender_exporter`]).
+//!
+//! A light's direction and a camera's frame are its model's: ufbx measures a
+//! light's from `node_to_world`, not from the geometric transform (ufbx.h
+//! L1384-L1388). A light or camera that breaks a bound (`Light::check`,
+//! `Camera::check`) is dropped with a warning naming it and the bound, and
+//! its node stays: a reader never refuses a file over one.
+//!
+//! Ruling IDs ("Ruling A24b") are mesh-gaps item 4's rulings, listed with
+//! their costs in the status block of
+//! `docs/superpowers/plans/2026-11-04-mesh-material-layers.md`; R5, R8, R14
+//! and R15 are the rulings of mesh-gaps item 5, lights and cameras, listed
+//! with their costs in the "Rulings" section of
+//! `docs/superpowers/plans/2026-11-04-mesh-lights-cameras.md`.
 
-use super::fbx::{malformed, srgb_decode, unsupported, TICKS_PER_SECOND, TICKS_PER_SECOND_2019};
+use super::fbx::{decode_color, malformed, srgb_decode, unsupported, TICKS_PER_SECOND, TICKS_PER_SECOND_2019};
+use super::{FbxColorSpace, LightUnits};
 use super::fbx_dom::{split_object_name, ArrayRef, Dom, Prop, RecId, ROOT};
 use super::math::{self, EulerOrder, Mat4};
 use super::package::{self, Sidecars};
@@ -50,6 +194,9 @@ use super::scene::{
     Primitive, Sampler, Scene, SceneMesh, Skin, SkinWeights, Texture, TextureRef, Transform, UvTransform, Wrap,
     MAX_ANIMATION_KEYS, MAX_JOINTS, MAX_MORPH_TARGETS, MAX_NODES, MAX_SCENE_INDICES, MAX_SCENE_VERTICES,
 };
+use super::scene::{Clearcoat, Iridescence, MaterialLayer, Sheen, Specular, Transmission};
+use super::scene::{from_blender_energy, Camera, Light, LightKind, Projection};
+use super::fbx::{reframe, Turn};
 use super::{MeshError, SceneRead};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -58,9 +205,7 @@ const MAX_UV_SETS: usize = 8;
 /// Influences kept per vertex. Vendors ship 8–10 (Meshy); 32 is past anything
 /// a skinning shader evaluates, and glTF's reader stops there too.
 const MAX_INFLUENCES: usize = 32;
-/// Morph-target floats the scene may hold (targets × vertices × 3), the
-/// decoded-value ceiling `glb.rs` applies.
-const MAX_MORPH_VALUES: usize = 48_000_000;
+use super::scene::MAX_MORPH_VALUES;
 /// Objects in one document.
 const MAX_OBJECTS: usize = 2_000_000;
 /// Rate at which curves whose interpolation the scene cannot express exactly
@@ -276,7 +421,10 @@ fn fbx_world(parent: &Mat4, parent_local: &Mat4, local: &Mat4, inherit: i64) -> 
     }
     let p_rs = without_translation(parent);
     let p_r = rotation_part(&p_rs);
-    let p_r_inv = math::transpose(&p_r);
+    // A true inverse: under a sheared parent the column-normalised rotation
+    // is not orthogonal, and its transpose is not its inverse (the SDK's
+    // sample and three.js's FBXLoader invert it).
+    let p_r_inv = math::invert(&p_r).unwrap_or_else(|| math::transpose(&p_r));
     let p_s = math::mat_mul(&p_r_inv, &p_rs);
     let l_rs = without_translation(local);
     let l_r = rotation_part(&l_rs);
@@ -300,31 +448,7 @@ fn fbx_world(parent: &Mat4, parent_local: &Mat4, local: &Mat4, inherit: i64) -> 
 /// Decompose a matrix into TRS, folding any shear the matrix carries into
 /// the nearest rotation (Gram-Schmidt) when it has no exact TRS form.
 fn trs_lossy(m: &Mat4) -> ([f64; 3], [f64; 4], [f64; 3]) {
-    if let Some(trs) = math::decompose(m) {
-        return trs;
-    }
-    let col = |c: usize| [m[c * 4], m[c * 4 + 1], m[c * 4 + 2]];
-    let len = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    let norm = |v: [f64; 3]| {
-        let l = len(v);
-        if l > 1e-300 {
-            [v[0] / l, v[1] / l, v[2] / l]
-        } else {
-            [0.0; 3]
-        }
-    };
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let (c0, c1) = (col(0), col(1));
-    let x = norm(c0);
-    let y = norm([c1[0] - dot(c1, x) * x[0], c1[1] - dot(c1, x) * x[1], c1[2] - dot(c1, x) * x[2]]);
-    // The right-handed frame; a mirror goes into the third scale.
-    let z = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
-    let mut s = [len(c0), len(c1), len(col(2))];
-    if math::is_mirroring(m) {
-        s[2] = -s[2];
-    }
-    let r = [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]];
-    ([m[12], m[13], m[14]], math::mat3_to_quat(&r), s)
+    math::decompose_lossy(m)
 }
 
 // ─── layer elements ─────────────────────────────────────────────────────────
@@ -369,6 +493,29 @@ impl Layer {
             .get(start..start + self.stride)
             .ok_or_else(|| malformed(format!("{what} has no element {direct} ({} values)", self.values.len())))
     }
+}
+
+/// The segments of a `Line` geometry's `PointsIndex`, each handed to `each`
+/// as its two control points: consecutive entries make a segment, and an
+/// entry `-(e + 1)` names point `e` and ends the strip, so no segment joins it
+/// to the entry after. A strip of c points gives c - 1 segments and one of
+/// fewer than 2 gives none. A trailing strip with no end stops at the array's
+/// end, with no closing segment (Ruling I10-R10: assimp wraps it back to the
+/// first index, the FBX SDK always ends a strip). An entry that names a point
+/// outside `0..cps` is malformed, as a polygon corner's is.
+fn walk_strips(index: &[i32], cps: usize, what: &str, mut each: impl FnMut(usize, usize)) -> Result<(), MeshError> {
+    let mut previous: Option<usize> = None;
+    for (i, &raw) in index.iter().enumerate() {
+        let (cp, end) = if raw < 0 { (!raw as usize, true) } else { (raw as usize, false) };
+        if cp >= cps {
+            return Err(malformed(format!("{what} point index {i} names point {cp} of {cps}")));
+        }
+        if let Some(p) = previous {
+            each(p, cp);
+        }
+        previous = if end { None } else { Some(cp) };
+    }
+    Ok(())
 }
 
 /// Ceiling-free count check before any per-corner work: an attribute array
@@ -686,6 +833,625 @@ impl MapUse {
     };
 }
 
+impl Flavour {
+    /// The family's layer properties, for the flavours that have layers.
+    fn layers(self) -> Option<&'static LayerNames> {
+        match self {
+            Flavour::Arnold => Some(&STANDARD_SURFACE),
+            Flavour::MaxPhysical => Some(&MAX_PHYSICAL),
+            Flavour::MaxOpenPbr => Some(&OPENPBR),
+            Flavour::Stingray | Flavour::MaxPbr(_) | Flavour::Phong => None,
+        }
+    }
+}
+
+/// One DCC family's layer properties as its FBX exports name them, and the
+/// defaults its documentation gives (the module doc's "Material layers"
+/// says how they are read). The names are those of real exports in ufbx
+/// v0.23.1's `data/`, and each family's are pinned by a test
+/// (`arnold_layers_read`, `physical_layers_read`, `openpbr_layers_read`).
+struct LayerNames {
+    /// The family, as warnings name it.
+    family: &'static str,
+    /// Its colours are 3ds Max `ColorAndAlpha`s, decoded like its base
+    /// colour; otherwise they are Maya's linear `Vector3D`s.
+    max_colors: bool,
+    coat: &'static str,
+    /// The coat's roughness, with the family's default for it.
+    coat_roughness: (&'static str, f64),
+    /// A switch that makes the coat roughness a glossiness.
+    coat_gloss: Option<&'static str>,
+    coat_color: &'static str,
+    /// The coat's ior, with the family's default, which goes unwarned.
+    coat_ior: (&'static str, f64),
+    coat_anisotropy: Option<&'static str>,
+    /// What the coat does to the layers under it, which glTF's coat doesn't,
+    /// each with its default, which goes unwarned (Ruling A24g).
+    coat_affect: &'static [(&'static str, f64)],
+    transmission: &'static str,
+    /// The transmission's own roughness, which glTF's can't have (Ruling
+    /// A24h).
+    transmission_roughness: TransmissionRoughness,
+    transmission_color: &'static str,
+    transmission_depth: &'static str,
+    thin_walled: &'static str,
+    /// Whether a thin-walled sheet keeps its transmission colour as its tint
+    /// when it also states a depth.
+    thin_tint: bool,
+    /// The base ior, with the family's documented default, which reads as
+    /// unset (Ruling A24b).
+    ior: (&'static str, f64),
+    /// The weight that is glTF's `specularFactor`, if the family has one.
+    specular: Option<&'static str>,
+    /// A specular weight glTF has no slot for.
+    specular_weight: Option<&'static str>,
+    specular_color: &'static str,
+    /// The specular anisotropy, with its value for none.
+    anisotropy: (&'static str, f64),
+    dispersion: Option<&'static str>,
+    /// Weight, colour and roughness of a sheen that is glTF's, with the
+    /// roughness's default.
+    sheen: Option<(&'static str, &'static str, &'static str, f64)>,
+    /// The weight of a fuzz layer, a different model from glTF's sheen.
+    fuzz: Option<&'static str>,
+    film: Film,
+    /// The material properties whose textures feed a layer the reader
+    /// reads. FBX layer textures are not carried yet.
+    texture_slots: &'static [(&'static str, MaterialLayer)],
+}
+
+/// How a family states a transmission roughness apart from its specular
+/// roughness. glTF's transmission takes the base roughness:
+/// KHR_materials_transmission L123, "This microfacet lobe is exactly the same
+/// as the specular lobe except sampled along the line of sight through the
+/// surface".
+enum TransmissionRoughness {
+    /// Added to the specular roughness, 0 by default.
+    Extra(&'static str),
+    /// Its own roughness when its lock (on by default) is off, and a switch
+    /// that makes it a glossiness.
+    Unlocked { roughness: &'static str, lock: &'static str, invert: &'static str },
+    None,
+}
+
+/// How a family states a thin film (glTF's iridescence).
+enum Film {
+    /// Thickness in nanometres, on when above 0, and the film's ior with its
+    /// default.
+    Thickness(&'static str, (&'static str, f64)),
+    /// Weight, thickness in micrometres and ior, each with its default.
+    Weighted { weight: &'static str, thickness: (&'static str, f64), ior: (&'static str, f64) },
+    None,
+}
+
+/// Arnold's aiStandardSurface and Maya's Standard Surface (`Flavour::Arnold`).
+/// The names are Maya's: `data/maya_arnold_properties_7500_ascii.fbx` and
+/// its standardSurface twin `maya_osl_properties_7500_ascii.fbx`, whose
+/// BindingTable binds each to its Standard Surface parameter
+/// (`"Maya|coatRoughness"` → `coat_roughness`; ufbx.c L19570-L19618).
+/// The meanings, defaults and units are the Standard Surface spec's,
+/// v1.0.1.1 (`index.html`; "SS" below), and its `reference/standard_surface.osl`
+/// at the same tag:
+/// - coat → `clearcoatFactor` (L161), coat_roughness → its roughness, both
+///   squared into the GGX alpha (L163, .osl L219; KHR_materials_clearcoat:
+///   `α = clearcoatRoughness^2`); defaults 0.1 and ior 1.5 (L163, L166).
+///   coat_affect_color and coat_affect_roughness darken and roughen the base
+///   under the coat, default 0 (L142-L151, L168-L169);
+/// - transmission → `transmissionFactor` (L276, L295); a depth of 0 tints
+///   by the colour and no medium absorbs, a positive one tints white and
+///   absorbs (L282, L289, L297). transmission_extra_roughness adds to the
+///   specular roughness for the transmission alone, default 0 (L285, L301);
+/// - specular_IOR → `ior` (L258, L303), whose default is 1.52 in the OSL
+///   (L162) and in Maya (`data/maya_arnold_textures_7500_ascii.fbx`);
+/// - specular → `specularFactor`: both scale the whole dielectric lobe (L246;
+///   KHR_materials_specular: `dielectric_f90 = specular`);
+/// - sheen × sheen_color → `sheenColorFactor`, √sheen_roughness →
+///   `sheenRoughnessFactor`: MaterialX v1.39.5 feeds both to one
+///   `sheen_bsdf`, glTF's roughness squared and SS's as it is
+///   (`gltf_pbr.mtlx` L258-L271, `standard_surface.mtlx` L259-L262); the
+///   roughness's default is 0.3 (L333). A sheen weight the file doesn't
+///   state reads as off, the reference code's 0 (.osl L177,
+///   `standard_surface.mtlx` L60), not the 0.8 of the spec's table (L331);
+/// - thin_film_thickness (nanometres, L229) → the thickness glTF uses
+///   without a texture, `iridescenceThicknessMaximum`, at factor 1;
+///   thin_film_IOR (default 1.5, L230) → `iridescenceIor`. Both films sit
+///   between vacuum and the base's ior (L216; KHR_materials_iridescence).
+///
+/// glTF's side, here and below, is the `KHR_materials_*` text at
+/// KhronosGroup/glTF 9d23a5a.
+const STANDARD_SURFACE: LayerNames = LayerNames {
+    family: "Standard Surface",
+    max_colors: false,
+    coat: "Maya|coat",
+    coat_roughness: ("Maya|coatRoughness", 0.1),
+    coat_gloss: None,
+    coat_color: "Maya|coatColor",
+    coat_ior: ("Maya|coatIOR", 1.5),
+    coat_anisotropy: Some("Maya|coatAnisotropy"),
+    coat_affect: &[("Maya|coatAffectColor", 0.0), ("Maya|coatAffectRoughness", 0.0)],
+    transmission: "Maya|transmission",
+    transmission_roughness: TransmissionRoughness::Extra("Maya|transmissionExtraRoughness"),
+    transmission_color: "Maya|transmissionColor",
+    transmission_depth: "Maya|transmissionDepth",
+    thin_walled: "Maya|thinWalled",
+    thin_tint: false,
+    ior: ("Maya|specularIOR", 1.52),
+    specular: Some("Maya|specular"),
+    specular_weight: None,
+    specular_color: "Maya|specularColor",
+    anisotropy: ("Maya|specularAnisotropy", 0.0),
+    dispersion: Some("Maya|transmissionDispersion"),
+    sheen: Some(("Maya|sheen", "Maya|sheenColor", "Maya|sheenRoughness", 0.3)),
+    fuzz: None,
+    film: Film::Thickness("Maya|thinFilmThickness", ("Maya|thinFilmIOR", 1.5)),
+    texture_slots: &[
+        ("Maya|coat", MaterialLayer::Clearcoat),
+        ("Maya|coatRoughness", MaterialLayer::Clearcoat),
+        ("Maya|coatColor", MaterialLayer::Clearcoat),
+        ("Maya|coatIOR", MaterialLayer::Clearcoat),
+        ("Maya|coatNormal", MaterialLayer::Clearcoat),
+        ("Maya|transmission", MaterialLayer::Transmission),
+        ("Maya|transmissionColor", MaterialLayer::Transmission),
+        ("Maya|specularIOR", MaterialLayer::Ior),
+        ("Maya|specular", MaterialLayer::Specular),
+        ("Maya|specularColor", MaterialLayer::Specular),
+        ("Maya|sheen", MaterialLayer::Sheen),
+        ("Maya|sheenColor", MaterialLayer::Sheen),
+        ("Maya|sheenRoughness", MaterialLayer::Sheen),
+        ("Maya|thinFilmThickness", MaterialLayer::Iridescence),
+        ("Maya|thinFilmIOR", MaterialLayer::Iridescence),
+    ],
+};
+
+/// 3ds Max's Physical Material (`Flavour::MaxPhysical`). The names are
+/// `data/max_physical_material_properties_7500_ascii.fbx`'s (ufbx.c
+/// L19628-L19679). The meanings and defaults are Autodesk's: the 3ds Max
+/// 2024 help's "Physical Material Parameters" (GUID-C1328905) and the
+/// MAXScript reference's Physical_Material (3ds Max 2018, GUID-57562F6A):
+/// - coating → `clearcoatFactor`, coat_roughness → its roughness, on the
+///   material's roughness scale (0.0 "completely smooth and mirror-like",
+///   1.0 "extremely rough"), as the base layer reads it, and a glossiness
+///   when coat_roughness_inv is on; defaults 0 and coat ior 1.52.
+///   coat_affect_color and coat_affect_roughness default to 0.5;
+/// - transparency → `transmissionFactor`; a trans_depth of 0 tints at the
+///   surface, a positive one absorbs, and a thin-walled surface has no
+///   depth. trans_roughness is its own only when trans_roughness_lock (on
+///   by default) is off, a glossiness when trans_roughness_inv is on
+///   (MAXScript L81-L94);
+/// - trans_ior → `ior` ("It defines both how much rays bend when entering
+///   the medium, and also the angular dependency of the reflectivity when
+///   set to Fresnel mode (the default)", MAXScript L74-L75), default 1.52.
+///   The Custom Curve mode (brdf_mode false, with brdf_low, brdf_high and
+///   brdf_curve; MAXScript L141-L163) is not read: its reflectance is read
+///   as the ior's;
+/// - reflectivity → `specularFactor`: the reflection is "the weight
+///   multiplied by the angular function", default 1.
+///
+/// Its anisotropy is a roughness ratio, 1.0 being "not stretched".
+const MAX_PHYSICAL: LayerNames = LayerNames {
+    family: "3ds Max Physical",
+    max_colors: true,
+    coat: "3dsMax|Parameters|coating",
+    coat_roughness: ("3dsMax|Parameters|coat_roughness", 0.0),
+    coat_gloss: Some("3dsMax|Parameters|coat_roughness_inv"),
+    coat_color: "3dsMax|Parameters|coat_color",
+    coat_ior: ("3dsMax|Parameters|coat_ior", 1.52),
+    coat_anisotropy: None,
+    coat_affect: &[("3dsMax|Parameters|coat_affect_color", 0.5), ("3dsMax|Parameters|coat_affect_roughness", 0.5)],
+    transmission: "3dsMax|Parameters|transparency",
+    transmission_roughness: TransmissionRoughness::Unlocked {
+        roughness: "3dsMax|Parameters|trans_roughness",
+        lock: "3dsMax|Parameters|trans_roughness_lock",
+        invert: "3dsMax|Parameters|trans_roughness_inv",
+    },
+    transmission_color: "3dsMax|Parameters|trans_color",
+    transmission_depth: "3dsMax|Parameters|trans_depth",
+    thin_walled: "3dsMax|Parameters|thin_walled",
+    thin_tint: true,
+    ior: ("3dsMax|Parameters|trans_ior", 1.52),
+    specular: Some("3dsMax|Parameters|reflectivity"),
+    specular_weight: None,
+    specular_color: "3dsMax|Parameters|refl_color",
+    anisotropy: ("3dsMax|Parameters|anisotropy", 1.0),
+    dispersion: None,
+    sheen: None,
+    fuzz: None,
+    film: Film::None,
+    texture_slots: &[
+        ("3dsMax|Parameters|coat_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|coat_rough_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|coat_color_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|coat_bump_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|transparency_map", MaterialLayer::Transmission),
+        ("3dsMax|Parameters|trans_color_map", MaterialLayer::Transmission),
+        ("3dsMax|Parameters|trans_ior_map", MaterialLayer::Ior),
+        ("3dsMax|Parameters|reflectivity_map", MaterialLayer::Specular),
+        ("3dsMax|Parameters|refl_color_map", MaterialLayer::Specular),
+    ],
+};
+
+/// 3ds Max's OpenPBR material (`Flavour::MaxOpenPbr`). The names are
+/// `data/max_openpbr_material_7700_ascii.fbx`'s (ufbx.c L19703-L19751). The
+/// meanings, defaults and units are the OpenPBR Surface spec's, v1.1.1
+/// (`index.html`):
+/// - coat_weight → `clearcoatFactor`, coat_roughness r → alpha r², as
+///   glTF's (L398-L401, L421); defaults 0, coat ior 1.6 and coat_darkening
+///   1 (L936-L941);
+/// - transmission_weight → `transmissionFactor` (L839); a depth of 0 tints
+///   by the colour with no medium (L784), and a thin-walled sheet takes its
+///   colour as its transmittance, its refraction un-deflected (L1259). Its
+///   transmission has no roughness of its own;
+/// - specular_ior → `ior` (L518, default 1.5);
+/// - thin_film_weight → `iridescenceFactor`, thin_film_thickness in
+///   micrometres (default 0.5) × 1000 → nanometres, as MaterialX v1.39.5's
+///   `open_pbr_surface.mtlx` does (L298-L301), thin_film_ior (default 1.4)
+///   → `iridescenceIor` (L853-L855, L881-L883).
+///
+/// specular_weight scales the reflectance through the ior and keeps f90,
+/// and specular_color tints the whole Fresnel factor (L494-L507, L496),
+/// neither as glTF's specular does; the anisotropy stretches the NDF
+/// another way (L412-L415).
+const OPENPBR: LayerNames = LayerNames {
+    family: "OpenPBR",
+    max_colors: true,
+    coat: "3dsMax|Parameters|coat_weight",
+    coat_roughness: ("3dsMax|Parameters|coat_roughness", 0.0),
+    coat_gloss: None,
+    coat_color: "3dsMax|Parameters|coat_color",
+    coat_ior: ("3dsMax|Parameters|coat_ior", 1.6),
+    coat_anisotropy: Some("3dsMax|Parameters|coat_roughness_anisotropy"),
+    coat_affect: &[("3dsMax|Parameters|coat_darkening", 1.0)],
+    transmission: "3dsMax|Parameters|transmission_weight",
+    transmission_roughness: TransmissionRoughness::None,
+    transmission_color: "3dsMax|Parameters|transmission_color",
+    transmission_depth: "3dsMax|Parameters|transmission_depth",
+    thin_walled: "3dsMax|Parameters|geometry_thin_walled",
+    thin_tint: true,
+    ior: ("3dsMax|Parameters|specular_ior", 1.5),
+    specular: None,
+    specular_weight: Some("3dsMax|Parameters|specular_weight"),
+    specular_color: "3dsMax|Parameters|specular_color",
+    anisotropy: ("3dsMax|Parameters|specular_roughness_anisotropy", 0.0),
+    dispersion: Some("3dsMax|Parameters|transmission_dispersion_scale"),
+    sheen: None,
+    fuzz: Some("3dsMax|Parameters|fuzz_weight"),
+    film: Film::Weighted {
+        weight: "3dsMax|Parameters|thin_film_weight",
+        thickness: ("3dsMax|Parameters|thin_film_thickness", 0.5),
+        ior: ("3dsMax|Parameters|thin_film_ior", 1.4),
+    },
+    texture_slots: &[
+        ("3dsMax|Parameters|coat_weight_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|coat_roughness_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|coat_color_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|coat_ior_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|coat_bump_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|geometry_coat_normal_map", MaterialLayer::Clearcoat),
+        ("3dsMax|Parameters|transmission_weight_map", MaterialLayer::Transmission),
+        ("3dsMax|Parameters|transmission_color_map", MaterialLayer::Transmission),
+        ("3dsMax|Parameters|specular_ior_map", MaterialLayer::Ior),
+        ("3dsMax|Parameters|thin_film_weight_map", MaterialLayer::Iridescence),
+        ("3dsMax|Parameters|thin_film_thickness_map", MaterialLayer::Iridescence),
+        ("3dsMax|Parameters|thin_film_ior_map", MaterialLayer::Iridescence),
+    ],
+};
+
+/// A material's layer properties being read, and what the reader must say
+/// about them.
+struct LayerRead<'m, 'a> {
+    props: Props<'m, 'a>,
+    what: &'m str,
+    family: &'static str,
+    /// The space the file's colours are in, which warnings name them in.
+    stored: &'static str,
+    notes: Vec<String>,
+}
+
+impl LayerRead<'_, '_> {
+    /// A number the file states, `None` when it states none. One that is not
+    /// a finite 32-bit number is noted and ignored.
+    fn number(&mut self, name: &str) -> Option<f64> {
+        let v = self.props.f64(name)?;
+        if (v as f32).is_finite() {
+            return Some(v);
+        }
+        self.notes.push(format!("{} has {name} {}, which is not a finite number; it was ignored", self.what, shown(v)));
+        None
+    }
+
+    /// A 0–1 weight; outside that it is noted and the layer left out, never
+    /// clamped (Ruling A16).
+    fn weight(&mut self, name: &str, layer: &str) -> Option<f64> {
+        let v = self.number(name)?;
+        if (0.0..=1.0).contains(&v) {
+            return Some(v);
+        }
+        self.notes.push(format!("{} has {name} {}, outside 0 to 1; the {layer} layer was left out", self.what, shown(v)));
+        None
+    }
+
+    /// A 0–1 value, or the family's default when the file states none or one
+    /// outside 0 to 1 (noted).
+    fn unit(&mut self, name: &str, default: f64) -> f64 {
+        match self.number(name) {
+            Some(v) if (0.0..=1.0).contains(&v) => v,
+            Some(v) => {
+                self.notes.push(format!("{} has {name} {}, outside 0 to 1; it was read as {}'s default {}", self.what, shown(v), self.family, shown(default)));
+                default
+            }
+            None => default,
+        }
+    }
+
+    /// A film's ior, or the family's default when the file states none or one
+    /// below KHR_materials_iridescence's minimum of 1 (noted).
+    fn film_ior(&mut self, (name, default): (&str, f64)) -> f32 {
+        match self.number(name) {
+            Some(v) if v >= 1.0 => v as f32,
+            Some(v) => {
+                self.notes.push(format!(
+                    "{} has {name} {}, which KHR_materials_iridescence cannot hold (1 and above); it was read as {}'s default {}",
+                    self.what,
+                    shown(v),
+                    self.family,
+                    shown(default)
+                ));
+                default as f32
+            }
+            None => default as f32,
+        }
+    }
+
+    /// An RGB colour as the file stores it (a 3ds Max colour's alpha aside).
+    /// One that is not finite is noted and ignored.
+    fn color(&mut self, name: &str) -> Option<[f64; 3]> {
+        let c = self.props.vec3(name)?;
+        if c.iter().all(|v| (*v as f32).is_finite()) {
+            return Some(c);
+        }
+        self.notes.push(format!("{} has {name} {} {}, which is not a finite colour; it was ignored", self.what, self.stored, shown3(c)));
+        None
+    }
+
+    fn not_carried(&mut self, name: &str, value: String, why: &str) {
+        self.notes.push(format!("{} has {name} {value}; {why}, so it is not carried", self.what));
+    }
+}
+
+/// A file's number as the scene would hold it, for warnings.
+fn shown(v: f64) -> String {
+    (v as f32).to_string()
+}
+
+/// Characters a note keeps of a name it quotes from the file, then "…"
+/// (Ruling A45): well past any real one.
+const MAX_QUOTED_NAME: usize = 256;
+
+/// A name from the file as a note quotes it: at most [`MAX_QUOTED_NAME`]
+/// characters, then "…".
+fn quoted_name(name: &str) -> String {
+    match name.char_indices().nth(MAX_QUOTED_NAME) {
+        Some((at, _)) => format!("{}…", &name[..at]),
+        None => name.to_string(),
+    }
+}
+
+fn shown3(c: [f64; 3]) -> String {
+    format!("({}, {}, {})", shown(c[0]), shown(c[1]), shown(c[2]))
+}
+
+/// Read the layers of `names`' family into `m`, whose base layer is read
+/// (`base_textured`: a map drives its base colour), and return what glTF
+/// can't hold, a warning each (Rulings A16 and A24–A24f).
+fn read_layers(names: &LayerNames, props: Props<'_, '_>, what: &str, space: FbxColorSpace, base_textured: bool, m: &mut Material) -> Vec<String> {
+    // Warnings name a stored colour in the space the file stores it in
+    // (3ds Max's sRGB unless the caller reads them as linear; Maya's are
+    // linear), and a colour glTF draws in linear.
+    let stored = if names.max_colors && matches!(space, FbxColorSpace::Srgb) { "sRGB" } else { "linear" };
+    let mut r = LayerRead { props, what, family: names.family, stored, notes: Vec::new() };
+    let fam = names.family;
+    let white = |c: &[f64; 3]| c.iter().all(|v| *v == 1.0);
+    let decode = |c: [f64; 3]| if names.max_colors { c.map(|v| decode_color(v, space)) } else { c.map(|v| v as f32) };
+
+    if let Some(factor) = r.weight(names.coat, "clearcoat").filter(|w| *w > 0.0) {
+        let rough = r.unit(names.coat_roughness.0, names.coat_roughness.1);
+        let gloss = names.coat_gloss.is_some_and(|g| props.f64(g).is_some_and(|v| v != 0.0));
+        let roughness = (if gloss { 1.0 - rough } else { rough }) as f32;
+        m.clearcoat = Some(Clearcoat { factor: factor as f32, roughness, ..Default::default() });
+        // glTF's coat is white and isotropic, with an ior of 1.5, and leaves
+        // the layers under it as they are (KHR_materials_clearcoat); a
+        // family's defaults go unwarned (Rulings A24b, A24g).
+        let mut parts = Vec::new();
+        if let Some(c) = r.color(names.coat_color).filter(|c| !white(c)) {
+            parts.push(format!("{} {stored} {}", names.coat_color, shown3(c)));
+        }
+        if let Some(v) = r.number(names.coat_ior.0).filter(|v| *v as f32 != 1.5 && *v as f32 != names.coat_ior.1 as f32) {
+            parts.push(format!("{} {}", names.coat_ior.0, shown(v)));
+        }
+        if let Some(name) = names.coat_anisotropy {
+            if let Some(v) = r.number(name).filter(|v| *v != 0.0) {
+                parts.push(format!("{name} {}", shown(v)));
+            }
+        }
+        for (name, default) in names.coat_affect {
+            if let Some(v) = r.number(name).filter(|v| *v as f32 != *default as f32) {
+                parts.push(format!("{name} {}", shown(v)));
+            }
+        }
+        if !parts.is_empty() {
+            let verb = if parts.len() == 1 { "is" } else { "are" };
+            r.notes.push(format!(
+                "{what}'s clearcoat was read as glTF's, white and isotropic with an ior of 1.5, leaving the layers under it as they are: its {} {verb} not carried",
+                parts.join(", ")
+            ));
+        }
+    }
+
+    if let Some(factor) = r.weight(names.transmission, "transmission").filter(|w| *w > 0.0) {
+        m.transmission = Some(Transmission { factor: factor as f32, texture: None });
+        let thin = props.f64(names.thin_walled).is_some_and(|v| v != 0.0);
+        let depth = r.number(names.transmission_depth).filter(|d| *d > 0.0);
+        // glTF's volume needs a thickness, which none of the families
+        // stores (Ruling A24c). Dispersion acts only in a refracting volume,
+        // so it is named only here (A24a): a thin-walled sheet renders none
+        // (SS L287, OpenPBR L1259; KHR_materials_dispersion L35).
+        if !thin {
+            let mut lost = Vec::new();
+            if let Some(d) = depth {
+                lost.push(format!("its absorption ({} {})", names.transmission_depth, shown(d)));
+            }
+            if let Some(name) = names.dispersion {
+                if let Some(v) = r.number(name).filter(|v| *v > 0.0) {
+                    lost.push(format!("its dispersion ({name} {})", shown(v)));
+                }
+            }
+            let lost = match lost.len() {
+                0 => String::new(),
+                n => format!(", and {} {} not carried", lost.join(" and "), if n == 1 { "is" } else { "are" }),
+            };
+            r.notes.push(format!(
+                "{what} reads thin-walled, with no refraction: glTF's volume needs a thickness, which {fam} materials do not store{lost}"
+            ));
+        }
+        // glTF's transmission takes the base roughness (Ruling A24h).
+        match names.transmission_roughness {
+            TransmissionRoughness::Extra(name) => {
+                if let Some(v) = r.number(name).filter(|v| *v != 0.0) {
+                    r.not_carried(name, shown(v), "glTF's transmission takes the base roughness");
+                }
+            }
+            TransmissionRoughness::Unlocked { roughness, lock, invert } => {
+                let unlocked = props.f64(lock).is_some_and(|v| v == 0.0);
+                if let Some(v) = r.number(roughness).filter(|_| unlocked) {
+                    let own = if props.f64(invert).is_some_and(|v| v != 0.0) { 1.0 - v } else { v };
+                    if (own as f32 - m.roughness).abs() > 1e-6 {
+                        r.not_carried(
+                            roughness,
+                            shown(v),
+                            &format!("with {lock} off it is apart from the roughness, {}, and glTF's transmission takes the base roughness", m.roughness),
+                        );
+                    }
+                }
+            }
+            TransmissionRoughness::None => {}
+        }
+        // glTF tints transmitted light with the base colour
+        // (KHR_materials_transmission, "Tinting"); the base colour stays as
+        // read (Ruling A24d).
+        let tint = if depth.is_some() && !(thin && names.thin_tint) {
+            [1.0; 3]
+        } else {
+            r.color(names.transmission_color).map(decode).unwrap_or([1.0; 3])
+        };
+        let base = [m.base_color[0], m.base_color[1], m.base_color[2]];
+        if base_textured || tint.iter().zip(base).any(|(t, b)| (t - b).abs() > 1e-6) {
+            r.notes.push(format!(
+                "{what}: glTF tints transmitted light with the base colour{}, linear {}, where {fam} tints it linear {}",
+                if base_textured { " and its map" } else { "" },
+                shown3(base.map(f64::from)),
+                shown3(tint.map(f64::from))
+            ));
+        }
+    }
+
+    // glTF's default and the family's documented one read as unset
+    // (Ruling A24b); anything else KHR_materials_ior holds (0, or 1 and
+    // above) is carried.
+    if let Some(v) = r.number(names.ior.0) {
+        let ior = v as f32;
+        if ior != super::scene::DEFAULT_IOR && ior != names.ior.1 as f32 {
+            if super::scene::ior_in_schema(ior) {
+                m.ior = Some(ior);
+            } else {
+                r.notes.push(format!(
+                    "{what} has {} {}, which KHR_materials_ior cannot hold (0, or 1 and above); it is not carried",
+                    names.ior.0,
+                    shown(v)
+                ));
+            }
+        }
+    }
+
+    // Ruling A24f.
+    if let Some(name) = names.specular {
+        if let Some(w) = r.weight(name, "specular").filter(|w| *w != 1.0) {
+            m.specular = Some(Specular { factor: w as f32, ..Default::default() });
+        }
+    }
+    if let Some(name) = names.specular_weight {
+        if let Some(v) = r.number(name).filter(|v| *v != 1.0) {
+            r.not_carried(name, shown(v), &format!("{fam}'s specular weight scales its reflectance through the ior, unlike glTF's"));
+        }
+    }
+    if let Some(c) = r.color(names.specular_color).filter(|c| !white(c)) {
+        r.not_carried(names.specular_color, format!("{stored} {}", shown3(c)), "glTF's specular colour tints only the reflectance at normal incidence");
+    }
+
+    // Rulings A24e and A24 (fuzz).
+    if let Some(v) = r.number(names.anisotropy.0).filter(|v| *v != names.anisotropy.1) {
+        r.not_carried(names.anisotropy.0, shown(v), &format!("{fam}'s anisotropic roughness differs from glTF's"));
+    }
+    if let Some(name) = names.fuzz {
+        if let Some(v) = r.number(name).filter(|v| *v > 0.0) {
+            r.not_carried(name, shown(v), &format!("{fam}'s fuzz is a different model from glTF's sheen"));
+        }
+    }
+
+    if let Some((weight, color, roughness, rough_default)) = names.sheen {
+        if let Some(w) = r.weight(weight, "sheen").filter(|w| *w > 0.0) {
+            let c = r.color(color).unwrap_or([1.0; 3]);
+            if c.iter().all(|v| (0.0..=1.0).contains(v)) {
+                let rough = r.unit(roughness, rough_default);
+                let color = c.map(|v| (v * w) as f32);
+                if color.iter().any(|v| *v > 0.0) {
+                    m.sheen = Some(Sheen { color, roughness: rough.sqrt() as f32, ..Default::default() });
+                }
+            } else {
+                r.notes.push(format!("{what} has {color} {stored} {}, outside 0 to 1; the sheen layer was left out", shown3(c)));
+            }
+        }
+    }
+
+    match names.film {
+        Film::Thickness(thickness, ior) => {
+            if let Some(t) = r.number(thickness).filter(|t| *t != 0.0) {
+                if t > 0.0 {
+                    let ior = r.film_ior(ior);
+                    m.iridescence = Some(Iridescence { factor: 1.0, ior, thickness_max: t as f32, ..Default::default() });
+                } else {
+                    r.notes.push(format!("{what} has {thickness} {}, a negative thickness; the iridescence layer was left out", shown(t)));
+                }
+            }
+        }
+        Film::Weighted { weight, thickness, ior } => {
+            if let Some(w) = r.weight(weight, "iridescence").filter(|w| *w > 0.0) {
+                let microns = match r.number(thickness.0) {
+                    Some(t) if t >= 0.0 => t,
+                    Some(t) => {
+                        r.notes.push(format!(
+                            "{what} has {} {}, a negative thickness; it was read as {fam}'s default {}",
+                            thickness.0,
+                            shown(t),
+                            shown(thickness.1)
+                        ));
+                        thickness.1
+                    }
+                    None => thickness.1,
+                };
+                let nanometres = (microns * 1000.0) as f32;
+                if nanometres.is_finite() {
+                    let ior = r.film_ior(ior);
+                    m.iridescence = Some(Iridescence { factor: w as f32, ior, thickness_max: nanometres, ..Default::default() });
+                } else {
+                    r.notes.push(format!("{what} has {} {}, too thick to hold; the iridescence layer was left out", thickness.0, shown(microns)));
+                }
+            }
+        }
+        Film::None => {}
+    }
+    r.notes
+}
+
 /// The global axis-and-unit conversion, as a matrix taking file space to
 /// the scene's Y-up metres.
 fn axis_unit_matrix(props: &Props<'_, '_>) -> Result<Mat4, MeshError> {
@@ -762,6 +1528,277 @@ fn decode_base64(s: &[u8]) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+// ─── lights and cameras ─────────────────────────────────────────────────────
+
+/// A light's stored `Color` component in the scene's linear terms (Ruling
+/// R14): as it is when the caller reads FBX colours as linear, and else
+/// decoded by the sRGB curve without clamping, as three.js decodes it
+/// (`SRGBToLinear`, ColorManagement.js L205-L209 at r183), so that a colour
+/// past 1 keeps the brightness Ruling R8 moves into the intensity, and a
+/// negative one stays negative for `Light::check` to drop. Within 0 to 1 it
+/// is `math::srgb_to_linear`'s curve.
+fn light_color(stored: f64, space: FbxColorSpace) -> f64 {
+    match space {
+        FbxColorSpace::Linear => stored,
+        FbxColorSpace::Srgb if stored <= 0.04045 => stored / 12.92,
+        FbxColorSpace::Srgb => ((stored + 0.055) / 1.055).powf(2.4),
+    }
+}
+
+/// A light attribute's properties (`unit` metres per file unit; `space`, how
+/// its colour is stored; `units`, what its `Intensity` is in; `label` names it
+/// in a warning) as the scene's light, with what reading it warns of, or why
+/// it is dropped. ufbx's reading (ufbx.c L23047-L23065, v0.23.1) and its
+/// defaults, in the scene's units (see the module doc).
+fn read_light(
+    props: Props<'_, '_>,
+    name: Option<String>,
+    unit: f64,
+    space: FbxColorSpace,
+    units: LightUnits,
+    label: &str,
+) -> Result<(Light, Vec<String>), String> {
+    let mut notes = Vec::new();
+    let raw = props.i64("LightType").unwrap_or(0);
+    let kind = match raw {
+        0 => LightKind::Point,
+        1 => LightKind::Directional,
+        2 => {
+            // Full cones in degrees: halved, and in radians.
+            let degrees = |names: &[&str]| names.iter().find_map(|n| props.f64(n)).unwrap_or(0.0);
+            let (inner, outer) = (degrees(&["InnerAngle", "HotSpot"]), degrees(&["OuterAngle", "ConeAngle", "Cone angle"]));
+            let outer_cone = (outer / 2.0).to_radians() as f32;
+            if outer_cone.is_finite() && outer_cone > std::f32::consts::FRAC_PI_2 {
+                // Ruling R32: wider than a hemisphere, it lights nearly
+                // every way, so it is a point light, not dropped.
+                notes.push(format!("{label} has a cone of {}° across, wider than a hemisphere (180°), so it was read as a point light", shown(outer)));
+                LightKind::Point
+            } else {
+                LightKind::Spot { inner_cone: (inner / 2.0).to_radians() as f32, outer_cone }
+            }
+        }
+        3 | 4 => {
+            let what = if raw == 3 { "an area light" } else { "a volume light" };
+            return Err(format!("it is {what} (LightType {raw}), and the scene holds point, directional and spot lights only"));
+        }
+        _ => {
+            // Outside FBX's enum: ufbx's default (`ufbxi_find_enum`, ufbx.c
+            // L11547-L11557).
+            notes.push(format!("{label} has LightType {raw}, which FBX does not define; it was read as a point light, as ufbx reads it"));
+            LightKind::Point
+        }
+    };
+    let mut color = props.vec3("Color").unwrap_or([1.0; 3]).map(|c| light_color(c, space));
+    let mut intensity = props.f64("Intensity").unwrap_or(100.0) / 100.0;
+    // Ruling R8: a colour past 1 holds part of the brightness.
+    let peak = color.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if peak > 1.0 && peak.is_finite() {
+        color = color.map(|c| c / peak);
+        intensity *= peak;
+    }
+    if units == LightUnits::Blender {
+        // `Intensity` / 100 is Blender's `energy` (above), so the scene's
+        // candela or lux is what Blender's glTF importer turns into it.
+        // Blender's exporter bakes 2^exposure into `Intensity`, and its
+        // importer reads no exposure; neither is read here. A candela or lux
+        // past f32 is not clamped: it becomes inf below, and `Light::check`
+        // drops the light with the warning `Photometric` units give.
+        intensity = from_blender_energy(&kind, intensity);
+    }
+    let far = props.i64("EnableFarAttenuation").unwrap_or(0) != 0;
+    let mut range = props.f64("FarAttenuationEnd").filter(|_| far).map(|r| r * unit);
+    if kind == LightKind::Directional {
+        if let Some(r) = range.take() {
+            notes.push(format!("{label} is directional, so its range {} is ignored", shown(r)));
+        }
+    } else if let Some(d) = props.i64("DecayType").filter(|d| *d != 2) {
+        let how = match d {
+            0 => "no decay",
+            1 => "linear decay",
+            3 => "cubic decay",
+            _ => "a decay FBX does not define",
+        };
+        notes.push(format!("{label} has DecayType {d} ({how}), but the scene's point and spot lights fall off with the inverse square, as glTF's do"));
+    }
+    let color = color.map(|c| c as f32);
+    let mut light = Light { name, kind, color, intensity: intensity as f32, range: range.map(|r| r as f32) };
+    if let Some(how) = light.soften_hard_edge() {
+        notes.push(format!("{label} {how}"));
+    }
+    light.check()?;
+    Ok((light, notes))
+}
+
+/// A camera attribute's properties as the scene's camera, with what reading
+/// it warns of, or why it is dropped: ufbx's reading (ufbx.c
+/// L23087-L23253, v0.23.1) and its defaults, in the scene's units. `blender`
+/// says Blender's exporter wrote the file ([`blender_exporter`]).
+fn read_camera(props: Props<'_, '_>, name: Option<String>, unit: f64, blender: bool, label: &str) -> Result<(Camera, Vec<String>), String> {
+    let mut notes = Vec::new();
+    let gate = Gate::of(&props);
+    let near = (props.f64("NearPlane").unwrap_or(0.0) * unit) as f32;
+    let far = (props.f64("FarPlane").unwrap_or(0.0) * unit) as f32;
+    let raw = props.i64("CameraProjectionType").unwrap_or(0);
+    let projection = if raw == 1 {
+        // 30 file units per `OrthoZoom` (ufbx.c L21356, L23109; ufbx's
+        // `maya_ortho_camera_size` test: Maya's orthographic widths), or,
+        // from Blender's exporter, `ortho_scale`, the extent in metres:
+        // ufbx.c L21353-L21354 undoes every unit scale for it, and
+        // export_fbx_bin.py L702 writes it unscaled where L704-L705 scale
+        // the clip planes.
+        let per_zoom = if blender { 1.0 } else { 30.0 * unit };
+        let [width, height] = gate.ortho_size(per_zoom * props.f64("OrthoZoom").unwrap_or(1.0));
+        Projection::Orthographic { xmag: (width / 2.0) as f32, ymag: (height / 2.0) as f32, znear: near, zfar: far }
+    } else {
+        if raw != 0 {
+            // ufbx's default for a value outside the enum (ufbx.c L11547-L11557).
+            notes.push(format!("{label} has CameraProjectionType {raw}, which FBX does not define; it was read as perspective, as ufbx reads it"));
+        }
+        let yfov = perspective_yfov(&props, &gate) as f32;
+        Projection::Perspective { yfov, aspect: Some(gate.aspect as f32), znear: near, zfar: Some(far) }
+    };
+    let camera = Camera { name, projection };
+    camera.check()?;
+    Ok((camera, notes))
+}
+
+/// A camera's film gate and aspect ratio as ufbx works them out (ufbx.c
+/// L23087-L23219, v0.23.1).
+struct Gate {
+    /// Width over height: `AspectWidth` over `AspectHeight` (the legacy
+    /// `AspectW` and `AspectH` before them), as `AspectRatioMode` relates
+    /// them, else the film's.
+    aspect: f64,
+    /// `FilmWidth` and `FilmHeight` in inches, else `ApertureFormat`'s, the
+    /// height times `FilmSqueezeRatio`.
+    film: [f64; 2],
+    /// `GateFit` with fill and overscan settled: 0 none or stretch (the film
+    /// as it is), 1 fitted to its height, 2 fitted across.
+    fit: i64,
+}
+
+impl Gate {
+    fn of(props: &Props<'_, '_>) -> Gate {
+        // A value outside an enum takes its default, as ufbx's
+        // `ufbxi_find_enum` does (ufbx.c L11547-L11557).
+        let choice = |name: &str, default: i64, max: i64| props.i64(name).filter(|v| (0..=max).contains(v)).unwrap_or(default);
+        // `ApertureFormat`'s film sizes, inches (ufbx.c L23072-L23085).
+        const FORMATS: [[f64; 2]; 12] = [
+            [1.0, 1.0],
+            [0.404, 0.295],
+            [0.493, 0.292],
+            [0.864, 0.630],
+            [0.816, 0.612],
+            [0.980, 0.735],
+            [0.825, 0.446],
+            [0.864, 0.732],
+            [2.066, 0.906],
+            [1.485, 0.991],
+            [2.080, 1.480],
+            [2.772, 2.072],
+        ];
+        let format = choice("ApertureFormat", 0, 11) as usize;
+        let mut film = [props.f64("FilmWidth").unwrap_or(FORMATS[format][0]), props.f64("FilmHeight").unwrap_or(FORMATS[format][1])];
+        let squeeze = props.f64("FilmSqueezeRatio").unwrap_or(if format == 7 { 2.0 } else { 1.0 });
+        let mut w = props.f64("AspectWidth").or_else(|| props.f64("AspectW")).unwrap_or(0.0);
+        let mut h = props.f64("AspectHeight").or_else(|| props.f64("AspectH")).unwrap_or(0.0);
+        let film_known = film[0] > 0.0 && film[1] > 0.0;
+        if w <= 0.0 && h <= 0.0 {
+            w = if film[0] > 0.0 { film[0] } else { 1.0 };
+            h = if film[1] > 0.0 { film[1] } else { 1.0 };
+        } else if w <= 0.0 {
+            w = if film_known { h / film[1] * film[0] } else { h };
+        } else if h <= 0.0 {
+            h = if film_known { w / film[0] * film[1] } else { w };
+        }
+        film[1] *= squeeze;
+        // Fixed width: the height is relative to the width; fixed height,
+        // the other way round.
+        let aspect = match choice("AspectRatioMode", 0, 4) {
+            3 => 1.0 / h,
+            4 => w,
+            _ => w / h,
+        };
+        let film_ratio = film[0] / film[1];
+        let fit = match choice("GateFit", 0, 5) {
+            3 => 1 + i64::from(aspect > film_ratio),
+            4 => 1 + i64::from(aspect < film_ratio),
+            5 => 0,
+            fit => fit,
+        };
+        Gate { aspect, film, fit }
+    }
+
+    /// The gate's width and height, in inches (ufbx.c L23179-L23219).
+    fn aperture(&self) -> [f64; 2] {
+        match self.fit {
+            1 => [self.film[1] * self.aspect, self.film[1]],
+            2 => [self.film[0], self.film[0] / self.aspect],
+            _ => self.film,
+        }
+    }
+
+    /// An orthographic view's full width and height, given its `extent`
+    /// along the gate fit (ufbx.c L23179-L23219: ufbx's own test,
+    /// `maya_ortho_camera_400x200`, has a view fitted across 30 wide and 15
+    /// high at 2:1).
+    fn ortho_size(&self, extent: f64) -> [f64; 2] {
+        match self.fit {
+            1 => [extent * self.aspect, extent],
+            2 => [extent, extent / self.aspect],
+            _ => [extent, extent],
+        }
+    }
+}
+
+/// A perspective camera's vertical field of view, in radians, as ufbx
+/// reads it for each `ApertureMode` (ufbx.c L23221-L23248, v0.23.1): 0,
+/// horizontal and vertical, `FieldOfViewY`; 1, horizontal, `FieldOfView`
+/// across, so tan(yfov/2) = tan(FieldOfView/2) / aspect; 2, vertical (the
+/// default), `FieldOfView`; 3, focal length, tan(yfov/2) = h /
+/// (2·`FocalLength`), with h the gate's height in millimetres, 25.4 to the
+/// inch (ufbx's `UFBXI_MM_TO_INCH`, ufbx.c L5896, rounds 1/25.4 to
+/// 0.0393700787).
+fn perspective_yfov(props: &Props<'_, '_>, gate: &Gate) -> f64 {
+    let angle = |name: &str| props.f64(name).unwrap_or(0.0).to_radians();
+    match props.i64("ApertureMode").filter(|m| (0..=3).contains(m)).unwrap_or(2) {
+        0 => angle("FieldOfViewY"),
+        1 => 2.0 * ((angle("FieldOfView") / 2.0).tan() / gate.aspect).atan(),
+        3 => 2.0 * (gate.aperture()[1] * 25.4 / (2.0 * props.f64("FocalLength").unwrap_or(0.0))).atan(),
+        _ => angle("FieldOfView"),
+    }
+}
+
+/// Whether `creator` names Blender's FBX exporter, by ufbx's two patterns
+/// for it (`ufbxi_match_exporter`, ufbx.c L12084-L12089, v0.23.1): "blender"
+/// in any case, then past one '-' (two for "blender-- ?.?.?"), spaces and a
+/// version of two (three) dot-separated numbers, as in "Blender (stable FBX
+/// IO) - 5.2.3 - 5.13.0". Its `OrthoZoom` is Blender's own `ortho_scale`.
+fn blender_exporter(creator: &str) -> bool {
+    fn past_dash(s: &str) -> Option<&str> {
+        s.find('-').map(|i| &s[i + 1..])
+    }
+    let Some(rest) = creator.get(..7).filter(|p| p.eq_ignore_ascii_case("blender")).map(|_| &creator[7..]) else { return false };
+    let version = |s: &str, parts: usize| {
+        let mut s = s.trim_start_matches([' ', '\t']);
+        for i in 0..parts {
+            if i > 0 {
+                match s.strip_prefix('.') {
+                    Some(r) => s = r,
+                    None => return false,
+                }
+            }
+            let digits = s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            if digits == 0 {
+                return false;
+            }
+            s = &s[digits..];
+        }
+        true
+    };
+    past_dash(rest).and_then(past_dash).is_some_and(|s| version(s, 3)) || past_dash(rest).is_some_and(|s| version(s, 2))
 }
 
 /// Per control point skin influences, compressed-row: control point `cp`'s
@@ -888,6 +1925,10 @@ struct PrimBuild {
 struct Reader<'d, 'a> {
     dom: &'d Dom<'a>,
     sidecars: &'d dyn Sidecars,
+    /// How classic material colours and light colours are stored.
+    colors: FbxColorSpace,
+    /// The units light strengths are stored in.
+    light_units: LightUnits,
     warnings: Vec<String>,
     warned: HashSet<String>,
     objects: HashMap<i64, Obj>,
@@ -895,9 +1936,20 @@ struct Reader<'d, 'a> {
     children: HashMap<i64, Vec<Edge>>,
     parents: HashMap<i64, Vec<Edge>>,
     templates: HashMap<String, PMap<'a>>,
+    /// Each `PropertyTemplate` by its class (`FbxLight`, `FbxCamera`): the
+    /// defaults of a light or camera attribute, which `templates` merges
+    /// with every other `NodeAttribute` class's.
+    class_templates: HashMap<String, PMap<'a>>,
     creator: String,
     tick_rate: f64,
     correction: Mat4,
+    /// Metres per file unit, `UnitScaleFactor / 100`: the scale
+    /// `correction` holds, for the lengths a light or camera states.
+    unit: f64,
+    /// Per light and camera attribute: its scene index, or `None` when it
+    /// was dropped.
+    light_map: HashMap<i64, Option<usize>>,
+    camera_map: HashMap<i64, Option<usize>>,
     scene: Scene,
     node_of: HashMap<i64, usize>,
     model_of_node: Vec<i64>,
@@ -927,14 +1979,19 @@ struct Reader<'d, 'a> {
 }
 
 /// Read a parsed document into a scene.
-pub(super) fn read(dom: &Dom<'_>, sidecars: &dyn Sidecars) -> Result<SceneRead, MeshError> {
+pub(super) fn read(dom: &Dom<'_>, sidecars: &dyn Sidecars, colors: FbxColorSpace, light_units: LightUnits) -> Result<SceneRead, MeshError> {
     let mut r = Reader::new(dom, sidecars);
+    r.colors = colors;
+    r.light_units = light_units;
     r.header()?;
     r.index()?;
     r.globals()?;
     r.models()?;
     r.geometry()?;
     r.animation()?;
+    // After the animation: the frames of light and camera nodes turn at
+    // every key as well as at rest.
+    r.lights_and_cameras();
     r.finish()
 }
 
@@ -943,6 +2000,8 @@ impl<'d, 'a> Reader<'d, 'a> {
         Reader {
             dom,
             sidecars,
+            colors: FbxColorSpace::default(),
+            light_units: LightUnits::default(),
             warnings: Vec::new(),
             warned: HashSet::new(),
             objects: HashMap::new(),
@@ -950,9 +2009,13 @@ impl<'d, 'a> Reader<'d, 'a> {
             children: HashMap::new(),
             parents: HashMap::new(),
             templates: HashMap::new(),
+            class_templates: HashMap::new(),
             creator: String::new(),
             tick_rate: TICKS_PER_SECOND,
             correction: math::IDENTITY,
+            unit: 1.0,
+            light_map: HashMap::new(),
+            camera_map: HashMap::new(),
             scene: Scene::default(),
             node_of: HashMap::new(),
             model_of_node: Vec::new(),
@@ -1141,6 +2204,13 @@ impl<'d, 'a> Reader<'d, 'a> {
                 let Some(ty) = dom.first_prop(ot)?.and_then(|p| p.as_str().map(|s| s.into_owned())) else { continue };
                 for pt in dom.children_named(ot, "PropertyTemplate") {
                     let m = read_p70(dom, pt)?;
+                    if let Some(class) = dom.first_prop(pt)?.and_then(|p| p.as_str().map(|s| s.into_owned())) {
+                        // Files before 7.4 spell the classes "KFbx…"
+                        // (Blender's importer strips the K, import_fbx.py
+                        // L3238-L3244).
+                        let class = class.strip_prefix('K').filter(|c| c.starts_with("Fbx")).map_or(class.clone(), str::to_string);
+                        self.class_templates.entry(class).or_insert_with(|| m.clone());
+                    }
                     let entry = self.templates.entry(ty.clone()).or_default();
                     for (k, v) in m {
                         entry.entry(k).or_insert(v);
@@ -1156,8 +2226,22 @@ impl<'d, 'a> Reader<'d, 'a> {
             Some(g) => read_p70(self.dom, g)?,
             None => HashMap::new(),
         };
-        let m = axis_unit_matrix(&self.props(&gs, "GlobalSettings"))?;
+        let props = self.props(&gs, "GlobalSettings");
+        let m = axis_unit_matrix(&props)?;
+        // `axis_unit_matrix` has checked it is a positive number.
+        let unit = props.f64("UnitScaleFactor").unwrap_or(1.0) / 100.0;
+        // Ruling R15: the scene has no ambient light (the spec's
+        // non-goals), so a file's non-black `AmbientColor` is named; black
+        // is the usual default, and what this writer writes.
+        let ambient = props.vec3("AmbientColor").filter(|c| c.iter().any(|v| *v != 0.0));
+        self.unit = unit;
         self.correction = m;
+        if let Some(c) = ambient {
+            self.warn(
+                "ambient",
+                format!("the file's ambient light, AmbientColor {} in its GlobalSettings, is not carried: the scene holds directional, point and spot lights only", shown3(c)),
+            );
+        }
         Ok(())
     }
 
@@ -1216,8 +2300,9 @@ impl<'d, 'a> Reader<'d, 'a> {
                 models.len() - order.len()
             )));
         }
-        let mut cameras = 0usize;
-        let mut lights = 0usize;
+        // Camera switchers and stereo rigs; plain cameras and lights are
+        // `lights_and_cameras`'.
+        let mut rigs = 0usize;
         for &m in &order {
             let pm = self.p70(m)?;
             let xf = self.read_xf(m, &pm)?;
@@ -1233,7 +2318,7 @@ impl<'d, 'a> Reader<'d, 'a> {
             let inherit_matters = xf.inherit != 1 && parent.is_some() && {
                 let p_rs = without_translation(&pw);
                 let p_r = rotation_part(&p_rs);
-                let p_s = math::mat_mul(&math::transpose(&p_r), &p_rs);
+                let p_s = math::mat_mul(&math::invert(&p_r).unwrap_or_else(|| math::transpose(&p_r)), &p_rs);
                 let uniform = is_scaled_identity(&p_s);
                 let local_unit = {
                     let len = |c: usize| (pl[c * 4] * pl[c * 4] + pl[c * 4 + 1] * pl[c * 4 + 1] + pl[c * 4 + 2] * pl[c * 4 + 2]).sqrt();
@@ -1252,10 +2337,8 @@ impl<'d, 'a> Reader<'d, 'a> {
             if inherit_matters || xf.has_pivots() {
                 self.complex.insert(m);
             }
-            match self.sub(m) {
-                "Camera" | "CameraSwitcher" | "CameraStereo" => cameras += 1,
-                "Light" => lights += 1,
-                _ => {}
+            if matches!(self.sub(m), "CameraSwitcher" | "CameraStereo") {
+                rigs += 1;
             }
             let ir = self.scene.nodes.len();
             self.scene.nodes.push(Node { name: Some(self.name_of(m)).filter(|n| !n.is_empty()), transform, ..Default::default() });
@@ -1272,8 +2355,8 @@ impl<'d, 'a> Reader<'d, 'a> {
             self.local.insert(m, local);
             self.xf.insert(m, xf);
         }
-        if cameras + lights > 0 {
-            self.warn("camlight", format!("{cameras} camera(s) and {lights} light(s) were read as empty nodes; the scene has neither"));
+        if rigs > 0 {
+            self.warn("camrigs", format!("{rigs} camera switcher(s) and stereo camera rig(s) were read as empty nodes; the scene has neither"));
         }
         Ok(())
     }
@@ -1288,8 +2371,11 @@ impl<'d, 'a> Reader<'d, 'a> {
         let (gt, gr, gs) = (v("GeometricTranslation", [0.0; 3])?, v("GeometricRotation", [0.0; 3])?, v("GeometricScaling", [1.0; 3])?);
         // The SDK's rule, which ufbx (Godot, Blender 4.5) follows: with
         // RotationActive off, rotation order and pre/post rotation are
-        // ignored and Lcl Rotation is XYZ.
-        let active = props.i64("RotationActive").unwrap_or(0) != 0 && props.i64("RotationSpaceForLimitOnly").unwrap_or(0) == 0;
+        // ignored and Lcl Rotation is XYZ. Stated nowhere (no property, no
+        // template) it is on, as ufbx reads it (ufbx.c:22964 at 5955c5c,
+        // `ufbxi_find_int(&node->props, ufbxi_RotationActive, 1)`); the
+        // SDK's own templates say 0.
+        let active = props.i64("RotationActive").unwrap_or(1) != 0 && props.i64("RotationSpaceForLimitOnly").unwrap_or(0) == 0;
         let raw_order = props.i64("RotationOrder").unwrap_or(0);
         let inherit_raw = props.i64("InheritType").unwrap_or(0);
         let order = if active {
@@ -1337,22 +2423,23 @@ impl<'d, 'a> Reader<'d, 'a> {
         for ni in 0..self.model_of_node.len() {
             let m = self.model_of_node[ni];
             let geoms = self.kids_of(m, "Geometry", None);
-            let mut meshes: Vec<i64> = Vec::new();
+            // The geometries that draw: polygon meshes and `Line`s.
+            let mut drawn: Vec<i64> = Vec::new();
             for g in geoms {
                 let sub = self.sub(g).to_string();
                 match sub.as_str() {
-                    "Mesh" => meshes.push(g),
+                    "Mesh" | "Line" => drawn.push(g),
                     "Shape" => {}
                     other => {
                         self.non_mesh_geometry += 1;
-                        let what = format!("{other:?} geometry (NURBS, curves and lines)");
-                        self.warn("nonmesh", format!("{what} is not carried: the scene models polygon meshes only"));
+                        let what = format!("{other:?} geometry (NURBS, patches and curves)");
+                        self.warn("nonmesh", format!("{what} is not carried: the scene models polygon meshes and line segments only"));
                     }
                 }
             }
-            let Some(&g) = meshes.first() else { continue };
-            if meshes.len() > 1 {
-                self.warn("multigeo", format!("model {:?} has {} geometries; only the first was read", self.name_of(m), meshes.len()));
+            let Some(&g) = drawn.first() else { continue };
+            if drawn.len() > 1 {
+                self.warn("multigeo", format!("model {:?} has {} geometries; only the first was read", self.name_of(m), drawn.len()));
             }
             let materials = self.kids_of(m, "Material", None);
             let geo = self.xf.get(&m).map_or(math::IDENTITY, |x| x.geo);
@@ -1388,12 +2475,23 @@ impl<'d, 'a> Reader<'d, 'a> {
             }
         };
         let Some(arr) = dom.child_array(el, data)? else { return Ok(None) };
-        let values = dom.f64s(&arr, what)?;
+        let mut values = dom.f64s(&arr, what)?;
         if values.len() % stride != 0 {
             return Err(malformed(format!("{what} has {} values, not a multiple of {stride}", values.len())));
         }
-        if values.iter().any(|v| !v.is_finite()) {
-            return Err(malformed(format!("{what} has a non-finite value")));
+        // Zero for a direction or a coordinate; for a colour its neutral,
+        // opaque white, so the corner is not made transparent.
+        let fill = if data == "Colors" { 1.0 } else { 0.0 };
+        let mut bad = 0usize;
+        for e in values.chunks_exact_mut(stride) {
+            if e.iter().any(|v| !v.is_finite()) {
+                e.fill(fill);
+                bad += 1;
+            }
+        }
+        if bad > 0 {
+            let read_as = if data == "Colors" { "opaque white" } else { "zero" };
+            self.warn(&format!("nonfinite-{what}"), format!("{what} has {bad} non-finite element(s); each was read as {read_as}"));
         }
         let index = match reference_s.as_str() {
             "Direct" => None,
@@ -1419,7 +2517,7 @@ impl<'d, 'a> Reader<'d, 'a> {
         if let Some(m) = self.mesh_map.get(&key) {
             return Ok(*m);
         }
-        let built = self.build_mesh(g, materials, geo)?;
+        let built = if self.sub(g) == "Line" { self.build_lines(g, materials, geo)? } else { self.build_mesh(g, materials, geo)? };
         let out = built.map(|(mesh, channels)| {
             self.scene.meshes.push(mesh);
             let i = self.scene.meshes.len() - 1;
@@ -1432,6 +2530,14 @@ impl<'d, 'a> Reader<'d, 'a> {
         Ok(out)
     }
 
+    /// One Geometry as an IR mesh: control points, polygons (a negative
+    /// `PolygonVertexIndex` closes one), and every LayerElement by its mapping
+    /// (`ByControlPoint`, `ByPolygonVertex`, `ByPolygon`, `AllSame`) and reference
+    /// (`Direct`, `IndexToDirect`). FBX has no public specification: the SDK's
+    /// FbxLayerElement (https://help.autodesk.com/cloudhelp/2020/ENU/FBX-Developer-Help/files/cpp_ref/FBX_Developer_Help_cpp_ref_class_fbx_layer_element_html.html),
+    /// ufbx v0.23.1 `ufbxi_read_mesh` and `ufbxi_read_vertex_element`
+    /// (https://github.com/ufbx/ufbx/blob/26a482ae66871d7de36eb722aa060bce95bce274/ufbx.c#L13430-L13807,
+    /// #L12737-L12922), and Blender v5.2.3's `blen_read_geom`.
     fn build_mesh(&mut self, g: i64, materials: &[i64], geo: &Mat4) -> Result<Option<(SceneMesh, Vec<BlendChannel>)>, MeshError> {
         let dom = self.dom;
         let gname = self.name_of(g);
@@ -1439,12 +2545,18 @@ impl<'d, 'a> Reader<'d, 'a> {
         let Some(rec) = self.rec(g) else { return Ok(None) };
         let Some(va) = dom.child_array(rec, "Vertices")? else { return Ok(None) };
         let Some(pa) = dom.child_array(rec, "PolygonVertexIndex")? else { return Ok(None) };
-        let verts = dom.f64s(&va, &format!("{what} Vertices"))?;
+        let mut verts = dom.f64s(&va, &format!("{what} Vertices"))?;
         if verts.len() % 3 != 0 {
             return Err(malformed(format!("{what} has {} vertex coordinates, not a multiple of 3", verts.len())));
         }
-        if verts.iter().any(|v| !v.is_finite()) {
-            return Err(malformed(format!("{what} has a non-finite vertex")));
+        // A vertex with a non-finite coordinate draws nothing a viewer can
+        // show; its polygons are skipped below, and it reads as the origin.
+        let off_vertex: Vec<bool> = verts.chunks_exact(3).map(|v| !v.iter().all(|c| c.is_finite())).collect();
+        let any_off = off_vertex.iter().any(|b| *b);
+        if any_off {
+            for v in verts.iter_mut().filter(|v| !v.is_finite()) {
+                *v = 0.0;
+            }
         }
         let cps = verts.len() / 3;
         let pvi = dom.i32s(&pa, &format!("{what} PolygonVertexIndex"))?;
@@ -1454,6 +2566,7 @@ impl<'d, 'a> Reader<'d, 'a> {
         let mut start = 0usize;
         let mut triangles = 0usize;
         let mut degenerate = 0usize;
+        let mut on_off_vertex = 0usize;
         for (i, &raw) in pvi.iter().enumerate() {
             let (cp, end) = if raw < 0 { (!raw, true) } else { (raw, false) };
             if cp as usize >= cps {
@@ -1461,8 +2574,12 @@ impl<'d, 'a> Reader<'d, 'a> {
             }
             corner_cp.push(cp as u32);
             if end {
-                let n = i + 1 - start;
-                if n >= 3 {
+                let mut n = i + 1 - start;
+                if any_off && corner_cp[start..=i].iter().any(|&c| off_vertex[c as usize]) {
+                    // Skipped as a point polygon is (n < 3).
+                    on_off_vertex += 1;
+                    n = 0;
+                } else if n >= 3 {
                     triangles += n - 2;
                 } else {
                     degenerate += 1;
@@ -1470,6 +2587,9 @@ impl<'d, 'a> Reader<'d, 'a> {
                 polys.push((start, n));
                 start = i + 1;
             }
+        }
+        if on_off_vertex > 0 {
+            self.warn(&format!("offvertex-{g}"), format!("{what} has {on_off_vertex} polygon(s) on a non-finite vertex; they were skipped"));
         }
         if start != pvi.len() {
             return Err(malformed(format!("{what}'s last polygon is not terminated by a negative index")));
@@ -1555,6 +2675,7 @@ impl<'d, 'a> Reader<'d, 'a> {
             slot_material.push(self.material_for(mid)?);
         }
         let mut bad_slots = 0usize;
+        let mut fanned_concave = 0usize;
 
         let skin = self.skin_for(g, cps)?;
         let blend = self.blend_for(g, cps)?;
@@ -1676,14 +2797,32 @@ impl<'d, 'a> Reader<'d, 'a> {
                 }
                 vids.push(id);
             }
-            // A fan from the first corner keeps the polygon's winding.
-            for i in 1..n - 1 {
+            // Fanned when convex, ear-clipped when not (`polygon`; ufbx and
+            // three.js's FBXLoader ear-clip too), keeping the polygon's
+            // winding — reversed under a mirroring geometric transform.
+            let (tris, fanned) = if n > 3 {
+                let pts: Vec<[f64; 3]> = vids.iter().map(|&v| b.positions[v as usize].map(f64::from)).collect();
+                super::polygon::triangles(&pts)
+            } else {
+                (vec![[0, 1, 2]], false)
+            };
+            fanned_concave += usize::from(fanned);
+            for t in tris {
                 if mirror {
-                    b.indices.extend_from_slice(&[vids[0], vids[i + 1], vids[i]]);
+                    b.indices.extend_from_slice(&[vids[t[0]], vids[t[2]], vids[t[1]]]);
                 } else {
-                    b.indices.extend_from_slice(&[vids[0], vids[i], vids[i + 1]]);
+                    b.indices.extend_from_slice(&[vids[t[0]], vids[t[1]], vids[t[2]]]);
                 }
             }
+        }
+        if fanned_concave > 0 {
+            self.warn(
+                &format!("fanned-{g}"),
+                format!(
+                    "{what} has {fanned_concave} concave polygon(s) of more than {} corners; they were fan-triangulated",
+                    super::polygon::MAX_EAR_CLIP
+                ),
+            );
         }
         if bad_slots > 0 {
             self.warn(
@@ -1758,6 +2897,7 @@ impl<'d, 'a> Reader<'d, 'a> {
                 indices: b.indices,
                 material,
                 targets,
+                topology: super::scene::Topology::Triangles,
             });
         }
         let (weights, names, channels) = match &blend {
@@ -1768,6 +2908,105 @@ impl<'d, 'a> Reader<'d, 'a> {
             SceneMesh { name: Some(gname).filter(|n| !n.is_empty()), primitives: prims, weights, target_names: names },
             channels,
         )))
+    }
+
+    /// One `Line` Geometry as an IR mesh of one lines primitive: `Points`,
+    /// three doubles each, and `PointsIndex`, whose entries run through the
+    /// points in strips ([`walk_strips`]), a negative entry `-(e + 1)` naming
+    /// point `e` and ending its strip as `PolygonVertexIndex` ends a polygon.
+    /// assimp v6.0.5 reads exactly these two arrays
+    /// (`code/AssetLib/FBX/FBXMeshGeometry.cpp` L716-728) and makes a segment
+    /// from each non-negative entry to the next, an end marker converted back
+    /// to its point (`FBXConverter.cpp` L1030-1068); the FBX SDK's `FbxLine`
+    /// (https://help.autodesk.com/cloudhelp/2020/ENU/FBX-API-Reference/cpp_ref/class_fbx_line.html)
+    /// keeps the same two arrays, "certain points could be marked as end
+    /// points" to leave gaps between segments.
+    ///
+    /// The points no segment names are not in the scene, as a polygon's
+    /// unused control points are not; a segment on a point that is not finite
+    /// is skipped and said. The model's geometric transform bakes in as a
+    /// mesh's does, and its first material binds as a mesh's single material
+    /// does. A Line's layer elements are not read.
+    fn build_lines(&mut self, g: i64, materials: &[i64], geo: &Mat4) -> Result<Option<(SceneMesh, Vec<BlendChannel>)>, MeshError> {
+        let dom = self.dom;
+        let gname = self.name_of(g);
+        let what = format!("geometry {gname:?}");
+        let Some(rec) = self.rec(g) else { return Ok(None) };
+        let Some(pa) = dom.child_array(rec, "Points")? else { return Ok(None) };
+        let Some(ia) = dom.child_array(rec, "PointsIndex")? else { return Ok(None) };
+        let points = dom.f64s(&pa, &format!("{what} Points"))?;
+        if points.len() % 3 != 0 {
+            return Err(malformed(format!("{what} has {} point coordinates, not a multiple of 3", points.len())));
+        }
+        let cps = points.len() / 3;
+        let finite = |cp: usize| points[cp * 3..cp * 3 + 3].iter().all(|c| c.is_finite());
+        let index = dom.i32s(&ia, &format!("{what} PointsIndex"))?;
+        // A first reading checks every entry and counts what stays: the
+        // segments, and the points they name.
+        let (mut segments, mut off) = (0usize, 0usize);
+        let mut named = vec![false; cps];
+        walk_strips(&index, cps, &what, |a, b| {
+            if finite(a) && finite(b) {
+                segments += 1;
+                named[a] = true;
+                named[b] = true;
+            } else {
+                off += 1;
+            }
+        })?;
+        if off > 0 {
+            self.warn(&format!("offpoint-{g}"), format!("{what} has {off} line segment(s) on a non-finite point; they were skipped"));
+        }
+        if segments == 0 {
+            return Ok(None);
+        }
+        // Charged before anything is built: two indices a segment, one vertex
+        // a point named.
+        let kept = named.iter().filter(|n| **n).count();
+        let new_indices = segments.saturating_mul(2);
+        if self.total_indices.saturating_add(new_indices) > MAX_SCENE_INDICES {
+            return Err(unsupported(format!("the scene passes {MAX_SCENE_INDICES} indices at {what}")));
+        }
+        if self.total_vertices.saturating_add(kept) > MAX_SCENE_VERTICES {
+            return Err(unsupported(format!("the scene passes {MAX_SCENE_VERTICES} vertices at {what}")));
+        }
+        self.total_indices += new_indices;
+        self.total_vertices += kept;
+
+        // Geometric transform: baked into this geometry and nothing else.
+        let baking = !is_identity(geo);
+        let mut slot = vec![0u32; cps];
+        let mut positions: Vec<[f32; 3]> = Vec::with_capacity(kept);
+        for cp in (0..cps).filter(|&cp| named[cp]) {
+            slot[cp] = positions.len() as u32;
+            let pos = [points[cp * 3], points[cp * 3 + 1], points[cp * 3 + 2]];
+            let pos = if baking { math::transform_point_f64(geo, pos) } else { pos };
+            positions.push([pos[0] as f32, pos[1] as f32, pos[2] as f32]);
+        }
+        let mut indices: Vec<u32> = Vec::with_capacity(new_indices);
+        walk_strips(&index, cps, &what, |a, b| {
+            if finite(a) && finite(b) {
+                indices.extend_from_slice(&[slot[a], slot[b]]);
+            }
+        })?;
+        let material = match materials.first() {
+            Some(&m) => self.material_for(m)?,
+            None => None,
+        };
+        let prim = Primitive {
+            positions,
+            normals: None,
+            tangents: None,
+            uvs: Vec::new(),
+            colors: None,
+            skin: None,
+            indices,
+            material,
+            targets: Vec::new(),
+            topology: super::scene::Topology::Lines,
+        };
+        let mesh = SceneMesh { name: Some(gname).filter(|n| !n.is_empty()), primitives: vec![prim], weights: Vec::new(), target_names: Vec::new() };
+        Ok(Some((mesh, Vec::new())))
     }
 
     // ── skins ───────────────────────────────────────────────────────────────
@@ -2112,12 +3351,15 @@ impl<'d, 'a> Reader<'d, 'a> {
 
     fn build_material(&mut self, id: i64) -> Result<Material, MeshError> {
         let pm = self.p70(id)?;
-        let what = format!("material {:?}", self.name_of(id));
+        // The notes below quote the name, clipped (Ruling A45).
+        let what = format!("material {:?}", quoted_name(&self.name_of(id)));
         let props = self.props(&pm, "Material");
         let color = |name: &str| props.vec3(name).filter(|v| finite3(*v));
-        let decode = |v: [f64; 3]| [srgb_decode(v[0]), srgb_decode(v[1]), srgb_decode(v[2])];
+        let space = self.colors;
+        let decode = |v: [f64; 3]| v.map(|c| decode_color(c, space));
         let mut m = Material { name: Some(self.name_of(id)).filter(|n| !n.is_empty()), metallic: 0.0, ..Default::default() };
         let mut deferred: Vec<String> = Vec::new();
+        let mut opacity_note: Option<String> = None;
         let flavour = if props.has("Maya|base_color") || props.has("Maya|metallic") {
             Flavour::Stingray
         } else if props.has("Maya|baseColor") {
@@ -2204,8 +3446,12 @@ impl<'d, 'a> Reader<'d, 'a> {
                 // 1), and reading it as metal would turn every Maya material
                 // to chrome.
                 let metallic = if self.creator.contains("Blender") { f("ReflectionFactor", 0.0) } else { 0.0 };
-                let emissive = color("Emissive").or_else(|| color("EmissiveColor")).map(decode).unwrap_or([0.0; 3]);
-                (diffuse, metallic, 1.0 - shininess.max(0.0).sqrt() / 10.0, scale(emissive, f("EmissiveFactor", 1.0)))
+                // The legacy `Emissive`, like `Diffuse`, is the computed colour
+                // × factor: the factor applies once.
+                let emissive = color("Emissive").map(decode).or_else(|| {
+                    color("EmissiveColor").map(|c| scale(decode(c), f("EmissiveFactor", 1.0)))
+                });
+                (diffuse, metallic, 1.0 - shininess.max(0.0).sqrt() / 10.0, emissive.unwrap_or([0.0; 3]))
             }
         };
         if let Some(b) = base {
@@ -2219,15 +3465,20 @@ impl<'d, 'a> Reader<'d, 'a> {
             _ => match props.f64("Opacity") {
                 Some(o) => o,
                 None => {
+                    // The FbxSurfacePhong template's defaults: factor 0,
+                    // colour black (research-fbx.md).
                     let tf = props.f64("TransparencyFactor").unwrap_or(0.0);
-                    let c = props.vec3("TransparentColor").unwrap_or([1.0; 3]);
+                    let c = props.vec3("TransparentColor").unwrap_or([0.0; 3]);
                     1.0 - tf * (c[0] + c[1] + c[2]) / 3.0
                 }
             },
         };
-        if !alpha.is_finite() {
-            return Err(malformed(format!("{what} opacity is not finite")));
-        }
+        let alpha = if alpha.is_finite() {
+            alpha
+        } else {
+            opacity_note = Some(format!("{what} opacity is not finite; it was read as opaque"));
+            1.0
+        };
         let alpha = alpha.clamp(0.0, 1.0) as f32;
         m.base_color[3] = alpha;
         if alpha < 1.0 {
@@ -2297,6 +3548,9 @@ impl<'d, 'a> Reader<'d, 'a> {
         for d in deferred {
             self.warn("maxgloss", d);
         }
+        if let Some(n) = opacity_note {
+            self.warn(&format!("opacity-{id}"), n);
+        }
         // Textures, by the material property they drive.
         let edges: Vec<Edge> = self.kids(id).to_vec();
         for (tex, prop) in edges {
@@ -2310,10 +3564,17 @@ impl<'d, 'a> Reader<'d, 'a> {
                 "Maya|TEX_ao_map" | "3dsMax|main|ao_map" | "3dsMax|main|ambientOcclusionMap" => 3,
                 other => {
                     if matches!(self.kind(tex), "Texture" | "LayeredTexture") {
-                        self.warn(
-                            &format!("slot-{other}"),
-                            format!("textures on the material slot {other:?} have no metallic-roughness equivalent and were not carried"),
-                        );
+                        // Textures on layer properties aren't carried yet;
+                        // the layer reads from its values.
+                        let layer = flavour.layers().and_then(|n| n.texture_slots.iter().find(|(s, _)| *s == other));
+                        let msg = match layer {
+                            Some((_, layer)) => format!(
+                                "textures on the material slot {other:?} drive the {} layer; FBX layer textures are not carried, so the layer is read from the slot's stored value only",
+                                layer.as_str()
+                            ),
+                            None => format!("textures on the material slot {other:?} have no metallic-roughness equivalent and were not carried"),
+                        };
+                        self.warn(&format!("slot-{other}"), msg);
                     }
                     continue;
                 }
@@ -2345,6 +3606,15 @@ impl<'d, 'a> Reader<'d, 'a> {
         }
         if let (Some(w), true) = (maps.emissive, m.emissive_texture.is_some()) {
             m.emissive = [w; 3];
+        }
+        // The layers, once the base colour glTF tints transmission with is
+        // final.
+        if let Some(names) = flavour.layers() {
+            let textured = m.base_color_texture.is_some();
+            let notes = read_layers(names, self.props(&pm, "Material"), &what, self.colors, textured, &mut m);
+            for (i, note) in notes.into_iter().enumerate() {
+                self.warn(&format!("layers-{id}-{i}"), note);
+            }
         }
         Ok(m)
     }
@@ -2490,6 +3760,12 @@ impl<'d, 'a> Reader<'d, 'a> {
         Ok(c)
     }
 
+    /// An AnimationCurve: `KeyTime` (1/46186158000 s ticks) and `KeyValueFloat`
+    /// as parallel arrays, with `KeyAttrFlags` and `KeyAttrDataFloat` run-length
+    /// coded by `KeyAttrRefCount`. The SDK's FbxAnimCurve and FbxAnimCurveDef;
+    /// ufbx v0.23.1 `ufbxi_read_animation_curve` and `ufbxi_key_flags`
+    /// (https://github.com/ufbx/ufbx/blob/26a482ae66871d7de36eb722aa060bce95bce274/ufbx.c#L14260-L14535,
+    /// #L14091-L14107).
     fn decode_curve(&mut self, id: i64) -> Result<Option<Curve>, MeshError> {
         let dom = self.dom;
         let what = "animation curve".to_string();
@@ -2536,12 +3812,11 @@ impl<'d, 'a> Reader<'d, 'a> {
             let mut k = 0usize;
             for (run, count) in refs.iter().enumerate() {
                 let count = usize::try_from(*count).map_err(|_| malformed(format!("{what} has a negative run length")))?;
-                for _ in 0..count {
-                    if k < n {
-                        attr[k] = run;
-                        k += 1;
-                    }
-                }
+                // Only the keys still unassigned: a declared count past them
+                // covers nothing (ufbx consumes runs per key).
+                let covered = count.min(n - k);
+                attr[k..k + covered].fill(run);
+                k += covered;
             }
             // Keys past the declared runs keep the last run's attributes.
             for a in attr.iter_mut().skip(k) {
@@ -2676,11 +3951,21 @@ impl<'d, 'a> Reader<'d, 'a> {
             .copied()
             .find(|s| active.as_deref() == Some(self.name_of(*s).as_str()) && has_curves(self, *s))
             .or_else(|| stacks.iter().copied().find(|s| has_curves(self, *s)));
-        let Some(stack) = chosen else { return Ok(()) };
-        let others: Vec<String> = stacks.iter().copied().filter(|s| *s != stack && has_curves(self, *s)).map(|s| self.name_of(s)).collect();
-        if !others.is_empty() {
-            self.warn("stacks", format!("{} more animation stack(s) [{}] were not carried; only {:?} was", others.len(), others.join(", "), self.name_of(stack)));
+        let Some(active) = chosen else { return Ok(()) };
+        // Every stack is a clip: the active one first (what a one-clip
+        // container keeps), then the rest in the file's order. FBX writers,
+        // ours included, write one stack per clip.
+        let order: Vec<i64> = std::iter::once(active)
+            .chain(stacks.iter().copied().filter(|s| *s != active && has_curves(self, *s)))
+            .collect();
+        for stack in order {
+            self.stack_animation(stack)?;
         }
+        Ok(())
+    }
+
+    /// One animation stack as one clip.
+    fn stack_animation(&mut self, stack: i64) -> Result<(), MeshError> {
         let layers = self.kids_of(stack, "AnimationLayer", None);
         let layers: Vec<i64> = layers.into_iter().filter(|l| !self.kids_of(*l, "AnimationCurveNode", None).is_empty()).collect();
         let Some(&layer) = layers.first() else { return Ok(()) };
@@ -2750,18 +4035,36 @@ impl<'d, 'a> Reader<'d, 'a> {
         let mut channels: Vec<Channel> = Vec::new();
         // Ancestors whose scale animates make inherit types 0/2 time-dependent.
         let scale_animated: HashSet<usize> = node_curves.iter().filter(|(_, c)| c[2].iter().any(|x| x.is_some())).map(|(n, _)| *n).collect();
+        // Per model: it, or an ancestor, animates its scale. Remembered along
+        // every walk, so a chain is walked once rather than once per node.
+        let mut scaled_at_or_above: HashMap<i64, bool> = HashMap::new();
         for (node, curves) in &node_curves {
             let model = self.model_of_node[*node];
             let mut complex = self.complex.contains(&model);
             if !complex && self.xf.get(&model).is_some_and(|x| x.inherit != 1) {
+                let mut walked = Vec::new();
                 let mut cur = self.model_parent.get(&model).copied();
+                let mut found = false;
                 while let Some(p) = cur {
+                    if let Some(&known) = scaled_at_or_above.get(&p) {
+                        found = known;
+                        break;
+                    }
                     if self.node_of.get(&p).is_some_and(|n| scale_animated.contains(n)) {
-                        complex = true;
+                        scaled_at_or_above.insert(p, true);
+                        found = true;
+                        break;
+                    }
+                    walked.push(p);
+                    if walked.len() > self.model_parent.len() {
                         break;
                     }
                     cur = self.model_parent.get(&p).copied();
                 }
+                for p in walked {
+                    scaled_at_or_above.insert(p, found);
+                }
+                complex = found;
             }
             let defaults: [[f64; 3]; 3] = [0, 1, 2].map(|k| node_defaults.get(&(*node, k)).copied().unwrap_or([f64::NAN; 3]));
             if complex {
@@ -2830,6 +4133,16 @@ impl<'d, 'a> Reader<'d, 'a> {
                     times.dedup();
                 }
             }
+            // Every channel's weight at every time, once per node holding the
+            // mesh: charged before anything is allocated, since nothing else
+            // bounds times × channels (1,024 channels and one long cubic
+            // curve asked for 651 MB).
+            let holders = nodes_of_mesh.get(&mi).map_or(0, Vec::len).max(1);
+            let need = times.len().checked_mul(ntargets).and_then(|v| v.checked_mul(holders)).unwrap_or(usize::MAX);
+            if self.morph_values.saturating_add(need) > MAX_MORPH_VALUES {
+                return Err(unsupported(format!("the blend-shape weight animation expands past {MAX_MORPH_VALUES} values")));
+            }
+            self.morph_values += need;
             let mut values = vec![0.0f32; times.len() * ntargets];
             for (i, t) in times.iter().enumerate() {
                 for (c, curve) in chans.iter().zip(&curves) {
@@ -2848,7 +4161,16 @@ impl<'d, 'a> Reader<'d, 'a> {
             }
         }
         if !channels.is_empty() {
-            self.scene.animations.push(Animation { name: Some(self.name_of(stack)).filter(|n| !n.is_empty()), channels });
+            let name = Some(self.name_of(stack)).filter(|n| !n.is_empty());
+            // A take with pre-roll keys before 0; the scene's clock starts
+            // there (glTF 2.0 §3.11), as the USD reader's does.
+            if let Some(lo) = super::pose::start_at_zero(&mut channels) {
+                self.warn(
+                    &format!("preroll-{stack}"),
+                    format!("animation stack {:?} starts at {lo}s; it was shifted to start at 0", name.as_deref().unwrap_or("")),
+                );
+            }
+            self.scene.animations.push(Animation { name, channels });
         }
         Ok(())
     }
@@ -3126,6 +4448,185 @@ impl<'d, 'a> Reader<'d, 'a> {
         Ok(out)
     }
 
+    // ── lights and cameras ──────────────────────────────────────────────────
+
+    /// Places each model's first light and first camera (see the module
+    /// doc), then turns the frames of the nodes that hold them, at rest and
+    /// at every key, from FBX's to the scene's (`fbx::reframe` with each
+    /// `fbx::Turn`'s inverse), so that every other node stays where it is.
+    /// What this builds is bounded by the node budget: every light and
+    /// camera a model places, and a model places one of each at most, and
+    /// `models` charged each model against `MAX_NODES` before building any
+    /// node; a child node made for one is charged against the same budget
+    /// before it is made.
+    fn lights_and_cameras(&mut self) {
+        let joints = self.scene.joint_nodes();
+        let mut turns: Vec<Option<Turn>> = vec![None; self.scene.nodes.len()];
+        // `finish` adds a root for the axis and unit conversion after this:
+        // a child made here must leave it room.
+        let budget = MAX_NODES - usize::from(!is_identity(&self.correction));
+        for ni in 0..self.model_of_node.len() {
+            let m = self.model_of_node[ni];
+            let attributes: Vec<(i64, bool)> = self
+                .kids(m)
+                .iter()
+                .filter(|(c, p)| p.is_none() && self.kind(*c) == "NodeAttribute")
+                .filter_map(|(c, _)| match self.sub(*c) {
+                    "Light" => Some((*c, true)),
+                    "Camera" => Some((*c, false)),
+                    _ => None,
+                })
+                .collect();
+            let light = attributes.iter().find(|a| a.1).map(|a| a.0);
+            let camera = attributes.iter().find(|a| !a.1).map(|a| a.0);
+            if attributes.len() > usize::from(light.is_some()) + usize::from(camera.is_some()) {
+                let model = quoted_name(&self.name_of(m));
+                let n = attributes.len();
+                // Keyed by the model, so each such model is named, once.
+                self.warn(&format!("extra-attributes {m}"), format!("model \"{model}\" has {n} light and camera attributes; only its first light and first camera were read"));
+            }
+            // What stays on the model's node: nothing beside its mesh or a
+            // joint, and of a light and a camera the one its class names (a
+            // Camera model's camera, else the light). The other goes on a
+            // child node of its own, which carries the turn back.
+            let crowded = self.scene.nodes[ni].mesh.is_some() || joints.get(ni).copied().unwrap_or(false);
+            let keeps_camera = camera.is_some() && (light.is_none() || self.sub(m) == "Camera");
+            for (attribute, is_light) in [(light, true), (camera, false)] {
+                let Some(a) = attribute else { continue };
+                let (kind, turn) = if is_light { ("light", Turn::LIGHT) } else { ("camera", Turn::CAMERA) };
+                let on_node = !crowded && is_light != keeps_camera;
+                if !on_node && self.scene.nodes.len() >= budget {
+                    let label = self.attribute_label(a, m, kind);
+                    self.warnings.push(format!(
+                        "{label} is dropped: it shares its model with a mesh, a joint or a light, so it needs a node of its own, past the scene's {MAX_NODES}"
+                    ));
+                    continue;
+                }
+                let index = if is_light { self.light_for(a, m) } else { self.camera_for(a, m) };
+                let Some(index) = index else { continue };
+                let place = |n: &mut Node| {
+                    if is_light {
+                        n.light = Some(index);
+                    } else {
+                        n.camera = Some(index);
+                    }
+                };
+                if on_node {
+                    place(&mut self.scene.nodes[ni]);
+                    turns[ni] = Some(turn.inverse());
+                } else {
+                    let name = self.scene.nodes[ni].name.as_ref().map(|n| format!("{n}_{kind}"));
+                    let transform = Transform::Trs { translation: [0.0; 3], rotation: turn.inverse().quat(), scale: [1.0; 3] };
+                    let mut child = Node { name, transform, ..Default::default() };
+                    place(&mut child);
+                    self.scene.nodes.push(child);
+                    let c = self.scene.nodes.len() - 1;
+                    self.scene.nodes[ni].children.push(c);
+                    turns.push(None);
+                }
+            }
+        }
+        self.unplaced_lights_and_cameras();
+        reframe(&mut self.scene, &turns);
+    }
+
+    /// A light or camera as a warning names it: by its attribute's name,
+    /// else its model's, quoted and cut at [`MAX_QUOTED_NAME`] (Ruling A45).
+    fn attribute_label(&self, a: i64, m: i64, kind: &str) -> String {
+        let name = self.name_of(a);
+        let name = if name.is_empty() { self.name_of(m) } else { name };
+        format!("{kind} \"{}\"", quoted_name(&name))
+    }
+
+    /// The scene's index of light attribute `a`, which model `m` places:
+    /// read once however many models place it, and `None`, with a warning
+    /// naming it and why, when it is dropped.
+    fn light_for(&mut self, a: i64, m: i64) -> Option<usize> {
+        if let Some(&kept) = self.light_map.get(&a) {
+            return kept;
+        }
+        let label = self.attribute_label(a, m, "light");
+        let name = Some(self.name_of(a)).filter(|n| !n.is_empty());
+        let read = match self.p70(a) {
+            Ok(pm) => read_light(Props { own: &pm, tmpl: self.class_templates.get("FbxLight") }, name, self.unit, self.colors, self.light_units, &label),
+            Err(e) => Err(format!("its properties do not read ({e})")),
+        };
+        let kept = match read {
+            Ok((light, notes)) => {
+                self.warnings.extend(notes);
+                self.scene.lights.push(light);
+                Some(self.scene.lights.len() - 1)
+            }
+            Err(why) => {
+                self.warnings.push(format!("{label} is dropped: {why}"));
+                None
+            }
+        };
+        self.light_map.insert(a, kept);
+        kept
+    }
+
+    /// [`Reader::light_for`] for a camera attribute.
+    fn camera_for(&mut self, a: i64, m: i64) -> Option<usize> {
+        if let Some(&kept) = self.camera_map.get(&a) {
+            return kept;
+        }
+        let label = self.attribute_label(a, m, "camera");
+        let name = Some(self.name_of(a)).filter(|n| !n.is_empty());
+        let blender = blender_exporter(&self.creator);
+        let read = match self.p70(a) {
+            Ok(pm) => read_camera(Props { own: &pm, tmpl: self.class_templates.get("FbxCamera") }, name, self.unit, blender, &label),
+            Err(e) => Err(format!("its properties do not read ({e})")),
+        };
+        let kept = match read {
+            Ok((camera, notes)) => {
+                self.warnings.extend(notes);
+                self.scene.cameras.push(camera);
+                Some(self.scene.cameras.len() - 1)
+            }
+            Err(why) => {
+                self.warnings.push(format!("{label} is dropped: {why}"));
+                None
+            }
+        };
+        self.camera_map.insert(a, kept);
+        kept
+    }
+
+    /// A warning for each light and camera attribute that no model holds:
+    /// each is dropped. They are named one by one while the node budget
+    /// lasts (`MAX_NODES`, as many as a scene can place), and one more
+    /// warning counts any past it, as glTF's reader does, so a file of
+    /// millions cannot make millions of warnings.
+    fn unplaced_lights_and_cameras(&mut self) {
+        let mut notes = Vec::new();
+        let mut more = [0usize; 2];
+        for &a in &self.order {
+            let is_light = match (self.kind(a), self.sub(a)) {
+                ("NodeAttribute", "Light") => true,
+                ("NodeAttribute", "Camera") => false,
+                _ => continue,
+            };
+            if self.ups(a).iter().any(|(p, prop)| prop.is_none() && self.kind(*p) == "Model") {
+                continue;
+            }
+            let kind = if is_light { "light" } else { "camera" };
+            if notes.len() < MAX_NODES {
+                let name = self.name_of(a);
+                let label = if name.is_empty() { format!("{kind} {a}") } else { format!("{kind} \"{}\"", quoted_name(&name)) };
+                notes.push(format!("{label} is placed by no model, so it is dropped"));
+            } else {
+                more[usize::from(!is_light)] += 1;
+            }
+        }
+        for (n, kind) in more.iter().zip(["light", "camera"]) {
+            if *n > 0 {
+                notes.push(format!("{n} more {kind}(s) are placed by no model, so they are dropped"));
+            }
+        }
+        self.warnings.extend(notes);
+    }
+
     fn finish(mut self) -> Result<SceneRead, MeshError> {
         if !is_identity(&self.correction) {
             // One root carrying the axis and unit conversion, so everything
@@ -3144,7 +4645,7 @@ impl<'d, 'a> Reader<'d, 'a> {
             let props = self.dom.props(doc)?;
             self.scene.name = props.get(1).and_then(|p| p.as_str()).map(|s| s.into_owned()).filter(|s| !s.is_empty());
         }
-        if self.scene.triangle_count() == 0 && self.non_mesh_geometry > 0 {
+        if self.scene.drawable_count() == 0 && self.non_mesh_geometry > 0 {
             return Err(unsupported(
                 "the file's only geometry is NURBS, patches or curves, which this converter does not tessellate",
             ));
@@ -3211,6 +4712,7 @@ fn finish_channel(node: usize, path: AnimPath, step: bool, times: &[f64], values
 mod tests {
     use super::super::package::NoSidecars;
     use super::*;
+    use super::super::fixtures::sweeps::{layer_sweep, span};
 
     const SECOND: i64 = 46_186_158_000;
 
@@ -3349,5 +4851,1204 @@ mod tests {
         // Below zero the first shape extrapolates; one shape is linear.
         assert_eq!(inbetween_weights(&full, -0.5), vec![-1.0, 0.0]);
         assert_eq!(inbetween_weights(&[1.0], 0.3), vec![0.3]);
+    }
+
+    /// 2026-10-12 review, finding 16: assigning keys to attribute runs looped
+    /// over each run's declared count even after every key had its run, so a
+    /// 2-key curve declaring a run of 2³¹−1 spun for seconds (a ~150 KB file
+    /// of 10k such runs: about 2 h). ufbx consumes runs per key.
+    #[test]
+    fn a_huge_attribute_run_costs_only_the_keys_it_covers() {
+        let started = std::time::Instant::now();
+        let c = curve(7400, &[(0.0, 0.0), (1.0, 10.0)], &[(FLAG_CUBIC | FLAG_TANGENT_USER, ["0", "0", "0", "0"], i32::MAX as usize)]);
+        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
+        assert!((c.eval(1.0) - 10.0).abs() < 1e-9);
+    }
+
+    // ── material layers ──────────────────────────────────────────────────
+
+    /// One `Properties70` line, typed as the exporter types it.
+    fn p(name: &str, ty: &str, label: &str, flags: &str, v: &[f64]) -> String {
+        let values: Vec<String> = v.iter().map(|x| x.to_string()).collect();
+        format!("\t\t\tP: \"{name}\", \"{ty}\", \"{label}\", \"{flags}\",{}\n", values.join(","))
+    }
+
+    /// Maya's types (`maya_arnold_properties_7500_ascii.fbx`): float,
+    /// Vector3D and bool.
+    fn maya(name: &str, x: f64) -> String {
+        p(name, "float", "", "", &[x])
+    }
+    fn maya3(name: &str, c: [f64; 3]) -> String {
+        p(name, "Vector3D", "Vector", "", &c)
+    }
+    fn maya_bool(name: &str, on: bool) -> String {
+        p(name, "bool", "", "", &[f64::from(u8::from(on))])
+    }
+
+    /// 3ds Max's (`max_physical_material_properties_7500_ascii.fbx`): Float,
+    /// ColorAndAlpha and Bool.
+    fn max(name: &str, x: f64) -> String {
+        p(name, "Float", "", "A", &[x])
+    }
+    fn max4(name: &str, c: [f64; 4]) -> String {
+        p(name, "ColorAndAlpha", "", "A", &c)
+    }
+    fn max_bool(name: &str, on: bool) -> String {
+        p(name, "Bool", "", "A", &[f64::from(u8::from(on))])
+    }
+
+    /// 3ds Max's class ids for a Physical (`physical`) or OpenPBR material,
+    /// as both exports write them (ufbx.c L22340-L22347 reads them).
+    fn max_class(physical: bool) -> String {
+        let (a, b) = if physical { (1030429932, -559038463) } else { (-246079949, 939201335) };
+        format!("\t\t\tP: \"3dsMax|ClassIDa\", \"int\", \"Integer\", \"\",{a}\n\t\t\tP: \"3dsMax|ClassIDb\", \"int\", \"Integer\", \"\",{b}\n")
+    }
+
+    /// A triangle with one material holding `props` and, when `slot` is
+    /// given, a texture (`t.png`) connected to that material property; read
+    /// back as the material and the reader's warnings.
+    fn layered_material(props: &str, slot: Option<&str>) -> (Material, Vec<String>) {
+        let r = layered_scene(props, slot, &NoSidecars);
+        (r.scene.materials[0].clone(), r.warnings)
+    }
+
+    /// `layered_material`'s document, read with `side`'s files.
+    fn layered_scene(props: &str, slot: Option<&str>, side: &dyn Sidecars) -> SceneRead {
+        let src = layered_doc(props, slot);
+        let r = super::super::read_scene(src.as_bytes(), super::super::MeshFormat::Fbx, side).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.scene.materials.len(), 1, "{src}");
+        r
+    }
+
+    /// `layered_material`'s document, as ASCII FBX text.
+    fn layered_doc(props: &str, slot: Option<&str>) -> String {
+        let texture = match slot {
+            Some(_) => "\tTexture: 30, \"Texture::t\", \"\" {\n\t\tType: \"TextureVideoClip\"\n\t\tFileName: \"t.png\"\n\t\tRelativeFilename: \"t.png\"\n\t}\n",
+            None => "",
+        };
+        let link = slot.map(|s| format!("\tC: \"OP\",30,20, \"{s}\"\n")).unwrap_or_default();
+        format!(
+            "; FBX 7.5.0 project file\nFBXHeaderExtension:  {{\n\tFBXVersion: 7500\n}}\nObjects:  {{\n\
+             \tModel: 10, \"Model::m\", \"Mesh\" {{\n\t}}\n\
+             \tGeometry: 99, \"Geometry::tri\", \"Mesh\" {{\n\t\tVertices: *9 {{\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}}\n\t\tPolygonVertexIndex: *3 {{\n\t\t\ta: 0,1,-3\n\t\t}}\n\
+             \t\tLayerElementMaterial: 0 {{\n\t\t\tMappingInformationType: \"AllSame\"\n\t\t\tReferenceInformationType: \"IndexToDirect\"\n\t\t\tMaterials: *1 {{\n\t\t\t\ta: 0\n\t\t\t}}\n\t\t}}\n\
+             \t\tLayer: 0 {{\n\t\t\tLayerElement:  {{\n\t\t\t\tType: \"LayerElementMaterial\"\n\t\t\t\tTypedIndex: 0\n\t\t\t}}\n\t\t}}\n\t}}\n\
+             \tMaterial: 20, \"Material::mat\", \"\" {{\n\t\tShadingModel: \"unknown\"\n\t\tProperties70:  {{\n{props}\t\t}}\n\t}}\n\
+             {texture}}}\nConnections:  {{\n\tC: \"OO\",10,0\n\tC: \"OO\",99,10\n\tC: \"OO\",20,10\n{link}}}\n"
+        )
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() <= 1e-6 * b.abs().max(1.0)
+    }
+
+    /// Every warning in `got` is one of `want` (each given as fragments the
+    /// warning must all contain), and each of `want` is warned exactly once.
+    fn assert_warnings(got: &[String], want: &[&[&str]], ctx: &str) {
+        for w in want {
+            let n = got.iter().filter(|g| w.iter().all(|f| g.contains(f))).count();
+            assert_eq!(n, 1, "{ctx}: {w:?} warned {n} times in {got:#?}");
+        }
+        for g in got {
+            assert!(want.iter().any(|w| w.iter().all(|f| g.contains(f))), "{ctx}: unexpected warning {g:?} in {got:#?}");
+        }
+    }
+
+    fn no_layers(m: &Material) -> bool {
+        MaterialLayer::ALL.iter().all(|l| !m.has_layer(*l))
+    }
+
+    /// The export's lines L342-L386, all of them, from
+    /// `data/maya_arnold_properties_7500_ascii.fbx` in ufbx v0.23.1,
+    /// which `arnold_layers_read` cites.
+    const ARNOLD_EXPORT: &str = "\t\t\tP: \"Maya\", \"Compound\", \"\", \"\"\n\
+            \t\t\tP: \"Maya|TypeId\", \"int\", \"Integer\", \"\",1138001\n\
+            \t\t\tP: \"Maya|outAlpha\", \"float\", \"\", \"\",0\n\
+            \t\t\tP: \"Maya|normalCamera\", \"Vector3D\", \"Vector\", \"\",1,1,1\n\
+            \t\t\tP: \"Maya|aiEnableMatte\", \"bool\", \"\", \"\",1\n\
+            \t\t\tP: \"Maya|aiMatteColor\", \"Vector3D\", \"Vector\", \"\",0.649999976158142,0.660000026226044,0.670000016689301\n\
+            \t\t\tP: \"Maya|aiMatteColorA\", \"float\", \"\", \"\",0.68\n\
+            \t\t\tP: \"Maya|base\", \"float\", \"\", \"\",0.01\n\
+            \t\t\tP: \"Maya|baseColor\", \"Vector3D\", \"Vector\", \"\",0.0199999995529652,0.0299999993294477,0.0399999991059303\n\
+            \t\t\tP: \"Maya|diffuseRoughness\", \"float\", \"\", \"\",0.05\n\
+            \t\t\tP: \"Maya|specular\", \"float\", \"\", \"\",0.07\n\
+            \t\t\tP: \"Maya|specularColor\", \"Vector3D\", \"Vector\", \"\",0.0799999982118607,0.0900000035762787,0.100000001490116\n\
+            \t\t\tP: \"Maya|specularRoughness\", \"float\", \"\", \"\",0.11\n\
+            \t\t\tP: \"Maya|specularIOR\", \"float\", \"\", \"\",0.12\n\
+            \t\t\tP: \"Maya|specularAnisotropy\", \"float\", \"\", \"\",0.13\n\
+            \t\t\tP: \"Maya|specularRotation\", \"float\", \"\", \"\",0.14\n\
+            \t\t\tP: \"Maya|metalness\", \"float\", \"\", \"\",0.06\n\
+            \t\t\tP: \"Maya|transmission\", \"float\", \"\", \"\",0.15\n\
+            \t\t\tP: \"Maya|transmissionColor\", \"Vector3D\", \"Vector\", \"\",0.159999996423721,0.170000001788139,0.180000007152557\n\
+            \t\t\tP: \"Maya|transmissionDepth\", \"float\", \"\", \"\",0.19\n\
+            \t\t\tP: \"Maya|transmissionScatter\", \"Vector3D\", \"Vector\", \"\",0.200000002980232,0.209999993443489,0.219999998807907\n\
+            \t\t\tP: \"Maya|transmissionScatterAnisotropy\", \"float\", \"\", \"\",0.23\n\
+            \t\t\tP: \"Maya|transmissionDispersion\", \"float\", \"\", \"\",0.24\n\
+            \t\t\tP: \"Maya|transmissionExtraRoughness\", \"float\", \"\", \"\",0.25\n\
+            \t\t\tP: \"Maya|transmitAovs\", \"bool\", \"\", \"\",1\n\
+            \t\t\tP: \"Maya|subsurface\", \"float\", \"\", \"\",0.26\n\
+            \t\t\tP: \"Maya|subsurfaceColor\", \"Vector3D\", \"Vector\", \"\",0.270000010728836,0.280000001192093,0.28999999165535\n\
+            \t\t\tP: \"Maya|subsurfaceRadius\", \"Vector3D\", \"Vector\", \"\",0.300000011920929,0.310000002384186,0.319999992847443\n\
+            \t\t\tP: \"Maya|subsurfaceScale\", \"float\", \"\", \"\",0.33\n\
+            \t\t\tP: \"Maya|subsurfaceAnisotropy\", \"float\", \"\", \"\",0.34\n\
+            \t\t\tP: \"Maya|subsurfaceType\", \"enum\", \"\", \"\",1\n\
+            \t\t\tP: \"Maya|sheen\", \"float\", \"\", \"\",0.46\n\
+            \t\t\tP: \"Maya|sheenColor\", \"Vector3D\", \"Vector\", \"\",0.469999998807907,0.479999989271164,0.490000009536743\n\
+            \t\t\tP: \"Maya|sheenRoughness\", \"float\", \"\", \"\",0.5\n\
+            \t\t\tP: \"Maya|thinWalled\", \"bool\", \"\", \"\",1\n\
+            \t\t\tP: \"Maya|tangent\", \"Vector3D\", \"Vector\", \"\",0.600000023841858,0.610000014305115,0.620000004768372\n\
+            \t\t\tP: \"Maya|coat\", \"float\", \"\", \"\",0.35\n\
+            \t\t\tP: \"Maya|coatColor\", \"Vector3D\", \"Vector\", \"\",0.360000014305115,0.370000004768372,0.379999995231628\n\
+            \t\t\tP: \"Maya|coatRoughness\", \"float\", \"\", \"\",0.39\n\
+            \t\t\tP: \"Maya|coatIOR\", \"float\", \"\", \"\",0.4\n\
+            \t\t\tP: \"Maya|coatAnisotropy\", \"float\", \"\", \"\",0.41\n\
+            \t\t\tP: \"Maya|coatRotation\", \"float\", \"\", \"\",0.42\n\
+            \t\t\tP: \"Maya|coatNormal\", \"Vector3D\", \"Vector\", \"\",0.430000007152557,0.439999997615814,0.449999988079071\n\
+            \t\t\tP: \"Maya|thinFilmThickness\", \"float\", \"\", \"\",0.55\n\
+            \t\t\tP: \"Maya|thinFilmIOR\", \"float\", \"\", \"\",0.56\n";
+
+    /// Arnold's aiStandardSurface and Maya's Standard Surface read the glTF
+    /// layers their properties map to, and warn about what glTF can't hold.
+    ///
+    /// The names and value types are Maya's own. The first case's lines are
+    /// copied from a Maya export, `data/maya_arnold_properties_7500_ascii.fbx`
+    /// in ufbx v0.23.1 (FBX SDK 2020.1;
+    /// https://github.com/ufbx/ufbx/blob/v0.23.1/data/maya_arnold_properties_7500_ascii.fbx),
+    /// which sets each property to a distinct value. Its standardSurface twin,
+    /// `data/maya_osl_properties_7500_ascii.fbx`, writes the same names and
+    /// binds each to its Standard Surface parameter in its BindingTable
+    /// (`"Maya|coatRoughness"` → `coat_roughness`), and ufbx.c L19570-L19618
+    /// reads them so. The meanings, units and defaults are the Standard
+    /// Surface spec's, v1.0.1.1
+    /// (https://github.com/Autodesk/standard-surface/blob/v1.0.1.1/index.html),
+    /// and its reference `reference/standard_surface.osl` at the same tag.
+    #[test]
+    fn arnold_layers_read() {
+        let export = ARNOLD_EXPORT;
+        let (m, w) = layered_material(export, None);
+        let ctx = "the Maya export";
+        // coat → clearcoatFactor, coatRoughness → clearcoatRoughnessFactor:
+        // both are roughnesses squared into the GGX alpha (SS L163, .osl
+        // L219; KHR_materials_clearcoat: alpha = clearcoatRoughness^2).
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 0.35, roughness: 0.39, ..Default::default() }), "{ctx}");
+        // transmission → transmissionFactor (SS L276, L295).
+        assert_eq!(m.transmission, Some(Transmission { factor: 0.15, texture: None }), "{ctx}");
+        // specular → specularFactor: both scale the whole dielectric lobe
+        // (SS L246; KHR_materials_specular: f90 = specular).
+        assert_eq!(m.specular, Some(Specular { factor: 0.07, ..Default::default() }), "{ctx}");
+        // sheen × sheenColor → sheenColorFactor; sheenRoughness is the
+        // sheen alpha, glTF's is its square root (MaterialX v1.39.5
+        // standard_surface.mtlx L259-L262 against gltf_pbr.mtlx L258-L271).
+        let s = m.sheen.clone().expect("sheen");
+        assert!(close(s.color[0], 0.2162) && close(s.color[1], 0.2208) && close(s.color[2], 0.2254), "{ctx}: {s:?}");
+        assert!(close(s.roughness, 0.70710677) && s.color_texture.is_none() && s.roughness_texture.is_none(), "{ctx}: {s:?}");
+        // thinFilmThickness (nm) → the thickness glTF uses without a
+        // texture, its maximum (KHR_materials_iridescence); thinFilmIOR 0.56
+        // is below glTF's minimum of 1, so it reads as SS's default, 1.5.
+        assert_eq!(
+            m.iridescence,
+            Some(Iridescence { factor: 1.0, ior: 1.5, thickness_max: 0.55, ..Default::default() }),
+            "{ctx}"
+        );
+        // Neither an ior KHR_materials_ior can't hold (0.12), nor what glTF
+        // has no slot for.
+        assert_eq!((m.ior, m.volume.clone(), m.anisotropy.clone(), m.dispersion), (None, None, None, None), "{ctx}");
+        assert_warnings(
+            &w,
+            &[
+                &["Maya|coatColor linear (0.36, 0.37, 0.38)", "Maya|coatIOR 0.4", "Maya|coatAnisotropy 0.41"],
+                // depth > 0: SS's tint is white, its colour an absorption (SS L282).
+                &["tints transmitted light with the base colour, linear", "Standard Surface tints it linear (1, 1, 1)"],
+                // glTF's transmission takes the base roughness (Ruling A24h).
+                &["Maya|transmissionExtraRoughness 0.25"],
+                &["Maya|specularColor linear (0.08, 0.09, 0.1)"],
+                &["Maya|specularIOR 0.12"],
+                &["Maya|specularAnisotropy 0.13"],
+                // transmissionDispersion 0.24 goes unwarned: the surface is
+                // thin-walled (SS L287), so it renders no dispersion.
+                &["Maya|thinFilmIOR 0.56"],
+            ],
+            ctx,
+        );
+
+        // Maya's defaults read no layer and warn about nothing: SS's
+        // defaults (SS L161-L333, .osl L155-L195) with Maya's own
+        // specularIOR of 1.52 (data/maya_arnold_textures_7500_ascii.fbx),
+        // which reads as unset (Ruling A24b).
+        let defaults = [
+            maya("Maya|base", 0.8),
+            maya3("Maya|baseColor", [1.0; 3]),
+            maya("Maya|specular", 1.0),
+            maya3("Maya|specularColor", [1.0; 3]),
+            maya("Maya|specularIOR", 1.52),
+            maya("Maya|specularAnisotropy", 0.0),
+            maya("Maya|transmission", 0.0),
+            maya3("Maya|transmissionColor", [1.0; 3]),
+            maya("Maya|transmissionDepth", 0.0),
+            maya("Maya|transmissionDispersion", 0.0),
+            maya("Maya|sheen", 0.0),
+            maya3("Maya|sheenColor", [1.0; 3]),
+            maya("Maya|sheenRoughness", 0.3),
+            maya_bool("Maya|thinWalled", false),
+            maya("Maya|coat", 0.0),
+            maya3("Maya|coatColor", [1.0; 3]),
+            maya("Maya|coatRoughness", 0.1),
+            maya("Maya|coatIOR", 1.5),
+            maya("Maya|coatAnisotropy", 0.0),
+            maya("Maya|thinFilmThickness", 0.0),
+            maya("Maya|thinFilmIOR", 1.5),
+        ]
+        .concat();
+        let (m, w) = layered_material(&defaults, None);
+        assert!(no_layers(&m) && w.is_empty(), "Maya's defaults: {m:?} {w:?}");
+
+        // Layers glTF holds as they are: no warning.
+        let held = [
+            maya("Maya|base", 1.0),
+            maya3("Maya|baseColor", [0.5; 3]),
+            maya("Maya|coat", 1.0),
+            maya("Maya|coatRoughness", 0.25),
+            maya3("Maya|coatColor", [1.0; 3]),
+            maya("Maya|coatIOR", 1.5),
+            maya("Maya|coatAffectColor", 0.0),
+            maya("Maya|coatAffectRoughness", 0.0),
+            maya("Maya|transmission", 1.0),
+            maya3("Maya|transmissionColor", [0.5; 3]),
+            maya("Maya|transmissionDepth", 0.0),
+            maya("Maya|transmissionExtraRoughness", 0.0),
+            maya("Maya|transmissionDispersion", 20.0),
+            maya_bool("Maya|thinWalled", true),
+            maya("Maya|specularIOR", 1.45),
+            maya("Maya|sheen", 1.0),
+            maya3("Maya|sheenColor", [0.3, 0.2, 0.1]),
+            maya("Maya|sheenRoughness", 0.36),
+        ]
+        .concat();
+        let (m, w) = layered_material(&held, None);
+        assert!(w.is_empty(), "held: {w:?}");
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 1.0, roughness: 0.25, ..Default::default() }));
+        assert_eq!(m.transmission, Some(Transmission { factor: 1.0, texture: None }));
+        assert_eq!(m.ior, Some(1.45));
+        let s = m.sheen.clone().expect("sheen");
+        assert!(close(s.color[0], 0.3) && close(s.color[1], 0.2) && close(s.color[2], 0.1) && close(s.roughness, 0.6), "{s:?}");
+        assert!(m.specular.is_none() && m.iridescence.is_none(), "{m:?}");
+
+        // Values outside their glTF field's range are left out with a
+        // warning, never clamped (Ruling A16): a weight leaves its layer
+        // out, a roughness reads as SS's default (sheen_roughness 0.3).
+        let outside = [
+            maya3("Maya|baseColor", [1.0; 3]),
+            maya("Maya|coat", 1.5),
+            maya("Maya|transmission", -0.5),
+            maya("Maya|sheen", 1.0),
+            maya("Maya|sheenRoughness", 2.0),
+            maya("Maya|specular", 1.2),
+            maya("Maya|specularIOR", 0.5),
+            maya("Maya|thinFilmThickness", -10.0),
+        ]
+        .concat();
+        let (m, w) = layered_material(&outside, None);
+        assert!(m.clearcoat.is_none() && m.transmission.is_none() && m.specular.is_none(), "{m:?}");
+        assert!(m.ior.is_none() && m.iridescence.is_none(), "{m:?}");
+        let s = m.sheen.clone().expect("sheen");
+        assert!(close(s.roughness, 0.5477226) && s.color == [1.0; 3], "{s:?}");
+        assert_warnings(
+            &w,
+            &[
+                &["Maya|coat 1.5"],
+                &["Maya|transmission -0.5"],
+                &["Maya|sheenRoughness 2"],
+                &["Maya|specular 1.2"],
+                &["Maya|specularIOR 0.5"],
+                &["Maya|thinFilmThickness -10"],
+            ],
+            "outside",
+        );
+        // So is a non-finite one (MSVC prints NaN as 1.#IND, infinity as
+        // 1.#INF): ignored with a warning, never handed to `validate`, which
+        // would refuse the file.
+        let non_finite = [
+            maya3("Maya|baseColor", [1.0; 3]),
+            maya("Maya|coat", 1.0),
+            "\t\t\tP: \"Maya|coatRoughness\", \"float\", \"\", \"\",1.#IND00\n".to_string(),
+            "\t\t\tP: \"Maya|specularIOR\", \"float\", \"\", \"\",1.#INF00\n".to_string(),
+            maya("Maya|sheen", 1.0),
+            "\t\t\tP: \"Maya|sheenColor\", \"Vector3D\", \"Vector\", \"\",1.#IND00,0,0\n".to_string(),
+        ]
+        .concat();
+        let (m, w) = layered_material(&non_finite, None);
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 1.0, roughness: 0.1, ..Default::default() }));
+        assert_eq!(m.ior, None);
+        // An ignored colour reads as SS's default, white (L332).
+        let s = m.sheen.clone().expect("sheen");
+        assert!(s.color == [1.0; 3] && close(s.roughness, 0.5477226), "{s:?}");
+        assert_warnings(&w, &[&["Maya|coatRoughness NaN"], &["Maya|specularIOR inf"], &["Maya|sheenColor linear (NaN, 0, 0)"]], "non-finite");
+        // A sheen colour outside 0 to 1 leaves the sheen out, as glTF's
+        // sheenColorFactor is 0 to 1 (KHR_materials_sheen's schema).
+        let bright = [maya3("Maya|baseColor", [1.0; 3]), maya("Maya|sheen", 1.0), maya3("Maya|sheenColor", [2.0, 0.5, 0.5])].concat();
+        let (m, w) = layered_material(&bright, None);
+        assert!(m.sheen.is_none(), "{m:?}");
+        assert_warnings(&w, &[&["Maya|sheenColor linear (2, 0.5, 0.5)", "the sheen layer was left out"]], "a bright sheen");
+        // An ior of 0 is KHR_materials_ior's own special value, so it is
+        // carried.
+        let (m, w) = layered_material(&[maya3("Maya|baseColor", [1.0; 3]), maya("Maya|specularIOR", 0.0)].concat(), None);
+        assert!(m.ior == Some(0.0) && w.is_empty(), "{m:?} {w:?}");
+
+        // A solid (not thin-walled) glass reads thin-walled, saying so, and
+        // names the absorption and dispersion it loses (Rulings A24c, A24a).
+        // Its untinted transmission matches the white base colour, so no tint
+        // warning.
+        let cases: [(f64, f64, &[&str]); 2] = [
+            (2.0, 30.0, &["thin-walled", "Maya|transmissionDepth 2", "Maya|transmissionDispersion 30"]),
+            (0.0, 0.0, &["thin-walled"]),
+        ];
+        for (depth, dispersion, fragments) in cases {
+            let solid = [
+                maya3("Maya|baseColor", [1.0; 3]),
+                maya("Maya|transmission", 1.0),
+                maya3("Maya|transmissionColor", [1.0; 3]),
+                maya("Maya|transmissionDepth", depth),
+                maya("Maya|transmissionDispersion", dispersion),
+                maya_bool("Maya|thinWalled", false),
+            ]
+            .concat();
+            let (m, w) = layered_material(&solid, None);
+            assert_eq!(m.transmission, Some(Transmission { factor: 1.0, texture: None }), "depth {depth}");
+            assert!(m.volume.is_none() && m.dispersion.is_none(), "depth {depth}");
+            assert_warnings(&w, &[fragments], &format!("solid, depth {depth}"));
+            assert!(depth > 0.0 || (!w[0].contains("transmissionDepth") && !w[0].contains("Dispersion")), "{w:?}");
+        }
+        // An opaque surface shows no dispersion, so it says nothing of it.
+        let opaque = [maya3("Maya|baseColor", [1.0; 3]), maya("Maya|transmission", 0.0), maya("Maya|transmissionDispersion", 30.0)].concat();
+        let (m, w) = layered_material(&opaque, None);
+        assert!(no_layers(&m) && w.is_empty(), "opaque: {m:?} {w:?}");
+        // SS tints by the colour only at depth 0, whatever thin_walled says
+        // (SS L282), so a thin sheet with a depth goes untinted where glTF
+        // tints it with the base colour.
+        let sheet = [
+            maya3("Maya|baseColor", [0.5; 3]),
+            maya("Maya|transmission", 1.0),
+            maya3("Maya|transmissionColor", [0.5; 3]),
+            maya("Maya|transmissionDepth", 1.0),
+            maya_bool("Maya|thinWalled", true),
+        ]
+        .concat();
+        let (_, w) = layered_material(&sheet, None);
+        assert_warnings(&w, &[&["base colour, linear (0.5, 0.5, 0.5)", "Standard Surface tints it linear (1, 1, 1)"]], "a thin sheet");
+        // A map on the base colour tints glTF's transmission too, whatever
+        // the factor beside it.
+        let files = vec![super::super::package::PackageFile { path: "t.png".into(), bytes: super::super::fixtures::quadrant_png() }];
+        let side = super::super::package::MemorySidecars { files: &files };
+        let mapped = [
+            maya3("Maya|baseColor", [1.0; 3]),
+            maya("Maya|transmission", 1.0),
+            maya3("Maya|transmissionColor", [1.0; 3]),
+            maya_bool("Maya|thinWalled", true),
+        ]
+        .concat();
+        let r = layered_scene(&mapped, Some("Maya|baseColor"), &side);
+        assert!(r.scene.materials[0].base_color_texture.is_some(), "{:?}", r.scene.materials[0]);
+        assert_warnings(&r.warnings, &[&["base colour and its map, linear (1, 1, 1)", "Standard Surface tints it linear (1, 1, 1)"]], "a mapped base");
+
+        // The coat's effect on the layers under it isn't glTF's (Ruling
+        // A24g): a darker, more saturated base and a rougher one (SS
+        // L142-L151, L168-L169, default 0).
+        let affect = [
+            maya3("Maya|baseColor", [1.0; 3]),
+            maya("Maya|coat", 1.0),
+            maya("Maya|coatAffectColor", 0.3),
+            maya("Maya|coatAffectRoughness", 0.2),
+        ]
+        .concat();
+        let (m, w) = layered_material(&affect, None);
+        assert!(m.clearcoat.is_some(), "{m:?}");
+        assert_warnings(&w, &[&["Maya|coatAffectColor 0.3", "Maya|coatAffectRoughness 0.2"]], "coat affect");
+
+        // A texture on a layer property is named, and the layer reads
+        // untextured, from its value (coatRoughness unset: SS's 0.1). The
+        // warning says no more than that.
+        let (m, w) = layered_material(&[maya3("Maya|baseColor", [1.0; 3]), maya("Maya|coat", 0.5)].concat(), Some("Maya|coat"));
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 0.5, roughness: 0.1, ..Default::default() }));
+        assert_warnings(&w, &[&["\"Maya|coat\"", "clearcoat", "stored value"]], "a textured coat");
+    }
+
+    /// The export's lines L325-L369, all of them, from
+    /// `data/max_physical_material_properties_7500_ascii.fbx` in ufbx v0.23.1,
+    /// which `physical_layers_read` cites.
+    const PHYSICAL_EXPORT: &str = "\t\t\tP: \"3dsMax|ClassIDa\", \"int\", \"Integer\", \"\",1030429932\n\
+            \t\t\tP: \"3dsMax|ClassIDb\", \"int\", \"Integer\", \"\",-559038463\n\
+            \t\t\tP: \"3dsMax|SuperClassID\", \"int\", \"Integer\", \"\",3072\n\
+            \t\t\tP: \"3dsMax|Parameters\", \"Compound\", \"\", \"\"\n\
+            \t\t\tP: \"3dsMax|Parameters|material_mode\", \"Integer\", \"\", \"A\",1\n\
+            \t\t\tP: \"3dsMax|Parameters|base_weight\", \"Float\", \"\", \"A\",0.01\n\
+            \t\t\tP: \"3dsMax|Parameters|base_color\", \"ColorAndAlpha\", \"\", \"A\",0.0199999995529652,0.0299999993294477,0.0399999991059303,0.0500000007450581\n\
+            \t\t\tP: \"3dsMax|Parameters|reflectivity\", \"Float\", \"\", \"A\",1\n\
+            \t\t\tP: \"3dsMax|Parameters|roughness\", \"Float\", \"\", \"A\",0.06\n\
+            \t\t\tP: \"3dsMax|Parameters|roughness_inv\", \"Bool\", \"\", \"A\",0\n\
+            \t\t\tP: \"3dsMax|Parameters|metalness\", \"Float\", \"\", \"A\",0.07\n\
+            \t\t\tP: \"3dsMax|Parameters|refl_color\", \"ColorAndAlpha\", \"\", \"A\",1,1,1,1\n\
+            \t\t\tP: \"3dsMax|Parameters|diff_roughness\", \"Float\", \"\", \"A\",0.37\n\
+            \t\t\tP: \"3dsMax|Parameters|brdf_mode\", \"Bool\", \"\", \"A\",1\n\
+            \t\t\tP: \"3dsMax|Parameters|brdf_low\", \"Float\", \"\", \"A\",0.05\n\
+            \t\t\tP: \"3dsMax|Parameters|brdf_high\", \"Float\", \"\", \"A\",1\n\
+            \t\t\tP: \"3dsMax|Parameters|brdf_curve\", \"Float\", \"\", \"A\",5\n\
+            \t\t\tP: \"3dsMax|Parameters|anisotropy\", \"Float\", \"\", \"A\",0.32\n\
+            \t\t\tP: \"3dsMax|Parameters|anisoangle\", \"Float\", \"\", \"A\",0.33\n\
+            \t\t\tP: \"3dsMax|Parameters|aniso_mode\", \"Integer\", \"\", \"A\",0\n\
+            \t\t\tP: \"3dsMax|Parameters|aniso_channel\", \"Integer\", \"\", \"A\",0\n\
+            \t\t\tP: \"3dsMax|Parameters|transparency\", \"Float\", \"\", \"A\",0.09\n\
+            \t\t\tP: \"3dsMax|Parameters|trans_color\", \"ColorAndAlpha\", \"\", \"A\",0.100000001490116,0.109999999403954,0.119999997317791,0.129999995231628\n\
+            \t\t\tP: \"3dsMax|Parameters|trans_depth\", \"Float\", \"\", \"A\",0.059055\n\
+            \t\t\tP: \"3dsMax|Parameters|trans_roughness\", \"Float\", \"\", \"A\",0.14\n\
+            \t\t\tP: \"3dsMax|Parameters|trans_roughness_inv\", \"Bool\", \"\", \"A\",0\n\
+            \t\t\tP: \"3dsMax|Parameters|trans_roughness_lock\", \"Bool\", \"\", \"A\",0\n\
+            \t\t\tP: \"3dsMax|Parameters|trans_ior\", \"Float\", \"\", \"A\",0.8\n\
+            \t\t\tP: \"3dsMax|Parameters|thin_walled\", \"Bool\", \"\", \"A\",0\n\
+            \t\t\tP: \"3dsMax|Parameters|scattering\", \"Float\", \"\", \"A\",0.16\n\
+            \t\t\tP: \"3dsMax|Parameters|sss_color\", \"ColorAndAlpha\", \"\", \"A\",0.170000001788139,0.180000007152557,0.189999997615814,0.200000002980232\n\
+            \t\t\tP: \"3dsMax|Parameters|sss_depth\", \"Float\", \"\", \"A\",0.098425\n\
+            \t\t\tP: \"3dsMax|Parameters|sss_scale\", \"Float\", \"\", \"A\",0.26\n\
+            \t\t\tP: \"3dsMax|Parameters|sss_scatter_color\", \"ColorAndAlpha\", \"\", \"A\",0.209999993443489,0.219999998807907,0.230000004172325,0.239999994635582\n\
+            \t\t\tP: \"3dsMax|Parameters|emission\", \"Float\", \"\", \"A\",0.27\n\
+            \t\t\tP: \"3dsMax|Parameters|emit_color\", \"ColorAndAlpha\", \"\", \"A\",0.280000001192093,0.28999999165535,0.300000011920929,0.310000002384186\n\
+            \t\t\tP: \"3dsMax|Parameters|emit_luminance\", \"Float\", \"\", \"A\",1500\n\
+            \t\t\tP: \"3dsMax|Parameters|emit_kelvin\", \"Float\", \"\", \"A\",6500\n\
+            \t\t\tP: \"3dsMax|Parameters|coating\", \"Float\", \"\", \"A\",0.38\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_color\", \"ColorAndAlpha\", \"\", \"A\",0.389999985694885,0.400000005960464,0.409999996423721,0.419999986886978\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_roughness\", \"Float\", \"\", \"A\",0.43\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_roughness_inv\", \"Bool\", \"\", \"A\",0\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_affect_color\", \"Float\", \"\", \"A\",0.45\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_affect_roughness\", \"Float\", \"\", \"A\",0.46\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_ior\", \"Float\", \"\", \"A\",0.44\n";
+
+    /// 3ds Max's Physical Material reads the glTF layers its properties map
+    /// to, and warns about what glTF can't hold.
+    ///
+    /// The first case's lines are copied from a 3ds Max export,
+    /// `data/max_physical_material_properties_7500_ascii.fbx` in ufbx v0.23.1
+    /// (FBX SDK 2019.2;
+    /// https://github.com/ufbx/ufbx/blob/v0.23.1/data/max_physical_material_properties_7500_ascii.fbx),
+    /// read by ufbx.c L19628-L19679 under the `3dsMax|Parameters|` prefix
+    /// (L22340-L22343). The meanings and defaults are Autodesk's: the 3ds Max
+    /// 2024 help, "Physical Material Parameters"
+    /// (https://help.autodesk.com/cloudhelp/2024/ENU/3DSMax-Lighting-Shading/files/GUID-C1328905-7783-4917-AB86-FC3CC19E8972.htm),
+    /// and the MAXScript reference's Physical_Material
+    /// (https://help.autodesk.com/cloudhelp/2018/ENU/MAXScript-Help/files/GUID-57562F6A-A8A1-4A28-BAE1-0D4729411214.htm).
+    #[test]
+    fn physical_layers_read() {
+        let export = PHYSICAL_EXPORT;
+        let (m, w) = layered_material(export, None);
+        let ctx = "the 3ds Max export";
+        // coating → clearcoatFactor, coat_roughness → its roughness, on the
+        // material's roughness scale (help: 0.0 "completely smooth and
+        // mirror-like", 1.0 "extremely rough"), as the base layer reads it.
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 0.38, roughness: 0.43, ..Default::default() }), "{ctx}");
+        // transparency → transmissionFactor (help: "how opaque or
+        // see-through the object appears. Light will be refracted").
+        assert_eq!(m.transmission, Some(Transmission { factor: 0.09, texture: None }), "{ctx}");
+        // reflectivity 1 is glTF's default specular; trans_ior 0.8 is outside
+        // KHR_materials_ior; Physical has no sheen or thin film.
+        assert_eq!((m.ior, m.specular.clone(), m.sheen.clone(), m.iridescence.clone()), (None, None, None, None), "{ctx}");
+        assert_eq!((m.volume.clone(), m.anisotropy.clone(), m.dispersion), (None, None, None), "{ctx}");
+        assert_warnings(
+            &w,
+            &[
+                // coat_affect_* other than their 0.5 (Ruling A24g).
+                &[
+                    "3dsMax|Parameters|coat_color sRGB (0.39, 0.4, 0.41)",
+                    "3dsMax|Parameters|coat_ior 0.44",
+                    "3dsMax|Parameters|coat_affect_color 0.45",
+                    "3dsMax|Parameters|coat_affect_roughness 0.46",
+                ],
+                &["thin-walled", "3dsMax|Parameters|trans_depth 0.059055"],
+                &["tints transmitted light with the base colour, linear", "3ds Max Physical tints it linear (1, 1, 1)"],
+                // Unlocked from the roughness, 0.06 (Ruling A24h).
+                &["3dsMax|Parameters|trans_roughness 0.14"],
+                &["3dsMax|Parameters|trans_ior 0.8"],
+                &["3dsMax|Parameters|anisotropy 0.32"],
+            ],
+            ctx,
+        );
+
+        // The MAXScript defaults read no layer and warn about nothing:
+        // trans_ior's and coat_ior's 1.52 among them (Ruling A24b), and an
+        // anisotropy of 1.0, "not stretched" (help).
+        let defaults = [
+            max_class(true),
+            max("3dsMax|Parameters|base_weight", 1.0),
+            max4("3dsMax|Parameters|base_color", [0.5, 0.5, 0.5, 1.0]),
+            max("3dsMax|Parameters|reflectivity", 1.0),
+            max4("3dsMax|Parameters|refl_color", [1.0; 4]),
+            max("3dsMax|Parameters|anisotropy", 1.0),
+            max("3dsMax|Parameters|anisoangle", 0.0),
+            max("3dsMax|Parameters|transparency", 0.0),
+            max4("3dsMax|Parameters|trans_color", [1.0; 4]),
+            max("3dsMax|Parameters|trans_depth", 0.0),
+            max_bool("3dsMax|Parameters|trans_roughness_lock", true),
+            max("3dsMax|Parameters|trans_roughness", 0.0),
+            max_bool("3dsMax|Parameters|trans_roughness_inv", false),
+            max("3dsMax|Parameters|trans_ior", 1.52),
+            max_bool("3dsMax|Parameters|thin_walled", false),
+            max("3dsMax|Parameters|coating", 0.0),
+            max4("3dsMax|Parameters|coat_color", [1.0; 4]),
+            max("3dsMax|Parameters|coat_roughness", 0.0),
+            max_bool("3dsMax|Parameters|coat_roughness_inv", false),
+            max("3dsMax|Parameters|coat_affect_color", 0.5),
+            max("3dsMax|Parameters|coat_affect_roughness", 0.5),
+            max("3dsMax|Parameters|coat_ior", 1.52),
+        ]
+        .concat();
+        let (m, w) = layered_material(&defaults, None);
+        assert!(no_layers(&m) && w.is_empty(), "the MAXScript defaults: {m:?} {w:?}");
+
+        // Layers glTF holds as they are. coat_roughness_inv makes the coat
+        // roughness a glossiness (MAXScript: "Invert Coating Roughness";
+        // ufbx.c L19678, L20117-L20121); reflectivity is the weight glTF's
+        // specularFactor is (help: "the weight multiplied by the angular
+        // function"). An unlocked transparency roughness equal to the
+        // roughness, here through trans_roughness_inv (1 - 0.7), and the
+        // coat_affect_* defaults say nothing.
+        let held = [
+            max_class(true),
+            max4("3dsMax|Parameters|base_color", [1.0; 4]),
+            max("3dsMax|Parameters|roughness", 0.3),
+            max("3dsMax|Parameters|coating", 1.0),
+            max("3dsMax|Parameters|coat_roughness", 0.8),
+            max_bool("3dsMax|Parameters|coat_roughness_inv", true),
+            max("3dsMax|Parameters|coat_ior", 1.52),
+            max("3dsMax|Parameters|coat_affect_color", 0.5),
+            max("3dsMax|Parameters|coat_affect_roughness", 0.5),
+            max("3dsMax|Parameters|transparency", 1.0),
+            max4("3dsMax|Parameters|trans_color", [1.0; 4]),
+            max_bool("3dsMax|Parameters|trans_roughness_lock", false),
+            max("3dsMax|Parameters|trans_roughness", 0.7),
+            max_bool("3dsMax|Parameters|trans_roughness_inv", true),
+            max_bool("3dsMax|Parameters|thin_walled", true),
+            max("3dsMax|Parameters|trans_ior", 1.33),
+            max("3dsMax|Parameters|reflectivity", 0.5),
+        ]
+        .concat();
+        let (m, w) = layered_material(&held, None);
+        assert!(w.is_empty(), "held: {w:?}");
+        let c = m.clearcoat.clone().expect("clearcoat");
+        assert!(c.factor == 1.0 && close(c.roughness, 0.2), "{c:?}");
+        assert_eq!(m.transmission, Some(Transmission { factor: 1.0, texture: None }));
+        assert_eq!(m.ior, Some(1.33));
+        assert_eq!(m.specular, Some(Specular { factor: 0.5, ..Default::default() }));
+
+        // A locked transparency roughness follows the roughness (MAXScript
+        // L81-L94), whatever trans_roughness says.
+        let locked = [
+            max_class(true),
+            max4("3dsMax|Parameters|base_color", [1.0; 4]),
+            max("3dsMax|Parameters|roughness", 0.3),
+            max("3dsMax|Parameters|transparency", 1.0),
+            max_bool("3dsMax|Parameters|thin_walled", true),
+            max_bool("3dsMax|Parameters|trans_roughness_lock", true),
+            max("3dsMax|Parameters|trans_roughness", 0.9),
+        ]
+        .concat();
+        let (m, w) = layered_material(&locked, None);
+        assert!(m.transmission.is_some() && w.is_empty(), "locked: {m:?} {w:?}");
+
+        // A thin-walled surface has no depth (MAXScript L100-L107), so its
+        // colour tints it whatever trans_depth says, and a colour equal to
+        // the base colour needs no warning.
+        let sheet = [
+            max_class(true),
+            max4("3dsMax|Parameters|base_color", [0.5, 0.5, 0.5, 1.0]),
+            max("3dsMax|Parameters|transparency", 1.0),
+            max4("3dsMax|Parameters|trans_color", [0.5, 0.5, 0.5, 1.0]),
+            max("3dsMax|Parameters|trans_depth", 1.0),
+            max_bool("3dsMax|Parameters|thin_walled", true),
+        ]
+        .concat();
+        let (m, w) = layered_material(&sheet, None);
+        assert!(m.transmission.is_some() && w.is_empty(), "a thin sheet: {m:?} {w:?}");
+
+        // A texture on a layer property is named; the layer reads from its
+        // value (coat_roughness unset: the MAXScript default, 0).
+        let coat = [max_class(true), max4("3dsMax|Parameters|base_color", [1.0; 4]), max("3dsMax|Parameters|coating", 0.5)].concat();
+        let (m, w) = layered_material(&coat, Some("3dsMax|Parameters|coat_map"));
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 0.5, roughness: 0.0, ..Default::default() }));
+        assert_warnings(&w, &[&["\"3dsMax|Parameters|coat_map\"", "clearcoat", "stored value"]], "a textured coat");
+    }
+
+    /// The export's lines L355-L396, all of them, from
+    /// `data/max_openpbr_material_7700_ascii.fbx` in ufbx v0.23.1,
+    /// which `openpbr_layers_read` cites.
+    const OPENPBR_EXPORT: &str = "\t\t\tP: \"3dsMax|ClassIDa\", \"int\", \"Integer\", \"\",-246079949\n\
+            \t\t\tP: \"3dsMax|ClassIDb\", \"int\", \"Integer\", \"\",939201335\n\
+            \t\t\tP: \"3dsMax|SuperClassID\", \"int\", \"Integer\", \"\",3072\n\
+            \t\t\tP: \"3dsMax|Parameters\", \"Compound\", \"\", \"\"\n\
+            \t\t\tP: \"3dsMax|Parameters|notes\", \"KString\", \"\", \"A\", \"\"\n\
+            \t\t\tP: \"3dsMax|Parameters|base_weight\", \"Float\", \"\", \"A\",0.01\n\
+            \t\t\tP: \"3dsMax|Parameters|base_color\", \"ColorAndAlpha\", \"\", \"A\",0.0199999995529652,0.0299999993294477,0.0399999991059303,0.0500000007450581\n\
+            \t\t\tP: \"3dsMax|Parameters|base_metalness\", \"Float\", \"\", \"A\",0.06\n\
+            \t\t\tP: \"3dsMax|Parameters|base_diffuse_roughness\", \"Float\", \"\", \"A\",0.07\n\
+            \t\t\tP: \"3dsMax|Parameters|specular_weight\", \"Float\", \"\", \"A\",0.08\n\
+            \t\t\tP: \"3dsMax|Parameters|specular_color\", \"ColorAndAlpha\", \"\", \"A\",0.0900000035762787,0.100000001490116,0.109999999403954,0.119999997317791\n\
+            \t\t\tP: \"3dsMax|Parameters|specular_roughness\", \"Float\", \"\", \"A\",0.14\n\
+            \t\t\tP: \"3dsMax|Parameters|specular_roughness_anisotropy\", \"Float\", \"\", \"A\",0.15\n\
+            \t\t\tP: \"3dsMax|Parameters|specular_ior\", \"Float\", \"\", \"A\",1.3\n\
+            \t\t\tP: \"3dsMax|Parameters|transmission_weight\", \"Float\", \"\", \"A\",0.16\n\
+            \t\t\tP: \"3dsMax|Parameters|transmission_color\", \"ColorAndAlpha\", \"\", \"A\",0.170000001788139,0.180000007152557,0.189999997615814,0.200000002980232\n\
+            \t\t\tP: \"3dsMax|Parameters|transmission_depth\", \"Float\", \"\", \"A\",0.21\n\
+            \t\t\tP: \"3dsMax|Parameters|transmission_scatter\", \"ColorAndAlpha\", \"\", \"A\",0.219999998807907,0.230000004172325,0.239999994635582,0.25\n\
+            \t\t\tP: \"3dsMax|Parameters|transmission_scatter_anisotropy\", \"Float\", \"\", \"A\",0.26\n\
+            \t\t\tP: \"3dsMax|Parameters|transmission_dispersion_scale\", \"Float\", \"\", \"A\",0.27\n\
+            \t\t\tP: \"3dsMax|Parameters|transmission_dispersion_abbe_number\", \"Float\", \"\", \"A\",0.28\n\
+            \t\t\tP: \"3dsMax|Parameters|subsurface_weight\", \"Float\", \"\", \"A\",0.29\n\
+            \t\t\tP: \"3dsMax|Parameters|subsurface_color\", \"ColorAndAlpha\", \"\", \"A\",0.300000011920929,0.310000002384186,0.319999992847443,0.330000013113022\n\
+            \t\t\tP: \"3dsMax|Parameters|subsurface_radius\", \"Float\", \"\", \"A\",0.39\n\
+            \t\t\tP: \"3dsMax|Parameters|subsurface_radius_scale\", \"ColorAndAlpha\", \"\", \"A\",0.349999994039536,0.360000014305115,0.370000004768372,0.379999995231628\n\
+            \t\t\tP: \"3dsMax|Parameters|subsurface_scatter_anisotropy\", \"Float\", \"\", \"A\",0.34\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_weight\", \"Float\", \"\", \"A\",0.4\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_color\", \"ColorAndAlpha\", \"\", \"A\",0.409999996423721,0.419999986886978,0.430000007152557,0.439999997615814\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_roughness\", \"Float\", \"\", \"A\",0.46\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_roughness_anisotropy\", \"Float\", \"\", \"A\",0.47\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_ior\", \"Float\", \"\", \"A\",4.5\n\
+            \t\t\tP: \"3dsMax|Parameters|coat_darkening\", \"Float\", \"\", \"A\",0.48\n\
+            \t\t\tP: \"3dsMax|Parameters|fuzz_weight\", \"Float\", \"\", \"A\",0.49\n\
+            \t\t\tP: \"3dsMax|Parameters|fuzz_color\", \"ColorAndAlpha\", \"\", \"A\",0.5,0.509999990463257,0.519999980926514,0.529999971389771\n\
+            \t\t\tP: \"3dsMax|Parameters|fuzz_roughness\", \"Float\", \"\", \"A\",0.54\n\
+            \t\t\tP: \"3dsMax|Parameters|emission_weight\", \"Float\", \"\", \"A\",0.55\n\
+            \t\t\tP: \"3dsMax|Parameters|emission_color\", \"ColorAndAlpha\", \"\", \"A\",0.560000002384186,0.569999992847443,0.579999983310699,0.589999973773956\n\
+            \t\t\tP: \"3dsMax|Parameters|emission_luminance\", \"Float\", \"\", \"A\",6000\n\
+            \t\t\tP: \"3dsMax|Parameters|thin_film_weight\", \"Float\", \"\", \"A\",0.61\n\
+            \t\t\tP: \"3dsMax|Parameters|thin_film_thickness\", \"Float\", \"\", \"A\",0.62\n\
+            \t\t\tP: \"3dsMax|Parameters|thin_film_ior\", \"Float\", \"\", \"A\",6.3\n\
+            \t\t\tP: \"3dsMax|Parameters|geometry_thin_walled\", \"Bool\", \"\", \"A\",1\n";
+
+    /// 3ds Max's OpenPBR material reads the glTF layers its properties map
+    /// to, and warns about what glTF can't hold.
+    ///
+    /// The first case's lines are copied from a 3ds Max export,
+    /// `data/max_openpbr_material_7700_ascii.fbx` in ufbx v0.23.1 (FBX SDK
+    /// 2020.3.5;
+    /// https://github.com/ufbx/ufbx/blob/v0.23.1/data/max_openpbr_material_7700_ascii.fbx),
+    /// read by ufbx.c L19703-L19751 under the `3dsMax|Parameters|` prefix
+    /// (L22344-L22347). The meanings, units and defaults are the OpenPBR
+    /// Surface spec's, v1.1.1
+    /// (https://github.com/AcademySoftwareFoundation/OpenPBR/blob/v1.1.1/index.html).
+    #[test]
+    fn openpbr_layers_read() {
+        let export = OPENPBR_EXPORT;
+        let (m, w) = layered_material(export, None);
+        let ctx = "the 3ds Max export";
+        // coat_weight → clearcoatFactor; coat_roughness r → alpha = r², as
+        // glTF's (OpenPBR L398-L401, L421).
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 0.4, roughness: 0.46, ..Default::default() }), "{ctx}");
+        // transmission_weight → transmissionFactor (OpenPBR L839).
+        assert_eq!(m.transmission, Some(Transmission { factor: 0.16, texture: None }), "{ctx}");
+        // specular_ior → ior (OpenPBR L518).
+        assert_eq!(m.ior, Some(1.3), "{ctx}");
+        // thin_film_weight → iridescenceFactor; thin_film_thickness is in
+        // micrometres (OpenPBR L854, L882), glTF's in nanometres.
+        let f = m.iridescence.clone().expect("iridescence");
+        assert!(f.factor == 0.61 && f.ior == 6.3 && close(f.thickness_max, 620.0) && f.thickness_min == 100.0, "{ctx}: {f:?}");
+        assert!(f.texture.is_none() && f.thickness_texture.is_none(), "{ctx}: {f:?}");
+        assert_eq!((m.specular.clone(), m.sheen.clone(), m.volume.clone(), m.anisotropy.clone(), m.dispersion), (None, None, None, None, None), "{ctx}");
+        assert_warnings(
+            &w,
+            &[
+                &["3dsMax|Parameters|specular_weight 0.08"],
+                &["3dsMax|Parameters|specular_color sRGB (0.09, 0.1, 0.11)"],
+                &["3dsMax|Parameters|specular_roughness_anisotropy 0.15"],
+                // Thin-walled: the colour tints the sheet (OpenPBR L1259).
+                &["tints transmitted light with the base colour, linear", "where OpenPBR tints it linear"],
+                // transmission_dispersion_scale 0.27 goes unwarned: the sheet
+                // is thin-walled, whose refraction is un-deflected (L1259).
+                // coat_darkening other than its 1 (Ruling A24g).
+                &[
+                    "3dsMax|Parameters|coat_color sRGB (0.41, 0.42, 0.43)",
+                    "3dsMax|Parameters|coat_roughness_anisotropy 0.47",
+                    "3dsMax|Parameters|coat_ior 4.5",
+                    "3dsMax|Parameters|coat_darkening 0.48",
+                ],
+                &["3dsMax|Parameters|fuzz_weight 0.49"],
+            ],
+            ctx,
+        );
+
+        // OpenPBR's defaults (L514-L518, L839-L845, L881-L883, L936-L941,
+        // L1121-L1123) read no layer and warn about nothing: coat_ior's 1.6
+        // among them (Ruling A24b).
+        let defaults = [
+            max_class(false),
+            max("3dsMax|Parameters|base_weight", 1.0),
+            max4("3dsMax|Parameters|base_color", [0.8, 0.8, 0.8, 1.0]),
+            max("3dsMax|Parameters|base_metalness", 0.0),
+            max("3dsMax|Parameters|specular_weight", 1.0),
+            max4("3dsMax|Parameters|specular_color", [1.0; 4]),
+            max("3dsMax|Parameters|specular_roughness", 0.3),
+            max("3dsMax|Parameters|specular_roughness_anisotropy", 0.0),
+            max("3dsMax|Parameters|specular_ior", 1.5),
+            max("3dsMax|Parameters|transmission_weight", 0.0),
+            max4("3dsMax|Parameters|transmission_color", [1.0; 4]),
+            max("3dsMax|Parameters|transmission_depth", 0.0),
+            max("3dsMax|Parameters|transmission_dispersion_scale", 0.0),
+            max("3dsMax|Parameters|transmission_dispersion_abbe_number", 20.0),
+            max("3dsMax|Parameters|coat_weight", 0.0),
+            max4("3dsMax|Parameters|coat_color", [1.0; 4]),
+            max("3dsMax|Parameters|coat_roughness", 0.0),
+            max("3dsMax|Parameters|coat_roughness_anisotropy", 0.0),
+            max("3dsMax|Parameters|coat_ior", 1.6),
+            max("3dsMax|Parameters|coat_darkening", 1.0),
+            max("3dsMax|Parameters|fuzz_weight", 0.0),
+            max("3dsMax|Parameters|thin_film_weight", 0.0),
+            max("3dsMax|Parameters|thin_film_thickness", 0.5),
+            max("3dsMax|Parameters|thin_film_ior", 1.4),
+            max_bool("3dsMax|Parameters|geometry_thin_walled", false),
+        ]
+        .concat();
+        let (m, w) = layered_material(&defaults, None);
+        assert!(no_layers(&m) && w.is_empty(), "OpenPBR's defaults: {m:?} {w:?}");
+
+        // Layers glTF holds as they are: no warning.
+        let held = [
+            max_class(false),
+            max("3dsMax|Parameters|base_metalness", 0.0),
+            max4("3dsMax|Parameters|base_color", [1.0; 4]),
+            max("3dsMax|Parameters|coat_weight", 1.0),
+            max("3dsMax|Parameters|coat_roughness", 0.2),
+            max("3dsMax|Parameters|coat_ior", 1.6),
+            max("3dsMax|Parameters|coat_darkening", 1.0),
+            max("3dsMax|Parameters|thin_film_weight", 1.0),
+            max("3dsMax|Parameters|thin_film_thickness", 0.25),
+            max("3dsMax|Parameters|thin_film_ior", 1.33),
+            max("3dsMax|Parameters|specular_ior", 2.4),
+            max("3dsMax|Parameters|transmission_weight", 0.5),
+            max4("3dsMax|Parameters|transmission_color", [1.0; 4]),
+            max_bool("3dsMax|Parameters|geometry_thin_walled", true),
+        ]
+        .concat();
+        let (m, w) = layered_material(&held, None);
+        assert!(w.is_empty(), "held: {w:?}");
+        assert_eq!(m.clearcoat, Some(Clearcoat { factor: 1.0, roughness: 0.2, ..Default::default() }));
+        let f = m.iridescence.clone().expect("iridescence");
+        assert!(f.factor == 1.0 && f.ior == 1.33 && close(f.thickness_max, 250.0), "{f:?}");
+        assert_eq!(m.ior, Some(2.4));
+        assert_eq!(m.transmission, Some(Transmission { factor: 0.5, texture: None }));
+
+        // A thin-walled sheet's colour is its transmittance whatever its
+        // depth (OpenPBR L1259), so a colour equal to the base colour, which
+        // glTF tints with, needs no warning.
+        let sheet = [
+            max_class(false),
+            max("3dsMax|Parameters|base_metalness", 0.0),
+            max4("3dsMax|Parameters|base_color", [0.5, 0.5, 0.5, 1.0]),
+            max("3dsMax|Parameters|transmission_weight", 1.0),
+            max4("3dsMax|Parameters|transmission_color", [0.5, 0.5, 0.5, 1.0]),
+            max("3dsMax|Parameters|transmission_depth", 1.0),
+            max_bool("3dsMax|Parameters|geometry_thin_walled", true),
+        ]
+        .concat();
+        let (m, w) = layered_material(&sheet, None);
+        assert!(w.is_empty() && m.transmission.is_some(), "a thin sheet: {m:?} {w:?}");
+
+        // A negative thickness reads as OpenPBR's default, 0.5 micrometres
+        // (Ruling A16: thicknesses are 0 or more), and a texture on a layer
+        // property is named while the layer reads from its values.
+        let film = [
+            max_class(false),
+            max("3dsMax|Parameters|base_metalness", 0.0),
+            max("3dsMax|Parameters|thin_film_weight", 1.0),
+            max("3dsMax|Parameters|thin_film_thickness", -1.0),
+        ]
+        .concat();
+        let (m, w) = layered_material(&film, Some("3dsMax|Parameters|thin_film_weight_map"));
+        let f = m.iridescence.clone().expect("iridescence");
+        assert!(f.factor == 1.0 && close(f.thickness_max, 500.0) && f.ior == 1.4, "{f:?}");
+        assert_warnings(
+            &w,
+            &[&["3dsMax|Parameters|thin_film_thickness -1"], &["\"3dsMax|Parameters|thin_film_weight_map\"", "iridescence", "stored value"]],
+            "a negative, textured film",
+        );
+        // A thickness whose nanometres overflow a 32-bit float leaves the
+        // film out, rather than handing `validate` an infinity.
+        let thick = [
+            max_class(false),
+            max("3dsMax|Parameters|base_metalness", 0.0),
+            max("3dsMax|Parameters|thin_film_weight", 1.0),
+            max("3dsMax|Parameters|thin_film_thickness", 1e36),
+        ]
+        .concat();
+        let (m, w) = layered_material(&thick, None);
+        assert!(m.iridescence.is_none(), "{m:?}");
+        assert_warnings(&w, &[&["3dsMax|Parameters|thin_film_thickness", "too thick to hold"]], "a thick film");
+
+        // A solid surface names the dispersion it loses with its refraction
+        // (Rulings A24c, A24a).
+        let solid = [
+            max_class(false),
+            max("3dsMax|Parameters|base_metalness", 0.0),
+            max4("3dsMax|Parameters|base_color", [1.0; 4]),
+            max("3dsMax|Parameters|transmission_weight", 1.0),
+            max4("3dsMax|Parameters|transmission_color", [1.0; 4]),
+            max_bool("3dsMax|Parameters|geometry_thin_walled", false),
+            max("3dsMax|Parameters|transmission_dispersion_scale", 0.5),
+        ]
+        .concat();
+        let (m, w) = layered_material(&solid, None);
+        assert!(m.transmission.is_some() && m.dispersion.is_none(), "{m:?}");
+        assert_warnings(&w, &[&["thin-walled", "3dsMax|Parameters|transmission_dispersion_scale 0.5"]], "a solid, dispersive glass");
+    }
+
+    /// What the FBX reader reads into the layers survives FBX → glTF: glTF
+    /// keeps every material layer (its row of the capability table holds
+    /// them all), so a GLB written from the read scene reports no material
+    /// loss and reads back with the same layers.
+    #[test]
+    fn layers_read_from_fbx_survive_glb() {
+        let props = [
+            maya("Maya|base", 1.0),
+            maya3("Maya|baseColor", [0.8; 3]),
+            maya("Maya|coat", 1.0),
+            maya("Maya|coatRoughness", 0.25),
+            maya("Maya|transmission", 0.5),
+            maya3("Maya|transmissionColor", [0.8; 3]),
+            maya_bool("Maya|thinWalled", true),
+            maya("Maya|specular", 0.5),
+            maya("Maya|specularIOR", 1.45),
+            maya("Maya|sheen", 1.0),
+            maya3("Maya|sheenColor", [0.3, 0.2, 0.1]),
+            maya("Maya|sheenRoughness", 0.36),
+            maya("Maya|thinFilmThickness", 350.0),
+            maya("Maya|thinFilmIOR", 1.33),
+        ]
+        .concat();
+        let fbx = layered_scene(&props, None, &NoSidecars).scene;
+        let m = &fbx.materials[0];
+        let read = |m: &Material| MaterialLayer::ALL.iter().filter(|l| m.has_layer(**l)).count();
+        assert_eq!(read(m), 6, "clearcoat, transmission, ior, specular, sheen and iridescence: {m:?}");
+        let opts = super::super::WriteOptions::default();
+        let glb = super::super::write_scene(&fbx, super::super::MeshFormat::Glb, opts).unwrap_or_else(|e| panic!("{e}"));
+        assert!(glb.losses.iter().all(|l| l.kind != super::super::LossKind::Materials), "{:?}", glb.losses);
+        let back = super::super::read_scene(&glb.package.files[0].bytes, super::super::MeshFormat::Glb, &NoSidecars).unwrap_or_else(|e| panic!("{e}"));
+        let b = &back.scene.materials[0];
+        assert_eq!(
+            (&b.clearcoat, &b.transmission, &b.volume, b.ior, &b.specular, &b.sheen, &b.iridescence, &b.anisotropy, b.dispersion),
+            (&m.clearcoat, &m.transmission, &m.volume, m.ior, &m.specular, &m.sheen, &m.iridescence, &m.anisotropy, m.dispersion)
+        );
+    }
+
+    /// A layer note quotes its material's name, and an FBX can name a
+    /// material at length: the note clips the name to 256 characters, marked
+    /// "…" past that (Ruling A45), and quotes an ordinary one whole.
+    #[test]
+    fn a_layer_note_clips_a_long_material_name() {
+        let long = "n".repeat(100_000);
+        let props = [maya3("Maya|baseColor", [1.0; 3]), maya("Maya|coat", 5.0)].concat();
+        let doc = layered_doc(&props, None).replace("\"Material::mat\"", &format!("\"Material::{long}\""));
+        let r = super::super::read_scene(doc.as_bytes(), super::super::MeshFormat::Fbx, &NoSidecars).unwrap_or_else(|e| panic!("{e}"));
+        let note = r.warnings.iter().find(|w| w.contains("Maya|coat 5")).unwrap_or_else(|| panic!("no coat note in {} warning(s)", r.warnings.len()));
+        let n = note.chars().count();
+        assert!(n < 400 && note.contains("nnn…"), "{n} characters: {}", note.chars().take(160).collect::<String>());
+        let (_, warnings) = layered_material(&props, None);
+        assert_warnings(&warnings, &[&["material \"mat\" has Maya|coat 5, outside 0 to 1"]], "an ordinary name");
+    }
+
+    /// `src`, an ASCII FBX, as the binary FBX of the same records: parsed by
+    /// `fbx_dom::parse_ascii` and written by litegen's own DOM writer,
+    /// `fbx_dom::write_records`, as a 7400 file (the layout that writer
+    /// emits; the semantic reader never sees which). As binary FBX spells
+    /// them, an object's `"Class::Name"` becomes `"Name\0\x01Class"`, and the
+    /// arrays are written as the SDK writes them: `Vertices` and a Line's
+    /// `Points` as doubles, `PolygonVertexIndex`, `PointsIndex` and
+    /// `Materials` as 32-bit integers.
+    fn binary_twin(src: &str) -> Vec<u8> {
+        use super::super::fbx_dom::{parse_ascii, write_records, WProp, WRec, BINARY_MAGIC};
+        fn record(dom: &Dom<'_>, r: RecId, object: bool) -> WRec {
+            let name = dom.name(r);
+            let props = dom.props(r).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let props = props
+                .into_iter()
+                .enumerate()
+                .map(|(i, p)| match p {
+                    Prop::Bool(b) => WProp::Byte(u8::from(b)),
+                    Prop::Int(v) => i32::try_from(v).map_or(WProp::I64(v), WProp::I32),
+                    Prop::Float(v) => WProp::F64(v),
+                    Prop::Str(s) if object && i == 1 => {
+                        let s = String::from_utf8_lossy(&s).into_owned();
+                        let (class, object_name) = s.split_once("::").unwrap_or_else(|| panic!("{name} {s:?} has no class"));
+                        WProp::Str([object_name.as_bytes(), b"\0\x01", class.as_bytes()].concat())
+                    }
+                    Prop::Str(s) => WProp::Str(s.into_owned()),
+                    Prop::Raw(r) => WProp::Raw(r.to_vec()),
+                    Prop::Array(a) if matches!(name, "Vertices" | "Points") => WProp::ArrF64(dom.f64s(&a, name).unwrap()),
+                    Prop::Array(a) => WProp::ArrI32(dom.i32s(&a, name).unwrap_or_else(|e| panic!("{name}: {e}"))),
+                })
+                .collect();
+            let children = dom.children(r).map(|c| record(dom, c, name == "Objects")).collect();
+            // `WRec` names its records with `&'static str`s: a test's few
+            // dozen record names are leaked.
+            WRec { name: Box::leak(Box::<str>::from(name)), props, children, force_null: false }
+        }
+        let dom = parse_ascii(src.as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+        let top: Vec<WRec> = dom.children(ROOT).map(|r| record(&dom, r, false)).collect();
+        let mut out = BINARY_MAGIC.to_vec();
+        out.extend_from_slice(&[0x1A, 0x00]);
+        out.extend_from_slice(&7400u32.to_le_bytes());
+        write_records(&top, &mut out).unwrap();
+        out
+    }
+
+    /// The layer properties of Arnold's Standard Surface, 3ds Max's Physical
+    /// Material and OpenPBR, through the reader: the binary twins
+    /// ([`binary_twin`]) of the three export documents these tests read
+    /// (`ARNOLD_EXPORT`, `PHYSICAL_EXPORT` and `OPENPBR_EXPORT` in
+    /// `layered_doc`) and of `arnold_layers_read`'s textured coat, each swept
+    /// by [`layer_sweep`] with every bit of the material's `Properties70` among
+    /// the single flips. Every reading is `Ok` or `Err`. No cut reaches a
+    /// material: each record's end offset lies past it. The documents are
+    /// 1.4–4.8 KB as they are, so unlike the other codecs' sweeps this one
+    /// has no lean twin and no `_full` test (Ruling A40a).
+    #[test]
+    fn fbx_layer_inputs_survive_truncation_and_bit_flips() {
+        let coat = [maya3("Maya|baseColor", [1.0; 3]), maya("Maya|coat", 0.5)].concat();
+        let docs = [
+            ("the Standard Surface export", layered_doc(ARNOLD_EXPORT, None)),
+            ("the Physical Material export", layered_doc(PHYSICAL_EXPORT, None)),
+            ("the OpenPBR export", layered_doc(OPENPBR_EXPORT, None)),
+            ("a textured Standard Surface coat", layered_doc(&coat, Some("Maya|coat"))),
+        ];
+        let read = |bytes: &[u8]| super::super::read_scene(bytes, super::super::MeshFormat::Fbx, &NoSidecars);
+        for (name, text) in docs {
+            let file = binary_twin(&text);
+            let ascii = read(text.as_bytes()).unwrap_or_else(|e| panic!("{name}, as text: {e}"));
+            let whole = read(&file).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!((&whole.scene, &whole.warnings), (&ascii.scene, &ascii.warnings), "{name} reads as its text does");
+            assert!(!no_layers(&whole.scene.materials[0]), "{name} itself carries layers");
+            layer_sweep(name, &file, span(name, &file, "Properties70", "Connections"), |bytes| {
+                let _ = read(bytes);
+            });
+        }
+    }
+
+    // ── Line geometry ───────────────────────────────────────────────────────
+
+    /// A Geometry (id 99) of subclass `sub`, as the SDK's FbxLine stores a
+    /// line: `Points`, three doubles each, and `PointsIndex`, whose negative
+    /// entries `-(e + 1)` end a strip at point `e`.
+    fn line_geometry(sub: &str, points: &[f64], index: &[i32]) -> String {
+        let p: Vec<String> = points.iter().map(|v| v.to_string()).collect();
+        let i: Vec<String> = index.iter().map(|v| v.to_string()).collect();
+        format!(
+            "\tGeometry: 99, \"Geometry::lines\", \"{sub}\" {{\n\t\tPoints: *{} {{\n\t\t\ta: {}\n\t\t}}\n\t\tPointsIndex: *{} {{\n\t\t\ta: {}\n\t\t}}\n\t}}\n",
+            p.len(),
+            p.join(","),
+            i.len(),
+            i.join(",")
+        )
+    }
+
+    /// An ASCII FBX of one model (id 10, `model_props` its Properties70
+    /// lines) under the root, with `objects` after it and `connections`
+    /// after the model's own.
+    fn line_doc(model_props: &str, objects: &str, connections: &str) -> String {
+        format!(
+            "; FBX 7.5.0 project file\nFBXHeaderExtension:  {{\n\tFBXVersion: 7500\n}}\nObjects:  {{\n\
+             \tModel: 10, \"Model::m\", \"Mesh\" {{\n\t\tProperties70:  {{\n{model_props}\t\t}}\n\t}}\n\
+             {objects}}}\nConnections:  {{\n\tC: \"OO\",10,0\n{connections}}}\n"
+        )
+    }
+
+    /// `src` read as the text it is and as its binary twin, which must read
+    /// alike (scene and warnings, or the same refusal).
+    fn read_text_and_binary(src: &str) -> Result<SceneRead, MeshError> {
+        let read = |bytes: &[u8]| super::super::read_scene(bytes, super::super::MeshFormat::Fbx, &NoSidecars);
+        let (text, binary) = (read(src.as_bytes()), read(&binary_twin(src)));
+        match (&text, &binary) {
+            (Ok(t), Ok(b)) => assert_eq!((&t.scene, &t.warnings), (&b.scene, &b.warnings), "the binary twin reads as its text does"),
+            (Err(t), Err(b)) => assert_eq!(t, b, "the binary twin is refused as its text is"),
+            _ => panic!("text: {:?}; binary: {:?}", text.as_ref().err(), binary.as_ref().err()),
+        }
+        text
+    }
+
+    /// Each segment of the scene's one lines primitive, as its two positions.
+    fn segments(scene: &Scene) -> Vec<[[f32; 3]; 2]> {
+        let prims: Vec<&Primitive> = scene.meshes.iter().flat_map(|m| &m.primitives).collect();
+        assert_eq!(prims.len(), 1, "one primitive");
+        let p = prims[0];
+        assert_eq!(p.topology, super::super::scene::Topology::Lines);
+        p.indices.chunks(2).map(|s| [p.positions[s[0] as usize], p.positions[s[1] as usize]]).collect()
+    }
+
+    const LINE_CONNECTIONS: &str = "\tC: \"OO\",99,10\n";
+
+    /// `Line` geometry reads as a lines primitive: `Points` and `PointsIndex`,
+    /// a negative entry `-(e + 1)` ending a strip at point `e`, as
+    /// `PolygonVertexIndex` ends a polygon. Two strips (0-1-2, then
+    /// 3-4-5-6) give 2 + 3 segments and none joins them; a point in no strip
+    /// is not carried; the model's geometric transform and first material
+    /// apply as a mesh's do.
+    #[test]
+    fn fbx_line_geometry_reads() {
+        use super::super::scene::Topology;
+        let points = [0., 0., 0., 1., 0., 0., 1., 1., 0., 3., 0., 0., 4., 0., 0., 4., 1., 0., 3., 1., 0., 9., 9., 9.];
+        let index = [0, 1, -3, 3, 4, 5, -7];
+        let model = "\t\t\tP: \"GeometricTranslation\", \"Vector3D\", \"Vector\", \"\",0,10,0\n\
+                     \t\t\tP: \"GeometricScaling\", \"Vector3D\", \"Vector\", \"\",2,1,1\n";
+        let material = "\tMaterial: 20, \"Material::mat\", \"\" {\n\t\tShadingModel: \"lambert\"\n\t\tProperties70:  {\n\t\t}\n\t}\n";
+        let objects = [line_geometry("Line", &points, &index), material.to_string()].concat();
+        let src = line_doc(model, &objects, &format!("{LINE_CONNECTIONS}\tC: \"OO\",20,10\n"));
+
+        // A Line-only file reads (the gate), as text and as binary.
+        let read = read_text_and_binary(&src);
+        assert!(read.is_ok(), "a file whose only geometry is a Line reads: {:?}", read.as_ref().err());
+        let r = read.unwrap_or_else(|e| panic!("{e}"));
+        let p = &r.scene.meshes[0].primitives[0];
+        assert_eq!(p.topology, Topology::Lines);
+        // The geometric transform: (2x, y + 10, z). Point 7 is in no strip.
+        let want: Vec<[f32; 3]> = [[0., 10., 0.], [2., 10., 0.], [2., 11., 0.], [6., 10., 0.], [8., 10., 0.], [8., 11., 0.], [6., 11., 0.]].to_vec();
+        assert_eq!(p.positions, want);
+        // Five segments, and none from point 2 to point 3.
+        assert_eq!(p.indices, vec![0, 1, 1, 2, 3, 4, 4, 5, 5, 6]);
+        assert!(p.normals.is_none() && p.tangents.is_none() && p.colors.is_none() && p.uvs.is_empty() && p.skin.is_none());
+        assert_eq!((r.scene.drawable_count(), r.scene.triangle_count()), (5, 0));
+        // The model's first material binds, and its node draws the mesh.
+        assert_eq!((p.material, r.scene.materials.len()), (Some(0), 1));
+        assert_eq!(r.scene.nodes.iter().filter(|n| n.mesh == Some(0)).count(), 1);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+
+        // The flat path holds triangles alone: a Line-only file is Empty there.
+        assert_eq!(super::super::read(src.as_bytes(), super::super::MeshFormat::Fbx).err(), Some(MeshError::Empty));
+
+        // A NurbsCurve beside it still warns, now saying nothing of lines,
+        // and the Line still reads.
+        let curve = "\tGeometry: 98, \"Geometry::curve\", \"NurbsCurve\" {\n\t}\n\tModel: 11, \"Model::c\", \"Mesh\" {\n\t}\n";
+        let both = line_doc(model, &[line_geometry("Line", &points, &index), curve.to_string()].concat(), &format!("{LINE_CONNECTIONS}\tC: \"OO\",11,0\n\tC: \"OO\",98,11\n"));
+        let r = read_text_and_binary(&both).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            r.warnings,
+            vec!["\"NurbsCurve\" geometry (NURBS, patches and curves) is not carried: the scene models polygon meshes and line segments only"]
+        );
+        assert_eq!(r.scene.drawable_count(), 5);
+        // A file of nothing else is still refused.
+        let only = line_doc("", curve, "\tC: \"OO\",11,0\n\tC: \"OO\",98,11\n");
+        assert_eq!(
+            read_text_and_binary(&only).err(),
+            Some(MeshError::Unsupported("fbx: the file's only geometry is NURBS, patches or curves, which this converter does not tessellate".into()))
+        );
+    }
+
+    /// A strip of c points gives c - 1 segments, in the order written; a strip
+    /// of one point gives none; and a trailing strip with no end stops where
+    /// the array does (Ruling I10-R10: assimp v6.0.5's `ConvertLine` wraps it
+    /// back to the first index, the FBX SDK always ends a strip).
+    #[test]
+    fn fbx_line_strips_end_where_the_file_ends_them() {
+        let points = [0., 0., 0., 1., 0., 0., 2., 0., 0.];
+        let segs = |index: &[i32]| segments(&read_text_and_binary(&line_doc("", &line_geometry("Line", &points, index), LINE_CONNECTIONS)).unwrap_or_else(|e| panic!("{index:?}: {e}")).scene);
+        let (a, b) = ([[0., 0., 0.], [1., 0., 0.]], [[1., 0., 0.], [2., 0., 0.]]);
+        // No negative entry: two segments, and no closing 2 to 0.
+        assert_eq!(segs(&[0, 1, 2]), vec![a, b]);
+        assert_eq!(segs(&[0, 1, -3]), vec![a, b]);
+        // A strip of one point is nothing; the next strip stands alone.
+        assert_eq!(segs(&[-1, 1, -3]), vec![b]);
+        // Two strips of two points: nothing between them.
+        assert_eq!(segs(&[0, -2, 1, -3]), vec![a, b]);
+        // The direction written is kept.
+        assert_eq!(segs(&[1, -1]), vec![[[1., 0., 0.], [0., 0., 0.]]]);
+    }
+
+    /// A Line is one geometry of its model, as a mesh is: the first connected
+    /// is read and the rest are named as unread.
+    #[test]
+    fn fbx_a_line_counts_as_one_of_a_models_geometries() {
+        use super::super::scene::Topology;
+        let tri = "\tGeometry: 98, \"Geometry::tri\", \"Mesh\" {\n\t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n";
+        let objects = [line_geometry("Line", &[0., 0., 0., 1., 0., 0.], &[0, -2]), tri.to_string()].concat();
+        for (first, kind, count) in [("99,10", Topology::Lines, 1), ("98,10", Topology::Triangles, 1)] {
+            let other = if first == "99,10" { "98,10" } else { "99,10" };
+            let r = read_text_and_binary(&line_doc("", &objects, &format!("\tC: \"OO\",{first}\n\tC: \"OO\",{other}\n"))).unwrap_or_else(|e| panic!("{e}"));
+            let prims: Vec<&Primitive> = r.scene.meshes.iter().flat_map(|m| &m.primitives).collect();
+            assert_eq!((prims.len(), prims[0].topology, r.scene.drawable_count()), (1, kind, count), "{first} first");
+            assert_eq!(r.warnings, vec!["model \"m\" has 2 geometries; only the first was read"], "{first} first");
+        }
+    }
+
+    /// What a Line cannot say is refused, as a polygon's is, or skipped with
+    /// a name: an index out of range, a coordinate list that is not whole
+    /// points, a segment on a point that is not finite; and a Line with no
+    /// segment left draws nothing.
+    #[test]
+    fn fbx_line_geometry_refuses_what_it_cannot_index() {
+        let doc = |points: &[f64], index: &[i32]| line_doc("", &line_geometry("Line", points, index), LINE_CONNECTIONS);
+        let three = [0., 0., 0., 1., 0., 0., 2., 0., 0.];
+        for index in [vec![0, 3], vec![0, -4], vec![0, i32::MIN]] {
+            let err = read_text_and_binary(&doc(&three, &index)).err();
+            assert!(matches!(&err, Some(MeshError::Malformed(m)) if m.contains("names point") && m.contains("of 3")), "{index:?}: {err:?}");
+        }
+        let err = read_text_and_binary(&doc(&[0., 0., 0., 1.], &[0, -1])).err();
+        assert!(matches!(&err, Some(MeshError::Malformed(m)) if m.contains("4 point coordinates, not a multiple of 3")), "{err:?}");
+        // Point 1 is infinite: the two segments on it go, with a note, and
+        // the third stands (the points it names are kept, the others not).
+        let off = [0., 0., 0., f64::INFINITY, 0., 0., 2., 0., 0., 3., 0., 0.];
+        let r = read_text_and_binary(&doc(&off, &[0, 1, 2, -4])).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(segments(&r.scene), vec![[[2., 0., 0.], [3., 0., 0.]]]);
+        assert_eq!(r.scene.meshes[0].primitives[0].positions.len(), 2);
+        assert_eq!(r.warnings, vec!["geometry \"lines\" has 2 line segment(s) on a non-finite point; they were skipped"]);
+        // Nothing left to draw.
+        assert_eq!(read_text_and_binary(&doc(&off, &[0, -2])).err(), Some(MeshError::Empty));
+        assert_eq!(read_text_and_binary(&doc(&three, &[-1])).err(), Some(MeshError::Empty));
+    }
+
+    /// A Line's segments (two indices each) and its points are charged to the
+    /// scene's budgets before they are allocated, as a mesh's polygons are:
+    /// what exactly fits is read, one over is `Unsupported`.
+    #[test]
+    fn fbx_line_geometry_is_charged_to_the_scene_budgets() {
+        // The fourth point is named by no segment: it is no vertex of the
+        // scene, so it is not charged.
+        let src = line_doc("", &line_geometry("Line", &[0., 0., 0., 1., 0., 0., 1., 1., 0., 9., 9., 9.], &[0, 1, -3]), LINE_CONNECTIONS);
+        let dom = super::super::fbx::parse(src.as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+        // 2 segments are 4 indices; 3 points named are 3 vertices. What it
+        // builds, with the totals the reader holds after.
+        let build = |indices_before: usize, vertices_before: usize| {
+            let side = NoSidecars;
+            let mut r = Reader::new(&dom, &side);
+            r.header().unwrap();
+            r.index().unwrap();
+            r.total_indices = indices_before;
+            r.total_vertices = vertices_before;
+            let built = r.build_lines(99, &[], &math::IDENTITY).map(|m| m.is_some());
+            (built, r.total_indices, r.total_vertices)
+        };
+        let (built, indices, vertices) = build(MAX_SCENE_INDICES - 4, MAX_SCENE_VERTICES - 3);
+        assert_eq!(built, Ok(true));
+        // What it builds is added to the totals, for the geometries after it.
+        assert_eq!((indices, vertices), (MAX_SCENE_INDICES, MAX_SCENE_VERTICES), "met to the index and to the vertex");
+        let (built, indices, vertices) = build(10, 20);
+        assert_eq!((built, indices, vertices), (Ok(true), 14, 23), "4 indices (2 segments) and 3 vertices (the points named), not 4");
+        let (err, indices, vertices) = build(MAX_SCENE_INDICES - 3, 0);
+        assert!(matches!(&err, Err(MeshError::Unsupported(m)) if m.contains("indices")), "{err:?}");
+        assert_eq!((indices, vertices), (MAX_SCENE_INDICES - 3, 0), "a refusal charges nothing");
+        let (err, indices, vertices) = build(0, MAX_SCENE_VERTICES - 2);
+        assert!(matches!(&err, Err(MeshError::Unsupported(m)) if m.contains("vertices")), "{err:?}");
+        assert_eq!((indices, vertices), (0, MAX_SCENE_VERTICES - 2), "a refusal charges nothing");
+    }
+
+    /// The Line reader under truncation and bit flips: a lean FBX of two
+    /// strips and a material, read as the binary twin and as the text, each
+    /// cut at every length and flipped bit by bit across the Line records
+    /// ([`layer_sweep`]). Every reading returns.
+    #[test]
+    fn fbx_line_inputs_survive_truncation_and_bit_flips() {
+        let points = [0., 0., 0., 1., 0., 0., 1., 1., 0., 3., 0., 0., 4., 0., 0., 4., 1., 0., 3., 1., 0., 9., 9., 9.];
+        let material = "\tMaterial: 20, \"Material::mat\", \"\" {\n\t\tShadingModel: \"lambert\"\n\t\tProperties70:  {\n\t\t}\n\t}\n";
+        let objects = [line_geometry("Line", &points, &[0, 1, -3, 3, 4, 5, -7]), material.to_string()].concat();
+        let text = line_doc("", &objects, &format!("{LINE_CONNECTIONS}\tC: \"OO\",20,10\n"));
+        let read = |bytes: &[u8]| super::super::read_scene(bytes, super::super::MeshFormat::Fbx, &NoSidecars);
+        let binary = binary_twin(&text);
+        for (name, file, from) in [("a Line geometry as binary FBX", binary, "Points"), ("a Line geometry as ASCII FBX", text.clone().into_bytes(), "Points:")] {
+            let whole = read(&file).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(whole.scene.drawable_count(), 5, "{name} reads whole");
+            layer_sweep(name, &file, span(name, &file, from, "Connections"), |bytes| {
+                let _ = read(bytes);
+            });
+        }
     }
 }

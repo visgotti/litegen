@@ -363,6 +363,7 @@ fn gate_words(def: &ToolDef) -> String {
         Gate::Perm(p) => format!("a signed-in user with `{}`", p.as_str()),
         Gate::Global(p) => format!("the platform admin (single-tenant: a user with `{}`)", p.as_str()),
         Gate::GatewayAdmin => "the platform admin (single-tenant: owners, admins and `admin` keys)".to_string(),
+        Gate::Deployment(s) => format!("the platform admin (single-tenant: the {} scope in the deployment's org)", scope(&s)),
         Gate::User => "a signed-in user".to_string(),
         Gate::Any => "any credential".to_string(),
     }

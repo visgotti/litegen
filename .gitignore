@@ -1,8 +1,10 @@
 # Claude Code (personal, machine-local overrides + worktrees — never publish).
-# Shared project skills in .claude/skills/ ARE versioned, so they travel with
-# the repo (e.g. /model-drift, which a scheduled cloud run also needs).
+# Shared project skills in .claude/skills/ and rules in .claude/rules/ ARE
+# versioned, so they travel with the repo (e.g. /model-drift, which a scheduled
+# cloud run also needs).
 .claude/*
 !.claude/skills/
+!.claude/rules/
 
 # Rust
 litegen-core/target/
@@ -22,6 +24,8 @@ out/
 # Playwright
 dashboard/test-results/
 dashboard/playwright-report/
+dashboard/test-results-hooks/
+dashboard/test-results-access/
 
 # Logs
 *.log
@@ -51,6 +55,9 @@ pnpm-debug.log*
 # Local runtime config + db (litegen.yaml is generated from aipix's .env by
 # aipix/scripts/litegen.mjs and contains real provider API keys — never commit).
 litegen.yaml
+# The hooks e2e suite's two configs (one hook path each, no secrets): CI's
+# checkout needs them.
+!/dashboard/e2e-hooks/*/litegen.yaml
 litegen.db
 litegen-dev.db
 *.db-shm
@@ -69,6 +76,11 @@ litegen-dev.db
 # manual check that isn't a build output or a real repo asset.
 .artifacts/
 
-# Locally stored assets (image_storage.local_dir defaults to data/assets).
-data/
-litegen-core/data/
+# Locally stored assets (image_storage.local_dir defaults to data/assets),
+# relative to where litegen runs: the repo root, litegen-core, and the
+# dashboard's e2e runs. Listed one by one, so a source folder named data/
+# elsewhere is never ignored by accident.
+/data/
+/litegen-core/data/
+/dashboard/data/
+/dashboard/e2e-hooks/*/data/

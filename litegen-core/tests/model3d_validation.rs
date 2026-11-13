@@ -31,6 +31,7 @@ fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
         params,
         ref_inputs: None,
         extra_allowlist: vec![],
+        extra_params: Default::default(),
         tags: vec![],
         deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
     }
@@ -54,7 +55,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
         symmetry: None, topology: None, rig: None,
         skeleton: None, joint_naming: None, height_m: None,
         source_model: None,
-        animations: None, fps: None,
+        animations: None, fps: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
         texture_resolution: None, keep_uvs: None,
         ground: None, center: None,
     }
@@ -94,6 +95,29 @@ fn formats_param(values: &[&str], max_items: Option<usize>) -> ParamSpec {
 // survives here is re-checked at all three observers of completion, and a
 // generation that delivers less than this fails. So an unsatisfiable request
 // has to be rejected here, before the vendor is billed.
+
+/// One submitted job makes one mesh, and one is billed (E3): `n` above 1 was
+/// accepted and silently ignored. Refused in both modes, as an image's `n` is;
+/// 0 is the same as 1.
+#[test]
+fn more_than_one_mesh_per_request_is_refused() {
+    let schema = schema_with(HashMap::new());
+    for strict in [true, false] {
+        let mut r = req(strict);
+        r.base.n = 3;
+        let out = validate_model3d(&schema, r);
+        assert!(
+            matches!(&out, Err(e) if e.code == "param_out_of_range" && e.param.as_deref() == Some("n")),
+            "n: 3, strict={strict}: {out:?}"
+        );
+    }
+    for n in [0, 1] {
+        let mut r = req(true);
+        r.base.n = n;
+        let out = validate_model3d(&schema, r);
+        assert!(out.is_ok(), "n: {n}: {:?}", out.err());
+    }
+}
 
 #[test]
 fn a_format_the_model_cannot_emit_is_rejected_in_both_modes() {
@@ -963,4 +987,33 @@ fn a_humanoid_naming_scheme_on_another_skeleton_is_refused() {
     r.skeleton = None;
     r.joint_naming = Some("unity".into());
     assert!(validate_model3d(&schema, r).is_ok(), "the row's default skeleton is humanoid");
+}
+
+/// The 2026-10-31 audit: a model declaring `height_m` with no ceiling of its
+/// own (`meshy/rig`, `fal/meshy-rig`) let any height through — 1e9 m passed —
+/// though litegen's own placement stops at 10,000 m.
+#[test]
+fn a_model_declared_height_with_no_ceiling_still_meets_litegens() {
+    let mut params = HashMap::new();
+    params.insert(
+        "height_m".to_string(),
+        ParamSpec::Float(ParamSpecFloat { min: Some(0.1), max: None, default: None, values: vec![], label: None, description: None }),
+    );
+    let schema = schema_with(params);
+    let mut r = req(true);
+    r.height_m = Some(1e9);
+    let e = validate_model3d(&schema, r.clone()).unwrap_err();
+    assert_eq!(e.code, "param_out_of_range");
+    r.height_m = Some(1.8);
+    assert!(validate_model3d(&schema, r).is_ok());
+}
+
+/// The 2026-10-31 audit: an animate model accepted a request naming no clip
+/// and completed with none (Meshy's adapter refuses at submit).
+#[test]
+fn an_animate_model_needs_a_clip() {
+    let mut schema = schema_with(HashMap::new());
+    schema.task = ModelTask::Animate;
+    let e = validate_model3d(&schema, req(true)).unwrap_err();
+    assert_eq!((e.code.as_str(), e.param.as_deref()), ("param_required", Some("animations")));
 }

@@ -115,3 +115,91 @@ async fn a_moderated_job_says_not_to_retry() {
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
     assert_eq!(body["error"]["retryable"], json!(false), "{body}");
 }
+
+// ─── E7: a failed submit is in the request log ──────────────────────────────
+
+/// An app whose fal refuses everything (422 on any path), and its database.
+async fn fal_refusing_everything() -> (axum::Router, std::sync::Arc<litegen::db::sqlite::SqliteDatabase>, MockServer) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({ "detail": [{ "msg": "refused", "type": "x" }] })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let uri = server.uri();
+    let (app, db) = harness::app_with(&dir, move |cfg| {
+        cfg.providers.insert("fal".into(), serde_json::from_value(json!({ "enabled": true, "api_key": "k", "api_base": uri })).unwrap());
+    })
+    .await;
+    (app, db, server)
+}
+
+fn submit(path: &str, body: Value) -> Request<Body> {
+    Request::post(path).header("content-type", "application/json").body(Body::from(body.to_string())).unwrap()
+}
+
+/// The request log's rows, once there are `n` (or after 2 s).
+async fn logged(db: &litegen::db::sqlite::SqliteDatabase, n: usize) -> Vec<litegen::types::RequestLog> {
+    use litegen::db::DatabaseStore;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let rows = db.get_request_logs(1, 10).await.unwrap().0;
+        if rows.len() >= n || std::time::Instant::now() > deadline {
+            return rows;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// E7: a video submit the vendor refused is a `failed` row in the request
+/// log, naming its provider, and counts in `/v1/stats`. It used to leave no
+/// row at all.
+#[tokio::test]
+async fn a_failed_video_submit_is_in_the_request_log() {
+    use litegen::db::DatabaseStore;
+    let (app, db, _server) = fal_refusing_everything().await;
+    let (status, body) = call(&app, submit("/v1/videos/generations", json!({ "model": "fal/ltx-2.3", "prompt": "a wave" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "vendor_rejected", "{body}");
+    let rows = logged(&db, 1).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!((row.status, row.media_type, row.model.as_str(), row.provider.as_str()), (litegen::types::GenerationStatus::Failed, litegen::types::MediaType::Video, "fal/ltx-2.3", "fal"), "{row:?}");
+    assert!(row.error.as_deref().unwrap_or_default().contains("refused"), "{row:?}");
+    assert_eq!(db.get_stats().await.unwrap().failed_requests, 1);
+}
+
+/// E7: the same for a 3D submit.
+#[tokio::test]
+async fn a_failed_3d_submit_is_in_the_request_log() {
+    use base64::Engine;
+    let (app, db, _server) = fal_refusing_everything().await;
+    let png = litegen::providers::image::visual_mock::generate_visual_image_png("a knight");
+    let (status, body) = call(
+        &app,
+        submit(
+            "/v1/models3d/generations",
+            json!({
+                "model": "fal/trellis",
+                "reference_images": [{ "type": "base64", "value": base64::engine::general_purpose::STANDARD.encode(png), "role": "init" }],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let rows = logged(&db, 1).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!((row.status, row.media_type, row.provider.as_str()), (litegen::types::GenerationStatus::Failed, litegen::types::MediaType::Model3d, "fal"), "{row:?}");
+}
+
+/// E7: a failed image's row names its provider. It said "unknown".
+#[tokio::test]
+async fn a_failed_image_submit_names_its_provider() {
+    let (app, db, _server) = fal_refusing_everything().await;
+    let (status, body) = call(&app, submit("/v1/images/generations", json!({ "model": "fal/flux-dev", "prompt": "a lighthouse" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let rows = logged(&db, 1).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].provider, "fal", "{:?}", rows[0]);
+}

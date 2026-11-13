@@ -2,6 +2,7 @@ import type { components } from "./generated/schema";
 import { LiteGenAPIError, LiteGenTimeoutError } from "./errors";
 import {
   waitForCompletion,
+  waitForJob,
   pollVideo,
   poll3d,
   waitForModel3d,
@@ -69,6 +70,9 @@ type Application = Schemas["Application"];
 type ProviderCredentialInfo = Schemas["ProviderCredentialInfo"];
 type AppStorageInfo = Schemas["AppStorageInfo"];
 type PutAppStorageRequest = Schemas["PutAppStorageRequest"];
+type AppAccessSettings = Schemas["AppAccessSettings"];
+type LinksRevoked = Schemas["LinksRevoked"];
+type PutAppAccessRequest = Schemas["PutAppAccessRequest"];
 type CreateOrgRequest = Schemas["CreateOrgRequest"];
 type UpdateOrgRequest = Schemas["UpdateOrgRequest"];
 type CreateAppRequest = Schemas["CreateAppRequest"];
@@ -307,7 +311,7 @@ export interface ProviderCatalogEntry {
   name: string;
   /** Which media this provider serves — any of "image", "video", "model3d". */
   modalities: string[];
-  /** Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3" | "kling_jwt". */
+  /** Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3". */
   auth_scheme: string;
   /** Which credentials array to submit: "api_keys" (bearer) or "credential_sets" (signing). */
   pool_field: string;
@@ -328,7 +332,10 @@ function isRawBody(body: unknown): body is RawBody {
 
 /** What `models3d.convert` hands back. */
 export interface Model3dConversion {
-  /** The converted file; `blob.type` is the target's Content-Type (e.g. `model/obj`). */
+  /**
+   * The converted file. `blob.type` is the target's Content-Type (e.g.
+   * `model/obj`), or `application/zip` when `package: "zip"` was asked for.
+   */
   blob: Blob;
   /** The container it is in — the `to` that was asked for. */
   format: Schemas["Model3dFormat"];
@@ -340,16 +347,27 @@ export interface Model3dConversion {
   /**
    * What this file lost on the way to the target container, from the
    * `X-Litegen-Conversion-Losses` response header — e.g. `["materials", "uvs"]`. Worked
-   * out from the input's actual content, not the format pair: a plain
-   * untextured mesh to STL loses nothing. Known kinds: `animation`, `skins`,
+   * out from the input's actual content, not the format pair: a mesh with no
+   * normals, materials or UVs loses nothing to STL. Known kinds: `animation`, `skins`,
    * `morph_targets`, `normals`, `uvs`, `vertex_colors`, `textures`,
    * `image_formats`, `materials`, `alpha`, `hierarchy`, `meshes`,
-   * `texture_sampling`, `texture_transforms`, `geometry`; a kind added later
-   * passes through as-is. Empty when nothing was lost (or by a server that
-   * does not report losses yet).
+   * `texture_sampling`, `texture_transforms`, `geometry`, `lights`, `cameras`,
+   * `points`, `lines`; a kind added later passes through as-is. Empty when
+   * nothing was lost (or by a server that does not report losses yet).
    */
   losses: string[];
+  /**
+   * What reading the input itself dropped or approximated, in prose, from the
+   * `X-Litegen-Conversion-Warnings` header (split on `; `): a material library or
+   * texture the upload could not include, cubic and NURBS curves, an FBX
+   * animation layer. Non-ASCII characters arrive as `?`. Empty when the reader
+   * had nothing to say.
+   */
+  warnings: string[];
 }
+
+/** A unit for a container with none of its own (STL, OBJ, PLY). */
+export type Model3dUnit = "m" | "cm" | "mm" | "in" | "ft";
 
 /** Options for `models3d.convert`. Which pairs work: `models3d.convertFormats()`. */
 export interface ConvertModel3dOptions {
@@ -357,6 +375,98 @@ export interface ConvertModel3dOptions {
   from: Schemas["Model3dFormat"];
   /** The container to convert it to. */
   to: Schemas["Model3dFormat"];
+  /**
+   * Only when `to` is `stl`, `obj` or `ply`, which carry no units: the unit the
+   * written numbers are in, `m` unless set. Slicers read STL as millimetres.
+   */
+  units?: Model3dUnit;
+  /**
+   * Only when `to` is `stl`, `obj` or `ply`: the written up axis, `y` (glTF's, the
+   * default) or `z` (slicers, CAD, Blender) — +Y up becomes +Z up, the front -Y.
+   */
+  up?: "y" | "z";
+  /** Only when `from` is `stl`, `obj` or `ply`: the unit the input's numbers are in. */
+  fromUnits?: Model3dUnit;
+  /** Only when `from` is `stl`, `obj` or `ply`: the input's up axis. */
+  fromUp?: "y" | "z";
+  /**
+   * Only when `from` or `to` is `fbx`: how FBX material and light colours are
+   * stored at that end — `srgb` (the default; three.js reads them so) or
+   * `linear` (Blender, ufbx and assimp read both so, and Unity and Unreal
+   * material colours). Vertex colours are sRGB either way.
+   */
+  fbxColorSpace?: "srgb" | "linear";
+  /**
+   * `file` (the default) answers with the converted file alone. `zip` answers
+   * with a zip (`application/zip`, `model.<to>.zip`) holding the main file first
+   * and anything that goes beside it, such as an OBJ's `.mtl` and textures. A
+   * single-file `to` gives a one-entry zip. The SDK passes the zip through
+   * unopened.
+   */
+  package?: "file" | "zip";
+  /**
+   * What happens to a KTX2 (Basis Universal) texture. `png` (the default)
+   * re-encodes it as PNG, so no container drops it and no glTF requires
+   * `KHR_texture_basisu`; one that cannot be decoded, or that would pass the
+   * 64 MiB texture budget, is left out and named as an `image_formats` loss.
+   * `keep` leaves it byte for byte when `to` is `glb` or `gltf`, which then
+   * require `KHR_texture_basisu`, so a reader with no KTX2 support may refuse
+   * the file: it suits viewers that upload KTX2 to the GPU (three.js with
+   * KTX2Loader, Babylon.js, Godot). Every other `to` gets PNG either way.
+   */
+  ktx2Textures?: "png" | "keep";
+  /**
+   * Only when `from` or `to` is `fbx`: the units FBX light strengths are
+   * stored in, at that end. `photometric` (the default) is the scene's own,
+   * glTF's: `Intensity` is 100 × the candela or lux, as three.js's FBXLoader
+   * and ufbx read it. `blender` stores 100 × the `energy` Blender's own glTF
+   * importer gives the same light, so it opens in Blender as bright as the
+   * glTF does. Colour, cones and range are the same either way.
+   */
+  fbxLightUnits?: "photometric" | "blender";
+  /**
+   * Only when `from` or `to` is `usdz`, `usda` or `usdc`: the units USD light
+   * strengths are stored in, at that end. `photometric` (the default) is
+   * UsdLux's own, by the schema (Storm, usdview's renderer, agrees on the sun
+   * and draws a point or spot light's sphere 4× brighter). `blender` writes
+   * what Blender's USD exporter writes for the same light, so it opens in
+   * Blender as bright as the glTF does. A file litegen wrote keeps its exact
+   * strengths in `customData`, which wins on read either way.
+   */
+  usdLightUnits?: "photometric" | "blender";
+  /**
+   * Only when `to` is `dae`: how Collada's morph targets (blend shapes) are
+   * written. `bake` (the default) applies the targets at each node's weights
+   * and drops their weight animation, which every Collada reader opens. `keep`
+   * writes them as `<morph>` controllers with their weight animation, which
+   * SceneKit (and so Xcode) and Godot read, while three.js's ColladaLoader and
+   * assimp refuse the whole file, so choose it only for a reader that opens
+   * controllers.
+   */
+  daeMorphs?: "bake" | "keep";
+  /**
+   * Only when `to` is `usdz`: what the package's root layer, its first entry,
+   * is. `usda` (the default) is USDA text, which `usdchecker --arkit` accepts
+   * (the rule demanding a crate was removed in OpenUSD 24.03) and which
+   * `<model-viewer>` hands to AR Quick Look as it is. `usdc` is the binary
+   * crate, as Apple's own packagers write it: the package is `model.usdc` and
+   * its textures, every entry stored and 64-byte aligned either way. The two
+   * read back as one scene.
+   */
+  usdzRoot?: "usda" | "usdc";
+  /**
+   * Only when `to` is `usda`, `usdc` or `usdz`: which animation clips the USD
+   * file holds. `all` keeps every clip as an alternative, a variant set
+   * `Animation` on the default prim with one variant per clip, the first
+   * selected, so a reader that composes variants can switch between them and
+   * one that does not plays the first. Every clip's skeletal and blend-shape
+   * animation is kept; rigid (node) motion is the first clip's only, the other
+   * clips' is named in the losses, and a scene whose clips are all rigid
+   * writes as `first`. `first` keeps the first clip alone. The default is
+   * `all` for `usda` and `usdc`, `first` for `usdz` until AR Quick Look's
+   * behaviour with variants is checked on a device.
+   */
+  usdClips?: "all" | "first";
   signal?: AbortSignal;
   /**
    * Milliseconds for the whole call (the upload, the conversion and the
@@ -369,6 +479,9 @@ export interface ConvertModel3dOptions {
 
 /** Response header naming what a conversion lost, comma-joined (omitted when nothing was). */
 const CONVERSION_LOSSES_HEADER = "x-litegen-conversion-losses";
+
+/** Response header with what reading the input said, `; `-joined (omitted when nothing). */
+const CONVERSION_WARNINGS_HEADER = "x-litegen-conversion-warnings";
 
 /** `filename="model.obj"` out of a Content-Disposition value, if it has one. */
 function dispositionFilename(value: string | null): string | null {
@@ -392,6 +505,11 @@ export function parseRetryAfter(value: string | null): number | undefined {
 export interface ListModelsOptions {
   /** Only models of this family: `"image"`, `"video"` or `"model3d"`. */
   media_type?: Schemas["MediaType"];
+  /**
+   * Every model the gateway serves, not only the ones the caller's org pool
+   * and app access allow (generations still enforce both).
+   */
+  all?: boolean;
 }
 
 // ─── Lax-mode dropped params ─────────────────────────────────────────────────
@@ -457,12 +575,13 @@ export interface LiteGenResponseInfo {
 }
 
 /**
- * How long a request may take when no `timeoutMs` is given: 6.5 minutes. A
+ * How long a request may take when no `timeoutMs` is given: 11.5 minutes. A
  * synchronous call can keep the server busy for three vendor attempts of up
- * to 120 s each (`server.vendor_timeout_secs`), and a client that gives up
- * first loses an answer the server is still producing — and billing.
+ * to 120 s each (`server.vendor_timeout_secs`), after fetching a 3D
+ * operation's URL source for up to 300 s, and a client that gives up first
+ * loses an answer the server is still producing — and billing.
  */
-export const DEFAULT_TIMEOUT_MS = 3 * 120_000 + 30_000;
+export const DEFAULT_TIMEOUT_MS = 300_000 + 3 * 120_000 + 30_000;
 
 // ─── Client options ──────────────────────────────────────────────────────────
 
@@ -773,16 +892,53 @@ export interface IdempotencyOptions {
   idempotencyKey?: string;
 }
 
+/**
+ * `keepOutputs: false` keeps nothing for this request (`X-Litegen-Keep-Outputs:
+ * false`, docs/storage-access.md): no copy of the output is stored anywhere,
+ * and the answer carries the image itself or the vendor's own link. A request
+ * can keep less than its app does, never more.
+ */
+export interface KeepOutputsOptions {
+  keepOutputs?: false;
+}
+
 /** Options for `images.generate`. */
-export interface ImageGenerateOptions extends IdempotencyOptions {
+export interface ImageGenerateOptions extends IdempotencyOptions, KeepOutputsOptions {
   signal?: AbortSignal;
 }
 
-/** Options for `videos.generate` and `models3d.generate`: polling, plus the submit's key. */
-export type JobGenerateOptions = WaitForCompletionOptions & IdempotencyOptions;
+/**
+ * Options for `images.submit` (docs/async-images.md): `waitSeconds` lets the
+ * server wait that long for the vendor's job before answering 202; omitted,
+ * it answers as soon as the vendor has the job.
+ */
+export interface ImageSubmitOptions extends ImageGenerateOptions {
+  waitSeconds?: number;
+}
 
-function idempotencyHeaders(opts?: IdempotencyOptions): Record<string, string> | undefined {
-  return opts?.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : undefined;
+/** The 202 answer of `images.submit`: the generation litegen delivers the image to. */
+export type ImageGenerationAccepted = Schemas["ImageGenerationAccepted"];
+
+/**
+ * What `images.submit` answers: the image, when its job finished within the
+ * wait (or the model's vendor answers at once), or the generation to come —
+ * `generations.waitForCompletion(id)` waits for that one.
+ */
+export type ImageSubmitResult = ImageResponse | ImageGenerationAccepted;
+
+/** Whether `images.submit` answered with the generation to come rather than the image. */
+export function isAccepted(r: ImageSubmitResult): r is ImageGenerationAccepted {
+  return (r as ImageGenerationAccepted).object === "image.generation";
+}
+
+/** Options for `videos.generate` and `models3d.generate`: polling, plus the submit's key and keep choice. */
+export type JobGenerateOptions = WaitForCompletionOptions & IdempotencyOptions & KeepOutputsOptions;
+
+function idempotencyHeaders(opts?: IdempotencyOptions & KeepOutputsOptions): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+  if (opts?.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
+  if (opts?.keepOutputs === false) headers["X-Litegen-Keep-Outputs"] = "false";
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
 class ImagesNamespace {
@@ -792,6 +948,21 @@ class ImagesNamespace {
     const o: ImageGenerateOptions =
       typeof AbortSignal !== "undefined" && opts instanceof AbortSignal ? { signal: opts } : ((opts as ImageGenerateOptions) ?? {});
     return this.client.request("POST", "/v1/images/generations", req, o.signal, idempotencyHeaders(o));
+  }
+  /**
+   * Generate an image without waiting for a slow vendor job (`Prefer:
+   * respond-async`, RFC 7240): the image itself when the job beat the wait,
+   * else the generation it will be delivered to. A model whose vendor
+   * answers at once, or a request that keeps nothing, is answered as by
+   * `generate`.
+   */
+  submit(req: ImageRequest, opts: ImageSubmitOptions = {}): Promise<ImageSubmitResult> {
+    const wait = opts.waitSeconds === undefined ? undefined : Math.max(0, Math.floor(opts.waitSeconds));
+    const headers = {
+      ...(idempotencyHeaders(opts) ?? {}),
+      Prefer: wait === undefined ? "respond-async" : `respond-async, wait=${wait}`,
+    };
+    return this.client.request("POST", "/v1/images/generations", req, opts.signal, headers);
   }
   estimateCost(req: ImageRequest, signal?: AbortSignal): Promise<CostEstimate> {
     return this.client.request("POST", "/v1/images/cost", req, signal);
@@ -1036,9 +1207,26 @@ class Models3dNamespace {
    * `mesh_empty`).
    */
   async convert(input: RawBody, opts: ConvertModel3dOptions): Promise<Model3dConversion> {
+    const query = new URLSearchParams({ from: opts.from, to: opts.to });
+    for (const [name, value] of [
+      ["units", opts.units],
+      ["up", opts.up],
+      ["from_units", opts.fromUnits],
+      ["from_up", opts.fromUp],
+      ["fbx_color_space", opts.fbxColorSpace],
+      ["package", opts.package],
+      ["ktx2_textures", opts.ktx2Textures],
+      ["fbx_light_units", opts.fbxLightUnits],
+      ["usd_light_units", opts.usdLightUnits],
+      ["dae_morphs", opts.daeMorphs],
+      ["usdz_root", opts.usdzRoot],
+      ["usd_clips", opts.usdClips],
+    ] as const) {
+      if (value !== undefined) query.set(name, value);
+    }
     const res = await this.client.fetchOk(
       "POST",
-      `/v1/utils/models3d/convert?from=${encodeURIComponent(opts.from)}&to=${encodeURIComponent(opts.to)}`,
+      `/v1/utils/models3d/convert?${query.toString()}`,
       input,
       opts.signal,
       { "Content-Type": "application/octet-stream" },
@@ -1047,16 +1235,19 @@ class Models3dNamespace {
     return {
       blob: await res.blob(),
       format: opts.to,
-      filename: dispositionFilename(res.headers.get("content-disposition")) ?? `model.${opts.to}`,
+      filename:
+        dispositionFilename(res.headers.get("content-disposition")) ??
+        (opts.package === "zip" ? `model.${opts.to}.zip` : `model.${opts.to}`),
       // Same comma-joined shape as the dropped-params header, so the same parser.
       losses: parseDroppedParams(res.headers.get(CONVERSION_LOSSES_HEADER)),
+      warnings: (res.headers.get(CONVERSION_WARNINGS_HEADER) ?? "").split("; ").filter((w) => w.length > 0),
     };
   }
   /**
    * What the converter accepts (`GET /v1/utils/models3d/formats`): the
    * containers usable as both `from` and `to` — any pair converts — and the
-   * largest input it takes. Narrower than `Model3dFormat`, and it grows with
-   * litegen's converter, so read it rather than hard-coding it.
+   * largest input it takes. Today every `Model3dFormat`; it follows litegen's
+   * converter, so read it rather than hard-coding it.
    */
   convertFormats(signal?: AbortSignal): Promise<Schemas["Model3dConvertFormats"]> {
     return this.client.request("GET", "/v1/utils/models3d/formats", undefined, signal);
@@ -1076,8 +1267,9 @@ function isAbortSignal(v: unknown): v is AbortSignal {
 class ModelsNamespace {
   constructor(private readonly client: LiteGenClient) {}
   /**
-   * The model catalog (`GET /v1/models`), optionally narrowed to one family:
-   * `models.list({ media_type: "model3d" })`. `models.list(signal)` — the
+   * The models the caller may use (`GET /v1/models`), optionally narrowed to
+   * one family: `models.list({ media_type: "model3d" })`. `{ all: true }`
+   * lists every model the gateway serves. `models.list(signal)` — the
    * original signature — still works.
    */
   async list(
@@ -1086,13 +1278,12 @@ class ModelsNamespace {
   ): Promise<ModelInfo[]> {
     const options: ListModelsOptions = isAbortSignal(opts) ? {} : (opts ?? {});
     const sig = isAbortSignal(opts) ? opts : signal;
-    const resp = options.media_type
-      ? await this.client.request<ModelListResponse>(
-          "GET",
-          `/v1/models?media_type=${encodeURIComponent(options.media_type)}`,
-          undefined,
-          sig,
-        )
+    const query = new URLSearchParams();
+    if (options.media_type) query.set("media_type", options.media_type);
+    if (options.all) query.set("all", "true");
+    const qs = query.toString();
+    const resp = qs
+      ? await this.client.request<ModelListResponse>("GET", `/v1/models?${qs}`, undefined, sig)
       : await this.client.request<ModelListResponse>("GET", "/v1/models", undefined, sig);
     return resp.data;
   }
@@ -1496,6 +1687,14 @@ class GenerationsNamespace {
   }
 
   /**
+   * Poll one generation until it is completed, failed or cancelled — a late
+   * image from `images.submit`, or any other kind.
+   */
+  waitForCompletion(id: string, opts?: WaitForCompletionOptions): Promise<Generation> {
+    return waitForJob<Generation>(id, (g) => this.get(g, opts?.signal), opts, "generation");
+  }
+
+  /**
    * Every file litegen kept for a generation (`GET /v1/generations/{id}/assets`):
    * its images, its video, its meshes, textures and previews, each with its
    * URL, size and SHA-256. Kept for at least 7 days, whatever happens to the
@@ -1535,6 +1734,49 @@ class GenerationsNamespace {
       "PATCH",
       `/v1/generations/${encodeURIComponent(id)}`,
       { status: "cancelled" },
+      signal,
+    );
+  }
+
+  /**
+   * Delete a finished generation's kept files and its request (prompt and
+   * params), keeping its billing record (`DELETE /v1/generations/{id}`).
+   * Resolves to the row with `files_deleted_at` set. Rejects with 409 while
+   * the job runs: cancel it first.
+   */
+  delete(id: string, signal?: AbortSignal): Promise<Generation> {
+    return this.client.request(
+      "DELETE",
+      `/v1/generations/${encodeURIComponent(id)}`,
+      undefined,
+      signal,
+    );
+  }
+
+  /**
+   * End every link litegen signed to this generation's files
+   * (`POST /v1/generations/{id}/revoke-links`). A bucket's own presigned
+   * links work until they expire.
+   */
+  revokeLinks(id: string, signal?: AbortSignal): Promise<LinksRevoked> {
+    return this.client.request(
+      "POST",
+      `/v1/generations/${encodeURIComponent(id)}/revoke-links`,
+      undefined,
+      signal,
+    );
+  }
+
+  /**
+   * The bytes behind a link litegen signed
+   * (`GET /v1/generations/{id}/assets/{index}/signed?…`): it needs no
+   * credentials. `query` is the link's own query string (`expires`, `issued`,
+   * `signature`), as it came.
+   */
+  downloadSigned(id: string, index: number, query: string, signal?: AbortSignal): Promise<Blob> {
+    return this.client.requestBlob(
+      "GET",
+      `/v1/generations/${encodeURIComponent(id)}/assets/${index}/signed?${query.replace(/^\?/, "")}`,
       signal,
     );
   }
@@ -1753,6 +1995,50 @@ class AppStorageNamespace {
   }
 }
 
+/** Who may open an app's stored files: `public`, `signed` or `private` links,
+ * and which keys pass the owner check (docs/storage-access.md). */
+class AppAccessNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  /** The app's own settings, and the ones its files follow. */
+  get(appId: string, signal?: AbortSignal): Promise<AppAccessSettings> {
+    return this.client.request(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/access`,
+      undefined,
+      signal,
+    );
+  }
+
+  /** Replace the app's settings; an omitted or `null` field uses the gateway's. */
+  put(
+    appId: string,
+    req: PutAppAccessRequest,
+    signal?: AbortSignal,
+  ): Promise<AppAccessSettings> {
+    return this.client.request(
+      "PUT",
+      `/v1/apps/${encodeURIComponent(appId)}/access`,
+      req,
+      signal,
+    );
+  }
+
+  /**
+   * End every link litegen signed to the app's files. A bucket's own
+   * presigned links work until they expire (`signed_links: "litegen"` makes
+   * every signed link revocable).
+   */
+  revokeLinks(appId: string, signal?: AbortSignal): Promise<LinksRevoked> {
+    return this.client.request(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/access/revoke-links`,
+      undefined,
+      signal,
+    );
+  }
+}
+
 class AppModelAccessNamespace {
   constructor(private readonly client: LiteGenClient) {}
 
@@ -1793,11 +2079,13 @@ class AppLimitsNamespace {
 
 class AppsNamespace {
   readonly storage: AppStorageNamespace;
+  readonly access: AppAccessNamespace;
   readonly allowedModels: AppModelAccessNamespace;
   readonly limits: AppLimitsNamespace;
 
   constructor(private readonly client: LiteGenClient) {
     this.storage = new AppStorageNamespace(client);
+    this.access = new AppAccessNamespace(client);
     this.allowedModels = new AppModelAccessNamespace(client);
     this.limits = new AppLimitsNamespace(client);
   }
@@ -2038,10 +2326,18 @@ class AdminNamespace {
   readonly providers: AdminProvidersNamespace;
   readonly routes: AdminRoutesNamespace;
   readonly settings: AdminSettingsNamespace;
-  constructor(client: LiteGenClient) {
+  constructor(private readonly client: LiteGenClient) {
     this.models = new AdminModelsNamespace(client);
     this.providers = new AdminProvidersNamespace(client);
     this.routes = new AdminRoutesNamespace(client);
     this.settings = new AdminSettingsNamespace(client);
+  }
+
+  /**
+   * End every link litegen signed, gateway-wide (`POST /v1/admin/revoke-links`).
+   * A bucket's own presigned links work until they expire.
+   */
+  revokeLinks(signal?: AbortSignal): Promise<LinksRevoked> {
+    return this.client.request("POST", "/v1/admin/revoke-links", undefined, signal);
   }
 }

@@ -1,6 +1,7 @@
 # endpoints
 /v1/images/creativeUpscale
 /v1/images/crispUpscale
+/v1/images/enhance
 /v1/images/eraseRegion
 /v1/images/generateBackground
 /v1/images/generations
@@ -9,7 +10,6 @@
 /v1/images/imageToImage
 /v1/images/inpaint
 /v1/images/outpaint
-/v1/images/refineDetails
 /v1/images/removeBackground
 /v1/images/replaceBackground
 /v1/images/variateImage

@@ -29,12 +29,13 @@ holds a model list.
     display_name: Acme Photo 2
     description: Acme Photo 2 text-to-image and image-to-image with style references.
     docs_url: https://docs.acme.example/reference/create-image   # human API page for THIS endpoint
-    # "$0.04 per image (1024x1024)"; default request is 1024x1024 → $0.04.
-    # 2048x2048 is $0.08 (×2), billed flat at the base here.
+    # "$0.04 per image (standard), $0.08 per image (hd)"; the default request
+    # is standard → $0.04.
     # @see https://acme.example/pricing.md (2026-10-12)
     pricing:
       base_cost_usd: 0.04
-      variable_pricing: { size_2048_multiplier: 2 }   # documentation only; never applied
+      variable_pricing:
+        - { when: { quality: hd }, usd: 0.08 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 2000 }   # the vendor's documented limit
     params:
@@ -105,7 +106,7 @@ never reaches the adapter, even if the YAML declares it.
 | Family | Params the request carries |
 |---|---|
 | all | `seed`, `negative_prompt` (on `BaseGenerationRequest`) |
-| image | `size`, `aspect_ratio`, `quality`, `style`, `steps`, `guidance_scale`, `strength` |
+| image | `size`, `aspect_ratio`, `resolution`, `quality`, `style`, `steps`, `guidance_scale`, `strength` |
 | video | `duration_seconds`, `aspect_ratio`, `resolution`, `fps` |
 | model3d | `output_formats`, `texture`, `pbr`, `target_polycount`, `topology`, `symmetry`, `rig` |
 
@@ -115,7 +116,7 @@ The canonical kind for each param (`canonical_param_kinds` in
 | Param | `kind` | Notes |
 |---|---|---|
 | `seed` | `seed` | `min` and `max` are required. Use the vendor's real range (Rodin is u16, most are u32). |
-| `negative_prompt`, `quality`, `style`, `resolution` | `string` | `enum_values` holds the vendor's exact spellings; `max_length` applies to free text. |
+| `negative_prompt`, `quality`, `style`, `resolution` | `string` | `enum_values` holds the vendor's exact spellings; `max_length` applies to free text. An image `resolution` is the exception: it is on litegen's one scale (`0.5K`, `0.75K`, `1K`, `1.5K`, `2K`, `4K`, plus FLUX 3 Image's `match_input`), default `1K`, and the adapter maps it to its vendor's spelling through a named table (`image_size` in google.rs, `kling_resolution`, `bfl_resolution`, `replicate_resolution`). A vendor's tier never goes in `extra_allowlist` (`image_tiers_are_one_resolution_param_on_one_scale`). |
 | `steps`, `fps` | `int` | `min`, `max`, `default` |
 | `guidance_scale`, `strength` | `float` | `min`, `max`, `default` |
 | `duration_seconds` | `float` or `int` | Most vendors take fractional seconds; Runway takes whole ones. |
@@ -254,10 +255,11 @@ switch exists only from v5.5, and Vidu Q3 takes `audio` but not `bgm` ("BGM
 does not available in q3 models"). Conformance tests pin several of these
 lists.
 
-The allowlist is enforced only when `strict` is true (the default). With
-`strict: false`, `check_extra` returns early and **the whole `extra` object
-reaches the adapter unfiltered**. That is why adapters must not let `extra`
-override fields they own (rule 11 in SKILL.md).
+The allowlist holds in either mode: with `strict: true` (the default) an
+unlisted key is refused (`extra_key_unsupported`), and with `strict: false`
+it is dropped and reported (`X-Litegen-Dropped-Params: extra.<key>`). Only
+allowlisted keys reach the adapter, so never allowlist a field the adapter
+owns (rule 11 in SKILL.md).
 
 If users need a knob that the UI should render, or that more than one vendor
 shares, it should become a canonical param. That is a core change, so ask the
@@ -265,19 +267,38 @@ user first.
 
 ## Pricing
 
-- `base_cost_usd` is the vendor's price for the row's default request.
-  `router.rs` bills it plus `cost_markup_percent`, multiplied by the images
-  delivered for images, and once at submit for video and 3D (a job that
-  later fails is still charged). `estimate_cost` should return the same flat
-  number; OpenAI image's size and quality scaling is the known exception.
+- `base_cost_usd` is the vendor's price for the row's default request, and
+  `variable_pricing` prices every other variant. Both are applied
+  (`capabilities::pricing`): the quote, the quota reservation and the charge
+  all come from them, plus `cost_markup_percent`, times the images delivered
+  for images. Video, 3D and late images are charged when the vendor accepts
+  the job, and refunded if it fails. An adapter's own `estimate_cost` result
+  is discarded.
 - Put the vendor's price string in a comment, quoted, with the arithmetic and
   `@see <pricing url> (YYYY-MM-DD)`:
   `# Default request (720p, 5 s): $0.055/s × 5 s = $0.275.`
-- Record what the default doesn't cover in the comment, and in
-  `variable_pricing` when it's a clean multiplier: higher resolution, longer
-  duration, ×3 for a textured mesh, per-megapixel sizes, add-ons. Nothing
-  applies `variable_pricing`; it is served in `GET /v1/models` for callers
-  to read.
+- Price every variant the vendor prices differently, as `variable_pricing`
+  rules applied in order to a running price that starts at
+  `base_cost_usd`. A rule's `when` names request facts, and its one effect
+  sets a price (`usd`), a rate (`per_second_usd`, `per_megapixel_usd`,
+  `per_item_usd` with `per_item`), or adjusts it (`multiply`, `add_usd`,
+  `multiply_per_megapixel_above`). The facts are a param (as sent, else its
+  default), an allowlisted `extra.<field>`, or a derived fact:
+  `duration_seconds`, `megapixels`, the `views`, `keyframes` and
+  `animations` counts, `added_views` (the views besides `view-front`: a
+  vendor's multi-view add-on), `references` (every reference sent) and
+  `references.<role>`. A fact may also be a range a number falls in,
+  `{ gt | gte | lt | lte: n }`, alone or together: a pixel tier is
+  `{ when: { size: '*', megapixels: { gt: 1.048576, lte: 2.359296 } }, usd: … }`
+  (`megapixels` is the size's pixels ÷ 1,000,000, and 1 MP when no size is
+  sent, hence `size: '*'`), a count past a free quota is an exact
+  `references: 6` with `add_usd`. A "first second plus a rate after" price is a
+  `per_second_usd` rate plus an `add_usd` fixed part (Vidu Q2 Pro).
+  `base_cost_usd` must equal what the rules charge the default request
+  (`every_base_price_is_what_the_rules_charge_for_the_default_request`).
+- A price the rules can't express (by a step count, by a range only the
+  vendor's calculator knows) goes in the comment and the report; the row
+  bills the default request's price for it.
 - Vendors that price in credits or units: show the conversion
   (`80 credits ($0.40)`). Prices only behind a login: say so and mark the
   price unverified (the Leonardo rows do this).

@@ -13,7 +13,8 @@
 //    snapshot keeps the names beside them, so a new UUID in the report can be
 //    looked up) and video `model` values, including ones the reference enum
 //    lags on (VEO3_1 and VEO3_1FAST, which the v1 Veo 3.1 guide sends to
-//    image-to-video).
+//    image-to-video). An id → name list, so `typings: false`: a model named
+//    here is listed, not typed.
 //  • veo31-guide, kling25-guide: the per-model guides for the
 //    image-to-video models we carry — the only place each model's v1 `model`
 //    value, duration set and resolution presets are documented ("Set to `4`,
@@ -23,7 +24,9 @@
 //    names, types and backticked values. Motion 2.0 has no v1 guide (only
 //    recipes), so the reference schema covers it.
 //  • generations: the v1 image reference; its only model id is the `modelId`
-//    default, the snapshot is the request schema.
+//    default, the snapshot is the request schema. It is the typings of
+//    leonardo/diffusion-xl, pinned in `typingsFrom`: `modelId` is free-form,
+//    so the schema never names the model's UUID.
 //  • init-image (index): the v1 upload reference — no model, but the adapters
 //    call it before every reference-image request.
 //  • deprecations (index): retirements are announced on this page while the
@@ -140,6 +143,8 @@ export default {
     'leonardo/veo3.1-fast': 'VEO3_1FAST',
     'leonardo/kling2.5': 'KLING2_5',
   },
+  // POST v1/generations takes the UUID in a free-form `modelId`, so its schema never names it.
+  typingsFrom: { 'leonardo/diffusion-xl': ['generations'] },
   sources: [
     v1Endpoint('image-to-video', 'createimagetovideogeneration', '/generations-image-to-video', (spec) =>
       openapiModelIds(spec, { paths: ['/generations-image-to-video'] }),
@@ -148,6 +153,7 @@ export default {
       key: 'model-ids',
       url: `${V1}/docs/commonly-used-api-values.md`,
       expect: 'text',
+      typings: false,
       // Only well-formed UUIDs: the table has a truncated one (DreamShaper v7) the API cannot accept.
       extract: (_md, body) => [
         ...column(imageModels(body), 'Model ID', 'Image Model IDs').filter((id) => UUID.test(id)),

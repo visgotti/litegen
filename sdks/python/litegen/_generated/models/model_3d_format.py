@@ -10,8 +10,9 @@ class Model3DFormat(str, Enum):
     PLY = "ply"
     STL = "stl"
     USDA = "usda"
+    USDC = "usdc"
     USDZ = "usdz"
-    VALUE_8 = "3mf"
+    VALUE_9 = "3mf"
 
     def __str__(self) -> str:
         return str(self.value)

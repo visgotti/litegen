@@ -45,6 +45,10 @@ def _parse_response(
         response_400 = ErrorResponse.from_dict(response.json())
 
         return response_400
+    if response.status_code == 402:
+        response_402 = ErrorResponse.from_dict(response.json())
+
+        return response_402
     if response.status_code == 404:
         response_404 = ErrorResponse.from_dict(response.json())
 
@@ -53,10 +57,22 @@ def _parse_response(
         response_409 = ErrorResponse.from_dict(response.json())
 
         return response_409
+    if response.status_code == 410:
+        response_410 = ErrorResponse.from_dict(response.json())
+
+        return response_410
+    if response.status_code == 429:
+        response_429 = ErrorResponse.from_dict(response.json())
+
+        return response_429
     if response.status_code == 502:
         response_502 = ErrorResponse.from_dict(response.json())
 
         return response_502
+    if response.status_code == 503:
+        response_503 = ErrorResponse.from_dict(response.json())
+
+        return response_503
     if response.status_code == 504:
         response_504 = ErrorResponse.from_dict(response.json())
 

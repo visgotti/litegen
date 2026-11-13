@@ -82,12 +82,21 @@ pub fn build(doc: &Value, def: &ToolDef) -> Result<(Map<String, Value>, ArgPlan)
                 name.to_string()
             }
             "header" => {
-                let (arg, header) = match name.to_ascii_lowercase().as_str() {
-                    "idempotency-key" => ("idempotency_key", "idempotency-key"),
+                let (arg, header, fallback) = match name.to_ascii_lowercase().as_str() {
+                    "idempotency-key" => {
+                        ("idempotency_key", "idempotency-key", "Send the same key again on a retry, so the call is never billed twice.")
+                    }
+                    "x-litegen-keep-outputs" => {
+                        ("keep_outputs", "x-litegen-keep-outputs", "`false` keeps no copy of this request's output anywhere.")
+                    }
+                    // `Prefer: respond-async` answers 202 before the output
+                    // exists. A tool answers when the job is done, and
+                    // wait_for_generation follows a job that outlasts a call.
+                    "prefer" => continue,
                     _ => return Err(format!("{}: unsupported header parameter {name}", def.name)),
                 };
                 if !schema.contains_key("description") {
-                    schema.insert("description".into(), json!("Send the same key again on a retry, so the call is never billed twice."));
+                    schema.insert("description".into(), json!(fallback));
                 }
                 plan.headers.push((arg.to_string(), header));
                 arg.to_string()

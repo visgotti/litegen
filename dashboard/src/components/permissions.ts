@@ -8,6 +8,7 @@ export function permissionsFor(role: string): string[] {
     'key:delete:own', 'key:delete:any', 'key:test_webhook:own', 'key:test_webhook:any',
     'generation:create', 'generation:read:own', 'generation:read:any',
     'generation:cancel:own', 'generation:cancel:any',
+    'generation:delete:own', 'generation:delete:any',
     'audit:read', 'cache:clear', 'system:config', 'system:transfer_owner',
     'invitation:send', 'invitation:revoke',
     'session:revoke:own', 'session:revoke:any',
@@ -18,13 +19,14 @@ export function permissionsFor(role: string): string[] {
     'key:delete:own', 'key:delete:any', 'key:test_webhook:own', 'key:test_webhook:any',
     'generation:create', 'generation:read:own', 'generation:read:any',
     'generation:cancel:own', 'generation:cancel:any',
+    'generation:delete:own', 'generation:delete:any',
     'audit:read', 'cache:clear', 'system:config',
     'invitation:send', 'invitation:revoke',
     'session:revoke:own', 'session:revoke:any',
   ];
   if (role === 'member') return [
     'user:read:self', 'key:read:own', 'key:write:own', 'key:delete:own', 'key:test_webhook:own',
-    'generation:create', 'generation:read:own', 'generation:cancel:own', 'session:revoke:own',
+    'generation:create', 'generation:read:own', 'generation:cancel:own', 'generation:delete:own', 'session:revoke:own',
   ];
   if (role === 'viewer') return [
     'user:read:self', 'key:read:own', 'generation:create', 'generation:read:own', 'session:revoke:own',

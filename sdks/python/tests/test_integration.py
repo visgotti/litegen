@@ -58,6 +58,8 @@ from litegen._generated.models import (
     PatchAccountRequest,
     PatchUserRequest,
     PutAppStorageRequest,
+    PutAppAccessRequest,
+    AccessMode,
     Role,
     SetAppModelAccessRequest,
     SetOrgAllowedModelsRequest,
@@ -99,10 +101,13 @@ from litegen._generated.api.applications import (
     delete_app,
     delete_app_storage,
     get_app,
+    get_app_access,
     get_app_allowed_models,
     get_app_storage,
     list_apps,
     patch_app,
+    put_app_access,
+    revoke_app_links,
     put_app_allowed_models,
     put_app_storage,
 )
@@ -128,10 +133,13 @@ from litegen._generated.api.dashboard import (
 )
 from litegen._generated.api.generations import (
     cancel_generation,
+    delete_generation,
     get_generation,
     get_generation_asset,
+    get_signed_generation_asset,
     list_generation_assets,
     list_generations,
+    revoke_generation_links,
 )
 from litegen._generated.api.images import estimate_image_cost, generate_image, segment_image
 from litegen._generated.api.models import get_model_schema, list_models
@@ -435,6 +443,20 @@ def test_generations(owner):
     assert streamed.status_code == 200, f"get_generation_asset: {streamed.status_code} {streamed.content!r}"
     assert hashlib.sha256(streamed.content).hexdigest() == listed.parsed.data[0].sha256
     EXERCISED.add("get_generation_asset")
+
+    # Its links can be revoked; a link litegen didn't sign opens nothing.
+    revoked = _ok(revoke_generation_links.sync_detailed(client=owner.bearer, id=img.parsed.id), 200)
+    assert revoked.parsed.revoked_at
+    EXERCISED.add("revoke_generation_links")
+    forged = get_signed_generation_asset.sync_detailed(
+        id=img.parsed.id, index=0, client=owner.bearer, expires=4_102_444_800, issued=0, signature="00" * 32
+    )
+    assert forged.status_code == 403, f"get_signed_generation_asset: {forged.status_code} {forged.content!r}"
+    EXERCISED.add("get_signed_generation_asset")
+    # Deleting it takes its files and request; the record stays.
+    deleted = _ok(delete_generation.sync_detailed(client=owner.bearer, id=img.parsed.id), 200)
+    assert deleted.parsed.files_deleted_at
+    EXERCISED.add("delete_generation")
 
     # Cancel the throwaway generation. Already-finished mock jobs may be
     # rejected (409/400/404); a pending one cancels (200). Accept both.
@@ -851,6 +873,23 @@ def test_app_lifecycle_and_storage_throwaway(owner):
     _ok(delete_app_storage.sync_detailed(client=owner.session, app_id=app_id), 200, 204)
     EXERCISED.add("delete_app_storage")
 
+    # Who may open the app's stored files: its own mode overrides the gateway's.
+    put = _ok(
+        put_app_access.sync_detailed(
+            client=owner.session, app_id=app_id,
+            body=PutAppAccessRequest(mode=AccessMode.SIGNED, signed_url_ttl_seconds=900),
+        ),
+        200,
+    )
+    assert put.parsed.effective.mode == AccessMode.SIGNED
+    assert put.parsed.effective.signed_url_ttl_seconds == 900
+    EXERCISED.add("put_app_access")
+    got = _ok(get_app_access.sync_detailed(client=owner.session, app_id=app_id), 200)
+    assert got.parsed.overrides.mode == AccessMode.SIGNED
+    EXERCISED.add("get_app_access")
+    _ok(revoke_app_links.sync_detailed(client=owner.session, app_id=app_id), 200)
+    EXERCISED.add("revoke_app_links")
+
     _ok(delete_app.sync_detailed(client=owner.session, app_id=app_id), 200, 204)
     EXERCISED.add("delete_app")
 
@@ -1053,7 +1092,7 @@ from litegen._generated.api.gateway import (  # noqa: E402
     admin_create_model, admin_delete_model, admin_delete_provider, admin_delete_routes,
     admin_get_model, admin_get_provider, admin_get_routes, admin_get_settings, admin_list_models,
     admin_list_providers, admin_patch_model, admin_put_provider, admin_put_routes,
-    admin_put_settings, admin_replace_model,
+    admin_put_settings, admin_replace_model, admin_revoke_links,
 )
 from litegen._generated.api.spend import spend_logs, spend_report  # noqa: E402
 from litegen._generated.models import (  # noqa: E402
@@ -1268,6 +1307,8 @@ def test_gateway_admin(master_client, owner, base_url):
     EXERCISED.add("admin_put_settings")
     _ok(admin_get_settings.sync_detailed(client=master_client), 200)
     EXERCISED.add("admin_get_settings")
+    _ok(admin_revoke_links.sync_detailed(client=master_client), 200)
+    EXERCISED.add("admin_revoke_links")
     _ok(admin_put_settings.sync_detailed(client=master_client, body=GatewaySettings.from_dict({})), 200)
 
     # The facade covers the same surface.
@@ -1384,9 +1425,9 @@ def test_every_generated_endpoint_is_covered(base_url):
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 137. Both `transfer_owner` modules are exercised
+    file count is 144. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    136 entries while the file count is 137.
+    143 entries while the file count is 144.
 
     Takes `base_url` only so it skips with the rest of the suite when the binary
     isn't built: without the binary nothing populates EXERCISED, and this would
@@ -1400,6 +1441,6 @@ def test_every_generated_endpoint_is_covered(base_url):
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 137 endpoint module files in total (136 unique names + duplicate transfer_owner).
-    assert file_count == 137, f"expected 137 endpoint module files, found {file_count}"
-    assert len(discovered) == 136, f"expected 136 unique names, found {len(discovered)}"
+    # 144 endpoint module files in total (143 unique names + duplicate transfer_owner).
+    assert file_count == 144, f"expected 144 endpoint module files, found {file_count}"
+    assert len(discovered) == 143, f"expected 143 unique names, found {len(discovered)}"

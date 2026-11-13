@@ -35,6 +35,7 @@ import {
 import { inlineRefCount, withoutInlineMasks, withoutInlineRefs } from './ref-images';
 import type { Availability, MergedRole, RefEntry } from './types';
 import { MODEL3D_POLL_TIMEOUT_MS } from './useFanOut';
+import { useFileSource, useFileSrc } from '../file-src';
 
 type Tab = 'image' | 'request' | 'response';
 
@@ -152,9 +153,11 @@ async function generateVideoJob(
 
 /** A finished clip: a GIF (the mocks') as an image, anything else as a video. */
 function VideoClip({ url }: { url: string }) {
-  return videoResultIsImage(url)
-    ? <img data-testid="playground-video" src={url} alt="Generated clip" />
-    : <video data-testid="playground-video" src={url} controls autoPlay loop muted playsInline />;
+  // A file-route URL says nothing about its type; the file it served does.
+  const { src, mime } = useFileSource(url);
+  return videoResultIsImage(url, mime)
+    ? <img data-testid="playground-video" src={src} alt="Generated clip" />
+    : <video data-testid="playground-video" src={src} controls autoPlay loop muted playsInline />;
 }
 
 /** Submit a 3D job and poll it to completion, reporting progress as it goes.
@@ -262,6 +265,16 @@ export function effectiveSize(chosen: string, options: string[]): string {
   return options.includes(chosen) ? chosen : options[0];
 }
 
+/**
+ * The problem before every other: no model yet. Until the model list arrives
+ * and its default lands, the form holds none, and Generate would send
+ * `model: ""`, which the server refuses.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
+export function modelProblem(model: string): string[] {
+  return model ? [] : ['needs a model'];
+}
+
 const DEFAULT_FORM: FormState = {
   model: '',
   prompt: '',
@@ -279,6 +292,8 @@ export default function SingleMode() {
   const [requestJson, setRequestJson] = useState<string>('');
   const [responseJson, setResponseJson] = useState<string>('');
   const [imageData, setImageData] = useState<{ b64_json?: string | null; url?: string | null } | null>(null);
+  // A private app's file route is fetched with the dashboard's credentials.
+  const imageSrc = useFileSrc(imageData?.b64_json ? undefined : imageData?.url);
   const [resultMediaType, setResultMediaType] = useState<RunKind>('image');
   const [meshAssets, setMeshAssets] = useState<Model3dAsset[]>([]);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -309,17 +324,24 @@ export default function SingleMode() {
 
   const promptsSpec = declaredParams?.prompts;
   // Before the schema arrives, only the prompt can be judged.
-  const problems = kind === 'segment'
-    ? buildSegmentationBody(form.model, promptsSpec, unified.form).problems
-    : schema
-      ? requestProblems(schema, { prompt: form.prompt, refs: unified.form.refs })
-      : form.prompt.trim() ? [] : ['needs a prompt'];
+  const problems = [
+    ...modelProblem(form.model),
+    ...(kind === 'segment'
+      ? buildSegmentationBody(form.model, promptsSpec, unified.form).problems
+      : schema
+        ? requestProblems(schema, { prompt: form.prompt, refs: unified.form.refs })
+        : form.prompt.trim() ? [] : ['needs a prompt']),
+  ];
 
   // Load every image and 3D model on mount, mock and real alike — the full
   // inspector lives here, so every model has to be reachable from it.
   useEffect(() => {
+    // A superseded load (StrictMode mounts twice in dev) must not land late:
+    // its default would replace a model the user picked in the meantime.
+    let cancelled = false;
     client.models.list()
       .then(allModels => {
+        if (cancelled) return;
         const usable = sortModels(allModels.filter(m => ['image', 'model3d', 'video'].includes(m.media_type)));
         setModels(usable);
         if (usable.length > 0) {
@@ -328,10 +350,12 @@ export default function SingleMode() {
           const fallback = usable.find(m => m.id === 'mock/visual-image-gen')
             ?? usable.find(m => availabilityOf(m) === 'mock')
             ?? usable[0];
-          setForm(prev => ({ ...prev, model: fallback.id }));
+          // Only a default: never over a model already chosen.
+          setForm(prev => ({ ...prev, model: prev.model || fallback.id }));
         }
       })
-      .catch(e => setError(e.message));
+      .catch(e => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
   }, []);
 
   // Load history on mount
@@ -778,7 +802,7 @@ export default function SingleMode() {
               ) : imageData?.url ? (
                 <img
                   data-testid="playground-image"
-                  src={imageData.url}
+                  src={imageSrc}
                   alt="Generated"
                 />
               ) : (

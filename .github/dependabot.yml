@@ -1,0 +1,12 @@
+# CI's actions are pinned to commit SHAs (.github/workflows/ci.yml). Each week
+# this proposes moving them to their newest releases, in one grouped pull
+# request whose CI run checks the new versions.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']

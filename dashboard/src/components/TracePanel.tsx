@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { Generation, RequestLog, RequestArtifact } from '@litegen/sdk';
 import GenerationOutput from './GenerationOutput';
+import { useFileSrc } from '../file-src';
+import { showToast } from './toast-store';
 import {
   POLL_INTERVAL_MS,
   httpStatusOf,
@@ -57,6 +59,19 @@ export default function TracePanel({ logId, onClose }: TracePanelProps) {
   }, [logId]);
 
   const current = logId && loaded?.id === logId ? loaded : null;
+
+  // Delete the generation's kept files and its request (docs/storage-access.md):
+  // the billing record stays. The server checks the permission.
+  const deleteFiles = async () => {
+    if (!logId || !window.confirm("Delete this generation's files and its prompt? Its billing record stays.")) return;
+    try {
+      await client.generations.delete(logId);
+      setLoaded({ id: logId, log: current?.log ?? null, artifact: null, error: '' });
+      showToast('Files and request deleted', 'info');
+    } catch (e) {
+      showToast((e as Error).message || 'Delete failed', 'error');
+    }
+  };
   const log = current?.log ?? null;
   const artifact = current?.artifact ?? null;
   const error = current?.error ?? '';
@@ -114,6 +129,14 @@ export default function TracePanel({ logId, onClose }: TracePanelProps) {
           <span style={{ color: '#e1e4e8', fontWeight: 600, fontSize: 14 }}>
             Trace: <code style={{ fontSize: 12, color: '#8b949e' }}>{logId}</code>
           </span>
+          <button
+            data-testid="trace-delete-files"
+            className="btn btn-danger"
+            onClick={deleteFiles}
+            style={{ fontSize: 12, padding: '4px 10px', marginLeft: 'auto', marginRight: 8 }}
+          >
+            Delete files
+          </button>
           <button
             data-testid="trace-panel-close"
             onClick={onClose}
@@ -182,6 +205,8 @@ export default function TracePanel({ logId, onClose }: TracePanelProps) {
 }
 
 function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
+  // A private app's file route is fetched with the dashboard's credentials.
+  const urlSrc = useFileSrc(artifact?.output_kind === 'url' ? artifact.output_value : undefined);
   if (!artifact) {
     return <div style={{ color: '#8b949e', fontSize: 13 }}>No artifact found for this request.</div>;
   }
@@ -200,6 +225,14 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
         }}
       >
         <strong>Error:</strong> {artifact.error_message || 'Unknown error'}
+      </div>
+    );
+  }
+
+  if (artifact.output_kind === 'not_kept') {
+    return (
+      <div data-testid="trace-visual-not-kept" style={{ color: '#8b949e', fontSize: 13 }}>
+        Not kept: this request kept nothing (<code>keep_outputs: false</code>), so litegen has no copy of its output.
       </div>
     );
   }
@@ -250,7 +283,7 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
         <video
           data-testid="trace-visual-video"
           controls
-          src={artifact.output_value}
+          src={urlSrc}
           style={{ maxWidth: '100%', borderRadius: 6, border: '1px solid #30363d' }}
         />
       );
@@ -258,7 +291,7 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
     return (
       <img
         data-testid="trace-visual-image"
-        src={artifact.output_value}
+        src={urlSrc}
         alt="Generated output"
         style={{ maxWidth: '100%', borderRadius: 6, border: '1px solid #30363d' }}
       />

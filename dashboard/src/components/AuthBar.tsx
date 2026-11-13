@@ -1,13 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { getApiKey, setApiKey, clearApiKey } from '../sdk-client';
 
 export default function AuthBar() {
   const [inputKey, setInputKey] = useState('');
-  const [savedKey, setSavedKey] = useState<string>('');
-
-  useEffect(() => {
-    setSavedKey(getApiKey());
-  }, []);
+  const [savedKey, setSavedKey] = useState<string>(() => getApiKey());
 
   const handleSave = () => {
     const key = inputKey.trim();

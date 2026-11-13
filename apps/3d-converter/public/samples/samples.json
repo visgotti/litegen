@@ -1,0 +1,109 @@
+[
+  {
+    "id": "skinned-glb",
+    "title": "Skinned, animated",
+    "description": "litegen's skinned test character, as glTF Binary.",
+    "format": "glb",
+    "static": false,
+    "files": [
+      "skinned.glb"
+    ]
+  },
+  {
+    "id": "textured-gltf",
+    "title": "Textured, three files",
+    "description": "Apple's textured USDZ, as glTF with its .bin and PNG beside it.",
+    "format": "gltf",
+    "static": true,
+    "files": [
+      "model.gltf",
+      "model.bin",
+      "quadrants.png"
+    ]
+  },
+  {
+    "id": "textured-obj",
+    "title": "Textured, OBJ + MTL + PNG",
+    "description": "assimp's textured FBX, as OBJ with its material library and texture.",
+    "format": "obj",
+    "static": true,
+    "files": [
+      "model.obj",
+      "model.mtl",
+      "textures/texture_0.png"
+    ]
+  },
+  {
+    "id": "cube-stl",
+    "title": "Geometry only",
+    "description": "A cube as binary STL: triangles, nothing else.",
+    "format": "stl",
+    "static": true,
+    "files": [
+      "model.stl"
+    ]
+  },
+  {
+    "id": "cube-ply",
+    "title": "Big-endian PLY",
+    "description": "A cube as a big-endian binary PLY.",
+    "format": "ply",
+    "static": true,
+    "files": [
+      "cube_be.ply"
+    ]
+  },
+  {
+    "id": "textured-3mf",
+    "title": "Coloured 3MF",
+    "description": "A model with base colours that assimp wrote as 3MF. Its numbers are Y up and labelled millimetres, so it reads as a 1.6 mm model on its back, as the file says.",
+    "format": "3mf",
+    "static": true,
+    "files": [
+      "textured.3mf"
+    ]
+  },
+  {
+    "id": "skinned-dae",
+    "title": "Skinned COLLADA",
+    "description": "A skinned model written by Apple's SceneKit, with its texture.",
+    "format": "dae",
+    "static": false,
+    "files": [
+      "skinned.dae",
+      "textures/bands.png"
+    ]
+  },
+  {
+    "id": "textured-fbx",
+    "title": "Textured FBX",
+    "description": "A textured model written by assimp as binary FBX 7500.",
+    "format": "fbx",
+    "static": true,
+    "files": [
+      "textured.fbx"
+    ]
+  },
+  {
+    "id": "textured-usdz",
+    "title": "Textured USDZ",
+    "description": "A textured model written by Apple's USD tools.",
+    "format": "usdz",
+    "static": true,
+    "files": [
+      "textured.usdz"
+    ],
+    "reference": "glb"
+  },
+  {
+    "id": "textured-usda",
+    "title": "Textured, USD text + PNG",
+    "description": "assimp's textured FBX, as a USD text layer with its texture beside it.",
+    "format": "usda",
+    "static": true,
+    "files": [
+      "model.usda",
+      "textures/image_0.png"
+    ]
+  }
+]

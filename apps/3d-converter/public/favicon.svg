@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <clipPath id="hex">
+      <path d="M22.4 2.15a3.2 3.2 0 0 1 3.2 0l14.4 8.3a3.2 3.2 0 0 1 1.6 2.77v16.6a3.2 3.2 0 0 1-1.6 2.77l-14.4 8.3a3.2 3.2 0 0 1-3.2 0l-14.4-8.3a3.2 3.2 0 0 1-1.6-2.77v-16.6a3.2 3.2 0 0 1 1.6-2.77z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="24" height="48" fill="#25b6ed"/>
+    <rect x="24" y="0" width="24" height="48" fill="#744bf1"/>
+  </g>
+  <!-- circuit "LG" traces + nodes, echoing the wordmark logo -->
+  <g stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+    <path d="M17 13.2v14.3h7.6"/>
+    <path d="M31 20h-6a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h4v-4h-2.6"/>
+  </g>
+  <g fill="#fff" opacity="0.95">
+    <circle cx="17" cy="13.2" r="1.7"/>
+    <circle cx="24.6" cy="27.5" r="1.7"/>
+    <circle cx="31" cy="20" r="1.7"/>
+    <circle cx="29" cy="33.6" r="1.7"/>
+  </g>
+</svg>

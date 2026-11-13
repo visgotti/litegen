@@ -55,7 +55,9 @@ export default function ProviderSection(props: Props) {
         <span style={{ color: configured ? '#3fb950' : '#6e7681' }}>{configured ? '●' : '○'}</span>
         <strong style={{ fontSize: 15 }}>{provider.name}</strong>
         <span style={{ color: '#6e7681', fontSize: 12 }}>{configured ? 'configured' : 'needs key'}</span>
-        <span style={{ marginLeft: 'auto', color: '#8b949e', fontSize: 12 }}>{enabledCount}/{models.length} enabled</span>
+        <span style={{ marginLeft: 'auto', color: '#8b949e', fontSize: 12 }}>
+          {models.length === 0 ? 'no models' : `${enabledCount}/${models.length} enabled`}
+        </span>
         <span style={{ color: '#8b949e' }}>{open ? '▾' : '▸'}</span>
       </button>
 
@@ -93,6 +95,11 @@ export default function ProviderSection(props: Props) {
           </div>
 
           {/* Models block (org-scoped enable, auto-save) */}
+          {models.length === 0 && (
+            <div data-testid={`provider-no-models-${provider.name}`} style={{ color: '#8b949e', fontSize: 13, padding: '6px 8px' }}>
+              No models run on {provider.name} yet. A gateway admin can add one under Gateway → Models.
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             {models.map(m => (
               <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6 }}>

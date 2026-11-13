@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <contributor>
+      <author>Assimp</author>
+      <authoring_tool>litegen mesh converter</authoring_tool>
+    </contributor>
+    <created>2026-11-06T07:11:48</created>
+    <modified>2026-11-06T07:11:48</modified>
+    <unit name="meter" meter="1" />
+    <up_axis>Y_UP</up_axis>
+  </asset>
+  <library_cameras>
+    <camera id="persp_camera_node-camera" name="persp_camera_node" >
+      <optics>
+        <technique_common>
+          <perspective>
+            <xfov sid="xfov">64.7649155</xfov>
+            <aspect_ratio>1.5</aspect_ratio>
+            <znear sid="znear">0.125</znear>
+            <zfar sid="zfar">64</zfar>
+          </perspective>
+        </technique_common>
+      </optics>
+    </camera>
+    <camera id="ortho_camera_node-camera" name="ortho_camera_node" >
+      <optics>
+        <technique_common>
+          <perspective>
+            <xfov sid="xfov">0</xfov>
+            <aspect_ratio>1.5</aspect_ratio>
+            <znear sid="znear">0.0625</znear>
+            <zfar sid="zfar">20</zfar>
+          </perspective>
+        </technique_common>
+      </optics>
+    </camera>
+  </library_cameras>
+  <library_lights>
+    <light id="sun_node-light" name="sun_node" >
+      <technique_common>
+        <directional>
+          <color sid="color">3 2.625 2.25</color>
+        </directional>
+      </technique_common>
+    </light>
+    <light id="bulb_node-light" name="bulb_node" >
+      <technique_common>
+        <point>
+          <color sid="color">20 15 10</color>
+          <constant_attenuation>0</constant_attenuation>
+          <linear_attenuation>0</linear_attenuation>
+          <quadratic_attenuation>1</quadratic_attenuation>
+        </point>
+      </technique_common>
+    </light>
+    <light id="spot_node-light" name="spot_node" >
+      <technique_common>
+        <spot>
+          <color sid="color">20 30 40</color>
+          <constant_attenuation>0</constant_attenuation>
+          <linear_attenuation>0</linear_attenuation>
+          <quadratic_attenuation>1</quadratic_attenuation>
+          <falloff_angle sid="fall_off_angle">11.459156</falloff_angle>
+          <falloff_exponent sid="fall_off_exponent">28.0020934</falloff_exponent>
+        </spot>
+      </technique_common>
+    </light>
+  </library_lights>
+  <library_images>
+  </library_images>
+  <library_effects>
+    <effect id="ground_mat-fx" name="ground_mat">
+      <profile_COMMON>
+        <technique sid="standard">
+          <phong>
+            <emission>
+              <color sid="emission">0   0   0   1</color>
+            </emission>
+            <diffuse>
+              <color sid="diffuse">0.5   0.5   0.5   1</color>
+            </diffuse>
+            <shininess>
+              <float sid="shininess">0</float>
+            </shininess>
+            <transparency>
+              <float sid="transparency">1</float>
+            </transparency>
+          </phong>
+        </technique>
+      </profile_COMMON>
+    </effect>
+    <effect id="cube_mat-fx" name="cube_mat">
+      <profile_COMMON>
+        <technique sid="standard">
+          <phong>
+            <emission>
+              <color sid="emission">0   0   0   1</color>
+            </emission>
+            <diffuse>
+              <color sid="diffuse">0.75   0.25   0.125   1</color>
+            </diffuse>
+            <shininess>
+              <float sid="shininess">250</float>
+            </shininess>
+            <transparency>
+              <float sid="transparency">1</float>
+            </transparency>
+          </phong>
+        </technique>
+      </profile_COMMON>
+    </effect>
+    <effect id="material_2-fx" name="">
+      <profile_COMMON>
+        <technique sid="standard">
+          <phong>
+            <emission>
+              <color sid="emission">0   0   0   1</color>
+            </emission>
+            <diffuse>
+              <color sid="diffuse">1   1   1   1</color>
+            </diffuse>
+            <shininess>
+              <float sid="shininess">0</float>
+            </shininess>
+            <transparency>
+              <float sid="transparency">1</float>
+            </transparency>
+          </phong>
+        </technique>
+      </profile_COMMON>
+    </effect>
+  </library_effects>
+  <library_materials>
+    <material id="ground_mat" name="ground_mat">
+      <instance_effect url="#ground_mat-fx"/>
+    </material>
+    <material id="cube_mat" name="cube_mat">
+      <instance_effect url="#cube_mat-fx"/>
+    </material>
+    <material id="material_2" name="">
+      <instance_effect url="#material_2-fx"/>
+    </material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="ground" name="ground" >
+      <mesh>
+        <source id="ground-positions" name="ground-positions">
+          <float_array id="ground-positions-array" count="12"> -2 0 2 2 0 2 2 0 -2 -2 0 -2 </float_array>
+          <technique_common>
+            <accessor count="4" offset="0" source="#ground-positions-array" stride="3">
+              <param name="X" type="float" />
+              <param name="Y" type="float" />
+              <param name="Z" type="float" />
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="ground-normals" name="ground-normals">
+          <float_array id="ground-normals-array" count="12"> 0 1 0 0 1 0 0 1 0 0 1 0 </float_array>
+          <technique_common>
+            <accessor count="4" offset="0" source="#ground-normals-array" stride="3">
+              <param name="X" type="float" />
+              <param name="Y" type="float" />
+              <param name="Z" type="float" />
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="ground-vertices">
+          <input semantic="POSITION" source="#ground-positions" />
+        </vertices>
+        <polylist count="2" material="defaultMaterial">
+          <input offset="0" semantic="VERTEX" source="#ground-vertices" />
+          <input offset="0" semantic="NORMAL" source="#ground-normals" />
+          <vcount>3 3 </vcount>
+          <p>0 1 2 0 2 3 </p>
+        </polylist>
+      </mesh>
+    </geometry>
+    <geometry id="cube" name="cube" >
+      <mesh>
+        <source id="cube-positions" name="cube-positions">
+          <float_array id="cube-positions-array" count="72"> -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 0.5 0.5 -0.5 0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 0.5 -0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 -0.5 0.5 -0.5 -0.5 0.5 </float_array>
+          <technique_common>
+            <accessor count="24" offset="0" source="#cube-positions-array" stride="3">
+              <param name="X" type="float" />
+              <param name="Y" type="float" />
+              <param name="Z" type="float" />
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="cube-normals" name="cube-normals">
+          <float_array id="cube-normals-array" count="72"> 0 0 1 0 0 1 0 0 1 0 0 1 0 0 -1 0 0 -1 0 0 -1 0 0 -1 1 0 0 1 0 0 1 0 0 1 0 0 -1 0 0 -1 0 0 -1 0 0 -1 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 -1 0 0 -1 0 0 -1 0 0 -1 0 </float_array>
+          <technique_common>
+            <accessor count="24" offset="0" source="#cube-normals-array" stride="3">
+              <param name="X" type="float" />
+              <param name="Y" type="float" />
+              <param name="Z" type="float" />
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="cube-tex0" name="cube-tex0">
+          <float_array id="cube-tex0-array" count="48"> 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1 </float_array>
+          <technique_common>
+            <accessor count="24" offset="0" source="#cube-tex0-array" stride="2">
+              <param name="S" type="float" />
+              <param name="T" type="float" />
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="cube-vertices">
+          <input semantic="POSITION" source="#cube-positions" />
+        </vertices>
+        <polylist count="12" material="defaultMaterial">
+          <input offset="0" semantic="VERTEX" source="#cube-vertices" />
+          <input offset="0" semantic="NORMAL" source="#cube-normals" />
+          <input offset="0" semantic="TEXCOORD" source="#cube-tex0" set="0" />
+          <vcount>3 3 3 3 3 3 3 3 3 3 3 3 </vcount>
+          <p>0 1 2 0 2 3 4 5 6 4 6 7 8 9 10 8 10 11 12 13 14 12 14 15 16 17 18 16 18 19 20 21 22 20 22 23 </p>
+        </polylist>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_controllers>
+  </library_controllers>
+  <library_visual_scenes>
+    <visual_scene id="ROOT" name="ROOT">
+      <node id="ground_node" name="ground_node" type="NODE">
+        <matrix sid="matrix">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+        <instance_geometry url="#ground">
+          <bind_material>
+            <technique_common>
+              <instance_material symbol="defaultMaterial" target="#ground_mat">
+              </instance_material>
+            </technique_common>
+          </bind_material>
+        </instance_geometry>
+      </node>
+      <node id="cube_node" name="cube_node" type="NODE">
+        <matrix sid="matrix">0.866025388 0 0.5 0.5 0 1 0 0.5 -0.5 0 0.866025388 -0.25 0 0 0 1</matrix>
+        <instance_geometry url="#cube">
+          <bind_material>
+            <technique_common>
+              <instance_material symbol="defaultMaterial" target="#cube_mat">
+                <bind_vertex_input semantic="CHANNEL0" input_semantic="TEXCOORD" input_set="0"/>
+              </instance_material>
+            </technique_common>
+          </bind_material>
+        </instance_geometry>
+      </node>
+      <node id="rig" name="rig" type="NODE">
+        <matrix sid="matrix">1 0 0 0.5 0 1 0 0 0 0 1 -0.25 0 0 0 1</matrix>
+        <node id="persp_camera_node" name="persp_camera_node" type="NODE">
+          <matrix sid="matrix">1 0 0 0 0 0.970142484 0.242535636 1.5 0 -0.242535636 0.970142484 4 0 0 0 1</matrix>
+          <instance_camera url="#persp_camera_node-camera"/>
+        </node>
+        <node id="ortho_camera_node" name="ortho_camera_node" type="NODE">
+          <matrix sid="matrix">0.707106769 0.301511347 -0.639602125 -3 9.32470101e-10 0.904534042 0.426401436 2.5 0.707106769 -0.301511347 0.639602184 3 0 0 0 1</matrix>
+          <instance_camera url="#ortho_camera_node-camera"/>
+        </node>
+        <node id="sun_node" name="sun_node" type="NODE">
+          <matrix sid="matrix">0.832050323 -0.386363119 0.398014873 2 3.8020147e-09 0.717531562 0.696526051 4 -0.554700196 -0.579544663 0.597022295 3 0 0 0 1</matrix>
+          <instance_light url="#sun_node-light"/>
+        </node>
+        <node id="bulb_node" name="bulb_node" type="NODE">
+          <matrix sid="matrix">1 0 0 -1.5 0 1 0 2 0 0 1 1 0 0 0 1</matrix>
+          <instance_light url="#bulb_node-light"/>
+        </node>
+        <node id="spot_node" name="spot_node" type="NODE">
+          <matrix sid="matrix">0.707106769 -0.485071272 0.51449579 1.5 8.13154699e-09 0.727606893 0.685994327 2.5 -0.707106769 -0.485071242 0.51449573 1.5 0 0 0 1</matrix>
+          <instance_light url="#spot_node-light"/>
+        </node>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene>
+    <instance_visual_scene url="#ROOT" />
+  </scene>
+</COLLADA>

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { AdminModelView, GatewaySettingsView, ModelSchema, ProviderConfigView, RoutesDocument } from '@litegen/sdk';
 import { client } from '../sdk-client';
 import { showToast } from '../components/toast-store';
+import { accessBody, describeAccess, type AccessForm } from '../components/access';
+import { runtimeBody, runtimeFormOf, type RuntimeForm } from '../components/gateway-settings';
 import '../management.css';
 
 type Tab = 'models' | 'providers' | 'routes' | 'settings';
@@ -283,6 +285,11 @@ function SettingsTab() {
   const [webhook, setWebhook] = useState('');
   const [euBudget, setEuBudget] = useState('');
   const [euDuration, setEuDuration] = useState('');
+  // Who may open stored files, for apps with no setting of their own.
+  const [access, setAccess] = useState<AccessForm>({ mode: '', ownerScope: '', ttl: '', keepOutputs: '', retentionDays: '', signedLinks: '' });
+  const [revokedAt, setRevokedAt] = useState('');
+  // The cache, retries, the vendor timeout and the breaker (docs/gateway-settings.md).
+  const [runtime, setRuntime] = useState<RuntimeForm>(() => runtimeFormOf({}));
   const [error, setError] = useState('');
 
   const apply = (v: GatewaySettingsView) => {
@@ -291,6 +298,16 @@ function SettingsTab() {
     setWebhook(v.settings.alert_webhook_url ?? '');
     setEuBudget(v.settings.default_end_user_max_budget_usd?.toString() ?? '');
     setEuDuration(v.settings.default_end_user_budget_duration ?? '');
+    const keep = v.settings.storage_access_keep_outputs;
+    setAccess({
+      mode: v.settings.storage_access_mode ?? '',
+      ownerScope: v.settings.storage_access_owner_scope ?? '',
+      ttl: v.settings.storage_access_signed_url_ttl_seconds?.toString() ?? '',
+      keepOutputs: keep === undefined || keep === null ? '' : String(keep),
+      retentionDays: v.settings.storage_access_retention_days?.toString() ?? '',
+      signedLinks: v.settings.storage_access_signed_links ?? '',
+    });
+    setRuntime(runtimeFormOf(v.settings));
   };
 
   useEffect(() => {
@@ -307,17 +324,45 @@ function SettingsTab() {
       return n;
     };
     try {
+      const { body: files, error: filesError } = accessBody(access);
+      if (!files) throw new Error(filesError);
+      const { body: runtimeFields, error: runtimeError } = runtimeBody(runtime);
+      if (!runtimeFields) throw new Error(runtimeError);
       apply(await client.admin.settings.update({
         cost_markup_percent: num(markup, 'Cost markup'),
         alert_webhook_url: webhook.trim() || null,
         default_end_user_max_budget_usd: num(euBudget, 'Default end-user budget'),
         default_end_user_budget_duration: euDuration.trim() || null,
+        // Every field is sent, or the save would clear it.
+        storage_access_mode: files.mode ?? null,
+        storage_access_owner_scope: files.owner_scope ?? null,
+        storage_access_signed_url_ttl_seconds: files.signed_url_ttl_seconds ?? null,
+        storage_access_keep_outputs: files.keep_outputs ?? null,
+        storage_access_retention_days: files.retention_days ?? null,
+        storage_access_signed_links: files.signed_links ?? null,
+        ...runtimeFields,
       }));
       showToast('Settings saved', 'info');
     } catch (e) {
       setError(errText(e));
     }
   };
+
+  const clearCache = async () => {
+    setError('');
+    try {
+      await client.cache.clear();
+      apply(await client.admin.settings.get());
+      showToast('Cache cleared', 'info');
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const field = (key: keyof RuntimeForm) => ({
+    value: runtime[key],
+    onChange: (e: { target: { value: string } }) => setRuntime({ ...runtime, [key]: e.target.value }),
+  });
 
   return (
     <div className="mg-card">
@@ -331,6 +376,95 @@ function SettingsTab() {
         <label>Budget alert webhook<input className="input" value={webhook} placeholder="https://…" data-testid="gateway-webhook" onChange={e => setWebhook(e.target.value)} /></label>
         <label>Default end-user budget (USD)<input className="input" value={euBudget} placeholder="none" data-testid="gateway-eu-budget" onChange={e => setEuBudget(e.target.value)} /></label>
         <label>Default end-user window<input className="input" value={euDuration} placeholder="e.g. 30d" data-testid="gateway-eu-duration" onChange={e => setEuDuration(e.target.value)} /></label>
+      </div>
+      <h4 style={{ margin: '16px 0 4px' }}>Stored files</h4>
+      <p className="mg-muted" data-testid="gateway-effective-access">
+        Apps with no setting of their own: {view ? describeAccess(view.effective_storage_access) : '…'}
+      </p>
+      <div className="mg-form-grid">
+        <label>Links
+          <select className="input" value={access.mode} data-testid="gateway-access-mode" onChange={e => setAccess({ ...access, mode: e.target.value })}>
+            <option value="">Config default</option>
+            <option value="public">Public: the stored URL itself</option>
+            <option value="signed">Signed: links that expire</option>
+            <option value="private">Private: litegen's file route, with a key</option>
+          </select>
+        </label>
+        <label>Who may open a file through litegen
+          <select className="input" value={access.ownerScope} data-testid="gateway-access-scope" onChange={e => setAccess({ ...access, ownerScope: e.target.value })}>
+            <option value="">Config default</option>
+            <option value="key">The key that made it</option>
+            <option value="app">Any key of its app</option>
+            <option value="org">Any key of its organization</option>
+          </select>
+        </label>
+        <label>Signed link life (seconds)<input className="input" value={access.ttl} placeholder="config default" data-testid="gateway-access-ttl" onChange={e => setAccess({ ...access, ttl: e.target.value })} /></label>
+        <label>Who signs a signed link
+          <select className="input" value={access.signedLinks} data-testid="gateway-access-signed-links" onChange={e => setAccess({ ...access, signedLinks: e.target.value })}>
+            <option value="">Config default</option>
+            <option value="store">The store that holds the file</option>
+            <option value="litegen">litegen, for every file (revocable)</option>
+          </select>
+        </label>
+        <label>Keep outputs
+          <select className="input" value={access.keepOutputs} data-testid="gateway-access-keep" onChange={e => setAccess({ ...access, keepOutputs: e.target.value })}>
+            <option value="">Config default</option>
+            <option value="true">Keep a copy of every output</option>
+            <option value="false">Keep nothing: the vendor's own links</option>
+          </select>
+        </label>
+        <label>Delete kept files after (days)<input className="input" value={access.retentionDays} placeholder="config default; 0 keeps them" data-testid="gateway-access-retention" onChange={e => setAccess({ ...access, retentionDays: e.target.value })} /></label>
+      </div>
+      <p className="mg-muted" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button className="btn btn-danger" data-testid="gateway-revoke-links" onClick={async () => {
+          try {
+            const r = await client.admin.revokeLinks();
+            setRevokedAt(r.revoked_at);
+          } catch (e) {
+            setError(errText(e));
+          }
+        }}>Revoke all litegen links</button>
+        {revokedAt && <span data-testid="gateway-revoked-at">Every litegen link issued before {new Date(revokedAt).toLocaleString()} is refused.</span>}
+      </p>
+      <h4 style={{ margin: '16px 0 4px' }}>Cache</h4>
+      <p className="mg-muted" data-testid="gateway-cache-effective">
+        {view
+          ? `${view.effective_cache.enabled ? 'on' : 'off'} · answers kept ${view.effective_cache.ttl_seconds} s · up to ${view.effective_cache.max_items} · ${view.cache_entries} cached now`
+          : '…'}
+      </p>
+      <div className="mg-form-grid">
+        <label>Image answers cached
+          <select className="input" data-testid="gateway-cache-enabled" {...field('cacheEnabled')}>
+            <option value="">Config default</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label>Kept for (seconds)<input className="input" placeholder="config default" data-testid="gateway-cache-ttl" {...field('cacheTtl')} /></label>
+        <label>At most (answers)<input className="input" placeholder="config default" data-testid="gateway-cache-size" {...field('cacheMaxItems')} /></label>
+      </div>
+      <div className="mg-actions"><button className="btn btn-secondary" data-testid="gateway-cache-clear" onClick={() => void clearCache()}>Clear cache</button></div>
+      <h4 style={{ margin: '16px 0 4px' }}>Retries and timeouts</h4>
+      <p className="mg-muted" data-testid="gateway-retry-effective">
+        {view
+          ? `${view.effective_retries.max_retries} ${view.effective_retries.max_retries === 1 ? 'retry' : 'retries'} · waits up to ${view.effective_retries.backoff_ms} ms, doubling, at most ${view.effective_retries.max_backoff_ms} ms · vendor calls end after ${view.effective_vendor_timeout_seconds} s`
+          : '…'}
+      </p>
+      <div className="mg-form-grid">
+        <label>Retries<input className="input" placeholder="config default" data-testid="gateway-retries" {...field('retries')} /></label>
+        <label>First backoff (ms)<input className="input" placeholder="config default" data-testid="gateway-backoff" {...field('backoffMs')} /></label>
+        <label>Longest backoff (ms)<input className="input" placeholder="config default" data-testid="gateway-max-backoff" {...field('maxBackoffMs')} /></label>
+        <label>Vendor timeout (seconds)<input className="input" placeholder="config default" data-testid="gateway-vendor-timeout" {...field('vendorTimeout')} /></label>
+      </div>
+      <h4 style={{ margin: '16px 0 4px' }}>Circuit breaker</h4>
+      <p className="mg-muted" data-testid="gateway-breaker-effective">
+        {view
+          ? `opens after ${view.effective_circuit_breaker.threshold} failures in a row, for ${view.effective_circuit_breaker.open_for_seconds} s`
+          : '…'}
+      </p>
+      <div className="mg-form-grid">
+        <label>Failures to open<input className="input" placeholder="config default" data-testid="gateway-breaker-threshold" {...field('breakerThreshold')} /></label>
+        <label>Open for (seconds)<input className="input" placeholder="config default" data-testid="gateway-breaker-open-for" {...field('breakerOpenFor')} /></label>
       </div>
       <div className="mg-actions"><button className="btn btn-primary" data-testid="gateway-settings-save" onClick={() => void save()}>Save settings</button></div>
     </div>

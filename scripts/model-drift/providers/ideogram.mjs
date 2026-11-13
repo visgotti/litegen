@@ -64,15 +64,49 @@ const postPaths = (spec) =>
 const v1GenerationModels = (spec) =>
   postPaths(spec).flatMap((path) => V1_GENERATE.map((re) => path.match(re)?.[1]).filter(Boolean));
 
-// The one v2 endpoint the adapter calls: Ideogram 4.5 Precise Edit
-// (`/v2/image/precise-edit/{model}`, ids `precise-edit/{model}`).
+// The v2 endpoints the adapter calls: Ideogram 4.5 Precise Edit
+// (`/v2/image/precise-edit/{model}`, ids `precise-edit/{model}`) and, since
+// 2026-11-03, Ideogram 4.5 generate (`/v2/image/generate/ideogram-4-5`).
 const V2_PRECISE_EDIT = /^\/v2\/image\/precise-edit\/([^/]+)$/;
-const PRECISE_EDIT = ['/v2/image/precise-edit/ideogram-4-5'];
+// 2026-11-04, the Nano Banana routes Ideogram resells (`/v2/image/generate/nano-banana-2`, `…/nano-banana-pro`).
+const PRECISE_EDIT = [
+  '/v2/image/precise-edit/ideogram-4-5',
+  '/v2/image/generate/ideogram-4-5',
+  '/v2/image/generate/nano-banana-2',
+  '/v2/image/generate/nano-banana-pro',
+  // 2026-11-04, P-Image (`/v2/image/generate/p-image-ideogram`, JSON).
+  '/v2/image/generate/p-image-ideogram',
+];
 
+// 2026-11-10, the video models Ideogram resells: `/v2/video/generate/{model}-
+// {text,image,reference}-to-video` (video/ideogram.rs), ids `video/{model}`.
+const V2_VIDEO = /^\/v2\/video\/generate\/(.+?)-(?:text|image|reference)-to-video$/;
+const VIDEO_MODELS = ['kling-3-standard', 'minimax-h3', 'seedance-2', 'seedance-2-5'];
+const VIDEO_ENDPOINTS = VIDEO_MODELS.flatMap((m) =>
+  ['text', 'image', ...(m.startsWith('kling') ? [] : ['reference'])].map((mode) => `/v2/video/generate/${m}-${mode}-to-video`),
+);
 const v2GenerationModels = (spec) => [
   ...postPaths(spec).map((path) => path.match(V2_GENERATE)?.[1]).filter(Boolean),
   ...postPaths(spec).map((path) => path.match(V2_PRECISE_EDIT)?.[1]).filter(Boolean).map((m) => `precise-edit/${m}`),
+  ...postPaths(spec).map((path) => path.match(V2_VIDEO)?.[1]).filter(Boolean).map((m) => `video/${m}`),
 ];
+
+// The price catalog's video section: each offering's per-second rates (US$
+// micros), so a price change shows as a changed snapshot.
+const videoPrices = (catalog) => {
+  const video = catalog.public_pricing?.sections?.find((s) => s.id === 'video');
+  if (!video) throw new Error('no "video" section in the usage-pricing catalog');
+  const lines = [];
+  for (const g of video.groups) {
+    for (const o of g.offerings) {
+      lines.push(`## ${o.id} (${o.endpoint?.path ?? 'no endpoint'})`);
+      for (const r of o.usage_rates?.rows ?? []) {
+        lines.push(`${r.label}: ${Object.entries(r.values).map(([k, v]) => `${k}=${v.amount}`).join(' ')}`);
+      }
+    }
+  }
+  return lines.join('\n') + '\n';
+};
 
 export default {
   provider: 'ideogram',
@@ -84,6 +118,16 @@ export default {
     'ideogram/ideogram-v4-turbo': 'ideogram-v4',
     'ideogram/ideogram-v4-quality': 'ideogram-v4',
     'ideogram/ideogram-4-5-precise-edit': 'precise-edit/ideogram-4-5',
+    'ideogram/ideogram-4-5': 'ideogram-4-5',
+    // Resold on v2, carried as Ideogram routes (2026-11-04).
+    'ideogram/nano-banana-2': 'nano-banana-2',
+    'ideogram/nano-banana-pro': 'nano-banana-pro',
+    'ideogram/p-image-ideogram': 'p-image-ideogram',
+    // Resold video on v2 (2026-11-10): its text, image and reference endpoints.
+    'ideogram/kling-3-standard': 'video/kling-3-standard',
+    'ideogram/minimax-h3': 'video/minimax-h3',
+    'ideogram/seedance-2': 'video/seedance-2',
+    'ideogram/seedance-2-5': 'video/seedance-2-5',
   },
   sources: [
     {
@@ -100,7 +144,22 @@ export default {
       url: 'https://developer.ideogram.ai/openapi/ideogram-api-v2.json',
       expect: 'json',
       extract: v2GenerationModels,
-      snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: PRECISE_EDIT, ours }) + PRECISE_EDIT.join('\n') + '\n',
+      snapshot: (spec, _body, { ours }) =>
+        openapiExcerpt(spec, { paths: [...PRECISE_EDIT, ...VIDEO_ENDPOINTS], ours }) +
+        [...PRECISE_EDIT, ...VIDEO_ENDPOINTS].join('\n') +
+        '\n' +
+        // Each carried video id beside the endpoints whose schemas type it.
+        VIDEO_MODELS.map((m) => `video/${m}: ${VIDEO_ENDPOINTS.filter((p) => p.includes(`/${m}-`) && !p.slice(p.indexOf(m) + m.length).startsWith('-5')).join(' ')}`).join('\n') +
+        '\n',
+    },
+    {
+      // The price catalog behind ideogram.ai's pricing page (JSON).
+      key: 'prices',
+      index: true,
+      url: 'https://ideogram.ai/api/usage-pricing/catalog',
+      expect: 'json',
+      extract: (catalog) => (catalog.public_pricing?.sections ?? []).flatMap((s) => s.groups.flatMap((g) => g.offerings.map((o) => o.id))),
+      snapshot: videoPrices,
     },
   ],
   acknowledged: [
@@ -108,6 +167,16 @@ export default {
       id,
       reason: 'v2 twin of a carried v1 generation (ideogram-v3 / ideogram-v4); the adapter calls v1, whose slug is the mapping',
     })),
-    { id: 'p-image-ideogram', reason: 'skipped 2026-09-11: P-Image is a budget tier on /v1/text-to-image/{model}; it needs its own request branch' },
+    // Models Ideogram's v2 resells are carried as Ideogram routes (the user,
+    // 2026-11-04: "like how litellm can still use openrouter"); these lack a
+    // price litegen can bill.
+    { id: 'auto', reason: 'skipped 2026-11-03: v2 "automatic model selection" runs a model Ideogram picks, priced by that model; litegen carries each model by id' },
+    ...['gpt-image-2', 'gpt-image-2-5-flare', 'gpt-image-2-5-sunburst'].map((id) => ({
+      id,
+      reason: "no price litegen can quote (read 2026-11-04 from https://ideogram.ai/api/usage-pricing/catalog): Ideogram bills OpenAI's tokens as used, the request sets no quality, and its own estimate at 1024² runs from US $0.0069 (low) to US $0.2118 (high)",
+    })),
+    { id: 'nano-banana-2-1', reason: 'skipped 2026-11-04: Ideogram\'s price page lists Nano Banana 2 and Pro, not 2.1' },
+    ...['ideogram-2', 'ideogram-2a'].map((id) => ({ id, reason: 'skipped 2026-11-03: legacy Ideogram 2.x on v2; 3.0, 4.0 and 4.5 are carried' })),
+    { id: 'z-image', reason: 'skipped 2026-11-03: a third-party model resold through Ideogram v2, with no Ideogram price in its served pages' },
   ],
 };

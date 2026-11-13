@@ -1,0 +1,31 @@
+[package]
+name = "litegen-3d-converter-py"
+description = "The PyO3 binding behind the PyPI package litegen-3d-converter."
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+# The extension module is `litegen_3d_converter` (#[pymodule] and
+# pyproject.toml's module-name); the crate's own name only avoids clashing
+# with the core crate's. rlib: for the stub_gen binary.
+name = "litegen_3d_converter_py"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "stub_gen"
+required-features = ["stubgen"]
+
+[features]
+# Writes litegen_3d_converter.pyi: `cargo run -p litegen-3d-converter-py --bin
+# stub_gen --features stubgen`. Off in the wheel, so the extension carries no
+# stub machinery.
+stubgen = ["dep:pyo3-stub-gen"]
+
+[dependencies]
+litegen-3d-converter = { path = "../core" }
+# abi3-py310: one wheel per platform for CPython 3.10 and every later version.
+pyo3 = { version = "0.30.1", features = ["abi3-py310"] }
+pyo3-stub-gen = { version = "0.23.2", optional = true }

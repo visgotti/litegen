@@ -1,7 +1,6 @@
 //! LiteGen's MCP endpoints over the real route table: `/mcp` (the AI API) and
 //! `/admin/mcp` (the management API), on both protocol revisions clients use.
 
-#[allow(dead_code)]
 mod harness;
 mod mcp_support;
 
@@ -140,7 +139,7 @@ async fn unknown_toolset_is_400() {
 
 /// Every AI-endpoint tool a non-user key can see: the 19 AI tools, the
 /// endpoint-shared `get_my_limits`, and `wait_for_generation`.
-const AI_TOOLS_FOR_KEYS: usize = 21;
+const AI_TOOLS_FOR_KEYS: usize = 23;
 
 #[tokio::test]
 async fn ai_key_is_exactly_ai() {
@@ -431,6 +430,30 @@ async fn convert_round_trip() {
     assert_eq!(resource[0]["resource"]["mimeType"], "model/gltf-binary");
 }
 
+/// `package: "zip"`: the file and its sidecars come back as one embedded zip,
+/// labelled as one.
+#[tokio::test]
+async fn convert_package_zip_embeds_the_zip() {
+    use base64::Engine;
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let glb = litegen::mesh::glb::write_scene(&litegen::mesh::fixtures::textured()).unwrap();
+    let result = Mcp::new(&app, "/mcp")
+        .call(
+            "convert_3d_model",
+            json!({ "from": "glb", "to": "obj", "package": "zip", "data_base64": base64::engine::general_purpose::STANDARD.encode(&glb) }),
+        )
+        .await;
+    assert!(!is_error(&result), "{result}");
+    let resource = blocks(&result, "resource");
+    assert_eq!(resource.len(), 1, "{result}");
+    let uri = resource[0]["resource"]["uri"].as_str().unwrap();
+    assert!(uri.starts_with("litegen://convert/") && uri.ends_with(".obj.zip"), "{uri}");
+    assert_eq!(resource[0]["resource"]["mimeType"], "application/zip");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(resource[0]["resource"]["blob"].as_str().unwrap()).unwrap();
+    let names: Vec<String> = litegen::mesh::zip::Archive::parse(&bytes).unwrap().entries.into_iter().map(|e| e.name).collect();
+    assert_eq!(names, ["model.obj", "model.mtl", "textures/quadrants.png"]);
+}
+
 #[tokio::test]
 async fn convert_refuses_two_sources_or_none() {
     let (app, _db, _dir) = mcp_support::app(|_| {}).await;
@@ -602,6 +625,56 @@ async fn big_body_is_413() {
     assert_eq!(raw(&app, req).await.0, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
+/// N6 (P9): MCP's own body read has the request body deadline too, so a
+/// client that stalls its body is answered 408 rather than held forever.
+#[tokio::test]
+async fn a_stalled_mcp_body_is_answered_408_at_the_deadline() {
+    use futures::StreamExt;
+    let (app, _db, _dir) = mcp_support::app(|c| c.server.request_body_timeout_secs = Some(1)).await;
+    let first = futures::stream::once(async { Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"{\"jsonrpc\":\"2.0\",")) });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", CURRENT)
+        .header("mcp-method", "tools/list")
+        .body(Body::from_stream(first.chain(futures::stream::pending())))
+        .unwrap();
+    let Ok((status, _, body)) = tokio::time::timeout(std::time::Duration::from_secs(10), raw(&app, req)).await else {
+        panic!("the stalled MCP body was never answered");
+    };
+    assert_eq!(status, StatusCode::REQUEST_TIMEOUT, "{body}");
+    assert!(body.contains("body_timeout"), "{body}");
+}
+
+/// N6 (P9), review M2: an MCP call's own body is charged to MCP's budget,
+/// so the request a tool replays through the API is the only charge on the
+/// generation routes' budget. At `max_in_flight: 1` (a 25 MiB budget) a
+/// 13 MiB call is answered as the same body sent directly is, rather than
+/// 503 on every retry.
+#[tokio::test]
+async fn an_mcp_call_is_charged_once_against_the_generation_body_budget() {
+    let (app, _db, _dir) = mcp_support::app(|c| c.backpressure.max_in_flight = 1).await;
+    let args = json!({ "model": "mock/image-gen", "prompt": "x".repeat(13 * 1024 * 1024) });
+    let head = |text: &str| text.chars().take(300).collect::<String>();
+    // The same body sent directly fits the budget and is validated.
+    let direct = Request::builder()
+        .method("POST")
+        .uri("/v1/images/cost")
+        .header("content-type", "application/json")
+        .body(Body::from(args.to_string()))
+        .unwrap();
+    let (status, _, body) = raw(&app, direct).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", head(&body));
+    assert!(body.contains("\"prompt_too_long\""), "{}", head(&body));
+    let result = Mcp::new(&app, "/mcp").call("estimate_image_cost", args).await;
+    let text = text_of(&result);
+    assert!(!text.contains("server_at_capacity"), "an MCP call was charged twice against one body budget: {}", head(&text));
+    assert!(is_error(&result) && text.starts_with("HTTP 400 prompt_too_long"), "the direct route's answer: {}", head(&text));
+}
+
 #[tokio::test]
 async fn metrics_count_calls() {
     litegen::api::metrics::init_prometheus();
@@ -612,6 +685,24 @@ async fn metrics_count_calls() {
     assert_eq!(status, StatusCode::OK);
     assert!(text.contains("litegen_mcp_tool_calls_total"), "{text}");
     assert!(text.contains("litegen_mcp_requests_total"), "{text}");
+}
+
+/// P10: the `tool` label comes from the catalog, never from the caller, so a
+/// made-up (or hidden) tool name counts as `unknown` and mints no new series.
+#[tokio::test]
+async fn a_made_up_tool_name_mints_no_metric_label() {
+    litegen::api::metrics::init_prometheus();
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mcp = Mcp::new(&app, "/mcp");
+    mcp.call("list_models", json!({ "media_type": "video" })).await;
+    let made_up = format!("made_up_tool_{}", uuid::Uuid::new_v4().simple());
+    assert!(is_error(&mcp.call(&made_up, json!({})).await));
+    let req = Request::builder().method("GET").uri("/metrics").body(Body::empty()).unwrap();
+    let (status, _, text) = raw(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!text.contains(&made_up), "a client-chosen tool name became a metric label");
+    assert!(text.contains(r#"litegen_mcp_tool_calls_total{tool="unknown",surface="ai",outcome="error"}"#), "{text}");
+    assert!(text.contains(r#"tool="list_models""#), "a known tool keeps its name: {text}");
 }
 
 // ─── Follow-ups: the trailing slash, read-only waits, rate limits ─────────────

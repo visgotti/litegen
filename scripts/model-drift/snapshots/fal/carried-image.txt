@@ -1,12 +1,12 @@
-## fal-ai/aura-flow — active text-to-image
+## fal-ai/aura-flow — deprecated text-to-image
 {
   "POST /fal-ai/aura-flow (application/json)": {
     "properties": {
-      "enable_safety_checker": {
+      "enable_prompt_expansion": {
         "default": true,
         "type": "boolean"
       },
-      "expand_prompt": {
+      "enable_safety_checker": {
         "default": true,
         "type": "boolean"
       },
@@ -86,12 +86,12 @@
         },
         "type": "array"
       },
-      "enable_safety_checker": {
-        "default": true,
+      "enable_prompt_expansion": {
+        "default": false,
         "type": "boolean"
       },
-      "expand_prompt": {
-        "default": false,
+      "enable_safety_checker": {
+        "default": true,
         "type": "boolean"
       },
       "format": {

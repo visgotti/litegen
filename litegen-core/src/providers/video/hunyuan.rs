@@ -30,6 +30,8 @@ const DESCRIBE_ACTION: &str = "DescribeHunyuanToVideoJob";
 ///   (`SubmitImageToVideoGeneralJobRequestParams`, `DescribeImageToVideoGeneralJobResponseParams`)
 /// @see <https://cloud.tencent.com/document/api/1616/124465>
 const I2V_MODEL_ID: &str = "hunyuan/hunyuan-video-i2v";
+/// What litegen itself sends to either job type; `extra` cannot replace it.
+const OWNED_FIELDS: &[&str] = &["Prompt", "Image", "Resolution", "Fps"];
 const I2V_SUBMIT_ACTION: &str = "SubmitImageToVideoGeneralJob";
 const I2V_DESCRIBE_ACTION: &str = "DescribeImageToVideoGeneralJob";
 /// Tencent documents no default Resolution for this action and bills 480p
@@ -60,7 +62,9 @@ const I2V_FPS: [u32; 3] = [16, 24, 30];
 /// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go>
 ///   (`SubmitHunyuanToVideoJobRequestParams`, `DescribeHunyuanToVideoJobResponseParams`: "WAIT：等待中，RUN：执行中，FAIL：任务失败，DONE：任务成功")
 /// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/client.go>
-/// @see <https://www.tencentcloud.com/document/product/845/32207> — TC3-HMAC-SHA256
+/// @see <https://cloud.tencent.com/document/api/1616/107790> — 签名方法 v3 (2026-11-09)
+///   Verbatim: "签名方法 v3 （TC3-HMAC-SHA256）功能上覆盖了以前的签名方法 v1"; "Algorithm 签名算法，目前固定为 TC3-HMAC-SHA256"
+///   (the English twin, tencentcloud.com/document/product/845/32207, answers only an anti-bot script)
 pub struct HunyuanVideoProvider {
     config: Option<ProviderInstanceConfig>,
     cred_pool: Option<CredentialPool>,
@@ -69,15 +73,18 @@ pub struct HunyuanVideoProvider {
 }
 
 impl HunyuanVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             cred_pool: None,
             auth: AuthSpec::TencentTc3 { service: "vclm".into(), default_region: "ap-guangzhou".into() },
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -129,33 +136,7 @@ impl HunyuanVideoProvider {
                 provider_error: None,
                 retryable: crate::providers::may_resend_after(&e, action.starts_with("Submit")),
             })?;
-        // The status first: a gateway's 5xx page is a passing failure.
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        let Ok(data) = serde_json::from_str::<Value>(&text) else {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Hunyuan {action} answered HTTP {} with a body that is not JSON", status.as_u16()),
-                status_code: Some(status.as_u16()),
-                provider_error: None,
-                retryable: status.is_server_error() || status.as_u16() == 429,
-            });
-        };
-        if let Some(err) = data["Response"]["Error"].as_object() {
-            // A passing failure — internal, rate-limited, unavailable — is asked
-            // again (on a poll, reaping would fail the row with no webhook); any
-            // other code (no such job, bad signature, bad parameter) is final.
-            // @see <https://cloud.tencent.com/document/api/1616/107794> — "InternalError | 内部错误",
-            //   "RequestLimitExceeded | 请求的次数超过了频率限制", "ServiceUnavailable | 当前服务暂时不可用"
-            let code = err.get("Code").and_then(|c| c.as_str()).unwrap_or("");
-            let passing = code.starts_with("InternalError") || code.starts_with("RequestLimitExceeded") || code == "ServiceUnavailable";
-            return Err(ProviderError::RequestFailed {
-                message: format!("Hunyuan API error {code}: {}", err.get("Message").and_then(|m| m.as_str()).unwrap_or("unknown")),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(data.clone()),
-                retryable: passing,
-            });
-        }
-        Ok(data)
+        read_tc3(resp, action).await
     }
 
     /// Request body for `SubmitImageToVideoGeneralJob` (hunyuan-video-i2v).
@@ -190,11 +171,10 @@ impl HunyuanVideoProvider {
             }
             body["Fps"] = Value::Number(fps.into());
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // Rule 11: `extra` never replaces what litegen sends.
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
             }
         }
         Ok(body)
@@ -217,6 +197,7 @@ impl VideoProvider for HunyuanVideoProvider {
         if !config.credentials.credential_sets.is_empty() {
             self.cred_pool = Some(CredentialPool::shared(config.credentials.credential_sets.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -270,11 +251,10 @@ impl VideoProvider for HunyuanVideoProvider {
         if let Some(res) = extras.resolution.as_deref() {
             body["Resolution"] = Value::String(res.to_string());
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // Rule 11: `extra` never replaces what litegen sends.
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -318,7 +298,8 @@ impl VideoProvider for HunyuanVideoProvider {
                 GenerationStatus::Failed,
                 Some(non_empty("ErrorMessage").or_else(|| non_empty("ErrorCode")).unwrap_or_else(|| "Hunyuan job failed".to_string())),
             ),
-            _ => (GenerationStatus::Processing, None),
+            "WAIT" | "RUN" => (GenerationStatus::Processing, None),
+            other => return Ok(super::unknown_state("hunyuan", Some(other).filter(|s| !s.is_empty()))),
         };
 
         Ok(VideoGenerationPollResult {
@@ -357,6 +338,53 @@ impl VideoProvider for HunyuanVideoProvider {
     }
 }
 
+
+/// A Tencent Cloud (TC3) answer, shared by the Hunyuan image and video
+/// providers: its JSON on success. The status first: a gateway's 5xx page,
+/// or a 429 (its `Retry-After` kept for the retry), is a passing failure.
+/// Tencent answers its own errors with HTTP 200 and `Response.Error`.
+pub(crate) async fn read_tc3(resp: reqwest::Response, action: &str) -> Result<Value, ProviderError> {
+    let status = resp.status();
+    let retry_after = crate::providers::retry_after_ms(resp.headers());
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let message = format!("Hunyuan {action} answered HTTP {}: {}", status.as_u16(), text.chars().take(200).collect::<String>());
+        let body: Option<Value> = serde_json::from_str(&text).ok();
+        if let Some(e) = crate::providers::rate_limited("hunyuan", status, retry_after, &message, body.as_ref()) {
+            return Err(e);
+        }
+        return Err(ProviderError::RequestFailed {
+            message,
+            status_code: Some(status.as_u16()),
+            provider_error: body,
+            retryable: status.is_server_error() || matches!(status.as_u16(), 408 | 429),
+        });
+    }
+    let Ok(data) = serde_json::from_str::<Value>(&text) else {
+        return Err(ProviderError::RequestFailed {
+            message: format!("Hunyuan {action} answered HTTP {} with a body that is not JSON", status.as_u16()),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        });
+    };
+    if let Some(err) = data["Response"]["Error"].as_object() {
+        // A passing failure — internal, rate-limited, unavailable — is asked
+        // again (on a poll, reaping would fail the row with no webhook); any
+        // other code (no such job, bad signature, bad parameter) is final.
+        // @see <https://cloud.tencent.com/document/api/1616/107794> — "InternalError | 内部错误",
+        //   "RequestLimitExceeded | 请求的次数超过了频率限制", "ServiceUnavailable | 当前服务暂时不可用"
+        let code = err.get("Code").and_then(|c| c.as_str()).unwrap_or("");
+        let passing = code.starts_with("InternalError") || code.starts_with("RequestLimitExceeded") || code == "ServiceUnavailable";
+        return Err(ProviderError::RequestFailed {
+            message: format!("Hunyuan API error {code}: {}", err.get("Message").and_then(|m| m.as_str()).unwrap_or("unknown")),
+            status_code: Some(status.as_u16()),
+            provider_error: Some(data.clone()),
+            retryable: passing,
+        });
+    }
+    Ok(data)
+}
 
 #[cfg(test)]
 mod tests {
@@ -745,5 +773,28 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST")).respond_with(ResponseTemplate::new(503).set_body_string("<html>busy</html>")).mount(&server).await;
         assert!(matches!(make_provider(&server.uri()).poll_status(&handle()).await, Err(ProviderError::RequestFailed { retryable: true, .. })));
+    }
+
+    /// `extra` passes vendor knobs through, never over a field litegen sets.
+    #[tokio::test]
+    async fn extra_never_overwrites_an_owned_field() {
+        for (model, materialized) in [
+            (I2V, one_image(MaterializedRefForm::Url("https://x/cat.png".to_string()))),
+            ("hunyuan/hunyuan-video", MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Response": { "JobId": "j1" } })))
+                .mount(&server)
+                .await;
+            let mut extras = make_extras();
+            extras.resolution = Some("720p".to_string());
+            extras.extra = Some(json!({ "Prompt": "overwritten", "Resolution": "1080p", "Image": { "Url": "https://evil/x.png" }, "LogoAdd": 0 }));
+            make_provider(&server.uri()).generate(&ref_schema(model), &make_base("a cat", model), &extras, &materialized).await.unwrap();
+            let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+            assert_eq!((body["Prompt"].as_str(), body["Resolution"].as_str()), (Some("a cat"), Some("720p")), "{model}: {body}");
+            assert_ne!(body["Image"]["Url"], "https://evil/x.png", "{model}: {body}");
+            assert_eq!(body["LogoAdd"], 0, "{model}: a knob litegen doesn't set still passes: {body}");
+        }
     }
 }

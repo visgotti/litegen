@@ -38,15 +38,25 @@ read [Vendors with more than one family](#vendors-with-more-than-one-family).
   it.
 - **Two observers poll the same job.**
   - Client polls go through `ProxyRouter::get_video_status`, using the
-    *platform* instance (see known-gaps.md).
+    instance that submitted the job (`VideoJob.provider`: an org's own key
+    when it brought one). A job no longer in memory (after a restart) is
+    answered from the row.
   - The background poller (`proxy/poller.rs`) uses a fresh instance built
     with the org's BYO credential. It rebuilds the handle from the DB row,
     which keeps **only `provider_job_id`, `provider` and `model`**, and it
     may run after a restart.
-- **The output is a URL.** The poller stores `video_url` as the row's
-  `result_url` and fires the webhook. Nothing re-hosts video, and
-  `video_data` is dropped today. The URL you return is the one the customer
-  gets.
+- **The output is kept.** The poll that sees a video finish keeps it
+  (`rehost_video`, `proxy/router.rs`): your `video_data` when you return
+  bytes, otherwise one download of `video_url`, without credentials, from a
+  public http(s) URL. The customer gets litegen's copy, never your URL. A
+  video finished with neither bytes nor such a URL fails at once (refunded,
+  with its webhook); a copy that fails for a passing reason is retried.
+  A generation that keeps nothing (`keep_outputs: false`) hands out your
+  `video_url` instead, in the app's access mode, so **return a public
+  http(s) `video_url`**, even with `video_data`. A vendor whose video comes
+  only as bytes, or behind its key, says so: `hands_out_links` returns
+  false, and core refuses a keep-nothing request (400
+  `keep_outputs_unsupported`) before the vendor runs.
 - **Inputs.**
   - `base`: prompt, `negative_prompt`, `seed`, `extra`.
   - `extras: VideoExtras`: `duration_seconds` (always set: the caller's
@@ -176,15 +186,17 @@ specific to video.
   poller has nothing else:
   - the plain task id, when the poll URL depends only on it (`vidu`,
     `pixverse`);
-  - `{kind}/{task_id}`, when the poll path differs by endpoint (`kling`);
+  - `{kind}/{task_id}`, when the poll path differs by endpoint (Kling's
+    legacy design did this; its current API polls one `GET /tasks`, so its
+    handle is the plain id and the old form is still read for jobs in flight);
   - a JSON object, when you need the endpoint and the vendor's status or
     result URLs (`fal`: `{"request_id", "endpoint", "status_url",
     "response_url"}`).
 - If the poll URL comes from the vendor, store it in the handle and use it
   as given. Send your key to it only if its host is the vendor's API host or
   the `api_base` host; otherwise fall back to the documented path built from
-  `api_base()`. Build every fallback from `api_base()`: `video/fal.rs`
-  hard-codes `queue.fal.run` there, which is a known gap.
+  `api_base()`. Build every fallback from `api_base()`, as `queue_urls` in
+  `video/fal.rs` does.
 - Never use `self` state or caches to poll. The instance that polls may not
   be the one that submitted.
 
@@ -202,27 +214,30 @@ specific to video.
   - Failed, cancelled, expired and moderated map to `Failed`, with the
     vendor's reason in `error`. Runway's `CANCELLED` once polled until the
     timeout.
-  - Queued and running map to `Pending` and `Processing`.
-  - For an undocumented state, return a *retryable* error that names the
-    state, not `Processing`. The poller asks again every 5 s, logs a warning
-    each time, and reaps the row after 2 h. That makes the problem loud
-    without failing a job that may still finish. If the vendor documents a
-    closed enum, a non-retryable error is justified, as `model3d/fal.rs`
-    does. `video/fal.rs` still maps unknown states to `Pending`; don't copy
-    that.
+  - Queued and running map to `Pending` and `Processing`: list each one
+    the vendor documents, with its `@see`.
+  - Any other state, or none, returns `Ok(super::unknown_state("<p>",
+    state))`: `Failed`, with the state named in `error`, through the normal
+    terminal path that fires the webhook. Never a catch-all `Processing`:
+    such a job polled until the reaper's 2 h maximum age.
+    `every_video_and_3d_poll_fails_an_undocumented_state`
+    (`proxy/config_conformance.rs`) holds every adapter to this; add
+    your vendor's answer shape and in-progress states to its `state_answer`.
 - **Report progress honestly.** Use the vendor's percentage when it gives
   one, a fixed mid value otherwise, and 100 on completion.
-- **The output URL** has to be fetchable by the customer without vendor
-  credentials, and should stay alive long enough to download. If it isn't,
-  don't ship silently. Veo's auth-gated `video.uri` is the current case;
-  Bedrock's `s3://` output and Sora's bytes were earlier ones. Set
-  `content_type` (usually `video/mp4`).
-- **Return vendor verdicts as `Ok(Failed)`, never as `Err`.** Only a
-  terminal `Ok` result goes through the poller's normal tail, which fires
-  the customer's webhook. A retryable `Err` leaves the row in flight for the
-  next tick. A non-retryable `Err` makes the poller *reap* the row as failed
-  without any webhook. Use it only when the job's state can never be
-  learned: a 401 or 404 on the status call, or a malformed handle.
+- **The output URL** has to be fetchable without vendor credentials, and
+  should stay alive long enough to download. When it isn't, download the
+  video in `poll_status` (with the key, only from the vendor's API host)
+  and return `video_data`, as Veo's adapter does for its key-gated
+  `video.uri`; then `hands_out_links` is false. Set `content_type`
+  (usually `video/mp4`).
+- **Return vendor verdicts as `Ok(Failed)`, never as `Err`.** A terminal
+  `Ok` result goes through the poller's normal tail with the vendor's
+  reason. A retryable `Err` leaves the row in flight for the next tick. A
+  non-retryable `Err` makes the poller *reap* the row: failed, refunded and
+  webhooked, with the poll error as its only reason. Use it only when the
+  job's state can never be learned: a 401 or 404 on the status call, or a
+  malformed handle.
 
 ## The catalog row
 

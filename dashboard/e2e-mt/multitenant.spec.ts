@@ -218,7 +218,10 @@ test('hosted multi-tenant: BYO S3 storage configure, persist-without-secret, rem
   await page.goto('/organization');
   await page.locator('[data-testid="storage-bucket"]').fill('e2e-bucket');
   await page.locator('[data-testid="storage-region"]').fill('us-east-1');
-  await page.locator('[data-testid="storage-endpoint"]').fill('http://127.0.0.1:5599'); // never called in this test
+  // Never called in this test. A name that never resolves (RFC 6761's
+  // .invalid): hosted mode refuses a loopback or private endpoint (SSRF), and
+  // accepts a name that doesn't resolve yet, checking it again at every use.
+  await page.locator('[data-testid="storage-endpoint"]').fill('https://s3.e2e-bucket.invalid');
   await page.locator('[data-testid="storage-access-key-id"]').fill('AKIAE2E1234');
   await page.locator('[data-testid="storage-secret"]').fill(SECRET);
   await page.locator('[data-testid="storage-save"]').click();

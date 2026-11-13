@@ -2,7 +2,9 @@ import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { Generation } from '@litegen/sdk';
 import ModelPreview from './ModelPreview';
 import { assetsOf } from './model3d-assets';
+import PackageDownloads from './PackageDownloads';
 import { videoResultIsImage } from './generation-output';
+import { useFileSource, useFileSrc } from '../file-src';
 
 const MUTED: CSSProperties = { color: '#8b949e', fontSize: 13 };
 const MEDIA: CSSProperties = { maxWidth: '100%', borderRadius: 6, border: '1px solid #30363d' };
@@ -58,8 +60,11 @@ function InFlight({ generation }: { generation: Generation }) {
  */
 function VideoResult({ url }: { url: string }) {
   const [failed, setFailed] = useState(false);
-  if (videoResultIsImage(url)) {
-    return <img data-testid="generation-output-image" src={url} alt="Generated output" style={MEDIA} />;
+  // A private app's file route is fetched with the dashboard's credentials.
+  // A file-route URL says nothing about its type; the file it served does.
+  const { src, mime } = useFileSource(url);
+  if (videoResultIsImage(url, mime)) {
+    return <img data-testid="generation-output-image" src={src} alt="Generated output" style={MEDIA} />;
   }
   if (failed) {
     return (
@@ -75,7 +80,7 @@ function VideoResult({ url }: { url: string }) {
     <video
       data-testid="generation-output-video"
       controls
-      src={url}
+      src={src}
       onError={() => setFailed(true)}
       style={MEDIA}
     />
@@ -90,6 +95,7 @@ function Completed({ generation }: { generation: Generation }) {
     return (
       <div data-testid="generation-output-completed">
         <ModelPreview assets={assetsOf(generation)} testId="generation-output-3d" />
+        <PackageDownloads assets={assetsOf(generation)} testId="generation-output-packages" />
       </div>
     );
   }
@@ -101,10 +107,16 @@ function Completed({ generation }: { generation: Generation }) {
       ) : generation.media_type === 'video' ? (
         <VideoResult key={url} url={url} />
       ) : (
-        <img data-testid="generation-output-image" src={url} alt="Generated output" style={MEDIA} />
+        <ImageResult url={url} />
       )}
     </div>
   );
+}
+
+/** An image result; a private app's file route is fetched with the
+ *  dashboard's credentials first. */
+function ImageResult({ url }: { url: string }) {
+  return <img data-testid="generation-output-image" src={useFileSrc(url)} alt="Generated output" style={MEDIA} />;
 }
 
 function byStatus(generation: Generation): ReactNode {

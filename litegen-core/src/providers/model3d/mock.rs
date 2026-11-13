@@ -45,25 +45,79 @@ const RIG_MODEL: &str = "mock/rig-3d";
 /// catalog row declares so, and litegen turns it to face +Z.
 const TURNED_MODEL: &str = "mock/turned-3d";
 
+/// Emits the mesh library's textured fixture, a GLB with a PNG base-colour
+/// map: what a test of textures in every container (packages) needs.
+const TEXTURED_MODEL: &str = "mock/textured-3d";
+
+/// The textured fixture as a GLB.
+fn textured_glb() -> Vec<u8> {
+    crate::mesh::glb::write_scene(&crate::mesh::fixtures::textured()).expect("the textured fixture writes as a GLB")
+}
+
+/// Emits the mesh library's morph fixture, a GLB with two morph targets and
+/// a weight animation: what a test of `dae_morphs` needs, since Collada
+/// bakes morph targets unless asked to keep them as controllers.
+const MORPH_MODEL: &str = "mock/morph-3d";
+
+/// The morph fixture as a GLB.
+fn morph_glb() -> Vec<u8> {
+    crate::mesh::glb::write_scene(&crate::mesh::fixtures::morph()).expect("the morph fixture writes as a GLB")
+}
+
+/// Emits a vendor's meshopt-compressed GLB ([`MESHOPT_GLB`]), as a vendor
+/// that runs gltfpack `-cc` ships it. litegen decodes it and delivers every
+/// container uncompressed, keeping the vendor's file as the `original`.
+const MESHOPT_MODEL: &str = "mock/meshopt-3d";
+
+/// The mesh library's skinned fixture through gltfpack `-cc`, which requires
+/// `EXT_meshopt_compression`: the mock's copy, `mock_data/skinned.cc.glb`
+/// (its source and sha256 are in `mock_data/README.md`).
+const MESHOPT_GLB: &[u8] = include_bytes!("mock_data/skinned.cc.glb");
+
+/// Emits a vendor's Draco-compressed GLB ([`DRACO_GLB`]), as a vendor that
+/// runs glTF-Transform's `draco` ships it. litegen decodes it and delivers
+/// every container uncompressed, keeping the vendor's file as the
+/// `original`.
+const DRACO_MODEL: &str = "mock/draco-3d";
+
+/// The mesh library's skinned fixture through glTF-Transform's `draco`,
+/// which requires `KHR_draco_mesh_compression`: `mock_data/skinned.draco.glb`
+/// (its source, command and sha256 are in `mock_data/README.md`).
+const DRACO_GLB: &[u8] = include_bytes!("mock_data/skinned.draco.glb");
+
+/// Emits a vendor's GLB with a KTX2 texture ([`BASISU_GLB`]), as a vendor that
+/// runs gltfpack `-tc` or glTF-Transform's `etc1s` ships it. litegen decodes
+/// the texture and delivers it as PNG in every container (or keeps it in the
+/// `glb` and `gltf` on `ktx2_textures: keep`), keeping the vendor's file as
+/// the `original`.
+const BASISU_MODEL: &str = "mock/basisu-3d";
+
+/// The mesh library's textured fixture with a KTX2 base-colour map, which
+/// requires `KHR_texture_basisu`: `mock_data/textured.basisu.glb` (a copy of
+/// `mesh/testdata/gltf/ktx2/`'s; its source and sha256 are in
+/// `mock_data/README.md`).
+const BASISU_GLB: &[u8] = include_bytes!("mock_data/textured.basisu.glb");
+
 /// The animation operation: the rigged source plus one clip per request entry.
 const ANIMATE_MODEL: &str = "mock/animate-3d";
 
-/// The rigged source plus one LINEAR clip per requested clip, in order,
-/// named `mock_clip_<i>` (litegen names them as asked). Over each clip the
-/// skeleton's root rises and falls 5 cm and travels 1 m along +Z — or holds
-/// still horizontally when EVERY clip asks to be in place, the way a vendor
-/// with one in-place flag (Tripo's `animate_in_place`) honours it. A preset
-/// clip lasts 1 s, a prompt clip its `duration_s`; keys at `fps`. Any clips
-/// the source carried are replaced.
+/// The rigged source (`bytes`, a `format` file) plus one LINEAR clip per
+/// requested clip, in order, named `mock_clip_<i>` (litegen names them as
+/// asked). Over each clip the skeleton's root rises and falls 5 cm and
+/// travels 1 m along +Z — or holds still horizontally when EVERY clip asks to
+/// be in place, the way a vendor with one in-place flag (Tripo's
+/// `animate_in_place`) honours it. A preset clip lasts 1 s, a prompt clip its
+/// `duration_s`; keys at `fps`. Any clips the source carried are replaced.
 fn animate_source(
-    source: &crate::providers::SourceInput,
+    format: &str,
+    bytes: &[u8],
     clips: &[crate::providers::AnimationClip],
     fps: u32,
 ) -> Result<Vec<u8>, ProviderError> {
     use crate::mesh::scene::{AnimPath, Animation, Channel, Interpolation, Transform};
-    let format = crate::mesh::MeshFormat::parse(&source.format)
-        .ok_or_else(|| ProviderError::InvalidRequest(format!("mock/animate-3d cannot read '{}'", source.format)))?;
-    let mut scene = crate::mesh::read_scene(&source.bytes, format, &crate::mesh::package::NoSidecars)
+    let mesh_format = crate::mesh::MeshFormat::parse(format)
+        .ok_or_else(|| ProviderError::InvalidRequest(format!("mock/animate-3d cannot read '{format}'")))?;
+    let mut scene = crate::mesh::read_scene(bytes, mesh_format, &crate::mesh::package::NoSidecars)
         .map_err(|e| ProviderError::InvalidRequest(format!("mock/animate-3d cannot read the source: {e}")))?
         .scene;
     let skin = scene.skins.first().ok_or_else(|| ProviderError::InvalidRequest("mock/animate-3d needs a rigged source".into()))?;
@@ -239,7 +293,7 @@ fn segment_source(source: &crate::providers::SourceInput) -> Result<Vec<u8>, Pro
     });
     let mid = (lo[0] + hi[0]) / 2.0;
     let mut halves: [Vec<u32>; 2] = [Vec::new(), Vec::new()];
-    for t in flat.indices.chunks_exact(3) {
+    for t in flat.indices.as_chunks::<3>().0 {
         let x = t.iter().map(|&i| flat.positions[i as usize][0]).sum::<f32>() / 3.0;
         halves[usize::from(x >= mid)].extend_from_slice(t);
     }
@@ -312,20 +366,22 @@ impl Default for MockModel3dProvider {
     }
 }
 
-/// The cube as a GLB litegen's converter refuses: it declares Draco
-/// compression as required, as a vendor that compresses its meshes does, and
-/// `mesh` decodes no Draco. Nothing can be derived from it, so whatever
-/// container `mock/partial-3d` leaves out stays missing — the one way a
-/// promised container still goes missing now that every container litegen
-/// names is derivable from a mesh it can read.
+/// The cube as a GLB litegen's converter refuses: it requires
+/// `EXT_litegen_mock_undecodable`, an extension litegen will never
+/// implement, as a vendor file that needs one litegen lacks does. (A
+/// compressed one isn't such a file: litegen reads Draco and meshopt.)
+/// Nothing can be derived from it, so whatever container `mock/partial-3d`
+/// leaves out stays missing — the one way a promised container still goes
+/// missing now that every container litegen names is derivable from a mesh
+/// it can read.
 pub(crate) fn generate_undecodable_glb(prompt: &str) -> Vec<u8> {
     let glb = generate_cube_glb(prompt);
     let json_len = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
     let mut json: serde_json::Value = serde_json::from_slice(&glb[20..20 + json_len]).expect("the mock's own glb");
-    json["extensionsUsed"] = serde_json::json!(["KHR_draco_mesh_compression"]);
-    json["extensionsRequired"] = serde_json::json!(["KHR_draco_mesh_compression"]);
+    json["extensionsUsed"] = serde_json::json!(["EXT_litegen_mock_undecodable"]);
+    json["extensionsRequired"] = serde_json::json!(["EXT_litegen_mock_undecodable"]);
     let mut text = serde_json::to_vec(&json).expect("json");
-    while text.len() % 4 != 0 {
+    while !text.len().is_multiple_of(4) {
         text.push(b' ');
     }
     let bin = &glb[20 + json_len..];
@@ -373,15 +429,31 @@ impl Model3dProvider for MockModel3dProvider {
         } else {
             extras.output_formats.clone()
         };
-        if model.id == ANIMATE_MODEL {
+        // Any mock animate row is served so: an operator's own, added at
+        // runtime (`POST /v1/admin/models`), can't take this one's id.
+        if model.id == ANIMATE_MODEL || model.task == crate::capabilities::ModelTask::Animate {
             let source = extras.source.as_ref().ok_or_else(|| {
                 ProviderError::InvalidRequest("mock/animate-3d needs a source_model".into())
             })?;
-            source.record(match &source.vendor_task_id {
-                Some(id) if jobs().read().await.contains_key(id) => crate::providers::SourceDelivery::VendorTask,
-                _ => crate::providers::SourceDelivery::DataUri,
+            // As Tripo and Meshy: only a rig's own task animates by its id,
+            // and they animate the rig as they stored it, with their own joint
+            // names, not the copy litegen delivered and may have renamed. Any
+            // other source is sent inline and animated as sent. One read of
+            // the jobs decides both.
+            let rig_job = match &source.vendor_task_id {
+                Some(id) => jobs().read().await.get(id).filter(|j| j.model == RIG_MODEL).cloned(),
+                None => None,
+            };
+            source.record(if rig_job.is_some() {
+                crate::providers::SourceDelivery::VendorTask
+            } else {
+                crate::providers::SourceDelivery::DataUri
             });
-            let animated = animate_source(source, &extras.animations, extras.fps.unwrap_or(30))?;
+            let (format, bytes) = match rig_job.as_ref().and_then(|j| j.meshes.first()) {
+                Some((format, bytes)) => (format.as_str(), bytes.as_slice()),
+                None => (source.format.as_str(), source.bytes.as_slice()),
+            };
+            let animated = animate_source(format, bytes, &extras.animations, extras.fps.unwrap_or(30))?;
             let job = Arc::new(Job {
                 model: model.id.clone(),
                 meshes: vec![("glb".into(), animated)],
@@ -458,6 +530,16 @@ impl Model3dProvider for MockModel3dProvider {
         }
         let meshes: Vec<(String, Vec<u8>)> = if model.id == TURNED_MODEL {
             vec![("glb".into(), crate::providers::model3d::humanoid::turned_humanoid_glb())]
+        } else if model.id == TEXTURED_MODEL {
+            vec![("glb".into(), textured_glb())]
+        } else if model.id == MORPH_MODEL {
+            vec![("glb".into(), morph_glb())]
+        } else if model.id == MESHOPT_MODEL {
+            vec![("glb".into(), MESHOPT_GLB.to_vec())]
+        } else if model.id == DRACO_MODEL {
+            vec![("glb".into(), DRACO_GLB.to_vec())]
+        } else if model.id == BASISU_MODEL {
+            vec![("glb".into(), BASISU_GLB.to_vec())]
         } else {
             requested
             .iter()
@@ -470,6 +552,16 @@ impl Model3dProvider for MockModel3dProvider {
                 _ => None,
             })
             .collect()
+        };
+        // Asked only for containers it does not write, a vendor is asked for
+        // its glb, and litegen derives the rest from it (`model3d_deliver`):
+        // so is the mock. Without this, a request for fbx alone completed with
+        // no mesh. The partial model's undecodable glb stays the point of it.
+        let meshes = if meshes.is_empty() && model.id != TURNED_MODEL {
+            let glb = if model.id == PARTIAL_MODEL { generate_undecodable_glb(&base.prompt) } else { generate_cube_glb(&base.prompt) };
+            vec![("glb".to_string(), glb)]
+        } else {
+            meshes
         };
 
         // Bytes are rendered at submit time so the poll ramp measures polling,
@@ -587,7 +679,7 @@ impl Model3dProvider for MockModel3dProvider {
             .map(|(format, bytes)| Model3dFile {
                 kind: Model3dAssetKind::Mesh,
                 format: format.clone(),
-                content_type: crate::proxy::storage::model3d_content_type(
+                content_type: crate::store::model3d_content_type(
                     format,
                     "application/octet-stream",
                 )
@@ -597,6 +689,7 @@ impl Model3dProvider for MockModel3dProvider {
                 width: None,
                 height: None,
                 manifest: None,
+                source_url: Some(format!("https://example.com/mock-3d/{}/model.{format}", handle.provider_job_id)),
             })
             .collect();
         files.push(Model3dFile {
@@ -608,6 +701,7 @@ impl Model3dProvider for MockModel3dProvider {
             width: Some(512),
             height: Some(512),
             manifest: None,
+            source_url: Some(format!("https://example.com/mock-3d/{}/preview.png", handle.provider_job_id)),
         });
 
         Ok(Model3dGenerationPollResult {
@@ -661,6 +755,7 @@ mod tests {
             params: HashMap::new(),
             ref_inputs: None,
             extra_allowlist: vec![],
+            extra_params: Default::default(),
             tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         }
@@ -687,7 +782,7 @@ mod tests {
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
             animations: Vec::new(), fps: None,
-            skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
             texture_resolution: None, keep_uvs: None,
             ground: None, center: None,
         }
@@ -743,6 +838,32 @@ mod tests {
         let err = crate::mesh::read(&glb, crate::mesh::MeshFormat::Glb).unwrap_err();
         assert!(matches!(err, crate::mesh::MeshError::Unsupported(_)), "{err}");
         assert!(crate::mesh::read(&generate_cube_glb("a fox"), crate::mesh::MeshFormat::Glb).is_ok());
+    }
+
+    /// mesh-gaps item 2: litegen reads meshopt and Draco, so the partial
+    /// model's glb requires an extension litegen will never implement. It is
+    /// refused by that name, and for that alone: it is the readable cube with
+    /// nothing added but the extension.
+    #[test]
+    fn mock_partial_3d_still_refuses_its_glb() {
+        let glb = generate_undecodable_glb("a fox");
+        let err = crate::mesh::read(&glb, crate::mesh::MeshFormat::Glb).unwrap_err();
+        assert!(
+            matches!(&err, crate::mesh::MeshError::Unsupported(why) if why.contains("EXT_litegen_mock_undecodable")),
+            "refused, naming the extension it requires: {err}"
+        );
+        let split = |glb: &[u8]| -> (serde_json::Value, Vec<u8>) {
+            let len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+            (serde_json::from_slice(&glb[20..20 + len]).unwrap(), glb[20 + len..].to_vec())
+        };
+        let cube = generate_cube_glb("a fox");
+        let ((mut doc, bin), plain) = (split(&glb), split(&cube));
+        for key in ["extensionsUsed", "extensionsRequired"] {
+            let names = doc.as_object_mut().unwrap().remove(key);
+            assert_eq!(names, Some(serde_json::json!(["EXT_litegen_mock_undecodable"])), "{key}");
+        }
+        assert_eq!((doc, bin), plain, "the cube, and nothing else changed");
+        assert!(crate::mesh::read(&cube, crate::mesh::MeshFormat::Glb).is_ok());
     }
 
     #[tokio::test]
@@ -806,5 +927,91 @@ mod tests {
         };
         let err = p.poll_status(&h).await.unwrap_err();
         assert!(!err.is_retryable(), "a purged job cannot be recovered by retrying");
+    }
+
+    /// A glb source as litegen hands it over, chained by `vendor_task_id`
+    /// when one is given.
+    fn source(bytes: Vec<u8>, vendor_task_id: Option<&str>) -> crate::providers::SourceInput {
+        crate::providers::SourceInput {
+            bytes,
+            format: "glb".into(),
+            sha256: "00".into(),
+            facts: Default::default(),
+            vendor_task_id: vendor_task_id.map(str::to_string),
+            front: None,
+            joint_naming: None,
+            delivered: Default::default(),
+        }
+    }
+
+    fn read_glb(glb: &[u8]) -> crate::mesh::scene::Scene {
+        crate::mesh::read_scene(glb, crate::mesh::MeshFormat::Glb, &crate::mesh::package::NoSidecars).unwrap().scene
+    }
+
+    /// The first skin's joint names, in skin order.
+    fn joint_names(scene: &crate::mesh::scene::Scene) -> Vec<String> {
+        scene.skins[0].joints.iter().map(|&j| scene.nodes[j].name.clone().unwrap_or_default()).collect()
+    }
+
+    /// The mesh a job completes with.
+    async fn finished_mesh(p: &MockModel3dProvider, h: &Model3dGenerationHandle) -> Vec<u8> {
+        let (r, _) = poll_to_terminal(p, h).await;
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        r.files.into_iter().find(|f| f.kind == Model3dAssetKind::Mesh).unwrap().bytes
+    }
+
+    /// `mock/animate-3d` of `src` with one walk clip: the animated scene, and
+    /// how the mock said it took the source.
+    async fn animated(p: &MockModel3dProvider, src: crate::providers::SourceInput) -> (crate::mesh::scene::Scene, Option<crate::providers::SourceDelivery>) {
+        let mut x = extras();
+        x.source = Some(src);
+        x.animations = vec![crate::providers::AnimationClip {
+            name: "walk".into(), preset: Some("walk".into()), prompt: None, duration_s: None, in_place: Some(true), loop_requested: None,
+        }];
+        let h = p.generate(&schema(ANIMATE_MODEL), &base("", ANIMATE_MODEL), &x, &MaterializedRequest::default()).await.unwrap();
+        let scene = read_glb(&finished_mesh(p, &h).await);
+        (scene, x.source.as_ref().and_then(|s| s.delivery()))
+    }
+
+    /// Tripo and Meshy animate a rig chained by its task id from their own
+    /// stored copy, with their own joint names, not from the copy litegen
+    /// delivered and may have renamed. Only a source sent inline is animated
+    /// as sent.
+    #[tokio::test]
+    async fn mock_animate_by_task_id_animates_the_rigs_own_mesh() {
+        use crate::providers::model3d::humanoid::MOCK_JOINTS;
+        use crate::providers::SourceDelivery;
+        let p = provider();
+        let mut rig_extras = extras();
+        rig_extras.joint_naming = Some("unity".into());
+        rig_extras.source = Some(source(generate_cube_glb("a knight"), None));
+        let rig = p.generate(&schema(RIG_MODEL), &base("", RIG_MODEL), &rig_extras, &MaterializedRequest::default()).await.unwrap();
+        // The mock names joints itself only in VRM, so its stored rig keeps
+        // the mock's names, and litegen delivers it with Unity's (3D doc §3B).
+        let mut scene = read_glb(&finished_mesh(&p, &rig).await);
+        assert_eq!(joint_names(&scene), MOCK_JOINTS);
+        let renames = crate::mesh::humanoid::renames_to("unity", &joint_names(&scene)).unwrap();
+        crate::mesh::normalize::rename_nodes(&mut scene, &renames);
+        let delivered = crate::mesh::glb::write_scene(&scene).unwrap();
+        let unity = ["Hips", "Spine", "Head", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg"];
+        assert_eq!(joint_names(&read_glb(&delivered)), unity);
+
+        let (chained, how) = animated(&p, source(delivered.clone(), Some(rig.provider_job_id.as_str()))).await;
+        assert_eq!(how, Some(SourceDelivery::VendorTask));
+        assert_eq!(joint_names(&chained), MOCK_JOINTS, "the rig the vendor stored, not the renamed copy it was sent");
+        assert_eq!(chained.animations.len(), 1, "the rig animated, not handed back as stored");
+
+        // A task id of the mock's own that names no rig, a `mock/mesh-3d`
+        // job's: no rig to animate by its id, so the source is taken inline.
+        let mesh = p.generate(&schema("mock/mesh-3d"), &base("a crate", "mock/mesh-3d"), &extras(), &MaterializedRequest::default()).await.unwrap();
+        let (not_a_rig, how) = animated(&p, source(delivered.clone(), Some(mesh.provider_job_id.as_str()))).await;
+        assert_eq!(how, Some(SourceDelivery::DataUri), "a mesh job's id is no rig's");
+        assert_eq!(joint_names(&not_a_rig), unity, "the source as sent, not the mesh job's");
+        assert_eq!(not_a_rig.animations.len(), 1);
+
+        let (inline, how) = animated(&p, source(delivered, None)).await;
+        assert_eq!(how, Some(SourceDelivery::DataUri));
+        assert_eq!(joint_names(&inline), unity, "an inline source is animated as sent");
+        assert_eq!(inline.animations.len(), 1);
     }
 }

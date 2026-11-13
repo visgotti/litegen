@@ -5,12 +5,16 @@
 //! are present under that table's names; the map then names every bone of the
 //! table the rig has. A rig no table matches has no map: litegen never guesses.
 //!
-//! Sources (re-checked 2026-10-30):
-//! - VRM 1.0 bone names: the normative spec, `VRMC_vrm-1.0/humanoid.md`.
-//! - Unity: `HumanBodyBones` field names (UnityCsReference, Avatar.bindings.cs).
-//! - Mixamo: the joints of Mixamo-generated FBX ("X Bot", Mixamo, Inc.); Adobe
-//!   publishes no list. Names carry a `mixamorig:` namespace, which Blender
-//!   round-trips number (`mixamorig1:`).
+//! Sources (re-checked 2026-10-30; fingers, eyes and jaw 2026-11-01):
+//! - VRM 1.0 bone names: the normative spec, `VRMC_vrm-1.0/humanoid.md`
+//!   (vrm-specification 94e82dd), optional bones included.
+//! - Unity: `HumanBodyBones` field names (UnityCsReference bf60283,
+//!   Avatar.bindings.cs), 0-53.
+//! - Mixamo: the joints of Mixamo-generated FBX ("X Bot", Mixamo, Inc.) — the
+//!   67 of the X Bot three.js r170 ships as examples/models/gltf/Xbot.glb;
+//!   Adobe publishes no list. Names carry a `mixamorig:` namespace, which Blender
+//!   round-trips number (`mixamorig1:`) and containers that cannot spell `:`
+//!   write as `mixamorig_`.
 //! - Meshy: recorded from `fal-ai/meshy/rigging`'s example output — a spine
 //!   numbered in reverse (Hips → Spine02 → Spine01 → Spine) and a lower-case
 //!   `neck`.
@@ -31,6 +35,23 @@ const VRM: Table = &[
     ("rightShoulder", "rightShoulder"), ("rightUpperArm", "rightUpperArm"), ("rightLowerArm", "rightLowerArm"), ("rightHand", "rightHand"),
     ("leftUpperLeg", "leftUpperLeg"), ("leftLowerLeg", "leftLowerLeg"), ("leftFoot", "leftFoot"), ("leftToes", "leftToes"),
     ("rightUpperLeg", "rightUpperLeg"), ("rightLowerLeg", "rightLowerLeg"), ("rightFoot", "rightFoot"), ("rightToes", "rightToes"),
+    // Optional: eyes, jaw, fingers (humanoid.md).
+    ("leftEye", "leftEye"), ("rightEye", "rightEye"), ("jaw", "jaw"), ("leftThumbMetacarpal", "leftThumbMetacarpal"),
+    ("leftThumbProximal", "leftThumbProximal"), ("leftThumbDistal", "leftThumbDistal"),
+    ("leftIndexProximal", "leftIndexProximal"), ("leftIndexIntermediate", "leftIndexIntermediate"),
+    ("leftIndexDistal", "leftIndexDistal"), ("leftMiddleProximal", "leftMiddleProximal"),
+    ("leftMiddleIntermediate", "leftMiddleIntermediate"), ("leftMiddleDistal", "leftMiddleDistal"),
+    ("leftRingProximal", "leftRingProximal"), ("leftRingIntermediate", "leftRingIntermediate"),
+    ("leftRingDistal", "leftRingDistal"), ("leftLittleProximal", "leftLittleProximal"),
+    ("leftLittleIntermediate", "leftLittleIntermediate"), ("leftLittleDistal", "leftLittleDistal"),
+    ("rightThumbMetacarpal", "rightThumbMetacarpal"), ("rightThumbProximal", "rightThumbProximal"),
+    ("rightThumbDistal", "rightThumbDistal"), ("rightIndexProximal", "rightIndexProximal"),
+    ("rightIndexIntermediate", "rightIndexIntermediate"), ("rightIndexDistal", "rightIndexDistal"),
+    ("rightMiddleProximal", "rightMiddleProximal"), ("rightMiddleIntermediate", "rightMiddleIntermediate"),
+    ("rightMiddleDistal", "rightMiddleDistal"), ("rightRingProximal", "rightRingProximal"),
+    ("rightRingIntermediate", "rightRingIntermediate"), ("rightRingDistal", "rightRingDistal"),
+    ("rightLittleProximal", "rightLittleProximal"), ("rightLittleIntermediate", "rightLittleIntermediate"),
+    ("rightLittleDistal", "rightLittleDistal"),
 ];
 
 const UNITY: Table = &[
@@ -39,6 +60,23 @@ const UNITY: Table = &[
     ("rightShoulder", "RightShoulder"), ("rightUpperArm", "RightUpperArm"), ("rightLowerArm", "RightLowerArm"), ("rightHand", "RightHand"),
     ("leftUpperLeg", "LeftUpperLeg"), ("leftLowerLeg", "LeftLowerLeg"), ("leftFoot", "LeftFoot"), ("leftToes", "LeftToes"),
     ("rightUpperLeg", "RightUpperLeg"), ("rightLowerLeg", "RightLowerLeg"), ("rightFoot", "RightFoot"), ("rightToes", "RightToes"),
+    // HumanBodyBones 21-53; a thumb counts Proximal, Intermediate, Distal from the hand.
+    ("leftEye", "LeftEye"), ("rightEye", "RightEye"), ("jaw", "Jaw"), ("leftThumbMetacarpal", "LeftThumbProximal"),
+    ("leftThumbProximal", "LeftThumbIntermediate"), ("leftThumbDistal", "LeftThumbDistal"),
+    ("leftIndexProximal", "LeftIndexProximal"), ("leftIndexIntermediate", "LeftIndexIntermediate"),
+    ("leftIndexDistal", "LeftIndexDistal"), ("leftMiddleProximal", "LeftMiddleProximal"),
+    ("leftMiddleIntermediate", "LeftMiddleIntermediate"), ("leftMiddleDistal", "LeftMiddleDistal"),
+    ("leftRingProximal", "LeftRingProximal"), ("leftRingIntermediate", "LeftRingIntermediate"),
+    ("leftRingDistal", "LeftRingDistal"), ("leftLittleProximal", "LeftLittleProximal"),
+    ("leftLittleIntermediate", "LeftLittleIntermediate"), ("leftLittleDistal", "LeftLittleDistal"),
+    ("rightThumbMetacarpal", "RightThumbProximal"), ("rightThumbProximal", "RightThumbIntermediate"),
+    ("rightThumbDistal", "RightThumbDistal"), ("rightIndexProximal", "RightIndexProximal"),
+    ("rightIndexIntermediate", "RightIndexIntermediate"), ("rightIndexDistal", "RightIndexDistal"),
+    ("rightMiddleProximal", "RightMiddleProximal"), ("rightMiddleIntermediate", "RightMiddleIntermediate"),
+    ("rightMiddleDistal", "RightMiddleDistal"), ("rightRingProximal", "RightRingProximal"),
+    ("rightRingIntermediate", "RightRingIntermediate"), ("rightRingDistal", "RightRingDistal"),
+    ("rightLittleProximal", "RightLittleProximal"), ("rightLittleIntermediate", "RightLittleIntermediate"),
+    ("rightLittleDistal", "RightLittleDistal"),
 ];
 
 /// Mixamo's names without the `mixamorig:` namespace (matched with it).
@@ -48,6 +86,23 @@ const MIXAMO: Table = &[
     ("rightShoulder", "RightShoulder"), ("rightUpperArm", "RightArm"), ("rightLowerArm", "RightForeArm"), ("rightHand", "RightHand"),
     ("leftUpperLeg", "LeftUpLeg"), ("leftLowerLeg", "LeftLeg"), ("leftFoot", "LeftFoot"), ("leftToes", "LeftToeBase"),
     ("rightUpperLeg", "RightUpLeg"), ("rightLowerLeg", "RightLeg"), ("rightFoot", "RightFoot"), ("rightToes", "RightToeBase"),
+    // X Bot's eyes and fingers (no jaw); 1, 2, 3 out from the hand, 4 the tip.
+    ("leftEye", "LeftEye"), ("rightEye", "RightEye"), ("leftThumbMetacarpal", "LeftHandThumb1"),
+    ("leftThumbProximal", "LeftHandThumb2"), ("leftThumbDistal", "LeftHandThumb3"),
+    ("leftIndexProximal", "LeftHandIndex1"), ("leftIndexIntermediate", "LeftHandIndex2"),
+    ("leftIndexDistal", "LeftHandIndex3"), ("leftMiddleProximal", "LeftHandMiddle1"),
+    ("leftMiddleIntermediate", "LeftHandMiddle2"), ("leftMiddleDistal", "LeftHandMiddle3"),
+    ("leftRingProximal", "LeftHandRing1"), ("leftRingIntermediate", "LeftHandRing2"),
+    ("leftRingDistal", "LeftHandRing3"), ("leftLittleProximal", "LeftHandPinky1"),
+    ("leftLittleIntermediate", "LeftHandPinky2"), ("leftLittleDistal", "LeftHandPinky3"),
+    ("rightThumbMetacarpal", "RightHandThumb1"), ("rightThumbProximal", "RightHandThumb2"),
+    ("rightThumbDistal", "RightHandThumb3"), ("rightIndexProximal", "RightHandIndex1"),
+    ("rightIndexIntermediate", "RightHandIndex2"), ("rightIndexDistal", "RightHandIndex3"),
+    ("rightMiddleProximal", "RightHandMiddle1"), ("rightMiddleIntermediate", "RightHandMiddle2"),
+    ("rightMiddleDistal", "RightHandMiddle3"), ("rightRingProximal", "RightHandRing1"),
+    ("rightRingIntermediate", "RightHandRing2"), ("rightRingDistal", "RightHandRing3"),
+    ("rightLittleProximal", "RightHandPinky1"), ("rightLittleIntermediate", "RightHandPinky2"),
+    ("rightLittleDistal", "RightHandPinky3"),
 ];
 
 const MESHY: Table = &[
@@ -75,12 +130,18 @@ const TABLES: [(&str, Table, bool); 5] = [
     ("litegen-mock", LITEGEN_MOCK, false),
 ];
 
-/// A joint name without a `mixamorig:` / `mixamorig<N>:` namespace, or `None`
-/// when it has none.
+/// A joint name without its `mixamorig` namespace, or `None` when it has
+/// none: `mixamorig:` as Mixamo writes it, `mixamorig1:` as Blender
+/// re-imports number it, `mixamorig_` as containers that cannot spell `:`
+/// write it (Collada ids, USD prim names), or no separator at all before an
+/// upper-case name, as some tools strip it.
 fn strip_mixamo_namespace(name: &str) -> Option<&str> {
     let rest = name.strip_prefix("mixamorig")?;
-    let colon = rest.find(':')?;
-    rest[..colon].bytes().all(|b| b.is_ascii_digit()).then(|| &rest[colon + 1..])
+    let rest = &rest[rest.bytes().take_while(u8::is_ascii_digit).count()..];
+    match rest.strip_prefix(':').or_else(|| rest.strip_prefix('_')) {
+        Some(bare) => Some(bare),
+        None => rest.starts_with(|c: char| c.is_ascii_uppercase()).then_some(rest),
+    }
 }
 
 /// The rig's humanoid map: the matching table's name, and (VRM bone, joint
@@ -207,6 +268,65 @@ mod tests {
         // Blender re-imports number the namespace: mixamorig1:Hips.
         let renumbered: Vec<String> = joints.iter().map(|j| j.replace("mixamorig:", "mixamorig1:")).collect();
         assert_eq!(humanoid_map(&renumbered).unwrap().0, "mixamo");
+        // Containers that cannot spell `:` (Collada's NCName ids, USD prim
+        // names) write `_`; some tools drop the separator.
+        for sep in ["mixamorig_", "mixamorig1_", "mixamorig"] {
+            let respelled: Vec<String> = joints.iter().map(|j| j.replace("mixamorig:", sep)).collect();
+            assert_eq!(humanoid_map(&respelled).map(|m| m.0), Some("mixamo"), "{sep}");
+        }
+        // A word that only starts like the namespace is not it.
+        assert_eq!(strip_mixamo_namespace("mixamorigs:Hips"), None);
+        assert_eq!(strip_mixamo_namespace("mixamorighips"), None);
+    }
+
+    /// a3 #7 (2026-10-31 delivery review): fingers, eyes and the jaw map and
+    /// rename too — VRM 1.0's optional bones (humanoid.md), Unity's
+    /// HumanBodyBones 21-53 (Avatar.bindings.cs), and the X Bot three.js r170
+    /// ships as examples/models/gltf/Xbot.glb (67 joints, `LeftHandThumb1-4`
+    /// … `LeftHandPinky1-4`, `LeftEye`/`RightEye`, no jaw). VRM 1.0 counts a
+    /// thumb Metacarpal, Proximal, Distal out from the hand (its Parent Bone
+    /// column); Unity counts Proximal, Intermediate, Distal and Mixamo 1, 2, 3:
+    /// the same joints, by their place in the chain. Mixamo's 4 is the tip,
+    /// which no humanoid names.
+    #[test]
+    fn fingers_eyes_and_jaw_map_and_rename() {
+        let xbot = names(&[
+            "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine1", "mixamorig:Spine2", "mixamorig:Neck", "mixamorig:Head",
+            "mixamorig:HeadTop_End", "mixamorig:LeftEye", "mixamorig:RightEye",
+            "mixamorig:LeftShoulder", "mixamorig:LeftArm", "mixamorig:LeftForeArm", "mixamorig:LeftHand",
+            "mixamorig:LeftHandThumb1", "mixamorig:LeftHandThumb2", "mixamorig:LeftHandThumb3", "mixamorig:LeftHandThumb4",
+            "mixamorig:LeftHandIndex1", "mixamorig:LeftHandIndex2", "mixamorig:LeftHandIndex3",
+            "mixamorig:RightShoulder", "mixamorig:RightArm", "mixamorig:RightForeArm", "mixamorig:RightHand",
+            "mixamorig:RightHandPinky1", "mixamorig:RightHandPinky2", "mixamorig:RightHandPinky3",
+            "mixamorig:LeftUpLeg", "mixamorig:LeftLeg", "mixamorig:LeftFoot", "mixamorig:LeftToeBase",
+            "mixamorig:RightUpLeg", "mixamorig:RightLeg", "mixamorig:RightFoot", "mixamorig:RightToeBase",
+        ]);
+        let (table, map) = humanoid_map(&xbot).unwrap();
+        assert_eq!(table, "mixamo");
+        let get = |b: &str| map.iter().find(|(k, _)| k == b).map(|(_, v)| v.as_str());
+        assert_eq!(get("leftThumbMetacarpal"), Some("mixamorig:LeftHandThumb1"));
+        assert_eq!(get("leftThumbDistal"), Some("mixamorig:LeftHandThumb3"));
+        assert_eq!(get("leftIndexIntermediate"), Some("mixamorig:LeftHandIndex2"));
+        assert_eq!(get("rightLittleDistal"), Some("mixamorig:RightHandPinky3"));
+        assert_eq!(get("leftEye"), Some("mixamorig:LeftEye"));
+        let unity = renames_to("unity", &xbot).unwrap();
+        for (from, to) in [
+            ("mixamorig:LeftHandThumb1", "LeftThumbProximal"),
+            ("mixamorig:LeftHandThumb2", "LeftThumbIntermediate"),
+            ("mixamorig:LeftHandThumb3", "LeftThumbDistal"),
+            ("mixamorig:RightHandPinky3", "RightLittleDistal"),
+            ("mixamorig:RightEye", "RightEye"),
+        ] {
+            assert!(unity.contains(&(from.to_string(), to.to_string())), "{from} → {to}: {unity:?}");
+        }
+        let vrm = renames_to("vrm", &xbot).unwrap();
+        assert!(vrm.contains(&("mixamorig:LeftHandThumb1".to_string(), "leftThumbMetacarpal".to_string())), "{vrm:?}");
+        // Unity's jaw has a VRM name and no Mixamo one: kept as it is.
+        let mut with_jaw: Vec<String> = unity.iter().map(|(_, to)| to.clone()).collect();
+        with_jaw.extend(["Hips", "Spine", "Head", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg", "Jaw"].map(String::from));
+        let back = renames_to("vrm", &with_jaw).unwrap();
+        assert!(back.contains(&("Jaw".to_string(), "jaw".to_string())), "{back:?}");
+        assert!(!renames_to("mixamo", &with_jaw).unwrap().iter().any(|(from, _)| from == "Jaw"));
     }
 
     #[test]

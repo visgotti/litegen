@@ -56,6 +56,13 @@ pub const MAX_LIST_OP_ITEMS: usize = 16_384;
 /// Longest path string kept. A path is a chain of names; one this long is a
 /// hostile chain, not a scene.
 pub const MAX_PATH_LEN: usize = 8192;
+/// Variants of the default prim's `Animation` set the reader takes for clips
+/// ([`Stage::animation_variants`]). Each is one more composition of the whole
+/// stage, so a hostile set of thousands would be thousands of them; a real
+/// character has a few dozen clips at most.
+pub const MAX_ANIMATION_VARIANTS: usize = 64;
+/// The variant set Apple's clip layout uses, on the default prim.
+pub const ANIMATION_SET: &str = "Animation";
 
 fn malformed(detail: impl Into<String>) -> MeshError {
     MeshError::Malformed(format!("usd: {}", detail.into()))
@@ -88,8 +95,10 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
-    /// `string` and `token`.
+    /// `string`.
     Str(String),
+    /// `token`.
+    Token(String),
     Asset(String),
     Path(String),
     /// Vectors, quaternions, matrices.
@@ -99,8 +108,10 @@ pub enum Value {
     Floats(Vec<f32>),
     /// Arrays of `double`-based elements, flattened.
     Doubles(Vec<f64>),
-    /// `token[]` and `string[]`.
+    /// `string[]`.
     Strs(Vec<String>),
+    /// `token[]`.
+    Tokens(Vec<String>),
     Assets(Vec<String>),
     Dict(Vec<(String, Value)>),
     /// An untyped list (metadata values whose type the grammar does not name).
@@ -139,7 +150,7 @@ impl Value {
 
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Value::Str(s) | Value::Asset(s) | Value::Path(s) => Some(s),
+            Value::Str(s) | Value::Token(s) | Value::Asset(s) | Value::Path(s) => Some(s),
             _ => None,
         }
     }
@@ -180,7 +191,7 @@ impl Value {
 
     pub fn strs(&self) -> Option<&[String]> {
         match self {
-            Value::Strs(v) | Value::Assets(v) => Some(v),
+            Value::Strs(v) | Value::Tokens(v) | Value::Assets(v) => Some(v),
             _ => None,
         }
     }
@@ -266,14 +277,34 @@ pub struct Reference {
     pub scale: f64,
 }
 
+/// An attribute's variability: whether its value may change over time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Variability {
+    #[default]
+    Varying,
+    Uniform,
+    Config,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AttrSpec {
     pub type_name: String,
+    /// `uniform`, `config` or (the default) varying, as the statement
+    /// declares it. A later statement for the same attribute that names none
+    /// leaves it as it was.
+    pub variability: Variability,
     pub default: Option<Value>,
     pub samples: Option<Vec<(f64, Value)>>,
     pub connections: Option<ListOp<String>>,
+    /// The `interpolation` metadata, kept apart from [`AttrSpec::metadata`].
     pub interpolation: Option<String>,
+    /// The `elementSize` metadata, kept apart from [`AttrSpec::metadata`].
     pub element_size: Option<i64>,
+    /// Every other metadata key (`documentation`, `customData`,
+    /// `displayName`, ...) in the order the layer gives them, under the Sdf
+    /// field's name: the text format's `doc` is `documentation`. `interpolation`
+    /// and `elementSize` are not repeated here, so a writer re-emits each once.
+    pub metadata: Vec<(String, Value)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -315,42 +346,16 @@ impl PrimSpec {
         self.props.iter().find(|(n, _)| n == name).map(|(_, p)| p)
     }
 
-    pub fn prop_mut(&mut self, name: &str) -> Option<&mut Prop> {
-        self.props.iter_mut().find(|(n, _)| n == name).map(|(_, p)| p)
-    }
-
     pub fn attr(&self, name: &str) -> Option<&AttrSpec> {
         match self.prop(name) {
             Some(Prop::Attr(a)) => Some(a),
             _ => None,
         }
     }
-
-    /// The attribute `name`, created if absent. A name already used by a
-    /// relationship is a malformed layer (one property, two kinds).
-    pub fn attr_mut(&mut self, name: &str) -> Result<&mut AttrSpec, MeshError> {
-        if self.prop(name).is_none() {
-            self.props.push((name.to_string(), Prop::Attr(AttrSpec::default())));
-        }
-        match self.prop_mut(name) {
-            Some(Prop::Attr(a)) => Ok(a),
-            _ => Err(malformed(format!("property {name:?} is both an attribute and a relationship"))),
-        }
-    }
-
-    pub fn rel_mut(&mut self, name: &str) -> Result<&mut RelSpec, MeshError> {
-        if self.prop(name).is_none() {
-            self.props.push((name.to_string(), Prop::Rel(RelSpec::default())));
-        }
-        match self.prop_mut(name) {
-            Some(Prop::Rel(r)) => Ok(r),
-            _ => Err(malformed(format!("property {name:?} is both an attribute and a relationship"))),
-        }
-    }
 }
 
 /// One parsed layer.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Layer {
     /// The layer's path inside the package: relative asset paths it authors
     /// resolve against this.
@@ -363,6 +368,8 @@ pub struct Layer {
     /// Prim specs by path, including variant content (`/A{set=v}`,
     /// `/A{set=v}B`).
     pub specs: HashMap<String, PrimSpec>,
+    /// What parsing the layer skipped, for the stage's warnings.
+    pub warnings: Vec<String>,
 }
 
 impl Layer {
@@ -510,6 +517,32 @@ pub struct Source {
     /// stage time = offset + scale * layer time.
     pub offset: f64,
     pub scale: f64,
+    /// The mapping of the arc this opinion came through, before its layer's
+    /// own place in its stack: what an internal arc composes under. Pcp gives
+    /// an internal arc its authored offset alone, and the target's layers then
+    /// apply their own (usd/pcp/primIndex.cpp#L2251-L2257, OpenUSD v26.11.1).
+    node_offset: f64,
+    node_scale: f64,
+}
+
+/// One prim's composition in progress: the arcs being followed, to cut
+/// cycles, and every site (layer stack, path) an arc has already brought into
+/// the prim. A site met again is a weaker occurrence of opinions the prim
+/// already has, and is skipped: following every path through arcs that
+/// rejoin (a lattice of references) was exponential, a 4 KB file six arcs
+/// wide taking six times longer per level (2026-10-12 review #17).
+#[derive(Default)]
+struct Walk {
+    chain: Vec<(usize, String)>,
+    composed: std::collections::HashSet<(usize, String)>,
+}
+
+/// A layer's time codes per second: its own, else its framesPerSecond, else
+/// 24, as `SdfLayer::GetTimeCodesPerSecond` falls back
+/// (usd/sdf/layer.cpp#L1842-L1860, OpenUSD v26.11.1).
+pub fn layer_tcps(l: &Layer) -> f64 {
+    let rate = |key: &str| l.meta_f64(key).filter(|v| v.is_finite() && *v > 0.0);
+    rate("timeCodesPerSecond").or_else(|| rate("framesPerSecond")).unwrap_or(24.0)
 }
 
 #[derive(Debug, Clone)]
@@ -555,14 +588,37 @@ pub struct Attr {
 }
 
 impl Attr {
-    /// The value a viewer shows with no animation playing: the default when one
-    /// is authored, otherwise the earliest sample — which is what usdview,
-    /// usdrecord and Quick Look display at the start of the timeline.
+    /// The value a viewer shows at the start of the timeline: the earliest
+    /// sample when samples decide the value, otherwise the default.
+    ///
+    /// The strongest opinion with any value decides, and within it samples
+    /// beat a default (usd/usd/stage.cpp#L8996-L9069 and #L9383-L9400,
+    /// OpenUSD v26.11.1); [`Stage::attr`] keeps samples only from that
+    /// opinion. A viewer shows a numeric time: usdrecord renders the stage's
+    /// start time code (usdImaging/usdAppUtils/framesArgs.py#L249-L252), and
+    /// samples hold their first value before it (usd/sdf/data.cpp#L338-L365).
+    /// The default is what `UsdTimeCode::Default()` reads, which nothing here
+    /// draws, except as [`timeless`](Self::timeless) for animation the scene
+    /// carries.
     pub fn rest(&self) -> Option<&Value> {
+        let v = match self.samples.first() {
+            Some((_, v)) => v,
+            None => self.default.as_ref()?,
+        };
+        (!matches!(v, Value::Block)).then_some(v)
+    }
+
+    /// The value with no animation playing, for an attribute whose animation
+    /// the scene carries as a channel (transform ops, joint animation, blend
+    /// shape weights): its default, which is what `UsdTimeCode::Default()`
+    /// reads (usd/usd/stage.cpp#L7266-L7285), when its samples animate it;
+    /// otherwise [`rest`](Self::rest). litegen writes a scene's rest pose that
+    /// way, as the default beside the samples. A single sample animates
+    /// nothing, carries no channel, and holds at every time, so it wins.
+    pub fn timeless(&self) -> Option<&Value> {
         match &self.default {
-            Some(Value::Block) => None,
-            Some(v) => Some(v),
-            None => self.samples.first().map(|(_, v)| v),
+            Some(d) if self.animated() && !matches!(d, Value::Block) => Some(d),
+            _ => self.rest(),
         }
     }
 
@@ -577,8 +633,22 @@ pub type Fetch<'a> = dyn FnMut(&str) -> Option<Vec<u8>> + 'a;
 /// Parses one layer's bytes. Supplied by `usd.rs`, which knows both formats.
 pub type ParseLayer = fn(&[u8], &str) -> Result<Layer, MeshError>;
 
+/// The default prim's variant set `Animation`, when the file follows Apple's
+/// clip layout: variants that switch `skel:animationSource`, one clip each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationVariants {
+    /// The default prim's path.
+    pub prim: String,
+    /// The variants, in the order the set lists them.
+    pub variants: Vec<String>,
+    /// The authored selection, one of `variants`.
+    pub selected: String,
+}
+
 pub struct Stage {
-    pub layers: Vec<Layer>,
+    /// Shared with the stages [`Stage::recompose_selecting`] makes, so a
+    /// recomposition re-parses and copies nothing.
+    pub layers: Rc<Vec<Layer>>,
     pub prims: Vec<Prim>,
     pub roots: Vec<usize>,
     pub by_path: HashMap<String, usize>,
@@ -588,14 +658,45 @@ pub struct Stage {
     loaded: HashMap<String, usize>,
     /// Package paths being loaded, to refuse sublayer cycles.
     loading: Vec<String>,
+    parse: ParseLayer,
+    /// Variant selections that beat every authored one: (prim path, set,
+    /// variant). Seeds the prim's own composition, as a stronger site's would.
+    overrides: Vec<(String, String, String)>,
 }
 
 impl Stage {
     /// Compose `root` (and everything it pulls in through `fetch`) into a stage.
-    pub fn compose(root: Layer, fetch: &mut Fetch<'_>, parse: ParseLayer) -> Result<Stage, MeshError> {
+    pub fn compose(mut root: Layer, fetch: &mut Fetch<'_>, parse: ParseLayer) -> Result<Stage, MeshError> {
         let root_id = root.id.clone();
+        let warnings = std::mem::take(&mut root.warnings);
         let mut stage = Stage {
-            layers: vec![root],
+            layers: Rc::new(vec![root]),
+            prims: Vec::new(),
+            roots: Vec::new(),
+            by_path: HashMap::new(),
+            warnings,
+            stacks: Vec::new(),
+            loaded: HashMap::new(),
+            loading: Vec::new(),
+            parse,
+            overrides: Vec::new(),
+        };
+        let root_stack = stage.build_stack(0, fetch, parse)?;
+        stage.loaded.insert(root_id, root_stack);
+        stage.walk(root_stack, fetch, parse)?;
+        Ok(stage)
+    }
+
+    /// This stage composed again with variant `variant` of set `set` selected
+    /// on the prim at `prim`, over whatever the layers author (a stronger
+    /// site's selection, as Pcp composes one). The layers are the ones already
+    /// loaded: nothing is fetched or parsed, and a layer the first composition
+    /// could not fetch is missing again (its warning is in this stage's).
+    pub fn recompose_selecting(&self, prim: &str, set: &str, variant: &str) -> Result<Stage, MeshError> {
+        let mut overrides = self.overrides.clone();
+        overrides.push((prim.to_string(), set.to_string(), variant.to_string()));
+        let mut stage = Stage {
+            layers: Rc::clone(&self.layers),
             prims: Vec::new(),
             roots: Vec::new(),
             by_path: HashMap::new(),
@@ -603,11 +704,73 @@ impl Stage {
             stacks: Vec::new(),
             loaded: HashMap::new(),
             loading: Vec::new(),
+            parse: self.parse,
+            overrides,
         };
-        let root_stack = stage.build_stack(0, fetch, parse)?;
+        let mut nothing = |_: &str| -> Option<Vec<u8>> { None };
+        let parse = stage.parse;
+        let root_id = stage.layers[0].id.clone();
+        let root_stack = stage.build_stack(0, &mut nothing, parse)?;
         stage.loaded.insert(root_id, root_stack);
-        stage.walk(root_stack, fetch, parse)?;
+        stage.walk(root_stack, &mut nothing, parse)?;
         Ok(stage)
+    }
+
+    /// The default prim's variant set `Animation`, when it follows Apple's
+    /// clip layout (a variant that authors `skel:animationSource`) and
+    /// selects one of its variants; `None` for any other file, which reads as
+    /// a single animation. A set of more than [`MAX_ANIMATION_VARIANTS`] is
+    /// refused, naming the cap.
+    pub fn animation_variants(&self) -> Result<Option<AnimationVariants>, MeshError> {
+        let Some(name) = self.meta("defaultPrim").and_then(Value::as_str) else { return Ok(None) };
+        let Some(p) = self.find(&format!("/{name}")) else { return Ok(None) };
+        let prim = &self.prims[p];
+        let mut variants: Vec<String> = Vec::new();
+        let mut listed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut selected: Option<&str> = None;
+        let mut switching: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for s in &prim.sources {
+            let Some(spec) = self.spec(s) else { continue };
+            if selected.is_none() {
+                selected = spec.variant_selection.iter().find(|(k, _)| k == ANIMATION_SET).map(|(_, v)| v.as_str());
+            }
+            let mut defines = false;
+            for (set, vs) in &spec.variant_sets {
+                if set == ANIMATION_SET {
+                    defines = true;
+                    for v in vs {
+                        if listed.insert(v.as_str()) {
+                            variants.push(v.clone());
+                        }
+                    }
+                }
+            }
+            if defines {
+                // The variants' own content: this path with `{Animation=v}`,
+                // and everything below it. One pass over the layer's specs.
+                let prefix = format!("{}{{{ANIMATION_SET}=", s.path);
+                for (path, spec) in &self.layers[s.layer].specs {
+                    if let Some(rest) = path.strip_prefix(prefix.as_str()) {
+                        if spec.prop("skel:animationSource").is_some() {
+                            if let Some((v, _)) = rest.split_once('}') {
+                                switching.insert(v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !variants.iter().any(|v| switching.contains(v.as_str())) {
+            return Ok(None);
+        }
+        if variants.len() > MAX_ANIMATION_VARIANTS {
+            return Err(unsupported(format!(
+                "the default prim's variant set {ANIMATION_SET} has {} variants; at most {MAX_ANIMATION_VARIANTS} are read",
+                variants.len()
+            )));
+        }
+        let Some(selected) = selected.filter(|v| listed.contains(v)) else { return Ok(None) };
+        Ok(Some(AnimationVariants { prim: prim.path.clone(), selected: selected.to_string(), variants }))
     }
 
     fn warn(&mut self, w: String) {
@@ -626,8 +789,11 @@ impl Stage {
             return Err(unsupported(format!("the asset pulls in more than {MAX_LAYERS} layers")));
         }
         let Some(bytes) = fetch(path) else { return Ok(None) };
-        let layer = parse(&bytes, path)?;
-        self.layers.push(layer);
+        let mut layer = parse(&bytes, path)?;
+        for w in std::mem::take(&mut layer.warnings) {
+            self.warn(w);
+        }
+        Rc::make_mut(&mut self.layers).push(layer);
         Ok(Some(self.layers.len() - 1))
     }
 
@@ -658,7 +824,11 @@ impl Stage {
                     None => self.warn(format!("sublayer {path:?} was not supplied; its opinions are missing")),
                     Some(sub) => {
                         visiting.push(path);
-                        found.push((sub, off + sc * o, sc * s, depth + 1));
+                        // A sublayer's time codes are scaled by the listing
+                        // layer's rate over its own, under the listing layer's
+                        // mapping (usd/pcp/layerStack.cpp#L1878-L1892).
+                        let k = layer_tcps(&self.layers[li]) / layer_tcps(&self.layers[sub]);
+                        found.push((sub, off + sc * o, sc * s * k, depth + 1));
                     }
                 }
             }
@@ -716,6 +886,8 @@ impl Stage {
                     map: map.clone(),
                     offset: offset + scale * e.offset,
                     scale: scale * e.scale,
+                    node_offset: offset,
+                    node_scale: scale,
                 });
             }
         }
@@ -751,8 +923,11 @@ impl Stage {
             if path.len() > MAX_PATH_LEN {
                 return Err(malformed("a prim path is longer than any real hierarchy"));
             }
-            let mut chain = Vec::new();
-            let sources = self.expand(base, &path, 0, &[], &mut chain, fetch, parse)?;
+            let mut walk = Walk::default();
+            // A selection made for this prim (`recompose_selecting`) is a
+            // stronger site's: it beats what the prim's own layers author.
+            let seed: Vec<(String, String)> = self.overrides.iter().filter(|(p, _, _)| *p == path).map(|(_, s, v)| (s.clone(), v.clone())).collect();
+            let sources = self.expand(base, &path, 0, &seed, &mut walk, fetch, parse)?;
             let index = self.prims.len();
             let mut type_name = String::new();
             let mut specifier = Specifier::Over;
@@ -823,7 +998,7 @@ impl Stage {
         site: &str,
         depth: usize,
         outer_selection: &[(String, String)],
-        chain: &mut Vec<(usize, String)>,
+        walk: &mut Walk,
         fetch: &mut Fetch<'_>,
         parse: ParseLayer,
     ) -> Result<Vec<Source>, MeshError> {
@@ -846,12 +1021,6 @@ impl Stage {
             }
         }
 
-        let mut inherits = Vec::new();
-        let mut variants = Vec::new();
-        let mut references = Vec::new();
-        let mut payloads = Vec::new();
-        let mut specializes = Vec::new();
-
         // Arcs resolve in the layer stack of the opinion that authored them, so
         // list ops are composed per stack, strongest stack first.
         let mut stacks: Vec<usize> = Vec::new();
@@ -860,52 +1029,55 @@ impl Stage {
                 stacks.push(s.stack);
             }
         }
-        for stack in stacks {
-            let group: Vec<Source> = base.iter().filter(|s| s.stack == stack).cloned().collect();
-            let Some(first) = group.first().cloned() else { continue };
-            let class_paths = |this: &Stage, get: fn(&PrimSpec) -> Option<&ListOp<String>>| -> Vec<String> {
-                let mut list: Vec<String> = Vec::new();
-                for s in group.iter().rev() {
-                    if let Some(op) = this.spec(s).and_then(get) {
-                        list = op.apply(&list);
-                    }
+        let groups: Vec<Vec<Source>> = stacks.iter().map(|st| base.iter().filter(|s| s.stack == *st).cloned().collect()).collect();
+        let class_paths = |this: &Stage, group: &[Source], get: fn(&PrimSpec) -> Option<&ListOp<String>>| -> Vec<String> {
+            let mut list: Vec<String> = Vec::new();
+            for s in group.iter().rev() {
+                if let Some(op) = this.spec(s).and_then(get) {
+                    list = op.apply(&list);
                 }
-                list
-            };
-            let refs_of = |this: &Stage, get: fn(&PrimSpec) -> Option<&ListOp<Reference>>| -> Vec<(Reference, Source)> {
-                // Each reference remembers the opinion that authored it: its
-                // asset path is relative to that layer.
-                let mut list: Vec<Reference> = Vec::new();
-                let mut owner: Vec<(Reference, Source)> = Vec::new();
-                for s in group.iter().rev() {
-                    if let Some(op) = this.spec(s).and_then(get) {
-                        list = op.apply(&list);
-                        for r in &list {
-                            if !owner.iter().any(|(o, _)| o == r) {
-                                owner.push((r.clone(), s.clone()));
-                            }
+            }
+            list
+        };
+        let refs_of = |this: &Stage, group: &[Source], get: fn(&PrimSpec) -> Option<&ListOp<Reference>>| -> Vec<(Reference, Source)> {
+            // Each reference remembers the opinion that authored it: its asset
+            // path is relative to that layer.
+            let mut list: Vec<Reference> = Vec::new();
+            let mut owner: Vec<(Reference, Source)> = Vec::new();
+            for s in group.iter().rev() {
+                if let Some(op) = this.spec(s).and_then(get) {
+                    list = op.apply(&list);
+                    for r in &list {
+                        if !owner.iter().any(|(o, _)| o == r) {
+                            owner.push((r.clone(), s.clone()));
                         }
                     }
                 }
-                list.iter()
-                    .filter_map(|r| owner.iter().find(|(o, _)| o == r).cloned())
-                    .collect()
-            };
-            for target in class_paths(self, |p| p.inherits.as_ref()) {
-                let t = self.internal_arc(&first, &target, site, depth, &selection, chain, fetch, parse)?;
-                inherits.extend(t);
             }
-            for (r, owner) in refs_of(self, |p| p.references.as_ref()) {
-                let t = self.reference_arc(&owner, &r, site, depth, &selection, chain, fetch, parse, "reference")?;
-                references.extend(t);
+            list.iter().filter_map(|r| owner.iter().find(|(o, _)| o == r).cloned()).collect()
+        };
+
+        // The arcs are followed strongest first (LIVRPS: inherits, variants,
+        // references, payloads, specializes), so a site met again later is a
+        // weaker occurrence, which `Walk::composed` skips.
+        let mut out = base.clone();
+        let push = |this: &mut Stage, out: &mut Vec<Source>, sources: Vec<Source>| -> bool {
+            for s in sources {
+                if out.len() >= MAX_SOURCES {
+                    this.warn(format!("{} composes from more than {MAX_SOURCES} opinions; the weakest were ignored", short(site)));
+                    return false;
+                }
+                out.push(s);
             }
-            for (r, owner) in refs_of(self, |p| p.payloads.as_ref()) {
-                let t = self.reference_arc(&owner, &r, site, depth, &selection, chain, fetch, parse, "payload")?;
-                payloads.extend(t);
-            }
-            for target in class_paths(self, |p| p.specializes.as_ref()) {
-                let t = self.internal_arc(&first, &target, site, depth, &selection, chain, fetch, parse)?;
-                specializes.extend(t);
+            true
+        };
+        for group in &groups {
+            let first = group[0].clone();
+            for target in class_paths(self, group, |p| p.inherits.as_ref()) {
+                let t = self.internal_arc(&first, (first.node_offset, first.node_scale), &target, site, depth, &selection, walk, fetch, parse)?;
+                if !push(self, &mut out, t) {
+                    return Ok(out);
+                }
             }
         }
 
@@ -955,18 +1127,32 @@ impl Stage {
                 self.warn(format!("variant {set}={sel} selected on {} does not exist; nothing applied", short(site)));
                 continue;
             }
-            let expanded = self.expand(vbase, site, depth + 1, &selection, chain, fetch, parse)?;
-            variants.extend(expanded);
+            let expanded = self.expand(vbase, site, depth + 1, &selection, walk, fetch, parse)?;
+            if !push(self, &mut out, expanded) {
+                return Ok(out);
+            }
         }
 
-        let mut out = base;
-        for group in [inherits, variants, references, payloads, specializes] {
-            for s in group {
-                if out.len() >= MAX_SOURCES {
-                    self.warn(format!("{} composes from more than {MAX_SOURCES} opinions; the weakest were ignored", short(site)));
+        for (what, get) in [
+            ("reference", (|p: &PrimSpec| p.references.as_ref()) as fn(&PrimSpec) -> Option<&ListOp<Reference>>),
+            ("payload", |p: &PrimSpec| p.payloads.as_ref()),
+        ] {
+            for group in &groups {
+                for (r, owner) in refs_of(self, group, get) {
+                    let t = self.reference_arc(&owner, &r, site, depth, &selection, walk, fetch, parse, what)?;
+                    if !push(self, &mut out, t) {
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+        for group in &groups {
+            let first = group[0].clone();
+            for target in class_paths(self, group, |p| p.specializes.as_ref()) {
+                let t = self.internal_arc(&first, (first.node_offset, first.node_scale), &target, site, depth, &selection, walk, fetch, parse)?;
+                if !push(self, &mut out, t) {
                     return Ok(out);
                 }
-                out.push(s);
             }
         }
         Ok(out)
@@ -975,27 +1161,35 @@ impl Stage {
     /// An inherits or specializes arc, or an internal reference: a prim of the
     /// same layer stack.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// `time` is the arc's mapping: the owner's node mapping, with an internal
+    /// reference's authored offset composed in. The target's layers apply
+    /// their own place in the stack on top (`stack_sources`).
     fn internal_arc(
         &mut self,
         owner: &Source,
+        time: (f64, f64),
         target: &str,
         site: &str,
         depth: usize,
         selection: &[(String, String)],
-        chain: &mut Vec<(usize, String)>,
+        walk: &mut Walk,
         fetch: &mut Fetch<'_>,
         parse: ParseLayer,
     ) -> Result<Vec<Source>, MeshError> {
         let key = (owner.stack, target.to_string());
-        if chain.contains(&key) {
+        if walk.chain.contains(&key) {
             self.warn(format!("a composition cycle through {} was cut at {}", short(target), short(site)));
             return Ok(Vec::new());
         }
+        if !walk.composed.insert(key.clone()) {
+            return Ok(Vec::new());
+        }
         let map = Rc::new(PathMap::for_arc(target, site, Some(&owner.map)));
-        let base = self.stack_sources(owner.stack, target, &map, owner.offset, owner.scale);
-        chain.push(key);
-        let r = self.expand(base, site, depth + 1, selection, chain, fetch, parse);
-        chain.pop();
+        let base = self.stack_sources(owner.stack, target, &map, time.0, time.1);
+        walk.chain.push(key);
+        let r = self.expand(base, site, depth + 1, selection, walk, fetch, parse);
+        walk.chain.pop();
         r
     }
 
@@ -1007,26 +1201,27 @@ impl Stage {
         site: &str,
         depth: usize,
         selection: &[(String, String)],
-        chain: &mut Vec<(usize, String)>,
+        walk: &mut Walk,
         fetch: &mut Fetch<'_>,
         parse: ParseLayer,
         what: &str,
     ) -> Result<Vec<Source>, MeshError> {
         if r.asset.is_empty() {
-            if r.prim.is_empty() {
+            // The node mapping with the authored offset: no rate factor, and
+            // not the authoring layer's own offset (primIndex.cpp#L2251-L2257).
+            let time = (owner.node_offset + owner.node_scale * r.offset, owner.node_scale * r.scale);
+            let target = if r.prim.is_empty() {
                 // An internal reference to "the default prim" of one's own stack.
                 let dp = self.layers[self.stacks[owner.stack][0].layer].meta_str("defaultPrim").map(str::to_string);
                 let Some(dp) = dp else {
                     self.warn(format!("internal {what} on {} names no prim and the layer has no defaultPrim", short(site)));
                     return Ok(Vec::new());
                 };
-                let target = child_path("/", &dp);
-                return self.internal_arc(owner, &target, site, depth, selection, chain, fetch, parse);
-            }
-            let mut o = owner.clone();
-            o.offset = owner.offset + owner.scale * r.offset;
-            o.scale = owner.scale * r.scale;
-            return self.internal_arc(&o, &r.prim, site, depth, selection, chain, fetch, parse);
+                child_path("/", &dp)
+            } else {
+                r.prim.clone()
+            };
+            return self.internal_arc(owner, time, &target, site, depth, selection, walk, fetch, parse);
         }
         let base_id = self.layers[owner.layer].id.clone();
         let Some(path) = resolve_asset_path(&base_id, &r.asset) else {
@@ -1054,14 +1249,20 @@ impl Stage {
             r.prim.clone()
         };
         let key = (stack, target.clone());
-        if chain.contains(&key) {
+        if walk.chain.contains(&key) {
             self.warn(format!("a composition cycle through {path:?} was cut at {}", short(site)));
             return Ok(Vec::new());
         }
-        // A layer authored at another timeCodesPerSecond is rescaled to the
-        // stage's, as Pcp does.
-        let tcps = |l: &Layer| l.meta_f64("timeCodesPerSecond").filter(|v| v.is_finite() && *v > 0.0).unwrap_or(24.0);
-        let ratio = tcps(&self.layers[0]) / tcps(&self.layers[root_layer]);
+        if !walk.composed.insert(key.clone()) {
+            return Ok(Vec::new());
+        }
+        // The referenced layer's time codes are scaled by the rate of the
+        // layer that authors the arc over its own, under that layer's mapping
+        // (`owner`): usd/pcp/primIndex.cpp#L2381-L2395, srcLayer per
+        // usd/pcp/composeSite.cpp#L128-L132. The stage root's rate was used,
+        // which played a reference authored in a 48 tcps layer, to another,
+        // twice as fast under a 24 tcps root.
+        let ratio = layer_tcps(&self.layers[owner.layer]) / layer_tcps(&self.layers[root_layer]);
         let map = Rc::new(PathMap::for_arc(&target, site, None));
         let offset = owner.offset + owner.scale * r.offset;
         let scale = owner.scale * r.scale * ratio;
@@ -1070,9 +1271,9 @@ impl Stage {
             self.warn(format!("{what} target {} in {path:?} does not exist; skipped", short(&target)));
             return Ok(Vec::new());
         }
-        chain.push(key);
-        let out = self.expand(base, site, depth + 1, selection, chain, fetch, parse);
-        chain.pop();
+        walk.chain.push(key);
+        let out = self.expand(base, site, depth + 1, selection, walk, fetch, parse);
+        walk.chain.pop();
         out
     }
 
@@ -1171,11 +1372,14 @@ impl Stage {
     /// Property names of prim `p` across every opinion, strongest first.
     pub fn prop_names(&self, p: usize) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
+        // Seen names in a set: a scan of `out` per name was quadratic in a
+        // prim's property count.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         if let Some(prim) = self.prims.get(p) {
             for s in &prim.sources {
                 if let Some(spec) = self.spec(s) {
                     for (n, _) in &spec.props {
-                        if !out.contains(n) {
+                        if seen.insert(n.as_str()) {
                             out.push(n.clone());
                         }
                     }

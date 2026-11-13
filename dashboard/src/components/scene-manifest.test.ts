@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Model3dAsset } from '@litegen/sdk';
-import { clipRows, originalOf, sceneFacts } from './model3d-assets';
+import { clipRows, originalOf, sceneDimensions, sceneFacts, sceneNotes, sceneTriangles } from './model3d-assets';
 
 const SCENE = {
   units: 'm', up: '+y', front: '+z', oriented_by: 'litegen',
@@ -46,5 +46,26 @@ describe("the vendor's original file", () => {
     const original = { kind: 'original', url: 'https://x/o.fbx', format: 'fbx' } as Model3dAsset;
     expect(originalOf([mesh, original])).toBe(original);
     expect(originalOf([mesh])).toBeNull();
+  });
+});
+
+describe('what the inspector reads from the manifest', () => {
+  it('counts the triangles litegen measured', () => {
+    expect(sceneTriangles(SCENE)).toBe(1200);
+    expect(sceneTriangles({ ...SCENE, triangle_count: 'many' })).toBeNull();
+    expect(sceneTriangles(null)).toBeNull();
+  });
+
+  it('sizes the mesh from its bounds, in metres, or leaves it to the viewer', () => {
+    expect(sceneDimensions(SCENE)).toEqual({ x: 1, y: 1.75, z: 0.5 });
+    expect(sceneDimensions({ ...SCENE, bounds: null })).toBeUndefined();
+    expect(sceneDimensions({ ...SCENE, bounds: { min: [0, 0], max: [1, 1] } })).toBeUndefined();
+    expect(sceneDimensions(undefined)).toBeUndefined();
+  });
+
+  it('lists what delivery could not keep, skipping anything that is not text', () => {
+    expect(sceneNotes({ ...SCENE, notes: ['a texture could not be decoded', 7, ''] })).toEqual(['a texture could not be decoded']);
+    expect(sceneNotes(SCENE)).toEqual([]);
+    expect(sceneNotes(null)).toEqual([]);
   });
 });

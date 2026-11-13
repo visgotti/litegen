@@ -55,6 +55,38 @@ async fn a_rig_chained_by_generation_id_records_its_lineage() {
     assert_eq!(src["delivery"], "vendor_task", "{src}");
 }
 
+/// An animation's own task is no rig: animating an animation again animates
+/// the rig it came from, so the vendor gets that rig's task, however deep the
+/// chain of animations.
+#[tokio::test]
+async fn animating_an_animation_animates_its_rig() {
+    use litegen::db::DatabaseStore;
+    let (app, db) = harness::app_with_mock_3d().await;
+    let done = |body: Value| {
+        let app = app.clone();
+        async move {
+            let (status, sub) = post(&app, body).await;
+            assert_eq!(status, StatusCode::OK, "{sub}");
+            let id = sub["id"].as_str().unwrap().to_string();
+            let done = harness::poll_until_terminal(&app, &id).await;
+            assert_eq!(done["status"], "completed", "{done}");
+            id
+        }
+    };
+    let mesh = finished_mesh(&app).await;
+    let rig = done(json!({ "model": "mock/rig-3d", "source_model": { "type": "generation", "value": mesh } })).await;
+    let clip = json!([{ "name": "walk", "preset": "walk" }]);
+    let first = done(json!({ "model": "mock/animate-3d", "source_model": { "type": "generation", "value": rig }, "animations": clip })).await;
+    let again = done(json!({ "model": "mock/animate-3d", "source_model": { "type": "generation", "value": first }, "animations": clip })).await;
+    let third = done(json!({ "model": "mock/animate-3d", "source_model": { "type": "generation", "value": again }, "animations": clip })).await;
+    for id in [&first, &again, &third] {
+        let src = &db.get_generation(id).await.unwrap().unwrap().metadata.unwrap()["source"];
+        assert_eq!(src["delivery"], "vendor_task", "{id}: the rig's own task reached the vendor: {src}");
+    }
+    let src = &db.get_generation(&again).await.unwrap().unwrap().metadata.unwrap()["source"];
+    assert_eq!(src["generation_id"], first.as_str(), "the lineage names the source the caller sent: {src}");
+}
+
 #[tokio::test]
 async fn a_source_another_org_owns_is_not_found() {
     use litegen::db::DatabaseStore;

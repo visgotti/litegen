@@ -1,33 +1,182 @@
 # model values
+v6-max
+c1
+v6
+v5.6
+v5.5
+v5
 v3.5
 v4
 v4.5
-v5
-v5.5
-v5.6
-v6
-c1
+v5-fast
 
 # request property descriptions
-duration: Video duration v.3.5/v4/v4.5 : 5/8 (v3.5 1080p cannot use 8) v5 : 5/8 v5.5/v5.6 : 5/8/10 (1080p cannot use 10) v6/c1 : 1~15
-img_id: Image ID from Upload image API. single image or single-image templates
-model: Model version (now supports v3.5/v4/v4.5/v5/v5.5/v5.6/v6/c1)
-prompt: Prompt <= 5000 characters
-quality: Video quality ("360p", "540p", "720p", "1080p")
-seed: Random seed, range: 0 - 2147483647
-template_id: Template ID (template_id must be activated before use)
-generate_audio_switch: Supported in v5.5/5.6/v6/c1 models. Audio switch. Controls whether the video has audio. **true**: Audio on , **false**: Audio off . **default value** : false
-generate_multi_clip_switch: Supported in v5.5/v6 model. Single or multi-clip switch. controls single-clip and multi-clip generation modes. **true**: Multi-clip , **false**: Single-clip. **default value** : false
-sound_effect_switch: Supported in v5 and below. Or with template_id. Set to true if you want to enable this feature. Default is false.
-sound_effect_content: Supported in v5 models and below. Activated when sound_effect_switch=true, Describe the sound effect you want. Leave blank for auto generation.
-lip_sync_tts_switch: Supported in v5 models and below. Set to true if you want to enable this feature. Default is false.
-lip_sync_tts_content: Supported in v5 models and below. ~140 (UTF-8) characters
-lip_sync_tts_speaker_id: Supported in v5 models and below. id from Get speech tts list (v3.5/v4/v4.5/v5)
+model: Video generation model. Access to v5-fast depends on account permissions.
+prompt: Generation prompt.
+duration: Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older models: 5 or 8. Do not use unsupported duration/quality combinations.
+quality: Output resolution.
+seed: Random seed.
+webhook_id: Optional ID of a Webhook configured in the same account, not a callback URL. Omit it when polling task status.
+img_id: Uploaded image ID. Required for ordinary image generation.
+img_ids: Ordered image IDs for a multi-image template only.
+template_id: Optional current template ID returned by Get Effect Template List.
+generate_audio_switch: Generate native audio with V5.5, V5.6, V6, or C1. Set to true to enable audio or false for silent output.
+generate_multi_clip_switch: Enable multi-clip generation with V5.5 or V6. Not supported with other models or template_id.
+sound_effect_switch: Legacy sound-effect option; use only with a supporting model/template.
+sound_effect_content: Legacy sound description; applicable only when supported.
+lip_sync_switch: Legacy Lipsync option; applicable only when supported.
+lip_sync_tts_content: TTS text for a supporting legacy Lipsync request.
+lip_sync_tts_speaker_id: Speaker ID for a supporting legacy Lipsync request.
 
 {
   "POST /openapi/v2/video/img/generate (application/json)": {
+    "allOf": [
+      {
+        "anyOf": [
+          {
+            "properties": {
+              "generate_multi_clip_switch": {
+                "enum": [
+                  false
+                ]
+              }
+            },
+            "type": "object"
+          },
+          {
+            "not": {
+              "required": [
+                "template_id"
+              ]
+            },
+            "properties": {
+              "model": {
+                "enum": [
+                  "v5.5",
+                  "v6"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        ]
+      }
+    ],
+    "anyOf": [
+      {
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "properties": {
+                  "duration": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "not": {
+                  "properties": {
+                    "duration": {
+                      "enum": [
+                        10
+                      ]
+                    },
+                    "quality": {
+                      "enum": [
+                        "1080p"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "duration",
+                    "quality"
+                  ]
+                },
+                "properties": {
+                  "duration": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "not": {
+                  "properties": {
+                    "duration": {
+                      "enum": [
+                        8
+                      ]
+                    },
+                    "quality": {
+                      "enum": [
+                        "1080p"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "duration",
+                    "quality"
+                  ]
+                },
+                "properties": {
+                  "duration": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "duration": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            ]
+          }
+        ],
+        "not": {
+          "required": [
+            "template_id"
+          ]
+        },
+        "required": [
+          "img_id"
+        ]
+      },
+      {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "required": [
+          "template_id"
+        ]
+      }
+    ],
     "properties": {
       "duration": {
+        "maximum": 15,
+        "minimum": 1,
         "type": "integer"
       },
       "generate_audio_switch": {
@@ -37,8 +186,21 @@ lip_sync_tts_speaker_id: Supported in v5 models and below. id from Get speech tt
         "type": "boolean"
       },
       "img_id": {
-        "format": "uint64",
+        "format": "int64",
+        "minimum": 1,
         "type": "integer"
+      },
+      "img_ids": {
+        "items": {
+          "format": "int64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "minItems": 1,
+        "type": "array"
+      },
+      "lip_sync_switch": {
+        "type": "boolean"
       },
       "lip_sync_tts_content": {
         "type": "string"
@@ -46,20 +208,37 @@ lip_sync_tts_speaker_id: Supported in v5 models and below. id from Get speech tt
       "lip_sync_tts_speaker_id": {
         "type": "string"
       },
-      "lip_sync_tts_switch": {
-        "type": "boolean"
-      },
       "model": {
+        "enum": [
+          "v6-max",
+          "c1",
+          "v6",
+          "v5.6",
+          "v5.5",
+          "v5",
+          "v3.5",
+          "v4",
+          "v4.5",
+          "v5-fast"
+        ],
         "type": "string"
       },
       "prompt": {
-        "maxLength": 5000,
+        "maxLength": 2048,
         "type": "string"
       },
       "quality": {
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
         "type": "string"
       },
       "seed": {
+        "maximum": 2147483647,
+        "minimum": 0,
         "type": "integer"
       },
       "sound_effect_content": {
@@ -69,14 +248,18 @@ lip_sync_tts_speaker_id: Supported in v5 models and below. id from Get speech tt
         "type": "boolean"
       },
       "template_id": {
+        "format": "int64",
+        "minimum": 1,
         "type": "integer"
+      },
+      "webhook_id": {
+        "type": "string"
       }
     },
     "required": [
-      "duration",
-      "img_id",
       "model",
       "prompt",
+      "duration",
       "quality"
     ],
     "type": "object"

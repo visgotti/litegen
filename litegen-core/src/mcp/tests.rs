@@ -46,8 +46,8 @@ fn every_openapi_operation_is_a_tool_or_excluded() {
     let mut stale: Vec<_> = listed.difference(&ops).collect();
     stale.sort();
     assert!(stale.is_empty(), "catalog rows naming operations the API does not have: {stale:?}");
-    assert_eq!(TOOLS.len(), 113);
-    assert_eq!(EXCLUDED.len(), 24);
+    assert_eq!(TOOLS.len(), 119);
+    assert_eq!(EXCLUDED.len(), 25);
 }
 
 fn portable_tool_name(name: &str) -> bool {
@@ -194,6 +194,22 @@ async fn oauth_principals_see_what_their_grant_allows() {
     assert!(!sees(&member, &hosted, "update_org"), "the role still decides");
 }
 
+#[tokio::test]
+async fn single_tenant_deployment_tools_follow_the_default_org() {
+    use crate::types::Role;
+    let single = state(Mode::SingleTenant, Some("mk")).await;
+    let admin = |ctx: KeyContext| caller(ctx, CallerKind::OAuth, Surface::Admin);
+    let tools = ["list_users", "update_user", "delete_user", "transfer_platform_ownership", "create_gateway_model"];
+    // The deployment's owner sees its tools; the owner of another org, as
+    // anyone could once make, sees none, as the routes refuse them.
+    let owner = admin(oauth(Role::Owner, &[Scope::Read, Scope::Admin]));
+    let side_owner = admin(KeyContext { org_id: Some("org-side".into()), app_id: Some("app-side".into()), ..oauth(Role::Owner, &[Scope::Read, Scope::Admin]) });
+    for tool in tools {
+        assert!(sees(&owner, &single, tool), "{tool}: the deployment's owner");
+        assert!(!sees(&side_owner, &single, tool), "{tool}: another org's owner");
+    }
+}
+
 fn sees(caller: &Caller, state: &AppState, tool: &str) -> bool {
     let def = TOOLS.iter().find(|d| d.name == tool).unwrap_or_else(|| panic!("no tool {tool}"));
     visible(def, caller, state)
@@ -201,6 +217,23 @@ fn sees(caller: &Caller, state: &AppState, tool: &str) -> bool {
 
 fn visible_names(caller: &Caller, state: &AppState) -> Vec<&'static str> {
     TOOLS.iter().filter(|d| visible(d, caller, state)).map(|d| d.name).collect()
+}
+
+/// P1 (code review 2026-11-11): `get_provider_health` is the deployment's, as
+/// its route `GET /health` is: hosted, the platform admin only; single-tenant,
+/// a reader acting in the deployment's org.
+#[tokio::test]
+async fn provider_health_is_offered_to_the_deployment_only() {
+    use CallerKind::*;
+    use Scope::*;
+    let hosted = state(Mode::Hosted, Some("mk")).await;
+    let single = state(Mode::SingleTenant, Some("mk")).await;
+    let admin = |ctx: KeyContext, kind| caller(ctx, kind, Surface::Admin);
+    assert!(!sees(&admin(key(&[Read]), ApiKey), &hosted, "get_provider_health"), "a hosted tenant's read key");
+    assert!(sees(&admin(master(false), MasterKey), &hosted, "get_provider_health"), "the hosted master key");
+    assert!(sees(&admin(key(&[Read]), ApiKey), &single, "get_provider_health"), "a read key of the deployment's org");
+    let other = KeyContext { org_id: Some("other-org".into()), ..key(&[Read]) };
+    assert!(!sees(&admin(other, ApiKey), &single, "get_provider_health"), "a read key of another org");
 }
 
 #[tokio::test]
@@ -343,6 +376,18 @@ fn generate_image_flattens_body() {
     assert!(headers.contains(&("end_user", "x-litegen-end-user")), "{headers:?}");
     assert!(headers.contains(&("tags", "x-litegen-tags")), "{headers:?}");
     assert_eq!(plan.local, vec!["preview".to_string()], "preview is MCP's own argument, never sent to the API");
+
+    // Keeping nothing is asked per request only in a header; every generation
+    // tool takes it as `keep_outputs`. `Prefer: respond-async` is not offered:
+    // a tool answers when the job is done, and wait_for_generation follows one
+    // that outlasts the call.
+    for tool in ["generate_image", "generate_video", "generate_3d_model"] {
+        let (schema, plan) = tool_schema(&doc, tool);
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("keep_outputs"), "{tool} lacks keep_outputs");
+        assert!(plan.headers.iter().any(|(a, h)| a == "keep_outputs" && *h == "x-litegen-keep-outputs"), "{tool}: {:?}", plan.headers);
+        assert!(!props.keys().any(|k| k.eq_ignore_ascii_case("prefer")), "{tool} offers Prefer");
+    }
 }
 
 #[test]
@@ -475,10 +520,12 @@ fn build_request_names_a_missing_path_parameter() {
 
 #[tokio::test]
 async fn tags_always_include_mcp() {
-    let req = request_for("generate_image", json!({ "model": "m", "prompt": "p", "tags": ["x"], "end_user": "cust-1", "idempotency_key": "k1", "preview": false }));
+    let req = request_for("generate_image", json!({ "model": "m", "prompt": "p", "tags": ["x"], "end_user": "cust-1", "idempotency_key": "k1", "keep_outputs": false, "preview": false }));
     assert_eq!(req.headers()["x-litegen-tags"], "mcp,x");
     assert_eq!(req.headers()["x-litegen-end-user"], "cust-1");
     assert_eq!(req.headers()["idempotency-key"], "k1");
+    assert_eq!(req.headers()["x-litegen-keep-outputs"], "false");
+    assert!(req.headers().get("prefer").is_none(), "a tool call stays synchronous");
     assert_eq!(req.uri().path(), "/v1/images/generations");
     let body = body_json(req).await;
     assert_eq!(body, json!({ "model": "m", "prompt": "p" }), "headers and MCP's own arguments stay out of the body");
@@ -625,6 +672,69 @@ fn a_stored_record_links_its_files() {
     assert_eq!(linked.len(), 1, "{linked:?}");
     assert_eq!(linked[0]["uri"], "https://cdn.example/i.png");
     assert_eq!(linked[0]["mimeType"], "image/png");
+}
+
+/// MCP results carry no headers, so what the API says only in one becomes text.
+#[test]
+fn a_cached_image_is_named_as_cached() {
+    use crate::mcp::content::notes;
+    use crate::mcp::dispatch::HttpReply;
+    let reply = |cache: &str| {
+        let mut map = axum::http::HeaderMap::new();
+        map.insert("x-litegen-cache", cache.parse().unwrap());
+        HttpReply { status: axum::http::StatusCode::OK, headers: map, body: Bytes::new() }
+    };
+    let hit = notes(&reply("hit"));
+    assert_eq!(hit.len(), 1, "{hit:?}");
+    assert!(hit[0].contains("cache"), "{hit:?}");
+    assert!(notes(&reply("miss")).is_empty(), "a fresh image needs no note");
+    assert!(notes(&reply("bypass")).is_empty(), "a fresh image needs no note");
+}
+
+/// A dropped-params list capped by the server (`,+N more`, E2) still becomes
+/// the note: the header stays visible ASCII, which `to_str()` needs (a `…`
+/// marker would have dropped the whole note).
+#[test]
+fn a_capped_dropped_list_still_becomes_a_note() {
+    use crate::mcp::content::notes;
+    use crate::mcp::dispatch::HttpReply;
+    let (name, value) = crate::api::middleware::validator::dropped_header(&["fps".to_string(), "extra.a\u{1}b".to_string()])
+        .expect("the header survives an unsafe name");
+    let mut map = axum::http::HeaderMap::new();
+    map.insert(name, value);
+    let said = notes(&HttpReply { status: axum::http::StatusCode::OK, headers: map, body: Bytes::new() });
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("fps") && said[0].contains("+1 more"), "{said:?}");
+}
+
+/// A 504 `vendor_timeout` whose job can still be delivered names the generation
+/// it goes to; the tool error says how to wait for it.
+#[test]
+fn a_timed_out_job_that_still_runs_points_at_wait_for_generation() {
+    use crate::mcp::content::error_result;
+    use crate::mcp::dispatch::HttpReply;
+    let text = |error: Value| -> String {
+        let body = json!({ "error": error });
+        let reply = HttpReply {
+            status: axum::http::StatusCode::GATEWAY_TIMEOUT,
+            headers: axum::http::HeaderMap::new(),
+            body: Bytes::from(body.to_string()),
+        };
+        let content = serde_json::to_value(&error_result(&reply, Some(body)).content).unwrap();
+        content[0]["text"].as_str().unwrap().to_string()
+    };
+    let still_running = text(json!({
+        "message": "the vendor did not answer in time",
+        "type": "vendor_timeout",
+        "code": "vendor_timeout",
+        "generation_id": "litegen-img-42",
+        "status": "processing",
+    }));
+    assert!(still_running.starts_with("HTTP 504 vendor_timeout: the vendor did not answer in time"), "{still_running}");
+    assert!(still_running.contains("wait_for_generation") && still_running.contains("litegen-img-42"), "{still_running}");
+
+    let gone = text(json!({ "message": "the vendor did not answer in time", "code": "vendor_timeout" }));
+    assert!(!gone.contains("wait_for_generation"), "nothing to wait for: {gone}");
 }
 
 // ─── The generated tool reference ─────────────────────────────────────────────

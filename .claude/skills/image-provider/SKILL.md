@@ -155,15 +155,28 @@ specific to images; the shared rules still apply.
 - Use the polling URL the vendor returns (BFL `polling_url`) when there is
   one, but send your key to it only if its host is the vendor's API host or
   the `api_base` host. Otherwise build the poll URL from `api_base()`.
-- Give `generate()` one wall-clock deadline, about 90 s from entry. It must
-  cover the submit, every poll round trip and the download, not just the
-  sleeps, because the router's 120 s timeout measures the whole call.
-  Existing adapters allow 180–240 s, which is a known gap.
-- Once the vendor has accepted the job, every error is non-retryable. That
-  includes exhausting your own poll budget: return a non-retryable
-  `RequestFailed` that carries the vendor job id, not `ProviderError::Timeout`.
-  The router retries a `Timeout`, and that re-submits a job you've already
-  paid for.
+- Poll with `crate::providers::PollBudget` (`while budget.next().await`),
+  never a fixed number of attempts. It ends at litegen's deadline for the
+  call: the router runs every image call inside `providers::with_deadline`
+  (the attempt's start plus the vendor timeout), so an operator who raises
+  `vendor_timeout_seconds` for a slow model gives your adapter that time.
+  Its `default` applies only when the adapter is called directly, as in
+  tests.
+- Record the job as soon as the vendor accepts it:
+  `extras.vendor_job.record(id)`, or `record_resumable(id, json)` when a
+  later look needs more than the id (BFL's regional `polling_url`). From
+  then on the router never re-sends the call.
+- When the budget runs out, return `ProviderError::Timeout`. The router
+  answers 504 `vendor_timeout`, and for an adapter that says `resumable`
+  it delivers the image later (docs/async-images.md).
+- **Make the job resumable.** Keep the poll loop in one method and the
+  post-poll tail (finding the result URL, downloading it) in a `finish`
+  method that `generate` calls after the loop. Implement
+  `ImageProvider::poll_job(model, job, resume)` as that loop under
+  `image::poll_once` (a deadline that ends after one poll), mapping its
+  result with `image::job_failed`, and return true from `resumable`.
+  `every_resumable_image_job_is_read_by_poll_job`
+  (`proxy/config_conformance.rs`) holds the seven polling adapters to it.
 - Map moderation and failure statuses to non-retryable errors that carry
   the vendor's reason (BFL `Content Moderated`, `Request Moderated`,
   `Error`).

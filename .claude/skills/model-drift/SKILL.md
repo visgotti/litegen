@@ -41,6 +41,13 @@ Acknowledge an id only in two cases. The first is structural noise, such as a
 dated alias or a shutdown the vendor documents. The second is after the user
 says to skip it. Either way, record the reason.
 
+"Litegen carries this vendor or model direct" is never a reason. The user
+wants every hub's route carried as its own row (2026-11-04: "like how litellm
+can still use openrouter"), so a model TokenHub, fal, Replicate or Bedrock
+resells is a `new` id to carry. `test/aggregator-routes.test.mjs` fails on a
+new direct-route skip; its `PENDING` list names the definitions still being
+reversed.
+
 ## Repairing a failed source
 
 1. Reproduce: `curl -sIL -m 30 <url>`.

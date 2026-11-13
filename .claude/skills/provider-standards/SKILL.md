@@ -142,7 +142,10 @@ explain each one in more depth.
    key works for it with no new setup. Never add a name like `<vendor>-video`.
 5. **Declare auth instead of hand-writing headers.** Give the adapter an
    `auth: AuthSpec` field set in `new()`. Apply it with
-   `crate::providers::auth::apply(&self.auth, &creds, builder)`. For signing
+   `crate::providers::auth::apply(&self.auth, &creds, builder)`, or, where the
+   adapter picked a key from its own pool, the `.authorized(&self.auth,
+   &key)?` step (`auth::Authorize`). Never write an `Authorization` header by
+   hand: `no_adapter_writes_its_own_auth_header` fails the build. For signing
    schemes, call `sigv4::sign` or `tc3::sign` with the final body bytes
    instead. Every adapter for a vendor uses the same scheme and credential
    fields. Only a signing `service` may differ by product, as Tencent's
@@ -195,13 +198,14 @@ explain each one in more depth.
     A derived value (size → ratio, resolution → preset) must come from a
     named table of the vendor's enum, with a test proving the function can't
     return anything else.
-11. **Don't let `extra` override fields you own.** `extra_allowlist` is
-    enforced only in strict mode. With `strict: false`, `extra` reaches the
-    adapter unfiltered. Merge `extra` before you write the fields you own, or
-    skip those keys. The fields you own are the model or endpoint id, the
-    output count, the output format that sets `content_type`, and the prompt.
-    Otherwise a caller's `extra.model` could run a different vendor model from
-    the one litegen bills.
+11. **Don't let `extra` override fields you own.** Only `extra_allowlist`
+    keys reach the adapter, in either mode: strict refuses the rest, lax
+    drops and reports them. So never allowlist a field you own: the model or
+    endpoint id, the output count, the output format that sets
+    `content_type`, and the prompt. Still merge `extra` before you write those
+    fields, so no allowlisted key can replace one. Otherwise a caller's
+    `extra.model` could run a different vendor model from the one litegen
+    bills.
 12. **Don't forward `n`.** An adapter returns one output, the router bills
     one, and nothing caps `n`. Forwarding it as `n`, `num_images` or
     `candidateCount` makes the vendor generate and bill N. Send the vendor's
@@ -231,7 +235,8 @@ explain each one in more depth.
         connection errors); the poller retries next tick.
       - Make it non-retryable only when the job's state can never be learned
         (a 401 or 404 on the status call, a malformed handle). The poller
-        then *reaps* the row as failed **without firing a webhook**.
+        then *reaps* the row: failed, refunded and webhooked, with the poll
+        error as its only reason.
 
     Any other 4xx is non-retryable. Note that `ProviderError::Timeout` and
     `RateLimited` are retryable *by type*. So once the vendor has accepted a
@@ -244,13 +249,15 @@ explain each one in more depth.
 14. **Map every documented status.** List the vendor's status enum and map
     each terminal state explicitly. Cancelled, expired, moderated and
     content-filtered all map to `Failed` with the vendor's reason, never to
-    `Pending`. Report honest `progress`: the vendor's percentage if it gives
+    `Pending`. A state the docs don't list fails the job at once, naming it
+    (`video::unknown_state`, `image::unknown_state`); a poll that fails on the
+    way (a dropped connection, a 5xx, 408 or 429) is asked again inside the
+    poll budget, never the end of a job the vendor accepted. Report honest `progress`: the vendor's percentage if it gives
     one, otherwise a fixed mid value, and 100 once terminal.
 15. **Keep polling stateless.** `poll_status` receives only its handle, and
     may run on a different instance from the submit, possibly after a
-    restart. Video client polls use the platform instance, 3D client polls
-    reuse the submitting instance, and the poller builds a fresh BYO
-    instance. Put everything polling needs into the handle:
+    restart. Video and 3D client polls reuse the submitting instance, and
+    the poller builds a fresh BYO instance. Put everything polling needs into the handle:
     `provider_job_id` for video, `stage_context` for 3D.
 16. **Return output the caller can use.** That means image bytes with an
     accurate `content_type`, a video URL a client can fetch without vendor
@@ -259,9 +266,11 @@ explain each one in more depth.
     download size. A URL that came from a response is untrusted input, so
     pass it through `crate::util::ssrf::validate_public_url` before you
     fetch it server-side, as the fal 3D downloads do.
-17. **Fit the time budget.** On direct dispatch, `generate()` gets 120 s per
-    attempt. Video and 3D adapters only submit inside `generate()`. Image
-    adapters that poll internally must finish well inside the 120 s.
+17. **Fit the time budget.** On direct dispatch, `generate()` gets the
+    vendor timeout per attempt (120 s by default; `vendor_timeout_seconds`,
+    `docs/gateway-settings.md`). Video and 3D adapters only submit inside
+    `generate()`. Image adapters that poll internally poll with `PollBudget`,
+    which ends at that deadline.
 18. **Propagate traces.** Wrap every outbound request builder in
     `crate::providers::inject_trace_headers(...)`.
 

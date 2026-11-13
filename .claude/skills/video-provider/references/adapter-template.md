@@ -7,7 +7,8 @@ shows every pattern you're likely to need. "Acme" is a placeholder: replace
 every URL, field and status with what the vendor's docs say, and quote them
 in the `@see … Verbatim:` lines. For real files in the same style, read
 `providers/video/vidu.rs` (choosing an endpoint from the roles) and
-`providers/video/kling.rs` (a `{kind}/{task_id}` handle).
+`providers/video/kling.rs` (a model in the path, one `GET /tasks` poll, and an
+old handle form still read).
 
 ## Contents
 
@@ -86,15 +87,18 @@ impl Default for AcmeVideoProvider {
 }
 
 impl AcmeVideoProvider {
+    /// The client for Acme's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(Client::builder().timeout(std::time::Duration::from_secs(60)), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(60)) // submits only; well under the router's 120 s
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -154,6 +158,7 @@ impl VideoProvider for AcmeVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -201,13 +206,14 @@ impl VideoProvider for AcmeVideoProvider {
             }
         };
 
-        // `extra` first, so the fields this adapter owns win (lax mode passes
-        // `extra` through unfiltered).
+        // `extra` first (only its allowlisted keys arrive), so the fields this
+        // adapter owns win.
         let mut body = match &extras.extra {
             Some(Value::Object(m)) => Value::Object(m.clone()),
             _ => json!({}),
         };
-        body["model"] = json!(native);
+        // The operator's `model_mapping` may rename the model on the wire.
+        body["model"] = json!(crate::providers::wire_model(self.config.as_ref(), &model.id, native));
         body["prompt"] = json!(base.prompt);
         body["duration"] = json!(Self::resolve_duration(extras.duration_seconds)); // an INTEGER on the wire
         if let Some(res) = extras.resolution.as_deref() {
@@ -246,10 +252,16 @@ impl VideoProvider for AcmeVideoProvider {
                 retryable: e.is_connect(),
             })?;
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let data: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
+            let message = format!("Acme API error (HTTP {status}): {}", acme_error_message(&data));
+            // A 429 that names its wait keeps it for the retry.
+            if let Some(e) = crate::providers::rate_limited("acme", status, retry_after, &message, Some(&data)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
-                message: format!("Acme API error (HTTP {status}): {}", acme_error_message(&data)),
+                message,
                 status_code: Some(status.as_u16()),
                 provider_error: Some(data),
                 retryable: status.is_server_error() || status.as_u16() == 429,
@@ -305,16 +317,10 @@ impl VideoProvider for AcmeVideoProvider {
             Some("running") => GenerationStatus::Processing,
             Some("succeeded") => GenerationStatus::Completed,
             Some("failed") | Some("cancelled") => GenerationStatus::Failed,
-            other => {
-                // Undocumented: loud, but not fatal. The poller keeps
-                // asking and reaps the row after 2 h.
-                return Err(ProviderError::RequestFailed {
-                    message: format!("Acme job {id} reported an undocumented status {other:?}"),
-                    status_code: None,
-                    provider_error: Some(data),
-                    retryable: true,
-                });
-            }
+            // Undocumented (or none): the job fails now, naming the state,
+            // through the terminal path that fires its webhook — never a
+            // catch-all Processing that polls until the reaper's 2 h.
+            other => return Ok(super::unknown_state("acme", other)),
         };
         let video_url = data["output"]["url"].as_str().map(str::to_string);
 

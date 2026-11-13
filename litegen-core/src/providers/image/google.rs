@@ -17,9 +17,10 @@ use crate::types::*;
 ///
 /// Routes through the Gemini `generateContent` API with image response modality.
 ///
-/// @see <https://ai.google.dev/api/generate-content> — `models.generateContent` REST reference
-/// @see <https://ai.google.dev/gemini-api/docs/image-generation> — image-generation guide
-///   (`responseModalities: ["image"]` and the `inlineData` image part shape)
+/// @see <https://aistudio.google.com/api-reference/generate-content> — `POST /v1beta/models/{model}:generateContent` REST reference
+/// @see <https://aistudio.google.com/docs/image-generation?generate-content=true> — image-generation guide,
+///   generateContent variant (`responseModalities: ["image"]` and the `inlineData` image part
+///   shape); the plain page documents the Interactions API (2026-11-09)
 ///
 /// Authenticated with the `x-goog-api-key` header, as every REST sample in the
 /// image guide does (`-H "x-goog-api-key: $GEMINI_API_KEY"`). Never the `?key=`
@@ -33,15 +34,18 @@ pub struct GoogleProvider {
 }
 
 impl GoogleProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::raw_header("x-goog-api-key"),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -76,9 +80,16 @@ impl GoogleProvider {
     /// (`instances`/`parameters` body), while Gemini native image models use
     /// `:generateContent`.
     ///
-    /// @see <https://ai.google.dev/api/imagen> — `models.predict` for Imagen
-    fn api_url(&self, model: &str) -> String {
-        let verb = if Self::is_imagen_model(model) {
+    /// Google's Imagen reference page is gone (Imagen was shut down 2026-08-17:
+    /// "Imagen is shut down and no longer available through the Gemini API.");
+    /// the `:predict` surface survives only as `models.predict` in the v1beta
+    /// discovery document.
+    /// @see <https://aistudio.google.com/docs/image-generation> (2026-11-09)
+    /// @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — `models.predict` (2026-11-09)
+    /// `native` (the row's model) picks the verb; `wire` is the id sent.
+    fn api_url(&self, native: &str, wire: &str) -> String {
+        let model = wire;
+        let verb = if Self::is_imagen_model(native) {
             "predict"
         } else {
             "generateContent"
@@ -107,7 +118,7 @@ impl GoogleProvider {
             "gemini-2.5-flash-image" | "gemini-2.5-flash" => "gemini-2.5-flash-image",
             // GA since 2026-05-28. The `-preview` alias we used to append was
             // shut down on 2026-06-25.
-            // @see <https://ai.google.dev/gemini-api/docs/changelog>
+            // @see <https://aistudio.google.com/docs/changelog> (2026-11-09)
             "gemini-3-pro-image" | "gemini-3-pro" => "gemini-3-pro-image",
             "gemini-3.1-flash-image" => "gemini-3.1-flash-image",
             "gemini-3.1-flash-lite-image" => "gemini-3.1-flash-lite-image",
@@ -124,6 +135,21 @@ impl Default for GoogleProvider {
     }
 }
 
+/// litegen's tier as Google's `imageSize`: "Supported values are `512`, `1K`,
+/// `2K`, `4K`. If not specified, the model will use default value `1K`." Each
+/// row declares the ones its model takes (3.1 Flash Image "adds the smaller
+/// 512px (0.5K) resolution").
+/// @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — `ImageConfig` (2026-11-03)
+fn image_size(resolution: &str) -> Option<&'static str> {
+    match resolution {
+        "0.5K" => Some("512"),
+        "1K" => Some("1K"),
+        "2K" => Some("2K"),
+        "4K" => Some("4K"),
+        _ => None,
+    }
+}
+
 #[async_trait]
 impl ImageProvider for GoogleProvider {
     fn name(&self) -> &str {
@@ -134,6 +160,7 @@ impl ImageProvider for GoogleProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -148,12 +175,17 @@ impl ImageProvider for GoogleProvider {
     /// `predictions[].bytesBase64Encoded` response); Gemini native image models
     /// route through `POST {api_base}/models/{model}:generateContent`.
     ///
-    /// @see <https://ai.google.dev/api/generate-content> — `models.generateContent`.
+    /// @see <https://aistudio.google.com/api-reference/generate-content> — `POST /v1beta/models/{model}:generateContent`.
     ///   Proves the `contents[].parts[]` request structure (text + `inlineData`/`fileData`),
     ///   the `generationConfig` (`responseModalities`, `seed`, nested
-    ///   `imageConfig.aspectRatio`), `x-goog-api-key` header auth, and the
-    ///   `candidates[].content.parts[].inlineData` response this method reads.
-    /// @see <https://ai.google.dev/api/imagen> — `models.predict` for Imagen.
+    ///   `imageConfig.aspectRatio`) and the `candidates[].content.parts[].inlineData`
+    ///   response this method reads. The `x-goog-api-key` header is how every
+    ///   REST sample in the image guide authenticates (the reference's own
+    ///   samples use `?key=`).
+    /// @see <https://aistudio.google.com/docs/image-generation?generate-content=true> (2026-11-09)
+    /// @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — `models.predict`
+    ///   (`PredictRequest.instances`/`parameters`, `PredictResponse.predictions`) for Imagen,
+    ///   whose reference page is gone (2026-11-09).
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -163,7 +195,7 @@ impl ImageProvider for GoogleProvider {
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
         let gemini_model = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "google".into() })?;
-        let url = self.api_url(gemini_model);
+        let url = self.api_url(gemini_model, crate::providers::wire_model(self.config.as_ref(), &model.id, gemini_model));
         let is_imagen = Self::is_imagen_model(gemini_model);
 
         // The requested aspect ratio. No Google row declares `size`, so none
@@ -174,7 +206,7 @@ impl ImageProvider for GoogleProvider {
             // ── Imagen :predict surface ───────────────────────────────────
             // {"instances":[{"prompt":...}],"parameters":{"sampleCount":...,
             //  "aspectRatio":...}}
-            // @see <https://ai.google.dev/api/imagen> — models.predict
+            // @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — models.predict (PredictRequest, 2026-11-09)
             let mut instance = json!({ "prompt": base.prompt });
             if let Some(np) = base.negative_prompt.as_deref() {
                 instance["negativePrompt"] = Value::String(np.to_string());
@@ -190,12 +222,12 @@ impl ImageProvider for GoogleProvider {
                 parameters["seed"] = Value::Number(seed.into());
             }
 
-            // Shallow-merge extra fields into parameters (e.g. personGeneration).
-            if let Some(Value::Object(extra_map)) = &extras.extra {
-                if let Some(p_obj) = parameters.as_object_mut() {
-                    for (k, v) in extra_map {
-                        p_obj.insert(k.clone(), v.clone());
-                    }
+            // `extra` adds Imagen's own parameters (personGeneration); it
+            // cannot replace what litegen sets, nor ask for more images than
+            // litegen returns and bills (rule 11, N1).
+            if let Some(p_obj) = parameters.as_object_mut() {
+                for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| matches!(k, "sampleCount" | "aspectRatio" | "seed")) {
+                    p_obj.insert(k.clone(), v.clone());
                 }
             }
 
@@ -264,23 +296,23 @@ impl ImageProvider for GoogleProvider {
             // No `candidateCount`: it defaults to 1, and litegen returns (and
             // bills) one image.
 
-            // Merge extra fields: `imageSize` is a member of
-            // `generationConfig.imageConfig`, whose only other member is the
-            // `aspectRatio` set above; nothing litegen sets is replaced.
-            // @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — `ImageConfig`
-            //   has exactly `aspectRatio` and `imageSize`.
-            const IMAGE_CONFIG_KEYS: [&str; 1] = ["imageSize"];
-            const OWNED: [&str; 4] = ["responseModalities", "candidateCount", "seed", "imageConfig"];
-            if let Some(Value::Object(extra_map)) = &extras.extra {
-                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED.contains(&k.as_str())) {
-                    if IMAGE_CONFIG_KEYS.contains(&k.as_str()) {
-                        if !gen_config["imageConfig"].is_object() {
-                            gen_config["imageConfig"] = json!({});
-                        }
-                        gen_config["imageConfig"][k] = v.clone();
-                    } else if let Some(cfg_obj) = gen_config.as_object_mut() {
-                        cfg_obj.insert(k.clone(), v.clone());
-                    }
+            // The tier is `imageConfig.imageSize`, beside `aspectRatio`: the REST
+            // `ImageConfig` has exactly those two members.
+            // @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — `ImageConfig` (2026-11-03)
+            if let Some(tier) = extras.resolution.as_deref() {
+                let size = image_size(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: Google has no image size {tier}", model.id)))?;
+                if !gen_config["imageConfig"].is_object() {
+                    gen_config["imageConfig"] = json!({});
+                }
+                gen_config["imageConfig"]["imageSize"] = Value::String(size.into());
+            }
+
+            // Merge extra fields; nothing litegen sets is replaced, the tier
+            // (`imageSize`, from `resolution`) included.
+            const OWNED: [&str; 5] = ["responseModalities", "candidateCount", "seed", "imageConfig", "imageSize"];
+            if let Some(cfg_obj) = gen_config.as_object_mut() {
+                for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED.contains(&k)) {
+                    cfg_obj.insert(k.clone(), v.clone());
                 }
             }
 
@@ -314,26 +346,10 @@ impl ImageProvider for GoogleProvider {
             }
         })?;
 
-        let status = resp.status();
-        let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Google response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-
-        if !status.is_success() {
-            let err = resp_json["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown error")
-                .to_string();
-            return Err(ProviderError::RequestFailed {
-                message: format!("Google API error: {err}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(resp_json),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        // The status before the body (read_vendor_json): a 429, a 408 or a
+        // 5xx turned the call away and is retried, after any `Retry-After`
+        // (docs/gateway-settings.md); any other error status is Google's refusal.
+        let resp_json = crate::providers::read_vendor_json(resp, "Google").await?;
 
         let mut metadata = HashMap::new();
         metadata.insert("model".to_string(), Value::String(gemini_model.to_string()));
@@ -341,7 +357,7 @@ impl ImageProvider for GoogleProvider {
         let (b64_data, mime_type): (String, String) = if is_imagen {
             // Imagen :predict returns:
             //   predictions[0].{bytesBase64Encoded, mimeType}
-            // @see <https://ai.google.dev/api/imagen> — models.predict response
+            // @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — PredictResponse.predictions (2026-11-09)
             let predictions = resp_json["predictions"].as_array().ok_or_else(|| {
                 ProviderError::RequestFailed {
                     message: "Google response missing predictions".to_string(),
@@ -407,7 +423,7 @@ impl ImageProvider for GoogleProvider {
             // model generates up to two interim images to test composition
             // and logic. The last image within Thinking is also the final
             // rendered image." With none, Google's reason is the error.
-            // @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation>
+            // @see <https://aistudio.google.com/docs/image-generation?generate-content=true> (2026-11-09)
             let image_part = parts_arr
                 .iter()
                 .rev()
@@ -472,7 +488,7 @@ impl ImageProvider for GoogleProvider {
 
     /// Validate the API key via `GET {api_base}/models`, key in the header.
     ///
-    /// @see <https://ai.google.dev/api/models#method:-models.list> — `models.list`
+    /// @see <https://aistudio.google.com/api-reference/models/list-models> — `models.list` (`GET /v1beta/models`, 2026-11-09)
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -597,7 +613,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: None,
-            aspect_ratio: Some("1:1".to_string()),
+            resolution: None, aspect_ratio: Some("1:1".to_string()),
             quality: None,
             style: None,
             steps: None,
@@ -617,7 +633,7 @@ mod tests {
     /// The key goes in the `x-goog-api-key` header, as every image sample in
     /// Google's docs sends it. In the URL query it rode along in reqwest's
     /// error text ("… for url (…?key=…)") into the 502 body, logs and the DB.
-    /// @see <https://ai.google.dev/gemini-api/docs/image-generation> (`-H "x-goog-api-key: $GEMINI_API_KEY"`)
+    /// @see <https://aistudio.google.com/docs/image-generation?generate-content=true> (`-H "x-goog-api-key: $GEMINI_API_KEY"`, 2026-11-09)
     #[tokio::test]
     async fn the_api_key_travels_in_a_header_never_in_the_url() {
         let server = MockServer::start().await;
@@ -734,7 +750,7 @@ mod tests {
 
     /// `gemini-3-pro-image-preview` was shut down on 2026-06-25 when
     /// `gemini-3-pro-image` went GA. Appending `-preview` targets the dead id.
-    /// @see <https://ai.google.dev/gemini-api/docs/changelog>
+    /// @see <https://aistudio.google.com/docs/changelog> (2026-11-09)
     #[test]
     fn gemini_3_pro_image_is_not_rewritten_to_the_retired_preview_id() {
         let resolved = GoogleProvider::resolve_model("google/gemini-3-pro-image");
@@ -742,7 +758,7 @@ mod tests {
     }
 
     /// Imagen 3 was shut down 2025-11-10; the whole Imagen surface (Imagen 4)
-    /// shuts down 2026-08-17. @see <https://ai.google.dev/gemini-api/docs/deprecations>
+    /// on 2026-08-17. @see <https://aistudio.google.com/docs/deprecations> (2026-11-09)
     #[test]
     fn catalog_ships_no_imagen_models() {
         let r = registry();
@@ -814,7 +830,7 @@ mod tests {
         let schema = ref_schema("google/gemini-3-pro-image");
         let base = make_base("a lighthouse", "google/gemini-3-pro-image");
         let mut extras = make_extras();
-        extras.extra = Some(json!({ "imageSize": "2K" }));
+        extras.resolution = Some("2K".into());
 
         provider
             .generate(&schema, &base, &extras, &empty_materialized())
@@ -853,12 +869,16 @@ mod tests {
         let mut base = make_base("a fox", "google/gemini-3.1-flash-image");
         base.n = 4;
         let mut extras = make_extras();
-        extras.extra = Some(json!({ "responseModalities": ["TEXT"], "candidateCount": 3, "imageSize": "2K", "personGeneration": "allow_all" }));
+        // The tier is litegen's (`resolution`): an `extra.imageSize` neither
+        // replaces it nor goes anywhere else.
+        extras.resolution = Some("2K".into());
+        extras.extra = Some(json!({ "responseModalities": ["TEXT"], "candidateCount": 3, "imageSize": "4K", "personGeneration": "allow_all" }));
         make_provider(&server.uri()).generate(&ref_schema("google/gemini-3.1-flash-image"), &base, &extras, &empty_materialized()).await.unwrap();
         let cfg = sent_body(&server).await["generationConfig"].clone();
         assert_eq!(cfg["responseModalities"], json!(["IMAGE"]), "{cfg}");
         assert!(cfg.get("candidateCount").is_none(), "{cfg}");
         assert_eq!(cfg["imageConfig"], json!({ "aspectRatio": "1:1", "imageSize": "2K" }), "{cfg}");
+        assert!(cfg.get("imageSize").is_none(), "{cfg}");
     }
 
     /// W5: the final image is the last non-thought one, and a reply with none
@@ -939,5 +959,63 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// A 429 turned the call away and is retried, after the `Retry-After`
+    /// Google asked for when it sent one (docs/gateway-settings.md).
+    #[tokio::test]
+    async fn a_429_is_retryable() {
+        let body = json!({ "error": { "code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED" } });
+        for (answer, wait_ms) in [
+            (ResponseTemplate::new(429).insert_header("retry-after", "2").set_body_json(body.clone()), Some(2000)),
+            (ResponseTemplate::new(429).set_body_json(body.clone()), None),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).respond_with(answer).mount(&server).await;
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("google/gemini-3.1-flash-image"), &make_base("x", "google/gemini-3.1-flash-image"), &make_extras(), &empty_materialized())
+                .await
+                .unwrap_err();
+            match wait_ms {
+                Some(ms) => assert!(matches!(&err, ProviderError::RateLimited { retry_after_ms, provider_error: Some(_), .. } if *retry_after_ms == ms), "{err:?}"),
+                None => assert!(matches!(&err, ProviderError::RequestFailed { retryable: true, status_code: Some(429), .. }), "{err:?}"),
+            }
+        }
+    }
+
+    /// A gateway's 5xx page is not JSON: the status decides, and the call is
+    /// retried rather than failed as an unreadable answer.
+    #[tokio::test]
+    async fn a_5xx_page_that_is_not_json_is_retryable() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(503).set_body_string("<html>Service Unavailable</html>")).mount(&server).await;
+        let err = make_provider(&server.uri())
+                .generate(&ref_schema("google/gemini-3.1-flash-image"), &make_base("x", "google/gemini-3.1-flash-image"), &make_extras(), &empty_materialized())
+                .await
+                .unwrap_err();
+        assert!(matches!(&err, ProviderError::RequestFailed { retryable: true, status_code: Some(503), .. }), "{err:?}");
+    }
+
+    /// litegen's tier goes as `imageConfig.imageSize`: "Supported values are
+    /// `512`, `1K`, `2K`, `4K`" — litegen's `0.5K` is Google's `512`. Every
+    /// tier a Google row declares maps; nothing else does.
+    /// @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> (ImageConfig, 2026-11-03)
+    #[test]
+    fn every_declared_resolution_is_one_of_googles_image_sizes() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let reg = crate::capabilities::CapabilityRegistry::from_dir(&dir).expect("load");
+        let mut seen = 0;
+        for m in reg.for_provider("google") {
+            if let Some(crate::capabilities::ParamSpec::String(s)) = m.params.get("resolution") {
+                for v in &s.enum_values {
+                    seen += 1;
+                    assert!(matches!(image_size(v), Some("512" | "1K" | "2K" | "4K")), "{}: {v}", m.id);
+                }
+            }
+        }
+        assert!(seen > 0, "no Google row declares a resolution");
+        assert_eq!((image_size("0.5K"), image_size("1.5K"), image_size("2k")), (Some("512"), None, None));
     }
 }

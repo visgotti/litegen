@@ -15,7 +15,7 @@ management API the way LiteLLM's key types do.
 | Scope | Opens |
 |---|---|
 | `generate` | Generating images, video and 3D; cost quotes; job status; mesh conversion; the model catalog (`/v1/models`, `/v1/providers`, `/v1/utils/models3d/formats`) and the key's generations and their assets (`/v1/generations…`) |
-| `read` | The model catalog and generations too, plus request logs, stats, provider health, spend, limits and end users |
+| `read` | The model catalog and generations too, plus request logs, stats, spend, limits and end users; in single-tenant mode, in the deployment's org, also provider health (`GET /health`, which checks the gateway's own vendor keys; in hosted mode only the master key reads it) |
 | `admin` | Managing keys, budgets and limits, end users, the audit log and the cache; in single-tenant mode also the gateway's models, providers, routes and settings |
 
 The Keys page offers them as presets:
@@ -57,7 +57,9 @@ the reservations already taken are rolled back. The key's older `token_quota`
 The org's allowed-model pool and the app's model access
 (`/v1/orgs/{id}/allowed-models`, `/v1/apps/{id}/allowed-models`) are now
 enforced at generation time. `GET /v1/models` lists only the models the caller
-may use.
+may use; `GET /v1/models?all=true` lists every model the gateway serves (the
+dashboard's Providers page edits the pool from it, so a model left out of the
+pool stays listed to be added back).
 
 | Endpoint | |
 |---|---|
@@ -99,15 +101,16 @@ platform admin (the hosted master key) sees every org, or one org via `org_id`.
 
 These endpoints are for the platform admin only, plus owners/admins and
 `admin`-scope keys in single-tenant mode. Changes apply to the next request and
-are stored, then re-applied at boot.
+are stored, then re-applied at boot. Settings and routes reach every replica
+within 15 s.
 
 | Endpoint | LiteLLM | |
 |---|---|---|
 | `GET/POST /v1/admin/models` | `/model/info`, `/model/new` | Add a model at runtime. The body is a `models/*.yaml` row and goes through the same validation. The vendor model called is the part of the id after `<provider>/`. |
 | `GET/PUT/PATCH/DELETE /v1/admin/models/{id}` | `/model/update`, `/model/block`, `/model/delete` | `PATCH {disabled}` hides any model, catalog or runtime. Catalog models are otherwise read-only. |
-| `GET /v1/admin/providers`, `GET/PUT/DELETE /v1/admin/providers/{name}` | `/credentials` | Set keys, `api_base`, `model_mapping`, headers, options or `enabled`. Secrets are AES-GCM encrypted at rest and only shown as `…last4`. Unset fields fall back to the env/YAML config. In-flight jobs keep the instance they started with. |
+| `GET /v1/admin/providers`, `GET/PUT/DELETE /v1/admin/providers/{name}` | `/credentials` | Set keys, `api_base`, `model_mapping`, headers, options or `enabled` ([provider-config.md](provider-config.md)); a header litegen can't send is a 400 `invalid_provider_config`. Secrets are AES-GCM encrypted at rest and only shown as `…last4`. Unset fields fall back to the env/YAML config. In-flight jobs keep the instance they started with. |
 | `GET/PUT/DELETE /v1/admin/routes` | router settings, fallbacks | Model routes: fallback, weighted round robin, lowest cost, lowest latency, caching |
-| `GET/PUT /v1/admin/settings` | `/config/update` | `cost_markup_percent`, `alert_webhook_url`, and a default end-user budget |
+| `GET/PUT /v1/admin/settings` | `/config/update`, the UI's caching and router settings | `cost_markup_percent`, `alert_webhook_url`, a default end-user budget, stored-file access ([docs/storage-access.md](storage-access.md)), and the cache, retries, vendor timeout and circuit breaker ([docs/gateway-settings.md](gateway-settings.md)) |
 
 Runtime models are refused for `fal`, whose adapter maps model ids through a
 fixed endpoint table. Add fal models to `models/fal.yaml` instead.

@@ -31,11 +31,13 @@ use crate::providers::{
 };
 use crate::types::*;
 
-/// ONE wall-clock budget for the whole `generate()`: the submit, every poll
-/// round trip and the download, not just the sleeps. The router times each
-/// attempt out at 120 s and re-submits on a timeout, and the vendor bills the
-/// second job too.
-const GENERATE_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+/// How long to poll when litegen sets no deadline (the adapter called
+/// directly, as in tests). Under the router, `PollBudget` polls until
+/// litegen's own deadline for the call instead: the attempt's start plus the
+/// vendor timeout (`providers::with_deadline`, docs/gateway-settings.md), so
+/// an operator who raises the timeout for a slow model gives this adapter the
+/// time too.
+const POLL_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// Largest image we'll buffer from a vendor URL.
 const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
@@ -76,15 +78,18 @@ impl Default for AcmeImageProvider {
 }
 
 impl AcmeImageProvider {
+    /// The client for Acme's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(Client::builder().timeout(std::time::Duration::from_secs(30)), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(30)) // per request; GENERATE_BUDGET bounds the whole call
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
             download_client: crate::util::ssrf::no_redirect_client_with_timeout(std::time::Duration::from_secs(30)),
             public_downloads_only: true,
         }
@@ -140,9 +145,9 @@ impl AcmeImageProvider {
 
     /// Builds the CreateImageRequest body.
     ///
-    /// `extra` goes in FIRST. With `strict: false` it arrives unfiltered, so
-    /// everything this adapter owns is written afterwards and wins. `n` is
-    /// never forwarded: litegen returns and bills one image.
+    /// `extra` goes in FIRST (only its allowlisted keys arrive), so everything
+    /// this adapter owns is written afterwards and wins. `n` is never
+    /// forwarded: litegen returns and bills one image.
     fn build_body(
         native: &str,
         model: &ModelSchema,
@@ -154,7 +159,8 @@ impl AcmeImageProvider {
             Some(Value::Object(m)) => Value::Object(m.clone()),
             _ => json!({}),
         };
-        body["model"] = json!(native);
+        // The operator's `model_mapping` may rename the model on the wire.
+        body["model"] = json!(crate::providers::wire_model(self.config.as_ref(), &model.id, native));
         body["prompt"] = json!(base.prompt);
         // We ask for PNG, so `content_type: image/png` below is true.
         body["output_format"] = json!("png");
@@ -199,14 +205,13 @@ impl AcmeImageProvider {
         creds: &ProviderCredentials,
         polling_url: &str,
         job_id: &str,
-        deadline: std::time::Instant,
     ) -> Result<Value, ProviderError> {
         let fail = |message: String, status_code: Option<u16>, body: Option<Value>| {
             ProviderError::RequestFailed { message, status_code, provider_error: body, retryable: false }
         };
-        // Stop polling early enough to leave time for the download.
-        while std::time::Instant::now() + POLL_INTERVAL + std::time::Duration::from_secs(10) < deadline {
-            tokio::time::sleep(POLL_INTERVAL).await;
+        // Sleeps the interval before each poll, never past the deadline.
+        let mut budget = crate::providers::PollBudget::new(POLL_BUDGET, POLL_INTERVAL);
+        while budget.next().await {
             let builder = crate::providers::auth::apply(&self.auth, creds, self.client.get(polling_url))?;
             let resp = crate::providers::inject_trace_headers(builder)
                 .send()
@@ -240,7 +245,7 @@ impl AcmeImageProvider {
         }
         // Out of budget. Non-retryable: a router retry would submit and bill
         // a second job. Name the vendor job so support can find it.
-        Err(fail(format!("Acme job {job_id} was not ready within the generate budget"), None, None))
+        Err(fail(format!("Acme job {job_id} was not ready by litegen's deadline"), None, None))
     }
 
     /// Downloads the signed result URL with no auth header, because it points
@@ -304,6 +309,7 @@ impl ImageProvider for AcmeImageProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -320,7 +326,6 @@ impl ImageProvider for AcmeImageProvider {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
-        let deadline = std::time::Instant::now() + GENERATE_BUDGET;
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id)?;
         let body = Self::build_body(native, model, base, extras, materialized)?;
@@ -340,11 +345,17 @@ impl ImageProvider for AcmeImageProvider {
                 retryable: e.is_connect(),
             })?;
         let status = resp.status();
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         let data: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if !status.is_success() {
+            let message = format!("Acme API error (HTTP {status}): {}", acme_error_message(&data, &text));
+            // A 429 that names its wait keeps it for the retry.
+            if let Some(e) = crate::providers::rate_limited("acme", status, retry_after, &message, Some(&data)) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
-                message: format!("Acme API error (HTTP {status}): {}", acme_error_message(&data, &text)),
+                message,
                 status_code: Some(status.as_u16()),
                 provider_error: Some(data),
                 // Rate limits and server errors on submit are safe to retry; 4xx is not.
@@ -366,7 +377,7 @@ impl ImageProvider for AcmeImageProvider {
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}/v2/images/{job_id}", self.api_base()));
 
-        let result = self.wait_for_result(&creds, &polling_url, job_id, deadline).await?;
+        let result = self.wait_for_result(&creds, &polling_url, job_id).await?;
         let image_url = result["result"]["url"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: format!("Acme job {job_id} is ready but has no result.url"),
             status_code: None,
@@ -670,9 +681,11 @@ mod tests {
 }
 ```
 
-Each polling test waits one `POLL_INTERVAL`, which is 2 s. If you lower it
-under `#[cfg(test)]` to speed up the suite, keep `GENERATE_BUDGET` in
-production well under the router's 120 s.
+Each polling test waits one `POLL_INTERVAL`, which is 2 s. To test the end
+of the budget, run the call inside `providers::with_deadline` with a
+deadline a few seconds out, and bound the test with `tokio::time::timeout`
+so a budget that ignores the deadline fails fast, as bfl's
+`an_endless_pending_ends_at_litegens_deadline` does.
 
 ## Catalog row (`models/acme.yaml`)
 

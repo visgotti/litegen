@@ -19,6 +19,7 @@ export class ProvidersService {
       .createQueryBuilder('m')
       .select('m.providerId', 'providerId')
       .addSelect('COUNT(*)', 'count')
+      .where('m.active = :active', { active: true })
       .groupBy('m.providerId')
       .getRawMany<{ providerId: string; count: string }>();
     const byProvider = new Map(counts.map((c) => [c.providerId, parseInt(c.count, 10)]));
@@ -33,6 +34,7 @@ export class ProvidersService {
     if (!provider) {
       throw new NotFoundException(`Provider "${id}" not found`);
     }
+    provider.models = (provider.models ?? []).filter((m) => m.active);
     return ProviderDetailDto.fromEntityWithModels(provider);
   }
 }

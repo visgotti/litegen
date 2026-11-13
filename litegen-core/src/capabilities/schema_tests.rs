@@ -97,12 +97,30 @@ models:
             ParamSpec::String(Default::default()),
             ParamSpec::StringArray(Default::default()),
             ParamSpec::Size(SizeSpec::Enum(SizeSpecEnum { values: vec![], label: None, description: None })),
-            ParamSpec::AspectRatio(ParamSpecAspectRatio { allowed: vec![], default: None, label: None, description: None }),
+            ParamSpec::AspectRatio(ParamSpecAspectRatio { allowed: vec![], default: None, label: None, description: None, frames_set_shape: None }),
             ParamSpec::Seed(ParamSpecSeed { min: 0, max: 1, label: None, description: None }),
         ];
         for spec in specs {
             let v = serde_json::to_value(&spec).unwrap();
             assert_eq!(v["kind"], spec.kind(), "{v}");
+        }
+    }
+
+    /// E4a: where a result goes, where it is stored and who sees it are
+    /// litegen's, in any spelling a vendor uses; other vendor fields are not.
+    #[test]
+    fn the_gateway_owns_where_results_go_and_who_sees_them() {
+        for key in [
+            "callback_url", "callbackUrl", "CallbackURL", "callback", "webhook_url", "webhook", "WebhookUrl",
+            "status_callback", "fal_webhook", "notify_url", "storageUri", "storage_uri", "outputDataConfig",
+            "isPublic", "is_public", "public", "Public",
+        ] {
+            assert!(gateway_owned_extra(key).is_some(), "{key} is litegen's");
+        }
+        assert!(gateway_owned_extra("callback_url").unwrap().contains("webhook"));
+        assert!(gateway_owned_extra("isPublic").unwrap().contains("access"));
+        for key in ["watermark", "seed", "model", "publication", "public_id", "prompt_optimizer", "safety_tolerance", "style_id"] {
+            assert_eq!(gateway_owned_extra(key), None, "{key} may be allowlisted");
         }
     }
 

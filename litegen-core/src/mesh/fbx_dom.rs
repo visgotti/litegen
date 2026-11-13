@@ -56,11 +56,12 @@ const MAX_DEPTH: usize = 64;
 /// legitimate files are mostly arrays and have far fewer records than bytes /
 /// 100. Four million is far past either and bounds the arena at ~150 MB.
 pub(super) const MAX_RECORDS: usize = 4_000_000;
-/// Bytes all decoded arrays may occupy together, the decoded-value budget of
-/// `glb.rs` restated for a format whose arrays are doubles: twice the input
-/// cap, which no honest file reaches — a 128 MB FBX of uncompressed doubles
-/// decodes to exactly 128 MB.
-pub(super) const MAX_DECODED_BYTES: usize = 2 * super::MAX_INPUT_BYTES;
+/// Bytes all decoded arrays may occupy together: the expansion budget every
+/// compressed container shares ([`super::MAX_EXPANDED_BYTES`]). Twice the
+/// input cap, as this was until 2026-11, refused litegen's own textured FBX
+/// above ~1.92M triangles: compressed arrays of doubles decode to five to
+/// seven times their file size.
+pub(super) const MAX_DECODED_BYTES: usize = super::MAX_EXPANDED_BYTES;
 
 /// Arrays at least this large are written zlib-compressed. The SDK's own
 /// threshold sits between 939 and 1,072 bytes in every file measured (see the
@@ -287,6 +288,12 @@ impl<'a> Dom<'a> {
         }
     }
 
+    /// The array bytes decoded so far, against [`MAX_DECODED_BYTES`].
+    #[cfg(test)]
+    pub(super) fn decoded_bytes(&self) -> usize {
+        self.decoded.get()
+    }
+
     fn charge(&self, bytes: usize, what: &str) -> Result<(), MeshError> {
         let total = self.decoded.get().saturating_add(bytes);
         if total > MAX_DECODED_BYTES {
@@ -353,7 +360,7 @@ impl<'a> Dom<'a> {
             }
             ArrayRef::Text { count, text } => {
                 self.charge(count.saturating_mul(8), what)?;
-                parse_text_numbers(text, count, what, |tok| tok.parse::<f64>().ok().filter(|f| f.is_finite()))
+                parse_text_numbers(text, count, what, parse_float)
             }
         }
     }
@@ -802,9 +809,9 @@ fn parse_text_props<'a>(t: &'a str, rec: &str) -> Result<Vec<Prop<'a>>, MeshErro
             if let Ok(v) = tok.parse::<i64>() {
                 Prop::Int(v)
             } else {
-                match tok.parse::<f64>() {
-                    Ok(f) if f.is_finite() => Prop::Float(f),
-                    _ => return Err(malformed(format!("record {rec:?}: {:?} is not a number", truncate(tok, 40)))),
+                match parse_float(tok) {
+                    Some(f) => Prop::Float(f),
+                    None => return Err(malformed(format!("record {rec:?}: {:?} is not a number", truncate(tok, 40)))),
                 }
             }
         } else {
@@ -817,6 +824,29 @@ fn parse_text_props<'a>(t: &'a str, rec: &str) -> Result<Vec<Prop<'a>>, MeshErro
 }
 
 /// Parse the values of an ASCII array, which must number exactly `count`.
+/// A number as an ASCII FBX writer prints one, the special values included:
+/// MSVC's printf spells NaN `1.#IND` or `1.#QNAN` and infinity `1.#INF` (any
+/// digits after, either sign), others `nan` and `inf`. They read as NaN and
+/// infinity for the semantic reader to replace with a warning: refusing the
+/// token refused the whole file over one bad normal.
+fn parse_float(tok: &str) -> Option<f64> {
+    if let Ok(f) = tok.parse::<f64>() {
+        return Some(f);
+    }
+    let (negative, body) = match tok.strip_prefix('-') {
+        Some(b) => (true, b),
+        None => (false, tok.strip_prefix('+').unwrap_or(tok)),
+    };
+    let spelled = |p: &str| body.strip_prefix(p).is_some_and(|rest| rest.bytes().all(|c| c.is_ascii_digit()));
+    if spelled("1.#INF") {
+        Some(if negative { f64::NEG_INFINITY } else { f64::INFINITY })
+    } else if spelled("1.#IND") || spelled("1.#QNAN") || spelled("1.#SNAN") {
+        Some(f64::NAN)
+    } else {
+        None
+    }
+}
+
 fn parse_text_numbers<T>(text: &str, count: usize, what: &str, parse: impl Fn(&str) -> Option<T>) -> Result<Vec<T>, MeshError> {
     let mut out = Vec::with_capacity(count.min(text.len() / 2 + 1));
     for tok in text.split(|c: char| c == ',' || c.is_ascii_whitespace()) {

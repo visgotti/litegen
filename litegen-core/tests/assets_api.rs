@@ -137,3 +137,165 @@ async fn another_orgs_assets_are_not_found() {
         assert_eq!(s, StatusCode::NOT_FOUND, "{path}");
     }
 }
+
+// ─── Stored files stream, and answer one range (review 2026-11-11, P6) ─────
+
+/// A finished generation row in the default app whose one mesh is at `url`.
+async fn completed_mesh_row(db: &litegen::db::sqlite::SqliteDatabase, id: &str, url: &str) {
+    use litegen::api::middleware::{DEFAULT_APP_ID, DEFAULT_ORG_ID};
+    use litegen::db::DatabaseStore;
+    db.insert_generation(id, None, "mock/mesh-3d", "mock", "model3d", Some("j"), 0.0, Some(DEFAULT_ORG_ID), Some(DEFAULT_APP_ID))
+        .await
+        .unwrap();
+    let metadata = json!({ "assets": [{ "kind": "mesh", "format": "glb", "url": url }] });
+    db.update_generation_if_active(id, "completed", 100, Some(url), None, Some(chrono::Utc::now()), Some(&metadata))
+        .await
+        .unwrap();
+}
+
+/// An S3 "bucket" on 127.0.0.1 that answers any request with a 4 MiB glb it
+/// never finishes: 64 KiB of it (starting `glTF`), then it holds the
+/// connection. Returns its endpoint.
+async fn stalling_bucket() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut req = [0u8; 8192];
+                let _ = sock.read(&mut req).await;
+                let head = b"HTTP/1.1 200 OK\r\nContent-Type: model/gltf-binary\r\nContent-Length: 4194304\r\n\r\n";
+                let mut chunk = vec![7u8; 64 * 1024];
+                chunk[..4].copy_from_slice(b"glTF");
+                if sock.write_all(head).await.is_ok() && sock.write_all(&chunk).await.is_ok() {
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                }
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn a_file_in_s3_starts_streaming_before_the_bucket_has_sent_it_all() {
+    use futures::StreamExt;
+    let endpoint = stalling_bucket().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ep = endpoint.clone();
+    let (app, db) = harness::app_with(dir.path(), move |c| {
+        c.image_storage.backend = "s3".into();
+        c.image_storage.s3 = Some(litegen::config::S3StorageConfig {
+            bucket_name: "b".into(),
+            region: "us-east-1".into(),
+            access_key_id: Some("k".into()),
+            secret_access_key: Some("s".into()),
+            endpoint_url: Some(ep),
+            custom_public_url: None,
+            session_token: None,
+            credentials_expire_at: None,
+        });
+    })
+    .await;
+    let id = "litegen-3d-s3stream";
+    completed_mesh_row(&db, id, &format!("{endpoint}/b/litegen/3d/{id}/model.glb")).await;
+
+    let wait = std::time::Duration::from_secs(5);
+    for route in [format!("/v1/generations/{id}/assets/0"), format!("/v1/models3d/assets/litegen/3d/{id}/model.glb")] {
+        let resp = tokio::time::timeout(wait, app.clone().oneshot(Request::get(&route).body(Body::empty()).unwrap()))
+            .await
+            .unwrap_or_else(|_| panic!("{route} waited for the whole object before answering"))
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{route}");
+        let mut body = resp.into_body().into_data_stream();
+        let mut head = Vec::new();
+        while head.len() < 4 {
+            let chunk = tokio::time::timeout(wait, body.next())
+                .await
+                .unwrap_or_else(|_| panic!("{route} sent nothing while the bucket was still sending"))
+                .expect("a first chunk")
+                .unwrap();
+            head.extend_from_slice(&chunk);
+        }
+        assert_eq!(&head[..4], b"glTF", "{route}");
+    }
+}
+
+/// A finished `mock/mesh-3d`: its id, its glb's stored key, the glb's index
+/// in its assets, and the glb's bytes.
+async fn finished_glb(app: &axum::Router) -> (String, String, usize, Vec<u8>) {
+    let id = harness::submit(app, "mock/mesh-3d", "a teapot").await;
+    let done = harness::poll_until_terminal(app, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let assets = done["assets"].as_array().unwrap();
+    let index = assets.iter().position(|a| a["kind"] == "mesh" && a["format"] == "glb").expect("a glb");
+    let url = assets[index]["url"].as_str().unwrap();
+    let key = url.split_once("/v1/models3d/assets/").expect("litegen's own asset route").1.split('?').next().unwrap().to_string();
+    let (s, _, bytes) = call(app, Request::get(format!("/v1/models3d/assets/{key}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::OK);
+    (id, key, index, bytes)
+}
+
+/// `route` answers a plain GET, one range, a suffix range and a range past
+/// the end as a file server does.
+async fn answers_ranges(app: &axum::Router, route: &str, whole: &[u8]) {
+    let len = whole.len();
+    let get = |range: Option<String>| {
+        let mut req = Request::get(route);
+        if let Some(r) = range {
+            req = req.header("range", r);
+        }
+        req.body(Body::empty()).unwrap()
+    };
+    let (s, h, body) = call(app, get(Some("bytes=0-3".into()))).await;
+    assert_eq!(s, StatusCode::PARTIAL_CONTENT, "{route}: bytes=0-3");
+    assert_eq!(h["content-range"], format!("bytes 0-3/{len}"), "{route}");
+    assert_eq!(h["content-length"], "4", "{route}");
+    assert_eq!(body, b"glTF", "{route}");
+
+    let (s, h, body) = call(app, get(None)).await;
+    assert_eq!(s, StatusCode::OK, "{route}: a plain GET");
+    assert_eq!(body, whole, "{route}: a plain GET is the whole file");
+    assert_eq!(h.get("accept-ranges").map(|v| v.to_str().unwrap()), Some("bytes"), "{route}: {h:?}");
+
+    let (s, h, body) = call(app, get(Some("bytes=-10".into()))).await;
+    assert_eq!(s, StatusCode::PARTIAL_CONTENT, "{route}: bytes=-10");
+    assert_eq!(h["content-range"], format!("bytes {}-{}/{len}", len - 10, len - 1), "{route}");
+    assert_eq!(body, &whole[len - 10..], "{route}");
+
+    let (s, h, _) = call(app, get(Some(format!("bytes={len}-")))).await;
+    assert_eq!(s, StatusCode::RANGE_NOT_SATISFIABLE, "{route}: a range past the end");
+    assert_eq!(h["content-range"], format!("bytes */{len}"), "{route}");
+}
+
+#[tokio::test]
+async fn a_range_request_gets_just_those_bytes() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let (_, key, _, whole) = finished_glb(&app).await;
+    answers_ranges(&app, &format!("/v1/models3d/assets/{key}"), &whole).await;
+}
+
+#[tokio::test]
+async fn the_file_route_answers_a_range_too() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let (id, _, index, whole) = finished_glb(&app).await;
+    answers_ranges(&app, &format!("/v1/generations/{id}/assets/{index}"), &whole).await;
+}
+
+// ─── One observer keeps a finished video (review 2026-11-11, P4) ───────────
+
+#[tokio::test]
+async fn a_client_poll_stands_aside_while_another_observer_keeps_the_video() {
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().unwrap();
+    let (app, db) = harness::app_with_mock_3d_assets_in(dir.path()).await;
+    let submitted = post_json(&app, "/v1/videos/generations", json!({ "model": "mock/video-gen", "prompt": "a wave" })).await;
+    let id = submitted["id"].as_str().unwrap();
+    assert!(db.lease_generation_work(id, "delivery", "elsewhere", chrono::Duration::minutes(5)).await.unwrap());
+
+    let (_, v) = get_json(&app, &format!("/v1/videos/{id}")).await;
+    assert_eq!(v["status"], "processing", "the video was kept while another observer held its delivery: {v}");
+    assert!(v["video_url"].is_null() && v["error"].is_null(), "{v}");
+    let kept = dir.path().join(format!("litegen/video/{id}"));
+    assert!(!kept.exists(), "the video was kept while another observer held its delivery: {}", kept.display());
+}

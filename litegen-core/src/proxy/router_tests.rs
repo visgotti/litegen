@@ -12,7 +12,13 @@ mod tests {
     use crate::proxy::cache::GenerationCache;
     use crate::proxy::materializer::MaterializedRequest;
     use crate::proxy::registry::ProviderRegistry;
-    use crate::proxy::router::ProxyRouter;
+    use crate::proxy::router::{OrgCredentials, ProxyRouter};
+
+    /// A database for the calls that take one (a video poll's claim): an
+    /// empty one, in memory.
+    async fn test_db() -> Arc<dyn crate::db::DatabaseStore> {
+        Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite"))
+    }
     use crate::proxy::storage::{ImageStore, ImageStoreError, LocalStore};
     use crate::providers::{
         GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
@@ -55,7 +61,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: None,
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             quality: None,
             style: None,
             steps: None,
@@ -327,7 +333,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let result = router
-            .generate_image(&schema, &base, &extras, &materialized, None, None, None)
+            .generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None)
             .await;
 
         assert!(
@@ -373,7 +379,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let response = router
-            .generate_image(&schema, &base, &extras, &materialized, None, None, None)
+            .generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None)
             .await
             .expect("generate_image should succeed");
 
@@ -429,7 +435,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let response = router
-            .generate_video(&schema, &base, &extras, &materialized, None)
+            .generate_video(&schema, &base, &extras, &materialized, OrgCredentials::default())
             .await
             .expect("generate_video should succeed");
 
@@ -438,6 +444,48 @@ mod tests {
             (cost - 1.00).abs() < 1e-9,
             "billed cost {cost} must equal per-video 1.00 × 1 delivered, not × n=5"
         );
+    }
+
+    /// A video job the router took is let go once it is older than any
+    /// observer can need it (P3): the poller reaps a job still active at 2 h,
+    /// so a job past the 3 h age has a terminal row. Before, only a client's
+    /// GET on this replica or a cancel let a job go, and the map grew until a
+    /// restart, each job with its provider instance.
+    #[tokio::test(start_paused = true)]
+    async fn a_video_job_past_the_reap_age_is_let_go() {
+        let registry = Arc::new(ProviderRegistry::new());
+        {
+            use crate::providers::video::mock::MockVideoProvider;
+            use crate::providers::VideoProvider as _;
+            let mut mp = MockVideoProvider::new();
+            mp.configure(default_instance_config());
+            registry.register_mock_video(Arc::new(mp)).await;
+        }
+        let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
+        let router = ProxyRouter::new(registry, cache, Arc::new(AppConfig::default()), Arc::new(LocalStore));
+        let schema = shipped_schema("mock/video-gen");
+        let extras = || crate::providers::VideoExtras {
+            duration_seconds: 5.0,
+            aspect_ratio: None,
+            resolution: None,
+            fps: None,
+            extra: None,
+            camera: None, audio: None, r#loop: None,
+            source: None, direction: None, time_range: None, replace: None,
+        };
+
+        let old = router
+            .generate_video(&schema, &make_base("old", "mock/video-gen"), &extras(), &empty_materialized(), OrgCredentials::default())
+            .await
+            .expect("the first video is submitted");
+        assert!(router.get_provider_job_id(&old.id).await.is_some(), "the job is tracked");
+        tokio::time::advance(std::time::Duration::from_secs(3 * 3600 + 1)).await;
+        let new = router
+            .generate_video(&schema, &make_base("new", "mock/video-gen"), &extras(), &empty_materialized(), OrgCredentials::default())
+            .await
+            .expect("the second video is submitted");
+        assert!(router.get_provider_job_id(&new.id).await.is_some(), "the new job is tracked");
+        assert_eq!(router.get_provider_job_id(&old.id).await, None, "a job past the reap age is let go");
     }
 
     // ─── G1: lowest_latency routes to provider with lower average latency ─────
@@ -491,7 +539,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let result = router
-            .generate_image(&schema, &base, &extras, &materialized, None, None, None)
+            .generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None)
             .await;
 
         assert!(result.is_ok(), "Expected success, got: {:?}", result.err());
@@ -540,7 +588,7 @@ mod tests {
         let extras = make_image_extras();
         let materialized = empty_materialized();
 
-        let result = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
+        let result = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await;
         assert!(result.is_ok(), "Expected success after retries, got: {:?}", result.err());
 
         let attempts = counter.load(Ordering::SeqCst);
@@ -553,7 +601,7 @@ mod tests {
     async fn cache_hit_does_not_call_provider_second_time() {
         let (counting_provider, call_counter) = CountingProvider::new("mock");
 
-        let config = Arc::new(AppConfig::default());
+        let config = Arc::new(cache_on());
 
         let registry = Arc::new(ProviderRegistry::new());
         registry.register_mock_image(Arc::new(counting_provider)).await;
@@ -563,6 +611,7 @@ mod tests {
             enabled: true,
             default_ttl_seconds: 3600,
             max_items: 100,
+            ..CacheGlobalConfig::default()
         };
         let cache = Arc::new(GenerationCache::new(&cache_config));
         let image_store = Arc::new(LocalStore);
@@ -576,15 +625,92 @@ mod tests {
         let materialized = empty_materialized();
 
         // First call — provider is invoked
-        let r1 = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
+        let r1 = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await;
         assert!(r1.is_ok(), "First call failed: {:?}", r1.err());
 
         // Second call with same prompt — should hit cache
-        let r2 = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
+        let r2 = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await;
         assert!(r2.is_ok(), "Second call failed: {:?}", r2.err());
 
         let count = call_counter.load(Ordering::SeqCst);
         assert_eq!(count, 1, "Provider should have been called once (cache hit on 2nd call), got {}", count);
+    }
+
+    /// Answers once the test opens its gate, and says when it has the request.
+    struct GatedProvider {
+        reached: Arc<tokio::sync::Notify>,
+        open: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl ImageProvider for GatedProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn configure(&mut self, _config: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+
+        async fn generate(
+            &self,
+            _model: &ModelSchema,
+            _base: &BaseGenerationRequest,
+            _extras: &ImageExtras,
+            _materialized: &MaterializedRequest,
+        ) -> Result<GenerationOutput, ProviderError> {
+            self.reached.notify_one();
+            self.open.notified().await;
+            Ok(GenerationOutput {
+                data: vec![0u8; 4],
+                content_type: "image/png".to_string(),
+                metadata: HashMap::new(),
+                more: Vec::new(),
+            })
+        }
+
+        async fn estimate_cost(
+            &self,
+            model: &ModelSchema,
+            _request: &ImageGenerationRequest,
+        ) -> Result<CostEstimate, ProviderError> {
+            Ok(build_cost_estimate(model.pricing.base_cost_usd, 0.0, CostSource::Estimated, None))
+        }
+
+        async fn health_check(&self) -> HealthCheckResult {
+            HealthCheckResult { healthy: true, message: "ok".into(), latency_ms: Some(0) }
+        }
+    }
+
+    /// An operator who turns the cache off while a request is with the vendor
+    /// must not find that request's answer stored anyway: a later switch-on
+    /// would serve it.
+    #[tokio::test]
+    async fn an_answer_that_arrives_after_the_cache_was_turned_off_is_not_kept() {
+        let (reached, open) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_image(Arc::new(GatedProvider { reached: reached.clone(), open: open.clone() })).await;
+        let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig {
+            enabled: true,
+            default_ttl_seconds: 3600,
+            max_items: 100,
+            ..CacheGlobalConfig::default()
+        }));
+        let router = Arc::new(ProxyRouter::new(registry, cache.clone(), Arc::new(cache_on()), Arc::new(LocalStore)));
+        let generating = tokio::spawn({
+            let router = router.clone();
+            async move {
+                let (schema, base) = (shipped_schema("mock/image-gen"), make_base("in flight", "mock/image-gen"));
+                let (extras, materialized) = (make_image_extras(), empty_materialized());
+                router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), reached.notified()).await.expect("the vendor has the request");
+        // Turned off while the vendor works, as PUT /v1/admin/settings applies it.
+        let mut overrides = router.overrides();
+        overrides.gateway.cache_enabled = Some(false);
+        router.set_overrides(overrides);
+        open.notify_one();
+        generating.await.unwrap().expect("the request itself succeeds");
+        assert_eq!(cache.entry_count().await, 0, "an answer that came back after the cache was turned off must not be stored");
     }
 
     // ─── Cache is isolated per tenant (no cross-tenant cache hits) ─────────────
@@ -592,10 +718,10 @@ mod tests {
     #[tokio::test]
     async fn cache_isolates_by_tenant() {
         let (counting_provider, call_counter) = CountingProvider::new("mock");
-        let config = Arc::new(AppConfig::default());
+        let config = Arc::new(cache_on());
         let registry = Arc::new(ProviderRegistry::new());
         registry.register_mock_image(Arc::new(counting_provider)).await;
-        let cache_config = CacheGlobalConfig { enabled: true, default_ttl_seconds: 3600, max_items: 100 };
+        let cache_config = CacheGlobalConfig { enabled: true, default_ttl_seconds: 3600, max_items: 100, ..CacheGlobalConfig::default() };
         let cache = Arc::new(GenerationCache::new(&cache_config));
         let router = ProxyRouter::new(registry, cache, config, Arc::new(LocalStore));
 
@@ -605,11 +731,11 @@ mod tests {
         let materialized = empty_materialized();
 
         // Tenant A: provider invoked, result cached under app-a's key.
-        assert!(router.generate_image(&schema, &base, &extras, &materialized, None, None, Some("app-a")).await.is_ok());
+        assert!(router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, Some("app-a")).await.is_ok());
         // Tenant B, identical request: MUST NOT receive A's cached result.
-        assert!(router.generate_image(&schema, &base, &extras, &materialized, None, None, Some("app-b")).await.is_ok());
+        assert!(router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, Some("app-b")).await.is_ok());
         // Tenant A again: hits A's own cache entry (no new provider call).
-        assert!(router.generate_image(&schema, &base, &extras, &materialized, None, None, Some("app-a")).await.is_ok());
+        assert!(router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, Some("app-a")).await.is_ok());
 
         let count = call_counter.load(Ordering::SeqCst);
         assert_eq!(count, 2, "one provider call per distinct tenant (A,B); A's 2nd is a cache hit; got {}", count);
@@ -639,7 +765,7 @@ mod tests {
         let extras = make_image_extras();
         let materialized = empty_materialized();
 
-        let result = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
+        let result = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await;
         assert!(result.is_ok(), "Expected success, got: {:?}", result.err());
 
         let writes = write_counter.load(Ordering::SeqCst);
@@ -652,11 +778,11 @@ mod tests {
     #[tokio::test]
     async fn cache_does_not_collide_when_only_size_differs() {
         let (counting_provider, call_counter) = CountingProvider::new("mock");
-        let config = Arc::new(AppConfig::default());
+        let config = Arc::new(cache_on());
         let registry = Arc::new(ProviderRegistry::new());
         registry.register_mock_image(Arc::new(counting_provider)).await;
         let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig {
-            enabled: true, default_ttl_seconds: 3600, max_items: 100,
+            enabled: true, default_ttl_seconds: 3600, max_items: 100, ..CacheGlobalConfig::default()
         }));
         let image_store = Arc::new(LocalStore);
         let schema = shipped_schema("mock/image-gen");
@@ -669,8 +795,8 @@ mod tests {
         extras_b.size = Some("1024x1024".into());
         let materialized = empty_materialized();
 
-        let _ = router.generate_image(&schema, &base, &extras_a, &materialized, None, None, None).await.unwrap();
-        let _ = router.generate_image(&schema, &base, &extras_b, &materialized, None, None, None).await.unwrap();
+        let _ = router.generate_image(&schema, &base, &extras_a, &materialized, OrgCredentials::default(), None, None).await.unwrap();
+        let _ = router.generate_image(&schema, &base, &extras_b, &materialized, OrgCredentials::default(), None, None).await.unwrap();
         // Different size → cache miss → provider called twice.
         assert_eq!(call_counter.load(Ordering::SeqCst), 2,
             "Different size must NOT share a cache entry");
@@ -684,7 +810,7 @@ mod tests {
         let image_store = Arc::new(LocalStore);
         let router = ProxyRouter::new(registry, cache, config, image_store);
 
-        let result = router.get_video_status("does-not-exist", None, None).await;
+        let result = router.get_video_status("does-not-exist", None, None, true, &test_db().await).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status_code(), 404, "Expected 404 for unknown video id");
@@ -751,7 +877,7 @@ mod tests {
         // First two calls: "always-failing" is tried (and fails), "mock" picks up.
         // Each call records one failure on "always-failing".
         for i in 0..2 {
-            let r = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
+            let r = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await;
             assert!(r.is_ok(), "Call {} should succeed via fallback to mock: {:?}", i, r.err());
         }
 
@@ -762,10 +888,140 @@ mod tests {
         );
 
         // Third call: breaker is open, "always-failing" is skipped, "mock" serves directly.
-        let r = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
+        let r = router.generate_image(&schema, &base, &extras, &materialized, OrgCredentials::default(), None, None).await;
         assert!(r.is_ok(), "Third call should succeed immediately via fallback (breaker open): {:?}", r.err());
         let resp = r.unwrap();
         assert_eq!(resp.provider, "mock", "Should route to mock (always-failing breaker is open)");
+    }
+
+    // ─── E9: what a refusal is, and what opens a breaker ─────────────────────
+
+    /// An image provider named `name` whose every call fails with what
+    /// `fail` builds.
+    struct FailsWith {
+        name: &'static str,
+        fail: fn() -> ProviderError,
+    }
+
+    #[async_trait]
+    impl ImageProvider for FailsWith {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn configure(&mut self, _config: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool {
+            true
+        }
+        async fn generate(&self, _m: &ModelSchema, _b: &BaseGenerationRequest, _e: &ImageExtras, _r: &MaterializedRequest) -> Result<GenerationOutput, ProviderError> {
+            Err((self.fail)())
+        }
+        async fn estimate_cost(&self, model: &ModelSchema, _request: &ImageGenerationRequest) -> Result<CostEstimate, ProviderError> {
+            Ok(build_cost_estimate(model.pricing.base_cost_usd, 0.0, CostSource::Estimated, None))
+        }
+        async fn health_check(&self) -> HealthCheckResult {
+            HealthCheckResult { healthy: true, message: String::new(), latency_ms: None }
+        }
+    }
+
+    /// The adapter's own refusal, before anything is sent.
+    fn refuses_before_calling() -> ProviderError {
+        ProviderError::InvalidRequest("cannot make this".into())
+    }
+
+    /// The vendor's refusal of this one request (a moderation 422, say).
+    fn vendor_refuses_the_request() -> ProviderError {
+        ProviderError::RequestFailed { message: "prompt flagged".into(), status_code: Some(422), provider_error: None, retryable: false }
+    }
+
+    /// A router whose `mock/image-gen` route tries `deployments` in order,
+    /// once each, with a breaker that opens after `threshold` failures. The
+    /// deployments are `always-failing` (a retryable 500), `mock` and `extra`.
+    async fn routed(deployments: &[&str], threshold: u32, extra: Vec<FailsWith>) -> ProxyRouter {
+        use crate::config::CircuitBreakerConfig;
+        let config = Arc::new(AppConfig {
+            model_routes: vec![ModelRouteConfig {
+                model: "mock/image-gen".to_string(),
+                deployments: deployments
+                    .iter()
+                    .map(|p| DeploymentConfig { provider: p.to_string(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 })
+                    .collect(),
+                strategy: Some("fallback".to_string()),
+                cache: None,
+            }],
+            circuit_breaker: CircuitBreakerConfig { threshold, open_for_seconds: 60 },
+            ..AppConfig::default()
+        });
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_image_provider_named("always-failing", Arc::new(AlwaysFailingProvider)).await;
+        for p in extra {
+            registry.register_image_provider_named(p.name, Arc::new(p)).await;
+        }
+        {
+            use crate::providers::image::mock::MockProvider;
+            let mut mp = MockProvider::new();
+            mp.configure(default_instance_config());
+            registry.register_mock_image(Arc::new(mp)).await;
+        }
+        ProxyRouter::new(registry, Arc::new(GenerationCache::new(&CacheGlobalConfig::default())), config, Arc::new(LocalStore))
+    }
+
+    async fn generate(router: &ProxyRouter) -> Result<ImageGenerationResponse, crate::proxy::router::ProxyError> {
+        let schema = shipped_schema("mock/image-gen");
+        router
+            .generate_image(&schema, &make_base("e9", "mock/image-gen"), &make_image_extras(), &empty_materialized(), OrgCredentials::default(), None, None)
+            .await
+    }
+
+    /// E9: an adapter's refusal before any call is the caller's request,
+    /// not the deployment's health: it fails over, and never opens the
+    /// breaker every tenant shares.
+    #[tokio::test]
+    async fn an_adapter_refusal_does_not_count_against_the_breaker() {
+        let router = routed(&["refuses", "mock"], 2, vec![FailsWith { name: "refuses", fail: refuses_before_calling }]).await;
+        for i in 0..2 {
+            let r = generate(&router).await;
+            assert!(r.is_ok(), "call {i} fails over to mock: {:?}", r.err());
+        }
+        assert!(!router.circuit_breaker.is_open("refuses").await, "two refusals of the caller's request opened the breaker");
+    }
+
+    /// E9 (finding 2): a vendor's refusal of one request (a 4xx such as a
+    /// moderation 422) doesn't say the deployment is unwell either.
+    #[tokio::test]
+    async fn a_vendors_refusal_of_the_request_does_not_count_against_the_breaker() {
+        let router = routed(&["refuses", "mock"], 2, vec![FailsWith { name: "refuses", fail: vendor_refuses_the_request }]).await;
+        for i in 0..2 {
+            let r = generate(&router).await;
+            assert!(r.is_ok(), "call {i} fails over to mock: {:?}", r.err());
+        }
+        assert!(!router.circuit_breaker.is_open("refuses").await, "two vendor 422s opened the breaker");
+    }
+
+    /// E9b: a route that asked no deployment (every breaker open) answers a
+    /// retryable 502 that reached no vendor, so it spends no key. It used to
+    /// be a 400 "Provider not configured" marked as a vendor attempt.
+    #[tokio::test]
+    async fn a_route_whose_every_breaker_is_open_answers_a_retryable_502_and_spends_no_key() {
+        let router = routed(&["always-failing"], 1, vec![]).await;
+        let first = generate(&router).await.expect_err("the only deployment fails");
+        assert!(first.reached_vendor() && first.status_code() == 502, "{first:?}");
+        let skipped = generate(&router).await.expect_err("its breaker is open");
+        assert_eq!(skipped.status_code(), 502, "{skipped:?}");
+        assert!(skipped.retryable(), "{skipped:?}");
+        assert!(!skipped.reached_vendor(), "nothing was sent: {skipped:?}");
+        assert!(!skipped.to_string().contains("Some("), "{skipped}");
+    }
+
+    /// E9: a later deployment's refusal never hides an earlier deployment's
+    /// real vendor failure, which may have billed: the answer is the vendor
+    /// failure (its key spent), not the refusal.
+    #[tokio::test]
+    async fn a_vendor_failure_is_not_hidden_by_a_later_refusal() {
+        let router = routed(&["always-failing", "refuses"], 5, vec![FailsWith { name: "refuses", fail: refuses_before_calling }]).await;
+        let err = generate(&router).await.expect_err("both deployments fail");
+        assert!(err.reached_vendor(), "{err:?}");
+        assert!(matches!(err, crate::proxy::router::ProxyError::VendorFailed { .. }), "{err:?}");
+        assert_eq!(err.status_code(), 502, "{err:?}");
     }
 
     // ─── L1: a vendor call is never re-sent once it may have been billed ─────
@@ -855,7 +1111,7 @@ mod tests {
             Arc::new(LocalStore),
         );
         let err = router
-            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), None, None, None)
+            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), OrgCredentials::default(), None, None)
             .await
             .expect_err("the poll failed");
         assert_eq!(counter.load(Ordering::SeqCst), 1, "retryable, but the vendor already took the job");
@@ -874,7 +1130,7 @@ mod tests {
             Arc::new(LocalStore),
         );
         let err = router
-            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), None, None, None)
+            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), OrgCredentials::default(), None, None)
             .await
             .expect_err("timed out");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -903,11 +1159,104 @@ mod tests {
         registry.register_image_provider_named("fast", Arc::new(fast)).await;
         let router = ProxyRouter::new(registry, Arc::new(GenerationCache::new(&CacheGlobalConfig::default())), config, Arc::new(LocalStore));
         let err = router
-            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), None, None, None)
+            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), OrgCredentials::default(), None, None)
             .await
             .expect_err("the first deployment may still bill its job");
         assert_eq!(err.status_code(), 504, "{err}");
         assert_eq!(slow.load(Ordering::SeqCst), 1, "not retried on its own deployment");
         assert_eq!(fast_count.load(Ordering::SeqCst), 0, "nor sent to the next");
     }
+
+    /// A config with the cache on: whether answers are cached is the
+    /// gateway's settings' call (`docs/gateway-settings.md`).
+    fn cache_on() -> AppConfig {
+        let mut config = AppConfig::default();
+        config.cache.enabled = true;
+        config
+    }
+
+    /// The platform's `mock` instance, as an org that brings its own key
+    /// would find it: every poll fails, as the platform key would for a job
+    /// it never made.
+    struct PlatformKeyFails;
+
+    #[async_trait::async_trait]
+    impl crate::providers::VideoProvider for PlatformKeyFails {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn configure(&mut self, _config: crate::providers::ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool {
+            true
+        }
+        async fn generate(
+            &self,
+            _m: &ModelSchema,
+            _b: &BaseGenerationRequest,
+            _e: &crate::providers::VideoExtras,
+            _r: &MaterializedRequest,
+        ) -> Result<crate::providers::VideoGenerationHandle, ProviderError> {
+            unreachable!("the job is submitted with the org's own key")
+        }
+        async fn poll_status(&self, _h: &crate::providers::VideoGenerationHandle) -> Result<crate::providers::VideoGenerationPollResult, ProviderError> {
+            Err(ProviderError::RequestFailed { message: "the platform key knows no such job".into(), status_code: Some(404), provider_error: None, retryable: false })
+        }
+        async fn estimate_cost(&self, _m: &ModelSchema, _r: &crate::types::VideoGenerationRequest) -> Result<CostEstimate, ProviderError> {
+            unreachable!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unreachable!()
+        }
+    }
+
+    /// A job is polled with the instance that took it: an org's own key, not
+    /// the platform's (known gap: client polls used the platform instance).
+    #[tokio::test]
+    async fn a_video_is_polled_with_the_instance_that_took_it() {
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_video(Arc::new(PlatformKeyFails)).await;
+        let router = ProxyRouter::new(
+            registry,
+            Arc::new(GenerationCache::new(&CacheGlobalConfig::default())),
+            Arc::new(AppConfig::default()),
+            Arc::new(LocalStore),
+        );
+        let schema = shipped_schema("mock/video-gen");
+        let base = make_base("byo polling", "mock/video-gen");
+        let extras = crate::providers::VideoExtras {
+            duration_seconds: 5.0,
+            aspect_ratio: None,
+            resolution: None,
+            fps: None,
+            extra: None,
+            camera: None, audio: None, r#loop: None,
+            source: None, direction: None, time_range: None, replace: None,
+        };
+        let byo = crate::providers::auth::ProviderCredentials { api_key: Some("the-orgs-own-key".into()), ..Default::default() };
+        let submitted = router.generate_video(&schema, &base, &extras, &empty_materialized(), OrgCredentials::of("mock", Some(byo.clone()))).await.expect("submitted with the org's key");
+        let polled = router.get_video_status(&submitted.id, None, None, true, &test_db().await).await;
+        assert!(polled.is_ok(), "polled with the org's instance, not the platform's: {:?}", polled.err());
+
+        // The same through a model route: the deployment's instance is kept.
+        let routed_registry = Arc::new(ProviderRegistry::new());
+        routed_registry.register_mock_video(Arc::new(PlatformKeyFails)).await;
+        let routed = ProxyRouter::new(
+            routed_registry,
+            Arc::new(GenerationCache::new(&CacheGlobalConfig::default())),
+            Arc::new(AppConfig {
+                model_routes: vec![ModelRouteConfig {
+                    model: "mock/video-gen".to_string(),
+                    deployments: vec![DeploymentConfig { provider: "mock".to_string(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 }],
+                    strategy: None,
+                    cache: None,
+                }],
+                ..AppConfig::default()
+            }),
+            Arc::new(LocalStore),
+        );
+        let submitted = routed.generate_video(&schema, &base, &extras, &empty_materialized(), OrgCredentials::of("mock", Some(byo))).await.expect("routed, with the org's key");
+        let polled = routed.get_video_status(&submitted.id, None, None, true, &test_db().await).await;
+        assert!(polled.is_ok(), "a routed job keeps its deployment's instance: {:?}", polled.err());
+    }
 }
+

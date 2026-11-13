@@ -143,6 +143,14 @@ mod tests {
         master_key: Option<&str>,
         mode: crate::config::Mode,
     ) -> Arc<AppState> {
+        build_state_over(Arc::new(NoopDb), master_key, mode).await
+    }
+
+    async fn build_state_over(
+        db: Arc<dyn DatabaseStore>,
+        master_key: Option<&str>,
+        mode: crate::config::Mode,
+    ) -> Arc<AppState> {
         let registry = Arc::new(ProviderRegistry::new());
         let config = Arc::new(AppConfig::default());
         let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
@@ -163,7 +171,7 @@ mod tests {
 
         Arc::new(AppState {
             router,
-            db: Arc::new(NoopDb),
+            db,
             master_key: master_key.map(|s| s.to_string()),
             registry: cap_registry,
             materializer,
@@ -593,6 +601,131 @@ mod tests {
         );
     }
 
+    // ─── Redis down: the key's limit falls back, or refuses when fail-closed ──
+
+    /// A state whose limiter uses a Redis that is not there.
+    async fn state_with_dead_redis(db: ValidKeyDb, fail_closed: bool) -> Arc<AppState> {
+        let mut state = build_state_with_db(db).await;
+        let limiter = crate::api::middleware::rate_limit::RateLimiter::with_shared(
+            crate::shared::testing::dead_redis(fail_closed).await,
+        );
+        Arc::get_mut(&mut state).expect("the only handle to the new state").rate_limiter = Arc::new(limiter);
+        state
+    }
+
+    fn get_test_with(key: &str) -> Request {
+        Request::builder()
+            .method("GET").uri("/test")
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty()).unwrap()
+    }
+
+    /// The headers on a served request report the bucket the request's own
+    /// take left, not a second look taken after the handler ran.
+    #[tokio::test]
+    async fn the_remaining_header_counts_down_with_each_request() {
+        let hash = sha256_hex("countdown-key");
+        let mut db = ValidKeyDb::active(&hash, "generate,read");
+        db.rpm_limit = Some(3);
+        let app = build_auth_router(build_state_with_db(db).await);
+
+        let mut remaining = Vec::new();
+        for _ in 0..3 {
+            let resp = app.clone().oneshot(get_test_with("countdown-key")).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            remaining.push(resp.headers().get("x-ratelimit-remaining").unwrap().to_str().unwrap().to_string());
+        }
+        assert_eq!(remaining, ["2", "1", "0"]);
+    }
+
+    /// One round trip per limited request: the header comes from the take. A
+    /// second look (what this used to do) fails here, since Redis is gone by
+    /// then, and falls back to a local bucket nobody has used: a full one.
+    #[tokio::test]
+    async fn the_remaining_header_comes_from_the_take_even_if_redis_is_gone_afterwards() {
+        use crate::config::connections::RedisSettings;
+        use crate::shared::testing::{addr_of, test_prefix, test_url, CutProxy};
+        use crate::shared::SharedRedis;
+
+        let Some(url) = test_url() else { return };
+        let proxy = Arc::new(CutProxy::start(addr_of(&url)).await);
+        let shared = SharedRedis::connect(&RedisSettings::from_url(&proxy.url()), &test_prefix()).await.unwrap();
+        let hash = sha256_hex("one-round-trip-key");
+        let mut db = ValidKeyDb::active(&hash, "generate,read");
+        db.rpm_limit = Some(10);
+        let mut state = build_state_with_db(db).await;
+        Arc::get_mut(&mut state).expect("the only handle to the new state").rate_limiter =
+            Arc::new(crate::api::middleware::rate_limit::RateLimiter::with_shared(shared));
+
+        // The handler cuts Redis off: by the time the headers are built, it is gone.
+        let cutting = proxy.clone();
+        let state_for_mw = state.clone();
+        let app = Router::new()
+            .route("/test", get(move || {
+                let proxy = cutting.clone();
+                async move {
+                    proxy.cut();
+                    StatusCode::OK
+                }
+            }))
+            .layer(middleware::from_fn(move |req: Request, next: Next| {
+                let state = state_for_mw.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, state, req, next).await
+                }
+            }));
+
+        let resp = app.oneshot(get_test_with("one-round-trip-key")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("x-ratelimit-remaining").unwrap(),
+            "9",
+            "ten a minute, one taken; a second look at the bucket would say 10"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_closed_answers_503_rate_limit_unverifiable() {
+        let hash = sha256_hex("fail-closed-key");
+        let mut db = ValidKeyDb::active(&hash, "generate,read");
+        db.rpm_limit = Some(60);
+        let app = build_auth_router(state_with_dead_redis(db, true).await);
+
+        let resp = app.oneshot(get_test_with("fail-closed-key")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get("retry-after").unwrap(), "1");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "rate_limit_unverifiable", "{v}");
+        assert_eq!(v["error"]["type"], "rate_limit_unverifiable", "{v}");
+    }
+
+    #[tokio::test]
+    async fn fail_closed_leaves_keys_without_a_limit_alone() {
+        let hash = sha256_hex("unlimited-key");
+        let db = ValidKeyDb::active(&hash, "generate,read"); // no rpm_limit
+        let app = build_auth_router(state_with_dead_redis(db, true).await);
+
+        let resp = app.oneshot(get_test_with("unlimited-key")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "nothing to verify, so nothing to refuse");
+    }
+
+    #[tokio::test]
+    async fn redis_down_without_fail_closed_keeps_the_per_replica_limit() {
+        let hash = sha256_hex("fallback-key");
+        let mut db = ValidKeyDb::active(&hash, "generate,read");
+        db.rpm_limit = Some(1);
+        let app = build_auth_router(state_with_dead_redis(db, false).await);
+
+        let first = app.clone().oneshot(get_test_with("fallback-key")).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(first.headers().get("x-ratelimit-limit").unwrap(), "1");
+        let second = app.oneshot(get_test_with("fallback-key")).await.unwrap();
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(second.headers().contains_key("retry-after"));
+    }
+
     // ─── Hosted mode disables the dev bypass: no master key + no auth → 401 ───
 
     #[tokio::test]
@@ -658,5 +791,76 @@ mod tests {
             StatusCode::OK,
             "single_tenant master key should be admin + scoped to the default org/app"
         );
+    }
+
+    // ─── Test: a key whose rpm_limit is 0 waits a minute, not forever ─────────
+
+    #[tokio::test]
+    async fn a_zero_rpm_key_is_refused_with_a_one_minute_retry_after() {
+        let hash = sha256_hex("rpm-zero-key");
+        let mut db = ValidKeyDb::active(&hash, "generate,read");
+        db.rpm_limit = Some(0);
+
+        let state = build_state_with_db(db).await;
+        let app = build_auth_router(state);
+
+        let req = Request::builder()
+            .method("GET").uri("/test")
+            .header("authorization", "Bearer rpm-zero-key")
+            .body(Body::empty()).unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(resp.headers().get("retry-after").unwrap(), "60");
+        let reset: u64 = resp.headers().get("x-ratelimit-reset").unwrap().to_str().unwrap().parse().unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!((now..=now + 61).contains(&reset), "the reset is a minute away: {reset} against {now}");
+    }
+
+    /// A key's owner is checked against the key's org. A key with no org is
+    /// checked against the default org in single-tenant mode, where that org is
+    /// the deployment. A hosted deployment's default org is nobody's, so there
+    /// such a key is refused rather than judged by a membership there.
+    #[tokio::test]
+    async fn a_hosted_key_with_no_org_is_refused() {
+        use crate::config::Mode;
+        use crate::db::sqlite::SqliteDatabase;
+        for (mode, works) in [(Mode::SingleTenant, true), (Mode::Hosted, false)] {
+            let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+            let now = chrono::Utc::now();
+            let user = User {
+                id: format!("u-{}", Uuid::new_v4()),
+                email: "maker@example.com".into(),
+                password_hash: None,
+                role: Role::Owner,
+                oauth_github_id: None,
+                oauth_google_id: None,
+                created_at: now,
+                updated_at: now,
+                last_login_at: None,
+                is_active: true,
+            };
+            db.create_user(&user).await.unwrap();
+            db.add_org_member(crate::api::middleware::DEFAULT_ORG_ID, &user.id, Role::Owner).await.unwrap();
+            sqlx::query(
+                "INSERT INTO api_keys (id, name, key_hash, key_prefix, created_at, is_active, tokens_used, scopes, owner_user_id) \
+                 VALUES (?, 'no org', ?, 'lg-n', datetime('now'), 1, 0, 'generate,read', ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(sha256_hex("no-org-key"))
+            .bind(&user.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+            let state = build_state_over(db, Some("master"), mode).await;
+            match crate::api::middleware::resolve_api_key(&state, "no-org-key").await {
+                Ok(ctx) => assert!(works, "{mode:?}: a key with no org got in as {:?}", ctx.org_id),
+                Err(resp) => {
+                    assert!(!works, "{mode:?}: refused with {}", resp.status());
+                    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{mode:?}");
+                }
+            }
+        }
     }
 }

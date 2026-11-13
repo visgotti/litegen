@@ -7,7 +7,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRefForm, MaterializedRequest};
 use crate::providers::auth::{AuthSpec, ProviderCredentials};
 use crate::providers::{
-    BaseGenerationRequest, CredentialPool, GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
+    ApiKeyPool, BaseGenerationRequest, GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
     ProviderError, ProviderInstanceConfig, build_cost_estimate,
 };
 use crate::types::*;
@@ -16,33 +16,48 @@ use crate::types::*;
 ///
 /// Async: `POST /v1/images/generations` returns `data.task_id`; poll
 /// `GET /v1/images/generations/{task_id}` until `data.task_status == "succeed"`,
-/// then download `data.task_result.images[0].url`. Auth: a per-request HS256
-/// JWT minted from the account access key (key_id) + secret key (key_secret),
-/// sent as `Authorization: Bearer <jwt>` (the [`AuthSpec::KlingJwt`] scheme).
+/// then download `data.task_result.images[0].url`. Auth: the account's API
+/// key, `Authorization: Bearer <key>` ([`AuthSpec::bearer`]), from the
+/// dashboard's `api_keys` pool. Kling's access/secret-key JWT works only on
+/// its legacy design, and no Kling adapter uses it since 2026-11-03.
 ///
-/// @see <https://kling.ai/document-api/api/get-started/authentication.md> (2026-10-30)
-///   (auth: HS256 JWT `"iss": ak`, `"exp": int(time.time()) + 1800`,
-///   `"nbf": int(time.time()) - 5`)
-/// @see <https://kling.ai/document-api/api/image/2-1/image-generation.md> (2026-10-30)
-///   (`/v1/images/generations`; response envelope {code, message, data:{task_id,
-///   task_status, task_result}})
+/// @see <https://kling.ai/document-api/api/get-started/authentication.md> (2026-11-03)
+///   Verbatim: "API Key (for all models) … API Key authentication must be used to call Kling AI API"
+///   Verbatim: "Format: **Authorization = "Bearer XXX"**, where XXX is the **API Key**"
+/// @see <https://kling.ai/document-api/api/image/3-0-omni/image-generation.md> (2026-11-03)
+///   Verbatim: "- Path: `/v1/images/generations` - Auth: `Authorization: Bearer <API_KEY>`"
+///   (response envelope {code, message, data:{task_id, task_status, task_result}})
 pub struct KlingImageProvider {
     config: Option<ProviderInstanceConfig>,
-    cred_pool: Option<CredentialPool>,
+    key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 impl KlingImageProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
-            cred_pool: None,
-            auth: AuthSpec::KlingJwt,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
+            key_pool: None,
+            auth: AuthSpec::bearer(),
+            client: Self::api_client(&Default::default()),
+            asset_client: crate::util::ssrf::public_only_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -61,10 +76,14 @@ impl KlingImageProvider {
             .as_ref()
             .map(|c| c.credentials.clone())
             .ok_or_else(|| ProviderError::NotConfigured("kling".into()))?;
-        if let Some(pool) = &self.cred_pool {
-            return Ok(base.with_signing(pool.next()));
+        if let Some(pool) = &self.key_pool {
+            return Ok(base.with_api_key(pool.next().to_string()));
         }
-        Ok(base)
+        if base.api_key.as_deref().is_some_and(|k| !k.is_empty()) {
+            return Ok(base);
+        }
+        // An access/secret key pair says to store an API key, as on video.
+        Err(crate::providers::video::kling::no_api_key(&base))
     }
 
     fn resolve_model(model_id: &str) -> &str {
@@ -74,22 +93,24 @@ impl KlingImageProvider {
     async fn poll_task(&self, task_id: &str) -> Result<Value, ProviderError> {
         let creds = self.creds()?;
         let url = format!("{}/v1/images/generations/{}", self.api_base(), task_id);
-        let max_attempts = 90;
-        for _ in 0..max_attempts {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // As long as litegen waits for this call (the vendor timeout,
+        // docs/gateway-settings.md); 180 s when called directly.
+        let started = std::time::Instant::now();
+        let mut budget = crate::providers::PollBudget::new(std::time::Duration::from_secs(180), std::time::Duration::from_secs(2));
+        while budget.next().await {
             let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.get(&url))?;
-            let data: Value = crate::providers::inject_trace_headers(builder)
-                .send()
-                .await
-                .map_err(|e| ProviderError::RequestFailed {
-                    message: e.to_string(),
-                    status_code: None,
-                    provider_error: None,
-                    retryable: true,
-                })?
-                .json()
-                .await
-                .unwrap_or_default();
+            let resp = match crate::providers::inject_trace_headers(builder).send().await {
+                Ok(resp) => resp,
+                // The job is Kling's now; a dropped poll is asked again.
+                Err(_) => continue,
+            };
+            // The status, then Kling's code: a passing failure (5xx, 429, a
+            // rate-limit or server code) is asked again; any other is final.
+            let data = match crate::providers::video::kling::read_kling(resp, "image poll").await {
+                Ok(data) => data,
+                Err(ProviderError::RequestFailed { retryable: true, .. } | ProviderError::RateLimited { .. }) => continue,
+                Err(e) => return Err(e),
+            };
             match data["data"]["task_status"].as_str() {
                 Some("succeed") => return Ok(data),
                 Some("failed") => {
@@ -100,46 +121,53 @@ impl KlingImageProvider {
                         retryable: false,
                     })
                 }
-                _ => continue,
+                // task_status: submitted | processing | succeed | failed.
+                Some("submitted") | Some("processing") => continue,
+                other => return Err(super::unknown_state("kling", other)),
             }
         }
-        Err(ProviderError::Timeout { timeout_ms: max_attempts * 2000 })
+        Err(ProviderError::Timeout { timeout_ms: budget.total_ms(started) })
     }
 
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
-        let resp = self.client.get(url).send().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to fetch Kling image: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: true,
-        })?;
-        if !resp.status().is_success() {
-            // A non-2xx (e.g. an expired/throttled presigned CDN URL) delivers a
-            // short error body, not image bytes. Returning it would store an
-            // error blob as the generated image and bill for a broken asset.
-            return Err(ProviderError::RequestFailed {
-                message: format!("Kling image URL returned HTTP {}", resp.status()),
-                status_code: Some(resp.status().as_u16()),
-                provider_error: None,
-                retryable: false,
-            });
-        }
-        Ok(resp
-            .bytes()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to read Kling image: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?
-            .to_vec())
+        super::fetch_result(&self.asset_client, url, self.public_assets_only, "kling image").await
     }
 }
 
 impl Default for KlingImageProvider {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl KlingImageProvider {
+    /// A finished job's result, as `generate` returns it: its image
+    /// downloaded, with the vendor's ids.
+    async fn finish(&self, task_id: &str, result: Value) -> Result<GenerationOutput, ProviderError> {
+        let image_url = result["data"]["task_result"]["images"][0]["url"].as_str().ok_or_else(|| ProviderError::RequestFailed {
+            message: "Kling result missing task_result.images[0].url".to_string(),
+            status_code: None,
+            provider_error: Some(result.clone()),
+            retryable: false,
+        })?;
+
+        let bytes = self.fetch_image_bytes(image_url).await?;
+        let mut metadata = HashMap::new();
+        metadata.insert("task_id".to_string(), Value::String(task_id.to_string()));
+        metadata.insert("url".to_string(), Value::String(image_url.to_string()));
+
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
+    }
+}
+
+/// litegen's tier as Kling's: "resolution: 1k (default) | 2k" (Image 2.1 and
+/// 3.0, the same price).
+/// @see <https://kling.ai/document-api/api/image/2-1/image-generation.md> (2026-11-03)
+fn kling_resolution(resolution: &str) -> Option<&'static str> {
+    match resolution {
+        "1K" => Some("1k"),
+        "2K" => Some("2k"),
+        _ => None,
     }
 }
 
@@ -150,16 +178,17 @@ impl ImageProvider for KlingImageProvider {
     }
 
     fn configure(&mut self, config: ProviderInstanceConfig) {
-        if !config.credentials.credential_sets.is_empty() {
-            self.cred_pool = Some(CredentialPool::shared(config.credentials.credential_sets.clone()));
+        if !config.api_keys.is_empty() {
+            self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
     fn is_configured(&self) -> bool {
         self.config
             .as_ref()
-            .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
+            .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
     async fn generate(
@@ -181,7 +210,7 @@ impl ImageProvider for KlingImageProvider {
         }
         // One image: litegen returns and bills one, whatever `n` was.
         let mut body = json!({
-            "model_name": native,
+            "model_name": crate::providers::wire_model(self.config.as_ref(), &model.id, native),
             "prompt": base.prompt,
             "n": 1,
         });
@@ -190,6 +219,10 @@ impl ImageProvider for KlingImageProvider {
         }
         if let Some(ar) = extras.aspect_ratio.as_deref() {
             body["aspect_ratio"] = Value::String(ar.to_string());
+        }
+        if let Some(tier) = extras.resolution.as_deref() {
+            let r = kling_resolution(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: Kling has no image resolution {tier}", model.id)))?;
+            body["resolution"] = Value::String(r.into());
         }
         // Reference image as base64 (no data: prefix) or URL. A `subject` is
         // Kling's subject reference ("`image_reference` … `subject`, `face`");
@@ -208,8 +241,9 @@ impl ImageProvider for KlingImageProvider {
         }
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11).
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model_name" | "prompt" | "n" | "negative_prompt" | "aspect_ratio" | "image" | "image_reference")) {
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| matches!(k, "model_name" | "prompt" | "n" | "negative_prompt" | "aspect_ratio" | "resolution" | "image" | "image_reference");
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
                 obj.insert(k.clone(), v.clone());
             }
         }
@@ -241,19 +275,20 @@ impl ImageProvider for KlingImageProvider {
         extras.vendor_job.record(task_id);
 
         let result = self.poll_task(task_id).await?;
-        let image_url = result["data"]["task_result"]["images"][0]["url"].as_str().ok_or_else(|| ProviderError::RequestFailed {
-            message: "Kling result missing task_result.images[0].url".to_string(),
-            status_code: None,
-            provider_error: Some(result.clone()),
-            retryable: false,
-        })?;
+        self.finish(task_id, result).await
+    }
 
-        let bytes = self.fetch_image_bytes(image_url).await?;
-        let mut metadata = HashMap::new();
-        metadata.insert("task_id".to_string(), Value::String(task_id.to_string()));
-        metadata.insert("url".to_string(), Value::String(image_url.to_string()));
+    fn resumable(&self, _model: &ModelSchema) -> bool {
+        true
+    }
 
-        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
+    /// One look at an accepted job, read as `generate`'s own poll loop reads it.
+    async fn poll_job(&self, _model: &str, job: &str, _resume: Option<&Value>) -> Result<crate::providers::ImageJobPoll, ProviderError> {
+        match super::poll_once(self.poll_task(job)).await {
+            Ok(Some(result)) => self.finish(job, result).await.map(crate::providers::ImageJobPoll::Done),
+            Ok(None) => Ok(crate::providers::ImageJobPoll::Running),
+            Err(e) => super::job_failed(e),
+        }
     }
 
     async fn estimate_cost(
@@ -296,12 +331,18 @@ mod tests {
         r.get(id).expect("model").clone()
     }
 
+    /// "API Key authentication must be used to call Kling AI API": the
+    /// dashboard's pool (`api_keys`), as a BYO credential arrives.
     fn make_provider(api_base: &str) -> KlingImageProvider {
         let mut p = KlingImageProvider::new();
-        let mut cfg = ProviderInstanceConfig { api_base: Some(api_base.to_string()), ..Default::default() };
-        cfg.credentials.key_id = Some("ak-test".to_string());
-        cfg.credentials.key_secret = Some("sk-test".to_string());
+        let cfg = ProviderInstanceConfig {
+            api_base: Some(api_base.to_string()),
+            api_keys: vec![crate::types::ApiKeyEntry { key: "kling-key".into(), weight: 1, label: None }],
+            ..Default::default()
+        };
         p.configure(cfg);
+        // The mock vendor serves results from loopback.
+        p.public_assets_only = false;
         p
     }
 
@@ -340,7 +381,7 @@ mod tests {
     fn make_extras() -> ImageExtras {
         ImageExtras {
             vendor_job: Default::default(),
-            size: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
+            size: None, resolution: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
             edit: None, views: Vec::new(),
             output_format: None, background: None,
@@ -352,7 +393,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generates_with_jwt_auth_and_poll() {
+    async fn generates_with_api_key_auth_and_poll() {
         let server = MockServer::start().await;
         let image_server = MockServer::start().await;
         let image_url = format!("{}/k.png", image_server.uri());
@@ -391,9 +432,10 @@ mod tests {
 
         let received = server.received_requests().await.unwrap();
         let post = received.iter().find(|r| r.method == wiremock::http::Method::POST).unwrap();
-        // JWT Bearer auth present.
+        // "Authorization = "Bearer XXX"" with the pooled API key, not a JWT.
+        // @see <https://kling.ai/document-api/api/get-started/authentication.md> (2026-11-03)
         let auth = post.headers.get("authorization").unwrap().to_str().unwrap();
-        assert!(auth.starts_with("Bearer ey"), "expected JWT bearer, got {auth}");
+        assert_eq!(auth, "Bearer kling-key");
         let body: Value = serde_json::from_slice(&post.body).unwrap();
         assert_eq!(body["model_name"], "kling-v2-1");
         assert_eq!(body["prompt"], "a jade dragon");
@@ -470,5 +512,65 @@ mod tests {
                 .unwrap_err();
             assert!(matches!(err, ProviderError::RequestFailed { retryable: r, .. } if r == retryable), "{code}: {err:?}");
         }
+    }
+
+    /// "API Key authentication must be used to call Kling AI API"; an access /
+    /// secret key pair is "only applicable to legacy version design
+    /// standards". A credential that is only such a pair (an org's stored
+    /// pair) is refused before any call, saying what to store instead.
+    /// @see <https://kling.ai/document-api/api/get-started/authentication.md> (2026-11-03)
+    #[tokio::test]
+    async fn a_stored_key_pair_is_refused_naming_the_api_key_kling_needs() {
+        let server = MockServer::start().await;
+        let mut p = KlingImageProvider::new();
+        p.configure(ProviderInstanceConfig {
+            api_base: Some(server.uri()),
+            credentials: ProviderCredentials { key_id: Some("ak".into()), key_secret: Some("sk".into()), ..Default::default() },
+            ..Default::default()
+        });
+        let schema = ref_schema("kling/kling-v2-1");
+        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        let err = p.generate(&schema, &make_base("x", "kling/kling-v2-1"), &make_extras(), &materialized).await.unwrap_err();
+        assert!(matches!(&err, ProviderError::NotConfigured(m) if m.contains("API key") && m.contains("access/secret key pair")), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing was sent");
+    }
+
+    /// Kling's image tier: "resolution: 1k (default) | 2k" — litegen's `1K`
+    /// and `2K`. Every tier a Kling image row declares maps; nothing else does.
+    /// @see <https://kling.ai/document-api/api/image/2-1/image-generation.md> (2026-11-03)
+    #[test]
+    fn every_declared_resolution_is_one_of_klings() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let reg = crate::capabilities::CapabilityRegistry::from_dir(&dir).expect("load");
+        let mut seen = 0;
+        for m in reg.for_provider("kling").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
+            if let Some(crate::capabilities::ParamSpec::String(s)) = m.params.get("resolution") {
+                for v in &s.enum_values {
+                    seen += 1;
+                    assert!(matches!(kling_resolution(v), Some("1k" | "2k")), "{}: {v}", m.id);
+                }
+            }
+        }
+        assert!(seen > 0, "no Kling image row declares a resolution");
+        assert_eq!((kling_resolution("4K"), kling_resolution("1k")), (None, None));
+    }
+
+    /// The tier goes as Kling's own `resolution`, and `extra` cannot replace it.
+    #[tokio::test]
+    async fn the_tier_goes_as_klings_resolution_and_extra_cannot_replace_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "code": 1201, "message": "stop" })))
+            .mount(&server)
+            .await;
+        let mut extras = make_extras();
+        extras.resolution = Some("2K".into());
+        extras.extra = Some(json!({ "resolution": "1k" }));
+        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        let _ = make_provider(&server.uri()).generate(&ref_schema("kling/kling-v3"), &make_base("x", "kling/kling-v3"), &extras, &materialized).await;
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["resolution"], "2k", "{body}");
     }
 }

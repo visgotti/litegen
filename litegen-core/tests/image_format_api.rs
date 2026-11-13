@@ -74,7 +74,8 @@ async fn the_listing_says_what_each_model_can_return() {
     let caps = |id: &str| list["data"].as_array().unwrap().iter().find(|m| m["id"] == id).unwrap_or_else(|| panic!("{id}"))["capabilities"].clone();
     let f = caps("mock/format-image");
     assert_eq!((f["output_formats"].clone(), f["supports_transparent_background"].as_bool(), f["lossy_only"].as_bool()), (json!(["png", "webp", "jpeg"]), Some(true), Some(false)), "{f}");
-    // "Luma always returns JPEG" (PixelGenie L9).
+    // Luma's ImageFormat is "jpg | png" (docs.lumalabs.ai/reference/generateimage.md,
+    // 2026-11-03): PixelGenie L9's "Luma always returns JPEG" no longer holds.
     let luma = caps("luma/photon-1");
-    assert_eq!((luma["output_formats"].clone(), luma["lossy_only"].as_bool()), (json!(["jpeg"]), Some(true)), "{luma}");
+    assert_eq!((luma["output_formats"].clone(), luma["lossy_only"].as_bool()), (json!(["jpeg", "png"]), Some(false)), "{luma}");
 }

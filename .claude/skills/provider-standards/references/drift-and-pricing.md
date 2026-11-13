@@ -160,10 +160,12 @@ comparison mechanical:
 - **Changing a carried model's price is the user's decision.** Report both
   prices with the URL.
 
-`apps/price-api` is a separate pricing service with its own seeds and
-scrapers, and its own coverage gate (`npm run coverage:check`) against
-`models/*.yaml`. It lags the catalog and is out of scope unless the user asks.
-`base_cost_usd` in the YAML is what litegen-core actually bills.
+`apps/price-api` is a separate pricing service. Its seeds are generated from
+`models/*.yaml` (`npm run coverage:fix`), each model at its `base_cost_usd`,
+and its coverage gate (`npm run coverage:check`) fails until they match the
+catalog. Only fal's classic image rows are scraped; everything else is
+curated there by hand. `base_cost_usd` in the YAML is what litegen-core
+actually bills.
 
 ## Acting on drift decisions
 

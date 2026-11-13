@@ -18,6 +18,7 @@
 /docs/api-reference/solutions/narrated-drama/one-click-narrated-drama.md
 /docs/api-reference/task-management/account-balance.md
 /docs/api-reference/task-management/cancel-task.md
+/docs/api-reference/task-management/subjects.md
 /docs/api-reference/task-management/task-detail.md
 /docs/api-reference/task-management/task-list.md
 /docs/api-reference/updates.md

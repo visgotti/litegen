@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::budget;
 use super::store::ManagementStore;
 use super::types::*;
+use crate::api::middleware::rate_limit::{unverifiable_response, LimitRefusal};
 use crate::api::middleware::{AppState, KeyContext};
 
 /// Header naming the end user a request is made on behalf of.
@@ -82,6 +83,24 @@ fn refuse(status: StatusCode, kind: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// The answer for a principal whose requests-per-minute bucket said no: the
+/// 429 with `Retry-After`, or the fixed 503 when fail-closed could not check.
+fn rate_refusal(entity: EntityType, rpm: u32, refusal: LimitRefusal) -> Response {
+    let retry = match refusal {
+        LimitRefusal::Exceeded { retry_after_secs } => retry_after_secs,
+        LimitRefusal::Unverifiable => return unverifiable_response(),
+    };
+    let mut resp = refuse(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limit_exceeded",
+        &format!("{} rate limit of {rpm} requests/minute exceeded", entity.as_str()),
+    );
+    if let Ok(v) = axum::http::HeaderValue::from_str(&retry.to_string()) {
+        resp.headers_mut().insert("retry-after", v);
+    }
+    resp
+}
+
 fn store_error(e: sqlx::Error) -> Response {
     tracing::error!(error = %e, "limits enforcement failed");
     (
@@ -137,6 +156,23 @@ pub fn in_flight(entity_type: EntityType, entity_id: &str) -> u32 {
         .get(&(entity_type, entity_id.to_string()))
         .copied()
         .unwrap_or(0)
+}
+
+// The slot machinery (`SlotGuard`, `SharedSlot`, `acquire_slot`) lives in `slots`;
+// these re-exports keep the paths `enforce::SlotGuard` and `enforce::acquire_slot`.
+pub use super::slots::{acquire_slot, SharedSlot, SlotGuard};
+
+/// The answer for a principal whose parallel cap said no: today's 429, with no
+/// `Retry-After`, or the fixed 503 when fail-closed could not check.
+fn parallel_refusal(entity: EntityType, max: u32, refusal: LimitRefusal) -> Response {
+    match refusal {
+        LimitRefusal::Exceeded { .. } => refuse(
+            StatusCode::TOO_MANY_REQUESTS,
+            "parallel_limit_exceeded",
+            &format!("{} has {max} requests in flight already", entity.as_str()),
+        ),
+        LimitRefusal::Unverifiable => unverifiable_response(),
+    }
 }
 
 /// Stable rate-limiter bucket id for a principal, disjoint from key ids.
@@ -226,14 +262,52 @@ pub async fn load_current(
 
 // ─── Guard ───────────────────────────────────────────────────────────────────
 
-/// Reservations and parallel slots held for one generation.
+/// Reservations and parallel slots held for one generation. Settle it once;
+/// a guard dropped unsettled (its handler panicked) gives its reservations
+/// back by itself.
 #[derive(Debug, Default)]
 pub struct LimitGuard {
     store_backed: bool,
     reserved: f64,
     charged: Vec<EntityLimits>,
     attribution: Attribution,
-    _slots: Vec<ParallelSlot>,
+    _slots: Vec<SlotGuard>,
+    release_to: ReleaseTo,
+}
+
+/// The store an unsettled guard gives its reservations back to when dropped.
+#[derive(Default)]
+struct ReleaseTo(Option<Arc<dyn crate::db::DatabaseStore>>);
+
+impl std::fmt::Debug for ReleaseTo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "ReleaseTo(store)" } else { "ReleaseTo(none)" })
+    }
+}
+
+impl Drop for LimitGuard {
+    /// What was reserved and never settled goes back, as `settle(0.0)` would
+    /// (no soft-budget alert: nothing was charged). In a task of its own,
+    /// since a drop cannot await. The slots free themselves.
+    fn drop(&mut self) {
+        if !self.store_backed || self.reserved <= 0.0 || self.charged.is_empty() {
+            return;
+        }
+        let Some(db) = self.release_to.0.take() else { return };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(reserved = self.reserved, "a dropped limits reservation could not be given back outside a runtime");
+            return;
+        };
+        let (reserved, charged) = (std::mem::take(&mut self.reserved), std::mem::take(&mut self.charged));
+        runtime.spawn(async move {
+            let Some(store) = db.management() else { return };
+            for l in charged {
+                if let Err(e) = store.charge_limits_spend(l.entity_type, &l.entity_id, -reserved).await {
+                    tracing::warn!(error = %e, entity = %l.entity_id, "releasing a dropped limits reservation failed");
+                }
+            }
+        });
+    }
 }
 
 /// A principal whose limits a generation was charged against: what its
@@ -245,6 +319,20 @@ pub struct ChargedLimit {
 }
 
 impl LimitGuard {
+    /// A guard holding nothing yet. With a store, it enforces limits, and
+    /// gives back what it reserved if dropped unsettled; without one, it
+    /// only attributes.
+    fn new(store: Option<Arc<dyn crate::db::DatabaseStore>>, attribution: Attribution) -> Self {
+        LimitGuard {
+            store_backed: store.is_some(),
+            reserved: 0.0,
+            charged: Vec::new(),
+            attribution,
+            _slots: Vec::new(),
+            release_to: ReleaseTo(store),
+        }
+    }
+
     /// Who the request is attributed to, for its request-log row.
     pub fn attribution(&self) -> Attribution {
         self.attribution.clone()
@@ -340,15 +428,15 @@ async fn raise_soft_budget_alert(
 /// Attribution with no enforcement: what `begin` returns when the database
 /// has no management store.
 fn passthrough(ctx: Option<&KeyContext>, req: &RequestAttribution) -> LimitGuard {
-    LimitGuard {
-        attribution: Attribution {
+    LimitGuard::new(
+        None,
+        Attribution {
             key_id: ctx.and_then(|c| c.key_id).map(|k| k.to_string()),
             user_id: ctx.and_then(|c| c.user.as_ref()).map(|u| u.user_id.clone()),
             end_user: req.end_user.clone(),
             tags: req.tags.clone(),
         },
-        ..Default::default()
-    }
+    )
 }
 
 /// Apply every principal's limits to a generation of `model_id` estimated at
@@ -411,16 +499,10 @@ pub async fn begin(
         principals.push((EntityType::App, a.clone()));
     }
 
-    let mut guard = LimitGuard {
-        store_backed: true,
-        attribution: Attribution {
-            key_id: key_id.map(|k| k.to_string()),
-            user_id,
-            end_user: req.end_user.clone(),
-            tags: req.tags.clone(),
-        },
-        ..Default::default()
-    };
+    let mut guard = LimitGuard::new(
+        Some(state.db.clone()),
+        Attribution { key_id: key_id.map(|k| k.to_string()), user_id, end_user: req.end_user.clone(), tags: req.tags.clone() },
+    );
 
     let mut rows = Vec::new();
     for (t, id) in &principals {
@@ -443,28 +525,14 @@ pub async fn begin(
     }
     for l in &rows {
         if let Some(max) = l.max_parallel_requests {
-            match ParallelSlot::try_acquire(l.entity_type, &l.entity_id, max) {
-                Some(slot) => guard._slots.push(slot),
-                None => {
-                    return Err(refuse(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        "parallel_limit_exceeded",
-                        &format!("{} has {max} requests in flight already", l.entity_type.as_str()),
-                    ))
-                }
+            match acquire_slot(&state.rate_limiter, l.entity_type, &l.entity_id, max).await {
+                Ok(slot) => guard._slots.push(slot),
+                Err(refusal) => return Err(parallel_refusal(l.entity_type, max, refusal)),
             }
         }
         if let Some(rpm) = l.rpm_limit.filter(|r| *r > 0) {
-            if let Err(retry) = state.rate_limiter.try_take(bucket_id(l.entity_type, &l.entity_id), rpm).await {
-                let mut resp = refuse(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "rate_limit_exceeded",
-                    &format!("{} rate limit of {rpm} requests/minute exceeded", l.entity_type.as_str()),
-                );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&retry.to_string()) {
-                    resp.headers_mut().insert("retry-after", v);
-                }
-                return Err(resp);
+            if let Err(refusal) = state.rate_limiter.try_take(bucket_id(l.entity_type, &l.entity_id), rpm).await {
+                return Err(rate_refusal(l.entity_type, rpm, refusal));
             }
         }
     }
@@ -509,9 +577,24 @@ pub async fn attribute(db: &Arc<dyn crate::db::DatabaseStore>, request_id: &str,
     }
 }
 
+/// Give `amount` back to every principal a failed or cancelled job was
+/// charged against (L18). Best-effort, like settlement: a refund that cannot
+/// be written is logged, never surfaced.
+pub async fn refund_limits(db: &Arc<dyn crate::db::DatabaseStore>, charged: &[ChargedLimit], amount: f64) {
+    let Some(store) = db.management() else { return };
+    for l in charged {
+        if let Err(e) = store.charge_limits_spend(l.entity_type, &l.entity_id, -amount).await {
+            tracing::warn!(error = %e, entity = %l.entity_id, "limits refund failed");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::middleware::rate_limit::RateLimiter;
+    use crate::shared::testing::{dead_redis, two_shared_limiters};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn attribution_headers_are_trimmed_deduped_and_capped() {
@@ -556,16 +639,235 @@ mod tests {
         assert_ne!(bucket_id(EntityType::Org, "o1"), bucket_id(EntityType::App, "o1"));
         assert_ne!(bucket_id(EntityType::Org, "o1"), bucket_id(EntityType::Org, "o2"));
     }
-}
 
-/// Give `amount` back to every principal a failed or cancelled job was
-/// charged against (L18). Best-effort, like settlement: a refund that cannot
-/// be written is logged, never surfaced.
-pub async fn refund_limits(db: &Arc<dyn crate::db::DatabaseStore>, charged: &[ChargedLimit], amount: f64) {
-    let Some(store) = db.management() else { return };
-    for l in charged {
-        if let Err(e) = store.charge_limits_spend(l.entity_type, &l.entity_id, -amount).await {
-            tracing::warn!(error = %e, entity = %l.entity_id, "limits refund failed");
+    #[tokio::test]
+    async fn a_rate_refusal_is_a_429_with_retry_after_or_the_fixed_503() {
+        use crate::api::middleware::rate_limit::LimitRefusal;
+
+        let resp = rate_refusal(EntityType::Org, 60, LimitRefusal::Exceeded { retry_after_secs: 3 });
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(resp.headers().get("retry-after").unwrap(), "3");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "rate_limit_exceeded", "{v}");
+        assert_eq!(v["error"]["message"], "org rate limit of 60 requests/minute exceeded", "{v}");
+
+        let resp = rate_refusal(EntityType::Org, 60, LimitRefusal::Unverifiable);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get("retry-after").unwrap(), "1");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "rate_limit_unverifiable", "{v}");
+    }
+
+    // ─── Parallel refusals, and `begin` over shared slots ─────────────────────
+    //
+    // The Redis ones need `LITEGEN_REDIS_TEST_URL` and skip themselves without
+    // it; the ones on `dead_redis` need no container. The slots themselves are
+    // tested in `slots`.
+
+    #[tokio::test]
+    async fn a_parallel_refusal_is_todays_429_or_the_fixed_503() {
+        let resp = parallel_refusal(EntityType::Key, 3, LimitRefusal::Exceeded { retry_after_secs: 0 });
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(resp.headers().get("retry-after").is_none(), "today's 429 has no Retry-After");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "error": {
+                "message": "key has 3 requests in flight already",
+                "type": "parallel_limit_exceeded",
+                "code": "parallel_limit_exceeded"
+            } })
+        );
+
+        let resp = parallel_refusal(EntityType::Key, 3, LimitRefusal::Unverifiable);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get("retry-after").unwrap(), "1");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "rate_limit_unverifiable", "{v}");
+    }
+
+    struct NoopStorage;
+    #[async_trait::async_trait]
+    impl crate::proxy::materializer::TempStorage for NoopStorage {
+        async fn put(&self, key: &str, _bytes: bytes::Bytes, _ct: &str) -> Result<String, crate::proxy::materializer::MaterializeError> {
+            Ok(format!("local://{key}"))
         }
+        async fn delete(&self, _key: &str) -> Result<(), crate::proxy::materializer::MaterializeError> {
+            Ok(())
+        }
+    }
+
+    /// A replica: its own limiter over `db`, which holds the principals' limits.
+    async fn replica(db: Arc<crate::db::sqlite::SqliteDatabase>, limiter: Arc<RateLimiter>) -> AppState {
+        use crate::config::{AppConfig, CacheGlobalConfig};
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        let cache = Arc::new(crate::proxy::cache::GenerationCache::new(&CacheGlobalConfig::default()));
+        let router = Arc::new(crate::proxy::router::ProxyRouter::new(
+            registry,
+            cache,
+            Arc::new(AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        ));
+        let materializer = Arc::new(crate::proxy::materializer::Materializer::new(Arc::new(NoopStorage), reqwest::Client::new()));
+        let mut models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        models.pop();
+        models.push("models");
+        AppState {
+            router,
+            db,
+            master_key: None,
+            registry: Arc::new(crate::capabilities::CapabilityRegistry::from_dir(&models).expect("models")),
+            materializer,
+            rate_limiter: limiter,
+            in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
+            oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
+            allow_password: true,
+        }
+    }
+
+    /// A key capped at one request in flight, and the context it calls with.
+    async fn capped_key(db: &crate::db::sqlite::SqliteDatabase) -> KeyContext {
+        use crate::db::DatabaseStore;
+        let key_id = uuid::Uuid::new_v4();
+        let now = Utc::now();
+        db.management()
+            .expect("sqlite has a management store")
+            .upsert_limits(&EntityLimits {
+                entity_type: EntityType::Key,
+                entity_id: key_id.to_string(),
+                org_id: None,
+                max_budget_usd: None,
+                soft_budget_usd: None,
+                budget_duration: None,
+                spend_usd: 0.0,
+                budget_reset_at: None,
+                soft_budget_alerted_at: None,
+                allowed_models: None,
+                max_parallel_requests: Some(1),
+                rpm_limit: None,
+                metadata: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        KeyContext {
+            key_id: Some(key_id),
+            scopes: vec![],
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: None,
+            permissions: vec![],
+            session_id: None,
+            org_id: None,
+            app_id: None,
+            oauth_grant_id: None,
+        }
+    }
+
+    async fn error_code(resp: Response) -> (StatusCode, String) {
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        (status, v["error"]["code"].as_str().unwrap_or_default().to_string())
+    }
+
+    #[tokio::test]
+    async fn begin_counts_parallel_requests_across_replicas() {
+        let Some((a, b)) = two_shared_limiters().await else { return };
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let ctx = capped_key(&db).await;
+        let (on_a, on_b) = (replica(db.clone(), a).await, replica(db, b).await);
+        let none = RequestAttribution::default();
+
+        let first = begin(&on_a, Some(&ctx), &none, "mock/image-gen", 0.0).await.unwrap();
+        // The local counters are one per process, which these two "replicas"
+        // share: a slot counted there would refuse on B for the wrong reason.
+        assert_eq!(in_flight(EntityType::Key, &ctx.key_id.unwrap().to_string()), 0, "counted in Redis, not here");
+        let refused = begin(&on_b, Some(&ctx), &none, "mock/image-gen", 0.0).await.unwrap_err();
+        assert_eq!(error_code(refused).await, (StatusCode::TOO_MANY_REQUESTS, "parallel_limit_exceeded".to_string()));
+
+        drop(first);
+        // The release is a task the drop spawns: the slot is back a moment later.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while begin(&on_b, Some(&ctx), &none, "mock/image-gen", 0.0).await.is_err() {
+            assert!(Instant::now() < deadline, "the slot did not come back within 2 s");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn begin_answers_the_fixed_503_when_fail_closed_cannot_check_a_cap() {
+        let limiter = Arc::new(RateLimiter::with_shared(dead_redis(true).await));
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let ctx = capped_key(&db).await;
+        let state = replica(db, limiter).await;
+        let refused = begin(&state, Some(&ctx), &RequestAttribution::default(), "mock/image-gen", 0.0).await.unwrap_err();
+        assert_eq!(error_code(refused).await, (StatusCode::SERVICE_UNAVAILABLE, "rate_limit_unverifiable".to_string()));
+    }
+
+    /// The key's tracked spend, as the store has it now.
+    async fn key_spend(db: &crate::db::sqlite::SqliteDatabase, ctx: &KeyContext) -> f64 {
+        use crate::db::DatabaseStore;
+        let key = ctx.key_id.unwrap().to_string();
+        db.management().unwrap().get_limits(EntityType::Key, &key).await.unwrap().unwrap().spend_usd
+    }
+
+    /// E12: a guard dropped before it was settled (a billed handler that
+    /// panicked) gives its reservations back, as `settle(0.0)` would. It used
+    /// to leave them held until the principal's budget window rolled.
+    #[tokio::test]
+    async fn an_unsettled_guard_releases_its_reservations_when_dropped() {
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let ctx = capped_key(&db).await;
+        let state = replica(db.clone(), Arc::new(RateLimiter::new())).await;
+        let guard = begin(&state, Some(&ctx), &RequestAttribution::default(), "mock/image-gen", 0.5).await.unwrap();
+        assert_eq!(key_spend(&db, &ctx).await, 0.5, "the estimate is reserved");
+        drop(guard);
+        // The release is a task the drop spawns.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut left = key_spend(&db, &ctx).await;
+        while left != 0.0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            left = key_spend(&db, &ctx).await;
+        }
+        assert_eq!(left, 0.0, "a guard dropped unsettled left {left} USD reserved");
+    }
+
+    /// A settled guard's charge stands when it is dropped: the drop releases
+    /// only what was never settled.
+    #[tokio::test]
+    async fn a_settled_guard_keeps_its_charge_when_dropped() {
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let ctx = capped_key(&db).await;
+        let state = replica(db.clone(), Arc::new(RateLimiter::new())).await;
+        let mut guard = begin(&state, Some(&ctx), &RequestAttribution::default(), "mock/image-gen", 0.5).await.unwrap();
+        guard.settle(&state, 0.3).await;
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!((key_spend(&db, &ctx).await - 0.3).abs() < 1e-9, "the settled charge stands");
+    }
+
+    #[tokio::test]
+    async fn begin_falls_back_to_a_local_slot_when_redis_is_down() {
+        let limiter = Arc::new(RateLimiter::with_shared(dead_redis(false).await));
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let ctx = capped_key(&db).await;
+        let state = replica(db, limiter).await;
+        let none = RequestAttribution::default();
+        let first = begin(&state, Some(&ctx), &none, "mock/image-gen", 0.0).await.unwrap();
+        assert_eq!(in_flight(EntityType::Key, &ctx.key_id.unwrap().to_string()), 1);
+        let refused = begin(&state, Some(&ctx), &none, "mock/image-gen", 0.0).await.unwrap_err();
+        assert_eq!(error_code(refused).await, (StatusCode::TOO_MANY_REQUESTS, "parallel_limit_exceeded".to_string()));
+        drop(first);
+        assert_eq!(in_flight(EntityType::Key, &ctx.key_id.unwrap().to_string()), 0);
     }
 }

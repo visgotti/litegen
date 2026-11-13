@@ -1,0 +1,38 @@
+# litegen-core/src/mesh/ as a crate, with nothing moved and no code changed:
+# `[lib] path` points at its mod.rs, which becomes the crate root.
+# .claude/rules/mesh-standalone.md keeps that folder liftable like this.
+# The dependencies are litegen-core's own specs for the crates mesh/ uses;
+# core/tests/mesh_crate.rs fails if they or their resolved versions drift.
+[package]
+name = "litegen-mesh"
+description = "litegen's 3D format-conversion library (litegen-core/src/mesh), built as its own crate."
+version.workspace = true
+license.workspace = true
+edition = "2021"
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "../../../litegen-core/src/mesh/mod.rs"
+
+[dependencies]
+serde_json = "1"
+miniz_oxide = "0.8"
+quick-xml = "0.41"
+image = { version = "0.25", default-features = false, features = ["png", "gif", "webp", "jpeg"] }
+# Draco geometry (glTF KHR_draco_mesh_compression), mesh/draco.rs: litegen-core's spec.
+draco-core = { version = "=2.3.3", default-features = false, features = ["decoder", "edgebreaker_valence_decode"] }
+# Zstandard (KTX2 supercompression scheme 2), mesh/ktx2.rs: litegen-core's spec.
+ruzstd = { version = "=0.9.1", default-features = false, features = ["std"] }
+
+# litegen-core allows these style lints on `mod mesh` (src/lib.rs) "until it is
+# its own crate with its own lint policy"; this is that crate, and the same
+# policy. core/tests/mesh_crate.rs keeps the two lists equal.
+[lints.clippy]
+chunks_exact_to_as_chunks = "allow"
+manual_is_multiple_of = "allow"
+needless_range_loop = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+no_effect_replace = "allow"
+redundant_guards = "allow"
+type_complexity = "allow"

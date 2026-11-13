@@ -5,7 +5,19 @@ import { describe, expect, it, vi } from 'vitest';
 // request-body builder, so the real client is never needed.
 vi.mock('../sdk-client', () => ({ client: {} }));
 
-const { buildGenerationBody, effectiveSize, omitImageOnlyParams } = await import('./SingleMode');
+const { buildGenerationBody, effectiveSize, modelProblem, omitImageOnlyParams } = await import('./SingleMode');
+
+describe('modelProblem', () => {
+  it('asks for a model until one is chosen', () => {
+    // Until the model list arrives and its default lands, the form holds no
+    // model, and Generate would send `model: ""`, which the server refuses.
+    expect(modelProblem('')).toEqual(['needs a model']);
+  });
+
+  it('has nothing to say once a model is chosen', () => {
+    expect(modelProblem('mock/visual-image-gen')).toEqual([]);
+  });
+});
 
 describe('effectiveSize', () => {
   const options = ['512x512', '1024x1024'];

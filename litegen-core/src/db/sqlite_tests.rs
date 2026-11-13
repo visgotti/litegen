@@ -80,6 +80,17 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Review 2026-11-11 P14.
+    #[tokio::test]
+    async fn a_key_lookup_reports_its_owners_standing_as_the_three_lookups_did() {
+        let db = in_memory_db().await;
+        let pool = db.pool().clone();
+        crate::db::trait_def::one_statement_reads_answer_as_the_lookups(&db, "sqlite", async |key_id: &str| {
+            sqlx::query("UPDATE api_keys SET org_id = NULL WHERE id = ?").bind(key_id).execute(&pool).await.unwrap();
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn lookup_by_hash_finds_active_key() {
         let db = in_memory_db().await;
@@ -877,6 +888,139 @@ mod tests {
             .expect("api_keys.public_id column must exist");
     }
 
+    /// Before 2026-11-06 a key made by a key got no owner, so it outlived the
+    /// person behind it. Migration 025 gives each such key its maker's owner,
+    /// read back through the audit log's `key.create` rows, down any chain of
+    /// keys. Keys made with the master key (no actor) stay the org's, an owner
+    /// already set is kept, and a cycle in the log ends.
+    #[tokio::test]
+    async fn migration_0025_gives_keys_made_by_keys_their_makers_owner() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite:file:mig0025?mode=memory&cache=shared")
+            .await
+            .expect("connect fresh sqlite");
+        let mut before = sqlx::migrate!("./migrations/sqlite");
+        before.migrations =
+            std::borrow::Cow::Owned(before.migrations.iter().filter(|m| m.version < 20240101000025).cloned().collect());
+        before.run(&pool).await.expect("migrations before 025");
+
+        for user in ["u-maker", "u-other"] {
+            sqlx::query("INSERT INTO users (id, email, role) VALUES (?, ?, 'admin')")
+                .bind(user)
+                .bind(format!("{user}@example.com"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // (key, owner)
+        for (key, owner) in [
+            ("k-parent", Some("u-maker")),
+            ("k-child", None),
+            ("k-grandchild", None),
+            ("k-service", None),
+            ("k-service-child", None),
+            ("k-owned", Some("u-other")),
+            ("k-orphan", None),
+            ("k-loop-a", None),
+            ("k-loop-b", None),
+        ] {
+            sqlx::query("INSERT INTO api_keys (id, name, key_hash, key_prefix, owner_user_id) VALUES (?, ?, ?, 'lg-x', ?)")
+                .bind(key)
+                .bind(key)
+                .bind(format!("hash-{key}"))
+                .bind(owner)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // (actor key, made key): who made what, as the audit log recorded it.
+        for (n, (actor, target)) in [
+            (Some("k-parent"), "k-child"),
+            (Some("k-child"), "k-grandchild"),
+            (None, "k-service"),
+            (Some("k-service"), "k-service-child"),
+            (Some("k-parent"), "k-owned"),
+            (Some("k-gone"), "k-orphan"),
+            (Some("k-loop-b"), "k-loop-a"),
+            (Some("k-loop-a"), "k-loop-b"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            sqlx::query(
+                "INSERT INTO audit_log (id, actor_key_id, actor_label, action, target_type, target_id) \
+                 VALUES (?, ?, ?, 'key.create', 'api_key', ?)",
+            )
+            .bind(format!("audit-{n}"))
+            .bind(actor)
+            .bind(actor.unwrap_or("master-key"))
+            .bind(target)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // A rotation is not a creation: it never names a maker.
+        sqlx::query(
+            "INSERT INTO audit_log (id, actor_key_id, actor_label, action, target_type, target_id) \
+             VALUES ('audit-rotate', 'k-parent', 'k-parent', 'key.rotate', 'api_key', 'k-orphan')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::migrate!("./migrations/sqlite").run(&pool).await.expect("migration 025 applies");
+
+        let owners: std::collections::HashMap<String, Option<String>> =
+            sqlx::query_as::<_, (String, Option<String>)>("SELECT id, owner_user_id FROM api_keys")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .collect();
+        let owner = |key: &str| owners[key].as_deref().map(str::to_string);
+        assert_eq!(owner("k-child").as_deref(), Some("u-maker"), "made by the maker's key");
+        assert_eq!(owner("k-grandchild").as_deref(), Some("u-maker"), "made by a key the maker's key made");
+        assert_eq!(owner("k-service"), None, "made with the master key: the org's");
+        assert_eq!(owner("k-service-child"), None, "made by the org's key: the org's");
+        assert_eq!(owner("k-owned").as_deref(), Some("u-other"), "an owner already set is kept");
+        assert_eq!(owner("k-orphan"), None, "its maker's row is gone, and a rotation names no maker");
+        assert_eq!((owner("k-loop-a"), owner("k-loop-b")), (None, None), "a cycle ends with no owner");
+    }
+
+    /// A rotation records who holds the new secret in the same statement that
+    /// sets it; with no new owner the key keeps the one it had.
+    #[tokio::test]
+    async fn rotate_api_key_takes_a_new_owner_or_keeps_the_old() {
+        let db = in_memory_db().await;
+        let now = chrono::Utc::now();
+        for id in ["u-first", "u-second"] {
+            let user = User {
+                id: id.to_string(),
+                email: format!("{id}@example.com"),
+                password_hash: None,
+                role: Role::Admin,
+                oauth_github_id: None,
+                oauth_google_id: None,
+                created_at: now,
+                updated_at: now,
+                last_login_at: None,
+                is_active: true,
+            };
+            db.create_user(&user).await.unwrap();
+        }
+        let key = db.create_api_key("k", "hash-0", "lg-0", None, None, "generate", None).await.unwrap();
+        db.set_api_key_owner(&key.id, "u-first").await.unwrap();
+
+        let kept = db.rotate_api_key(&key.id, "pk_1", "hash-1", "lg-1", None).await.unwrap().expect("rotated");
+        assert_eq!((kept.key_hash.as_str(), kept.owner_user_id.as_deref()), ("hash-1", Some("u-first")));
+        let taken = db.rotate_api_key(&key.id, "pk_2", "hash-2", "lg-2", Some("u-second")).await.unwrap().expect("rotated");
+        assert_eq!((taken.key_hash.as_str(), taken.owner_user_id.as_deref()), ("hash-2", Some("u-second")));
+        assert!(db.rotate_api_key(&Uuid::new_v4(), "pk_3", "hash-3", "lg-3", Some("u-second")).await.unwrap().is_none());
+    }
+
     // ─── Tenancy CRUD tests ───────────────────────────────────────────────────
 
     use crate::types::{Application, Organization};
@@ -905,6 +1049,41 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Security fix 3 (2026-11-05): the single-tenant Owner lives in
+    /// `users.role` and in the default org's membership. A transfer moves
+    /// both, or neither.
+    #[tokio::test]
+    async fn transfer_deployment_owner_moves_both_places_or_neither() {
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "deploy");
+        db.create_organization(&org).await.unwrap();
+        let owner = make_user("deploy-owner@example.com", Role::Owner);
+        let admin = make_user("deploy-admin@example.com", Role::Admin);
+        let outsider = make_user("deploy-outsider@example.com", Role::Member);
+        for u in [&owner, &admin, &outsider] {
+            db.create_user(u).await.unwrap();
+        }
+        db.add_org_member(&org.id, &owner.id, Role::Owner).await.unwrap();
+        db.add_org_member(&org.id, &admin.id, Role::Admin).await.unwrap();
+        let account = |id: String| {
+            let db = &db;
+            async move { db.get_user_by_id(&id).await.unwrap().unwrap().role }
+        };
+
+        // Someone with no membership can't take it, and nothing moves.
+        assert!(matches!(db.transfer_deployment_owner(&org.id, &outsider.id).await, Err(sqlx::Error::RowNotFound)));
+        assert_eq!(db.get_membership(&org.id, &owner.id).await.unwrap(), Some(Role::Owner));
+        assert_eq!(account(owner.id.clone()).await, Role::Owner);
+        assert_eq!(account(outsider.id.clone()).await, Role::Member);
+
+        // A member takes it, in both places.
+        db.transfer_deployment_owner(&org.id, &admin.id).await.unwrap();
+        assert_eq!(db.get_membership(&org.id, &admin.id).await.unwrap(), Some(Role::Owner));
+        assert_eq!(db.get_membership(&org.id, &owner.id).await.unwrap(), Some(Role::Admin));
+        assert_eq!(account(admin.id.clone()).await, Role::Owner);
+        assert_eq!(account(owner.id.clone()).await, Role::Admin);
     }
 
     #[tokio::test]
@@ -1529,6 +1708,60 @@ mod tests {
         assert!(!db.claim_generation_stage("g-term", "rig", "poller").await.unwrap());
     }
 
+    const LEASE: chrono::Duration = chrono::Duration::minutes(5);
+
+    #[tokio::test]
+    async fn a_work_lease_has_one_holder_until_it_is_released_or_lapses() {
+        let db = in_memory_db().await;
+        active_row(&db, "g-lease").await;
+        db.merge_generation_metadata_if_active("g-lease", &serde_json::json!({ "keep": 1 })).await.unwrap();
+        assert!(db.lease_generation_work("g-lease", "delivery", "a", LEASE).await.unwrap());
+        assert!(!db.lease_generation_work("g-lease", "delivery", "b", LEASE).await.unwrap(), "a live lease holds the others off");
+        assert!(db.lease_generation_work("g-lease", "delivery", "a", LEASE).await.unwrap(), "its holder may take it again");
+        assert!(db.lease_generation_work("g-lease", "other", "b", LEASE).await.unwrap(), "other work is its own lease");
+
+        db.release_generation_work("g-lease", "delivery", "b").await.unwrap();
+        assert!(!db.lease_generation_work("g-lease", "delivery", "b", LEASE).await.unwrap(), "only the holder can release it");
+        db.release_generation_work("g-lease", "delivery", "a").await.unwrap();
+        assert!(db.lease_generation_work("g-lease", "delivery", "b", LEASE).await.unwrap(), "a released lease is free");
+
+        // A holder that died: its lease is older than the term asked for.
+        assert!(db.lease_generation_work("g-lease", "delivery", "c", chrono::Duration::zero()).await.unwrap(), "a lapsed lease is free");
+        let m = metadata_of(&db, "g-lease").await;
+        assert_eq!(m["leases"]["delivery"]["by"], "c", "{m}");
+        assert!(m["leases"]["delivery"]["at"].is_string(), "{m}");
+        assert_eq!(m["keep"], 1, "the rest of the metadata is untouched: {m}");
+    }
+
+    #[tokio::test]
+    async fn racing_lease_claimants_produce_exactly_one_holder() {
+        let db = std::sync::Arc::new(in_memory_db().await);
+        active_row(&db, "g-lrace").await;
+        let mut tasks = Vec::new();
+        for i in 0..8 {
+            let db = db.clone();
+            tasks.push(tokio::spawn(async move { db.lease_generation_work("g-lrace", "delivery", &format!("o{i}"), LEASE).await.unwrap() }));
+        }
+        let mut wins = 0;
+        for t in tasks {
+            if t.await.unwrap() { wins += 1; }
+        }
+        assert_eq!(wins, 1);
+    }
+
+    /// A terminal row's work is done, and is never leased. A generation with
+    /// no row yet is: its insert is spawned at submit, a fast poll can outrun
+    /// it, and no poller works on a row it cannot list.
+    #[tokio::test]
+    async fn a_terminal_row_is_never_leased_and_a_missing_one_always_is() {
+        let db = in_memory_db().await;
+        active_row(&db, "g-lterm").await;
+        db.update_generation_if_active("g-lterm", "completed", 100, None, None, Some(chrono::Utc::now()), None).await.unwrap();
+        assert!(!db.lease_generation_work("g-lterm", "delivery", "a", LEASE).await.unwrap());
+        assert!(db.lease_generation_work("g-none", "delivery", "a", LEASE).await.unwrap());
+        assert!(db.get_generation("g-none").await.unwrap().is_none(), "and no row is made for it");
+    }
+
     // ─── Idempotency-Key records ────────────────────────────────────────────
 
     use crate::db::{IdempotencyBegin, StoredResponse};
@@ -1597,5 +1830,351 @@ mod tests {
             if matches!(t.await.unwrap(), IdempotencyBegin::Started) { started += 1; }
         }
         assert_eq!(started, 1);
+    }
+
+    // ─── leases and idempotency records on the database's clock (R8) ─────
+    // `with_clock_offset` sets "the database's clock" apart from this
+    // process's, which is how a replica whose own clock is off looks.
+
+    /// A replica whose clock runs 6 min ahead of the database's must not take
+    /// over a delivery lease another replica took just now (stamped on the
+    /// database's clock): on the database's clock it is fresh.
+    #[tokio::test]
+    async fn a_lease_another_replica_took_is_judged_on_the_databases_clock() {
+        let db = in_memory_db().await.with_clock_offset(-chrono::Duration::minutes(6));
+        active_row(&db, "g-skew").await;
+        let just_now_on_the_database = (chrono::Utc::now() - chrono::Duration::minutes(6)).to_rfc3339();
+        db.merge_generation_metadata_if_active("g-skew", &serde_json::json!({
+            "leases": { "delivery": { "by": "elsewhere", "at": just_now_on_the_database } },
+        })).await.unwrap();
+        assert!(
+            !db.lease_generation_work("g-skew", "delivery", "here", crate::proxy::delivery_lease::DELIVERY_LEASE).await.unwrap(),
+            "a lease taken just now on the database's clock is not 6 min old"
+        );
+    }
+
+    /// A lease is stamped on the database's clock, so every replica judges it
+    /// on the same one.
+    #[tokio::test]
+    async fn a_lease_is_stamped_on_the_databases_clock() {
+        let db = in_memory_db().await.with_clock_offset(chrono::Duration::minutes(6));
+        active_row(&db, "g-stamp").await;
+        assert!(db.lease_generation_work("g-stamp", "delivery", "here", crate::proxy::delivery_lease::DELIVERY_LEASE).await.unwrap());
+        let m = metadata_of(&db, "g-stamp").await;
+        let at = chrono::DateTime::parse_from_rfc3339(m["leases"]["delivery"]["at"].as_str().unwrap()).unwrap();
+        let off = (at.with_timezone(&chrono::Utc) - (chrono::Utc::now() + chrono::Duration::minutes(6))).num_seconds().abs();
+        assert!(off < 5, "the lease was stamped {off} s from the database's now: {m}");
+    }
+
+    /// A replica whose clock runs 16 min ahead must not judge another
+    /// replica's in-flight `Idempotency-Key` stale (15 min) and run the
+    /// request again: on the database's clock the record is fresh.
+    #[tokio::test]
+    async fn an_in_progress_key_is_judged_on_the_databases_clock() {
+        use crate::db::IdempotencyBegin;
+        let db = in_memory_db().await.with_clock_offset(-chrono::Duration::minutes(16));
+        let just_now_on_the_database = chrono::Utc::now() - chrono::Duration::minutes(16);
+        sqlx::query("INSERT INTO idempotency_keys (scope, idem_key, request_hash, state, created_at) VALUES ('s', 'k', 'h', 'in_progress', ?)")
+            .bind(just_now_on_the_database)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let begun = db.idempotency_begin("s", "k", "h").await.unwrap();
+        assert_eq!(begun, IdempotencyBegin::InProgress, "the other replica's run is in progress, not stale");
+    }
+    #[tokio::test]
+    async fn generations_due_for_retention_respect_app_cutoffs() {
+        use crate::types::AppFileAccessUpsert;
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "keeps");
+        db.create_organization(&org).await.unwrap();
+        let (a, b) = (make_app(&Uuid::new_v4().to_string(), &org.id, "a"), make_app(&Uuid::new_v4().to_string(), &org.id, "b"));
+        db.create_application(&a).await.unwrap();
+        db.create_application(&b).await.unwrap();
+        for (id, app) in [("g-a", Some(a.id.as_str())), ("g-b", Some(b.id.as_str())), ("g-none", None), ("g-running", Some(a.id.as_str()))] {
+            db.insert_generation(id, None, "mock/mesh-3d", "mock", "model3d", None, 0.0, Some(&org.id), app).await.unwrap();
+            if id != "g-running" {
+                db.update_generation_if_active(id, "completed", 100, None, None, Some(chrono::Utc::now()), None).await.unwrap();
+            }
+        }
+        db.put_app_file_access(&AppFileAccessUpsert {
+            app_id: a.id.clone(), mode: None, owner_scope: None, signed_url_ttl_seconds: None,
+            keep_outputs: None, retention_days: Some(1), signed_links: None,
+        }).await.unwrap();
+        assert_eq!(db.apps_with_retention().await.unwrap(), vec![(a.id.clone(), 1)]);
+        let later = chrono::Utc::now() + chrono::Duration::days(2);
+        let ids = |rows: Vec<crate::types::Generation>| rows.into_iter().map(|g| g.id).collect::<Vec<_>>();
+        assert_eq!(ids(db.generations_due_for_retention(Some(&a.id), later, 10).await.unwrap()), ["g-a"], "finished ones only");
+        let mut rest = ids(db.generations_due_for_retention(None, later, 10).await.unwrap());
+        rest.sort();
+        assert_eq!(rest, ["g-b", "g-none"], "every app without its own retention, and none");
+        assert!(db.generations_due_for_retention(Some(&a.id), chrono::Utc::now() - chrono::Duration::days(1), 10).await.unwrap().is_empty(), "none older than that");
+        assert_eq!(db.generations_due_for_retention(None, later, 1).await.unwrap().len(), 1, "the limit");
+        db.mark_files_deleted("g-a", chrono::Utc::now(), "retention").await.unwrap();
+        assert!(db.generations_due_for_retention(Some(&a.id), later, 10).await.unwrap().is_empty(), "swept once");
+        let g = db.get_generation("g-a").await.unwrap().unwrap();
+        assert!(g.files_deleted_at.is_some());
+        assert_eq!(g.files_deleted_reason.as_deref(), Some("retention"));
+    }
+
+    /// A row whose files the sweep failed to delete goes behind the rows not
+    /// yet tried (P12), so rows that keep failing can't fill every batch.
+    #[tokio::test]
+    async fn a_row_whose_delete_failed_goes_behind_the_others() {
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "fails");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "a");
+        db.create_application(&app).await.unwrap();
+        for (id, made) in [("g-old", "-3 days"), ("g-new", "-2 days")] {
+            db.insert_generation(id, None, "mock/mesh-3d", "mock", "model3d", None, 0.0, Some(&org.id), Some(&app.id)).await.unwrap();
+            db.update_generation_if_active(id, "completed", 100, None, None, Some(chrono::Utc::now()), None).await.unwrap();
+            sqlx::query("UPDATE generations SET created_at = datetime('now', ?) WHERE id = ?").bind(made).bind(id).execute(db.pool()).await.unwrap();
+        }
+        let ids = |rows: Vec<crate::types::Generation>| rows.into_iter().map(|g| g.id).collect::<Vec<_>>();
+        let later = chrono::Utc::now();
+        assert_eq!(ids(db.generations_due_for_retention(Some(&app.id), later, 1).await.unwrap()), ["g-old"], "oldest first");
+
+        db.note_files_delete_failed("g-old").await.unwrap();
+        assert_eq!(ids(db.generations_due_for_retention(Some(&app.id), later, 1).await.unwrap()), ["g-new"], "the failed row goes behind");
+        assert_eq!(ids(db.generations_due_for_retention(Some(&app.id), later, 10).await.unwrap()), ["g-new", "g-old"], "and is still due");
+    }
+
+    #[tokio::test]
+    async fn link_revocations_take_the_latest_scope() {
+        let db = in_memory_db().await;
+        let t = |secs: i64| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0).unwrap();
+        assert_eq!(db.links_revoked_at(Some("a"), "g").await.unwrap(), None);
+        db.revoke_links("app", "a", t(1_000)).await.unwrap();
+        assert_eq!(db.links_revoked_at(Some("a"), "g").await.unwrap(), Some(t(1_000)));
+        assert_eq!(db.links_revoked_at(Some("b"), "g").await.unwrap(), None, "another app's");
+        db.revoke_links("generation", "g", t(2_000)).await.unwrap();
+        assert_eq!(db.links_revoked_at(Some("a"), "g").await.unwrap(), Some(t(2_000)), "the latest of app and generation");
+        assert_eq!(db.links_revoked_at(Some("a"), "h").await.unwrap(), Some(t(1_000)));
+        db.revoke_links("gateway", "", t(1_500)).await.unwrap();
+        assert_eq!(db.links_revoked_at(Some("b"), "h").await.unwrap(), Some(t(1_500)), "the gateway's reaches every app");
+        assert_eq!(db.links_revoked_at(None, "g").await.unwrap(), Some(t(2_000)));
+        db.revoke_links("app", "a", t(3_000)).await.unwrap();
+        assert_eq!(db.links_revoked_at(Some("a"), "g").await.unwrap(), Some(t(3_000)), "a later revocation replaces the app's");
+        db.revoke_links("app", "a", t(500)).await.unwrap();
+        assert_eq!(db.links_revoked_at(Some("a"), "h").await.unwrap(), Some(t(3_000)), "an earlier time never un-revokes");
+    }
+
+    #[tokio::test]
+    async fn app_file_access_round_trips_and_goes_with_its_app() {
+        use crate::types::AppFileAccessUpsert;
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "files");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "web");
+        db.create_application(&app).await.unwrap();
+
+        assert!(db.get_app_file_access(&app.id).await.unwrap().is_none());
+        let put = |mode: Option<&str>, scope: Option<&str>, ttl: Option<i64>| AppFileAccessUpsert {
+            app_id: app.id.clone(),
+            mode: mode.map(str::to_string),
+            owner_scope: scope.map(str::to_string),
+            signed_url_ttl_seconds: ttl,
+            keep_outputs: None,
+            retention_days: None,
+            signed_links: None,
+        };
+        db.put_app_file_access(&put(Some("signed"), None, Some(900))).await.unwrap();
+        let row = db.get_app_file_access(&app.id).await.unwrap().expect("stored");
+        assert_eq!((row.mode.as_deref(), row.owner_scope.as_deref(), row.signed_url_ttl_seconds), (Some("signed"), None, Some(900)));
+        db.put_app_file_access(&put(None, Some("org"), None)).await.unwrap();
+        let row = db.get_app_file_access(&app.id).await.unwrap().expect("stored");
+        assert_eq!((row.mode.as_deref(), row.owner_scope.as_deref(), row.signed_url_ttl_seconds), (None, Some("org"), None), "a put replaces every field");
+        // Keeping, retention and links round-trip, and are replaced with the rest.
+        db.put_app_file_access(&AppFileAccessUpsert {
+            keep_outputs: Some(false),
+            retention_days: Some(30),
+            signed_links: Some("litegen".into()),
+            ..put(None, None, None)
+        })
+        .await
+        .unwrap();
+        let row = db.get_app_file_access(&app.id).await.unwrap().expect("stored");
+        assert_eq!((row.keep_outputs, row.retention_days, row.signed_links.as_deref()), (Some(false), Some(30), Some("litegen")));
+        db.put_app_file_access(&put(None, Some("org"), None)).await.unwrap();
+        let row = db.get_app_file_access(&app.id).await.unwrap().expect("stored");
+        assert_eq!((row.keep_outputs, row.retention_days, row.signed_links.as_deref()), (None, None, None));
+        assert!(db.delete_app_file_access(&app.id).await.unwrap());
+        assert!(!db.delete_app_file_access(&app.id).await.unwrap());
+
+        // Deleting the app, or its org, takes the row with it.
+        db.put_app_file_access(&put(Some("private"), None, None)).await.unwrap();
+        assert!(db.delete_application(&app.id).await.unwrap());
+        assert!(db.get_app_file_access(&app.id).await.unwrap().is_none());
+        let app2 = make_app(&Uuid::new_v4().to_string(), &org.id, "web2");
+        db.create_application(&app2).await.unwrap();
+        db.put_app_file_access(&AppFileAccessUpsert { app_id: app2.id.clone(), ..put(Some("private"), None, None) }).await.unwrap();
+        assert!(db.delete_organization(&org.id).await.unwrap());
+        assert!(db.get_app_file_access(&app2.id).await.unwrap().is_none());
+    }
+
+    // ── S2: a database file litegen makes, or can't use ──
+
+    /// A path's text, as a message about it names it.
+    fn shown(path: &std::path::Path) -> String {
+        path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_url_that_asks_to_create_the_database_creates_its_folder_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("nested/data/litegen.db");
+        let db = SqliteDatabase::connect(&format!("sqlite://{}?mode=rwc", shown(&file))).await.expect("opens");
+        db.create_api_key("k", "h", "lg-k", None, None, "read", None).await.unwrap();
+        assert!(file.is_file(), "the database is {}", shown(&file));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_database_litegen_cannot_open_is_named_with_its_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // The file can't be made in a directory litegen can't write, nor a directory below it.
+        let in_it = SqliteDatabase::connect(&format!("sqlite://{}/litegen.db?mode=rwc", shown(&locked))).await.err();
+        let below_it = SqliteDatabase::connect(&format!("sqlite://{}/sub/litegen.db?mode=rwc", shown(&locked))).await.err();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (file, err) in [(locked.join("litegen.db"), in_it), (locked.join("sub/litegen.db"), below_it)] {
+            let msg = err.unwrap_or_else(|| panic!("{} opened in a directory litegen can't write", shown(&file))).to_string();
+            assert!(msg.contains(&shown(&file)) && msg.contains("writable"), "names the file and the fix: {msg}");
+            assert!(!msg.contains("add ?mode=rwc"), "the URL has mode=rwc already: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_database_without_mode_rwc_is_still_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("absent");
+        let file = absent.join("litegen.db");
+        let err = SqliteDatabase::connect(&format!("sqlite://{}", shown(&file))).await.err();
+        let msg = err.unwrap_or_else(|| panic!("no mode=rwc, yet {} was opened", shown(&file))).to_string();
+        assert!(!absent.exists(), "no directory is made for a URL that doesn't ask to create its database");
+        assert!(msg.contains(&shown(&file)) && msg.contains("add ?mode=rwc"), "names the file and the fix: {msg}");
+    }
+
+    /// SQLite opens a file it can't write read-only, so the failure comes at
+    /// the first migration: SQLITE_READONLY (8), or, for a directory where its
+    /// journal can't be made, SQLITE_READONLY_DIRECTORY (1544).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_database_litegen_cannot_write_is_named_with_its_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &std::path::Path, mode: u32| std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let read_only_file = dir.path().join("litegen.db");
+        std::fs::write(&read_only_file, "").unwrap();
+        mode(&read_only_file, 0o444);
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let in_read_only_dir = locked.join("litegen.db");
+        std::fs::write(&in_read_only_dir, "").unwrap();
+        mode(&in_read_only_dir, 0o666);
+        mode(&locked, 0o555);
+        let file_err = SqliteDatabase::connect(&format!("sqlite://{}", shown(&read_only_file))).await.err();
+        let dir_err = SqliteDatabase::connect(&format!("sqlite://{}", shown(&in_read_only_dir))).await.err();
+        mode(&locked, 0o755);
+        for (file, err) in [(read_only_file, file_err), (in_read_only_dir, dir_err)] {
+            let msg = err.unwrap_or_else(|| panic!("{} was migrated, but litegen can't write it", shown(&file))).to_string();
+            assert!(msg.contains(&shown(&file)) && msg.contains("writable"), "names the file and the fix: {msg}");
+        }
+    }
+
+    // ── S2 fix-up M1: a database setting that isn't a SQLite URL ──
+
+    /// The error `connect(value)` refuses `value` with, if it repeats none of
+    /// the credentials or the host in it; otherwise what went wrong.
+    async fn refusal_of(value: &str) -> Result<String, String> {
+        let msg = match SqliteDatabase::connect(value).await {
+            Ok(_) => return Err(format!("{value}: opened as SQLite")),
+            Err(e) => e.to_string(),
+        };
+        if msg.contains("s3cret-pw") || msg.contains("db.example") {
+            return Err(format!("{value}: repeated in {msg}"));
+        }
+        Ok(msg)
+    }
+
+    /// sqlx reads all of a URL but a `sqlite:` prefix as a file name, so a URL
+    /// meant for another database was a path: named in errors, password and
+    /// all, and, with `?mode=rwc`, made into folders and a new SQLite database.
+    /// It is refused, naming only its scheme, and only when that is a scheme.
+    #[tokio::test]
+    async fn a_url_for_another_database_is_refused_naming_only_its_scheme() {
+        let mut wrong = Vec::new();
+        for (url, scheme) in [
+            ("mysql://litegen:s3cret-pw@db.example:3306/litegen", "mysql"),
+            ("postgresql+psycopg://litegen:s3cret-pw@db.example:5432/litegen", "postgresql+psycopg"),
+            ("POSTGRES://litegen:s3cret-pw@db.example:5432/litegen", "POSTGRES"),
+        ] {
+            match refusal_of(url).await {
+                Ok(msg) if msg.contains(&format!("`{scheme}`")) => {}
+                Ok(msg) => wrong.push(format!("{url}: doesn't name `{scheme}`: {msg}")),
+                Err(problem) => wrong.push(problem),
+            }
+        }
+        // What comes before `://` here is no scheme RFC 3986 allows (a quote
+        // mark; 33 characters), so it may be anything: none of it is named.
+        for (url, before) in [
+            ("\"postgres://litegen:s3cret-pw@db.example:5432/litegen\"", "\"postgres"),
+            ("abcdefghijklmnopqrstuvwxyz1234567://litegen:s3cret-pw@db.example/litegen", "abcdefghijklmnopqrstuvwxyz1234567"),
+        ] {
+            match refusal_of(url).await {
+                Ok(msg) if !msg.contains(before) && msg.contains("this database URL's scheme") => {}
+                Ok(msg) => wrong.push(format!("{url}: names its text before :// or doesn't say why: {msg}")),
+                Err(problem) => wrong.push(problem),
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A value with neither `sqlite:` nor a scheme is read as a SQLite file
+    /// name, as before S2. It may be no path at all, though: a Postgres
+    /// keyword/value string with its password, or a `postgres:/` typo. Its
+    /// error repeats none of it, and offers no `?mode=rwc` for it.
+    #[tokio::test]
+    async fn a_value_with_no_scheme_is_never_repeated_in_an_error() {
+        let mut wrong = Vec::new();
+        for value in ["host=db.example user=litegen password=s3cret-pw dbname=litegen", "postgres:/litegen:s3cret-pw@db.example:5432/litegen"] {
+            match refusal_of(value).await {
+                Ok(msg) if !msg.contains("?mode=rwc") && msg.contains("sqlite://") => {}
+                Ok(msg) => wrong.push(format!("{value}: offers ?mode=rwc, or doesn't say how to write a SQLite URL: {msg}")),
+                Err(problem) => wrong.push(problem),
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// Nor is a directory made for such a value with `?mode=rwc`: that
+    /// `postgres:/` typo would become folders named after its password. A path
+    /// in a temporary directory stands in for it, since before the fix the
+    /// typo itself would make its folders in the working directory.
+    #[tokio::test]
+    async fn a_value_with_no_scheme_gets_no_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("absent");
+        let err = SqliteDatabase::connect(&format!("{}?mode=rwc", shown(&absent.join("litegen.db")))).await.err();
+        assert!(!absent.exists(), "a directory was made for a value that isn't a SQLite URL");
+        let msg = err.expect("opened in a directory that doesn't exist").to_string();
+        assert!(!msg.contains(&shown(dir.path())), "the value is repeated: {msg}");
+    }
+
+    /// Guard: the SQLite forms besides `sqlite://` still open: a bare path,
+    /// and `sqlite:` without the slashes.
+    #[tokio::test]
+    async fn a_bare_path_and_the_short_sqlite_form_still_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bare, short) = (dir.path().join("bare.db"), dir.path().join("short.db"));
+        for url in [format!("{}?mode=rwc", shown(&bare)), format!("sqlite:{}?mode=rwc", shown(&short))] {
+            let db = SqliteDatabase::connect(&url).await.unwrap_or_else(|e| panic!("{url}: {e}"));
+            db.create_api_key("k", "h", "lg-k", None, None, "read", None).await.unwrap();
+        }
+        assert!(bare.is_file() && short.is_file(), "the databases are {} and {}", shown(&bare), shown(&short));
     }
 }

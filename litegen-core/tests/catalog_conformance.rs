@@ -310,6 +310,34 @@ fn openai_image_quality_values_are_the_gpt_image_enum() {
     }
 }
 
+/// MiniMax-H3-Highspeed and MiniMax-H3-Lite on the V2 video API (new
+/// 2026-11-03): each "Supports text-to-video, image-to-video (first / last
+/// frame), and reference-to-video …; `480P` / `768P` resolution, **`2K` is
+/// not supported**; 4–15s duration"; "reference images ≤ 9". Prices per
+/// second: Highspeed "768P $0.06", "480P $0.04"; Lite "768P $0.04", "480P
+/// $0.025" — the default request (768P, 5 s) is $0.30 and $0.20.
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-11-03)
+/// @see <https://platform.minimax.io/docs/pricing/overview.md> (2026-11-03)
+#[test]
+fn minimax_h3_highspeed_and_lite_are_carried_with_their_documented_contract() {
+    let reg = registry();
+    for (id, price) in [("minimax/MiniMax-H3-Highspeed", 0.30), ("minimax/MiniMax-H3-Lite", 0.20)] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video, "{id}");
+        match schema.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(4), Some(15), Some(5)), "{id}"),
+            other => panic!("{id} duration_seconds is {other:?}"),
+        }
+        let mut res = enum_values(&reg, id, "resolution");
+        res.sort();
+        assert_eq!(res, ["480P", "768P"], "{id}: no 2K");
+        let refs = schema.ref_inputs.as_ref().unwrap();
+        assert_eq!(refs.roles.get("reference").map(|r| r.max_count), Some(9), "{id}");
+        assert!(refs.roles.contains_key("first_frame") && refs.roles.contains_key("last_frame"), "{id}");
+        assert!((schema.pricing.base_cost_usd - price).abs() < 1e-9, "{id}");
+    }
+}
+
 /// MiniMax `image-01` `aspect_ratio` enum, verified against the embedded
 /// OpenAPI at platform.minimax.io. This one already matched — the test locks it.
 #[test]
@@ -325,6 +353,27 @@ fn minimax_image_aspect_ratios_match_the_documented_enum() {
     }
 }
 
+/// MiniMax `image-01` (`POST /v1/image_generation`): "width … Only effective
+/// for `image-01`. Must be set together with `height`. Range [512, 2048],
+/// must be divisible by 8" is the canonical `size`, and "seed … Using the same
+/// seed and parameters produces reproducible images" the canonical `seed`. The
+/// row declared neither.
+/// @see <https://platform.minimax.io/docs/api-reference/image-generation-t2i.md> (2026-11-03)
+#[test]
+fn minimax_image_01_takes_a_size_and_a_seed() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let schema = reg.get("minimax/image-01").expect("image-01 missing");
+    match schema.params.get("size") {
+        Some(ParamSpec::Size(SizeSpec::Freeform(f))) => {
+            assert_eq!((f.min_width, f.max_width, f.min_height, f.max_height), (512, 2048, 512, 2048), "[512, 2048]");
+            assert_eq!(f.multiple_of, Some(8), "divisible by 8");
+        }
+        other => panic!("image-01 size is {other:?}, expected a freeform 512-2048 box"),
+    }
+    assert!(matches!(schema.params.get("seed"), Some(ParamSpec::Seed(_))), "image-01 documents a reproducible seed");
+}
+
 /// Ideogram v3 `style_type` enum.
 #[test]
 fn ideogram_style_values_match_the_documented_enum() {
@@ -337,6 +386,56 @@ fn ideogram_style_values_match_the_documented_enum() {
                 "{id} allows style {s:?}, not in Ideogram's style_type enum"
             );
         }
+    }
+}
+
+/// Every Vidu endpoint our rows reach takes `seed`: "Random seed When not
+/// passed or passed as 0, a random number will be used instead Manual setting
+/// uses the specified seed" (text2video, img2video, start-end2video and
+/// reference2video alike). No row declared it; 0 means random, so a seed
+/// starts at 1.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/start-end-to-video.md> (vidu2.0, 2026-11-03)
+#[test]
+fn every_vidu_row_takes_a_seed_that_fixes_the_clip() {
+    let reg = registry();
+    let rows: Vec<_> = reg.served().into_iter().filter(|m| m.provider == "vidu").collect();
+    assert!(!rows.is_empty());
+    for m in rows {
+        match m.params.get("seed") {
+            Some(ParamSpec::Seed(s)) => assert_eq!((s.min, s.max), (1, 2147483647), "{}: 0 is Vidu's random", m.id),
+            other => panic!("{} seed is {other:?}", m.id),
+        }
+    }
+}
+
+/// Vidu's `audio` switch ("Whether to use the direct audio-video output
+/// capability") is on viduq1's text2video ("Default: true") and
+/// reference2video ("Default: false") and on viduq2-pro's img2video
+/// ("Default: false"); neither row declared it. Its other endpoints have no
+/// switch, which the adapter enforces (see its tests).
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md> (2026-11-03)
+#[test]
+fn vidu_q1_and_q2_pro_offer_their_audio_switch() {
+    let reg = registry();
+    for id in ["vidu/viduq1", "vidu/viduq2-pro"] {
+        assert!(matches!(reg.get(id).unwrap().params.get("audio"), Some(ParamSpec::Bool(_))), "{id} documents `audio`");
+    }
+}
+
+/// vidu2.0: "Duration | 4s, 8s" (Model Map), and the price table lists no
+/// other length ("Image-to-video | vidu2.0 | 4S | …", "… | 8S | 720p | …").
+/// The row took any whole second from 4 to 8, and the adapter snapped 5–7 to
+/// 4 or 8 after billing the length asked for.
+/// @see <https://platform.vidu.com/docs/model-map.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/pricing.md> (2026-11-03)
+#[test]
+fn vidu2_0_takes_4_or_8_seconds() {
+    let reg = registry();
+    match reg.get("vidu/vidu2.0").expect("vidu2.0 missing").params.get("duration_seconds") {
+        Some(ParamSpec::Int(d)) => assert_eq!((d.values.clone(), d.default), (vec![4, 8], Some(4)), "4 or 8 s"),
+        other => panic!("vidu2.0 duration_seconds is {other:?}"),
     }
 }
 
@@ -556,15 +655,15 @@ fn runway_gen4_turbo_is_image_to_video_only() {
         "gen4_turbo is not accepted by /v1/text_to_video"
     );
     assert!(schema.capabilities.image_to_video);
-    let init = schema
-        .ref_inputs
-        .as_ref()
-        .and_then(|ri| ri.roles.get("init"))
-        .expect("gen4-turbo needs an init role for its required promptImage");
-    assert!(
-        init.required && init.min_count >= 1,
-        "promptImage is required, so the init role must be required: {init:?}"
-    );
+    // promptImage is required: the start frame arrives as first_frame (or
+    // init, the role this row took before first_frame), and a prompt-only
+    // request is refused for want of one, before anything is billed.
+    let roles = &schema.ref_inputs.as_ref().expect("gen4-turbo takes a start frame").roles;
+    assert!(roles.contains_key("first_frame") && roles.contains_key("init"), "{:?}", roles.keys());
+    let prompt_only: litegen::types::VideoGenerationRequest =
+        serde_json::from_value(serde_json::json!({ "model": "runway/gen4-turbo", "prompt": "a drone shot" })).unwrap();
+    let err = litegen::api::middleware::validator::validate_video(schema, prompt_only).unwrap_err();
+    assert_eq!(err.code, "capability_unsupported", "{}", err.message);
 }
 
 /// `POST /v1/text_to_video` takes `ratio` ∈ `1280:720 | 720:1280` for gen4.5.
@@ -630,6 +729,249 @@ fn runway_gen4_image_turbo_requires_a_reference_image() {
         "gen4_image_turbo cannot generate from a prompt alone"
     );
     assert!(schema.capabilities.image_to_image);
+}
+
+/// The image models Runway resells on `POST /v1/text_to_image`, carried as
+/// runway routes beside each vendor's own (the hub-route policy, 2026-11-04).
+/// Each row matches its model's branch:
+/// - the `promptText` maxLength;
+/// - the aspect ratios and resolution tiers its `ratio` enum covers, every
+///   aspect at every tier (image/runway.rs maps each cell to its size);
+/// - its `referenceImages` maxItems;
+/// - the price of its default request, at "$0.01 per credit".
+///
+/// recraft_v4_1_flash and recraft_v4_1_vector have no published price, so they
+/// are not carried.
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-11-10)
+/// @see <https://docs.dev.runwayml.com/guides/pricing.md> (2026-11-10)
+#[test]
+fn runway_resold_image_rows_are_carried_with_runways_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    use litegen::capabilities::schema::MaskConvention;
+    struct Row {
+        id: &'static str,
+        prompt_max: usize,
+        aspects: &'static [&'static str],
+        resolutions: &'static [&'static str],
+        max_refs: u32,
+        base_usd: f64,
+    }
+    let reg = registry();
+    for r in [
+        Row { id: "runway/gpt_image_2", prompt_max: 32000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &["1K", "2K", "4K"], max_refs: 16, base_usd: 0.2 },
+        Row { id: "runway/gpt_image_2_5_flare", prompt_max: 32000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &["1K", "2K", "4K"], max_refs: 16, base_usd: 0.11 },
+        Row { id: "runway/gpt_image_2_5_sunburst", prompt_max: 32000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &["1K", "2K", "4K"], max_refs: 16, base_usd: 0.11 },
+        Row { id: "runway/gpt_image_2_6_flare", prompt_max: 32000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &["1K", "2K", "4K"], max_refs: 16, base_usd: 0.11 },
+        Row { id: "runway/gpt_image_2_6_sunburst", prompt_max: 32000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &["1K", "2K", "4K"], max_refs: 16, base_usd: 0.11 },
+        Row { id: "runway/gemini_2.5_flash", prompt_max: 45000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &[], max_refs: 3, base_usd: 0.05 },
+        Row { id: "runway/gemini_image3_pro", prompt_max: 45000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &["1K", "2K", "4K"], max_refs: 14, base_usd: 0.2 },
+        Row { id: "runway/gemini_image3.1_flash", prompt_max: 45000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:4", "4:1", "1:8", "8:1"], resolutions: &["0.5K", "1K", "2K", "4K"], max_refs: 14, base_usd: 0.07 },
+        Row { id: "runway/gemini_image3.1_flash_lite", prompt_max: 45000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], resolutions: &[], max_refs: 14, base_usd: 0.04 },
+        Row { id: "runway/nano_banana_2.1", prompt_max: 45000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:4", "4:1", "1:8", "8:1"], resolutions: &["1K", "2K", "4K"], max_refs: 14, base_usd: 0.04 },
+        Row { id: "runway/muse_image", prompt_max: 4000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"], resolutions: &[], max_refs: 10, base_usd: 0.01 },
+        Row { id: "runway/seedream5_pro", prompt_max: 4000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"], resolutions: &["1K", "2K"], max_refs: 10, base_usd: 0.05 },
+        Row { id: "runway/seedream5_lite", prompt_max: 4000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"], resolutions: &["2K", "3K"], max_refs: 14, base_usd: 0.04 },
+        Row { id: "runway/seedream5_flash", prompt_max: 4000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"], resolutions: &["1K", "2K"], max_refs: 10, base_usd: 0.02 },
+        Row { id: "runway/grok_imagine_image_2", prompt_max: 2500, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20"], resolutions: &["1K", "2K"], max_refs: 3, base_usd: 0.06 },
+        Row { id: "runway/bria_fibo_1_5", prompt_max: 10000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"], resolutions: &["1K", "2K"], max_refs: 1, base_usd: 0.05 },
+        Row { id: "runway/bria_fibo_edit_1_5", prompt_max: 10000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"], resolutions: &[], max_refs: 4, base_usd: 0.05 },
+        Row { id: "runway/ideogram_4_0", prompt_max: 4000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "12:5", "5:12"], resolutions: &[], max_refs: 1, base_usd: 0.07 },
+        Row { id: "runway/ideogram_4_5", prompt_max: 10000, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "2:1", "1:2"], resolutions: &["1K", "2K"], max_refs: 5, base_usd: 0.25 },
+        Row { id: "runway/ideogram_vector", prompt_max: 9500, aspects: &[], resolutions: &[], max_refs: 5, base_usd: 0.17 },
+    ] {
+        let id = r.id;
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(m.provider == "runway" && m.media_type == litegen::capabilities::MediaType::Image, "{id}");
+        assert_eq!(m.prompt.max_length, Some(r.prompt_max), "{id}: promptText maxLength");
+        assert_eq!(m.docs_url.as_deref(), Some("https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"), "{id}");
+        assert_eq!(aspect_ratios(&reg, id), r.aspects, "{id}: the aspects its ratio enum covers");
+        assert_eq!(enum_values(&reg, id, "resolution"), r.resolutions, "{id}: its ratio enum's tiers");
+        let init = m.ref_inputs.as_ref().and_then(|ri| ri.roles.get("init")).map(|role| role.max_count);
+        assert_eq!(init, Some(r.max_refs), "{id}: referenceImages maxItems");
+        assert!((m.pricing.base_cost_usd - r.base_usd).abs() < 1e-9, "{id}: {} (want {})", m.pricing.base_cost_usd, r.base_usd);
+        // One image per call: outputCount is litegen's, never a caller's.
+        assert!(!m.extra_allowlist.iter().any(|k| k == "outputCount" || k == "ratio" || k == "model"), "{id}: {:?}", m.extra_allowlist);
+    }
+
+    // Prices past the default, read from the guide's tables.
+    let price = |id: &str, params: serde_json::Value, refs: usize| {
+        let m = reg.get(id).unwrap();
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        req.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
+        req["reference_images"] = (0..refs).map(|i| serde_json::json!({ "type": "url", "value": format!("https://example.com/{i}.png") })).collect();
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    use serde_json::json as j;
+    for (id, params, refs, usd) in [
+        // gpt_image_2: "| `medium` | 5 | 11 |" (1K / 2K, 4K); "| `low` | 1 | 2 |".
+        ("runway/gpt_image_2", j!({ "quality": "medium", "resolution": "2K" }), 0, 0.05),
+        ("runway/gpt_image_2", j!({ "quality": "low", "resolution": "4K" }), 3, 0.02),
+        // 2.5: 4K `max` 1:1 is 75, 2K `xhigh` 21:9 is 8, 1K `low` 4:5 is 1;
+        // "(credits per image + 1 credit per reference image)".
+        ("runway/gpt_image_2_5_flare", j!({ "quality": "max", "resolution": "4K" }), 2, 0.77),
+        ("runway/gpt_image_2_5_flare", j!({ "quality": "low", "resolution": "4K", "aspect_ratio": "2:3" }), 0, 0.02),
+        ("runway/gpt_image_2_6_sunburst", j!({ "quality": "medium", "resolution": "4K", "aspect_ratio": "21:9" }), 0, 0.02),
+        ("runway/gpt_image_2_5_sunburst", j!({ "quality": "xhigh", "resolution": "2K", "aspect_ratio": "21:9" }), 0, 0.08),
+        ("runway/gpt_image_2_6_flare", j!({ "quality": "low", "aspect_ratio": "4:5" }), 1, 0.02),
+        ("runway/gpt_image_2_6_sunburst", j!({ "resolution": "2K", "aspect_ratio": "16:9" }), 0, 0.06),
+        // "5 credits per 512px image, … 16 credits per 4K image".
+        ("runway/gemini_image3.1_flash", j!({ "resolution": "0.5K" }), 0, 0.05),
+        ("runway/gemini_image3.1_flash", j!({ "resolution": "4K" }), 0, 0.16),
+        ("runway/gemini_image3_pro", j!({ "resolution": "4K" }), 0, 0.4),
+        ("runway/nano_banana_2.1", j!({ "resolution": "2K" }), 0, 0.06),
+        ("runway/seedream5_pro", j!({ "resolution": "2K" }), 0, 0.09),
+        // Grok: "four 1K `medium` images with two references is `4 × 6 + 2`".
+        ("runway/grok_imagine_image_2", j!({ "quality": "low", "resolution": "2K" }), 3, 0.09),
+        ("runway/grok_imagine_image_2", j!({}), 2, 0.08),
+        ("runway/bria_fibo_1_5", j!({ "resolution": "2K" }), 0, 0.1),
+        ("runway/ideogram_4_0", j!({ "quality": "high" }), 0, 0.11),
+        // Ideogram 4.5 "defaults to `medium` when generating from reference
+        // images and `high` otherwise, including `preciseEdit`".
+        ("runway/ideogram_4_5", j!({}), 1, 0.08),
+        ("runway/ideogram_4_5", j!({ "extra": { "preciseEdit": true } }), 1, 0.25),
+        ("runway/ideogram_4_5", j!({ "quality": "very_low" }), 1, 0.01),
+        ("runway/ideogram_vector", j!({ "quality": "high" }), 0, 0.22),
+        ("runway/ideogram_vector", j!({ "quality": "high" }), 1, 0.35),
+    ] {
+        let got = price(id, params.clone(), refs);
+        assert!((got - usd).abs() < 1e-9, "{id} {params} + {refs} refs: {got} (want {usd})");
+    }
+
+    // Bria FIBO Edit "1 to 4 images to edit": no prompt-only request.
+    let edit = reg.get("runway/bria_fibo_edit_1_5").unwrap();
+    let init = &edit.ref_inputs.as_ref().unwrap().roles["init"];
+    assert!(init.required && init.min_count == 1 && !edit.capabilities.text_to_image);
+    // Ideogram 4.5 `maskUri`: "Black areas are edited and white areas are preserved".
+    let i45 = reg.get("runway/ideogram_4_5").unwrap();
+    assert_eq!(i45.ref_inputs.as_ref().unwrap().roles["mask"].convention, Some(MaskConvention::BlackEdits));
+    assert!(i45.capabilities.inpainting && i45.params.contains_key("region"));
+    // `quality` that changes Runway's own default by request is left unset.
+    assert!(matches!(i45.params.get("quality"), Some(ParamSpec::String(s)) if s.default.is_none()));
+    // "recraft_v4_1_flash" and "recraft_v4_1_vector": no price on the guide.
+    for id in ["runway/recraft_v4_1_flash", "runway/recraft_v4_1_vector"] {
+        assert!(reg.get(id).is_none(), "{id} has no published price");
+    }
+}
+
+/// The video models Runway resells on `POST /v1/text_to_video` and
+/// `/v1/image_to_video`, carried as runway routes beside each vendor's own
+/// (the hub-route policy, 2026-11-04). Each row matches both of its model's
+/// branches:
+/// - the tighter `promptText` maxLength;
+/// - the aspects and tiers of its `ratio` enum (or its `resolution` field):
+///   every aspect at every tier, video/runway.rs mapping each to its size;
+/// - the duration bounds both modes share (Veo "4, 6, 8", Kling 2.5 "5, 10");
+/// - a last frame where `promptImage` takes position "last";
+/// - its `references` maxItems;
+/// - the price of its default request, at "$0.01 per credit".
+///
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-11-10)
+/// @see <https://docs.dev.runwayml.com/guides/pricing.md> (2026-11-10)
+#[test]
+fn runway_resold_video_rows_are_carried_with_runways_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    struct Row {
+        id: &'static str,
+        prompt_max: usize,
+        aspects: &'static [&'static str],
+        resolutions: &'static [&'static str],
+        duration: (i64, i64, i64),
+        last_frame: bool,
+        references: u32,
+        base_usd: f64,
+    }
+    let reg = registry();
+    for r in [
+        Row { id: "runway/veo3.1", prompt_max: 1000, aspects: &["9:16", "16:9"], resolutions: &["720p", "1080p"], duration: (4, 8, 8), last_frame: true, references: 0, base_usd: 3.2 },
+        Row { id: "runway/veo3.1_fast", prompt_max: 1000, aspects: &["9:16", "16:9"], resolutions: &["720p", "1080p"], duration: (4, 8, 8), last_frame: true, references: 0, base_usd: 1.2 },
+        Row { id: "runway/gemini_omni_flash", prompt_max: 4000, aspects: &["9:16", "16:9"], resolutions: &[], duration: (3, 10, 5), last_frame: false, references: 0, base_usd: 0.5 },
+        Row { id: "runway/gemini_omni_flash_1.1", prompt_max: 4000, aspects: &["9:16", "16:9"], resolutions: &["360p", "720p", "1080p", "4k"], duration: (3, 10, 5), last_frame: true, references: 5, base_usd: 0.5 },
+        Row { id: "runway/gemini_omni_flash_1.2", prompt_max: 4000, aspects: &["9:16", "16:9"], resolutions: &["360p", "720p", "1080p", "4k"], duration: (3, 15, 5), last_frame: true, references: 5, base_usd: 0.35 },
+        Row { id: "runway/kling2.5_turbo_pro", prompt_max: 2500, aspects: &["1:1", "9:16", "16:9"], resolutions: &["720p", "1080p"], duration: (5, 10, 5), last_frame: true, references: 0, base_usd: 0.6 },
+        Row { id: "runway/kling3.0_standard", prompt_max: 2500, aspects: &["1:1", "9:16", "16:9"], resolutions: &[], duration: (3, 15, 5), last_frame: true, references: 0, base_usd: 0.65 },
+        Row { id: "runway/kling3.0_pro", prompt_max: 2500, aspects: &["1:1", "9:16", "16:9"], resolutions: &[], duration: (3, 15, 5), last_frame: true, references: 0, base_usd: 0.85 },
+        Row { id: "runway/kling3.0_4k", prompt_max: 2500, aspects: &["1:1", "9:16", "16:9"], resolutions: &[], duration: (3, 15, 5), last_frame: true, references: 0, base_usd: 2.15 },
+        Row { id: "runway/klingO3_standard", prompt_max: 2500, aspects: &["1:1", "9:16", "16:9"], resolutions: &[], duration: (3, 15, 5), last_frame: true, references: 7, base_usd: 0.65 },
+        Row { id: "runway/klingO3_pro", prompt_max: 2500, aspects: &["1:1", "9:16", "16:9"], resolutions: &[], duration: (3, 15, 5), last_frame: true, references: 7, base_usd: 0.85 },
+        Row { id: "runway/klingO3_4k", prompt_max: 2500, aspects: &["1:1", "9:16", "16:9"], resolutions: &[], duration: (3, 15, 5), last_frame: true, references: 7, base_usd: 2.15 },
+        Row { id: "runway/kling_4", prompt_max: 26000, aspects: &["1:1", "9:16", "16:9", "21:9"], resolutions: &["720p", "1080p"], duration: (3, 30, 10), last_frame: true, references: 10, base_usd: 2.35 },
+        Row { id: "runway/kling_4_flash", prompt_max: 26000, aspects: &["1:1", "9:16", "16:9", "21:9"], resolutions: &[], duration: (3, 20, 5), last_frame: false, references: 10, base_usd: 0.47 },
+        Row { id: "runway/hailuo3", prompt_max: 6000, aspects: &["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], resolutions: &["768P", "2K"], duration: (5, 15, 5), last_frame: true, references: 9, base_usd: 0.5 },
+        Row { id: "runway/h3_max", prompt_max: 6000, aspects: &[], resolutions: &["480P", "768P"], duration: (5, 15, 5), last_frame: true, references: 0, base_usd: 0.4 },
+        Row { id: "runway/seedance2", prompt_max: 10000, aspects: &["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"], resolutions: &["480p", "720p", "1080p", "4k"], duration: (4, 15, 5), last_frame: true, references: 9, base_usd: 1.5 },
+        Row { id: "runway/seedance2_fast", prompt_max: 10000, aspects: &["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"], resolutions: &["480p", "720p"], duration: (4, 15, 5), last_frame: true, references: 9, base_usd: 1.2 },
+        Row { id: "runway/seedance2_mini", prompt_max: 10000, aspects: &["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"], resolutions: &["480p", "720p"], duration: (4, 15, 5), last_frame: true, references: 9, base_usd: 0.75 },
+        Row { id: "runway/seedance2_5", prompt_max: 15000, aspects: &["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"], resolutions: &["480p", "720p", "1080p"], duration: (4, 30, 5), last_frame: true, references: 30, base_usd: 1.5 },
+        Row { id: "runway/grok_imagine_1_5", prompt_max: 2500, aspects: &["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], resolutions: &["480p", "720p", "1080p"], duration: (1, 15, 5), last_frame: false, references: 7, base_usd: 0.8 },
+        Row { id: "runway/grok_imagine_1_5_lite", prompt_max: 2500, aspects: &["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"], resolutions: &["480p", "720p", "1080p"], duration: (1, 15, 5), last_frame: false, references: 0, base_usd: 0.15 },
+        Row { id: "runway/wan3", prompt_max: 20000, aspects: &["1:1", "3:4", "4:3", "9:16", "16:9"], resolutions: &["480p", "720p", "1080p"], duration: (2, 30, 5), last_frame: true, references: 10, base_usd: 0.5 },
+        Row { id: "runway/wan3_prime", prompt_max: 20000, aspects: &["1:1", "3:4", "4:3", "9:16", "16:9"], resolutions: &["480p", "720p", "1080p"], duration: (2, 30, 5), last_frame: true, references: 10, base_usd: 0.7 },
+        Row { id: "runway/happyhorse_1_0", prompt_max: 2500, aspects: &["1:1", "3:4", "4:3", "9:16", "16:9"], resolutions: &["720p", "1080p"], duration: (3, 15, 5), last_frame: false, references: 0, base_usd: 0.75 },
+    ] {
+        let id = r.id;
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(m.provider == "runway" && m.media_type == litegen::capabilities::MediaType::Video, "{id}");
+        assert!(m.capabilities.text_to_video && m.capabilities.image_to_video, "{id}: both modes");
+        assert_eq!(m.prompt.max_length, Some(r.prompt_max), "{id}: promptText maxLength");
+        assert_eq!(m.docs_url.as_deref(), Some("https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"), "{id}");
+        assert_eq!(aspect_ratios(&reg, id), r.aspects, "{id}: the aspects its ratio enum covers");
+        assert_eq!(enum_values(&reg, id, "resolution"), r.resolutions, "{id}: its tiers");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(r.duration.0), Some(r.duration.1), Some(r.duration.2)), "{id}: duration"),
+            other => panic!("{id} duration_seconds: {other:?}"),
+        }
+        let roles = &m.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id}: no ref_inputs")).roles;
+        assert_eq!(roles.get("first_frame").map(|role| role.max_count), Some(1), "{id}: a start frame");
+        assert_eq!(roles.contains_key("last_frame"), r.last_frame, "{id}: promptImage position \"last\"");
+        assert_eq!(roles.get("reference").map_or(0, |role| role.max_count), r.references, "{id}: references maxItems");
+        assert!((m.pricing.base_cost_usd - r.base_usd).abs() < 1e-9, "{id}: {} (want {})", m.pricing.base_cost_usd, r.base_usd);
+    }
+    // Discrete durations: Veo "enum": [4, 6, 8]; Kling 2.5 Turbo Pro [5, 10].
+    for (id, values) in [("runway/veo3.1", vec![4, 6, 8]), ("runway/veo3.1_fast", vec![4, 6, 8]), ("runway/kling2.5_turbo_pro", vec![5, 10])] {
+        assert!(matches!(reg.get(id).unwrap().params.get("duration_seconds"), Some(ParamSpec::Int(d)) if d.values == values), "{id}");
+    }
+
+    // Prices past the default, read from the guide.
+    let price = |id: &str, params: serde_json::Value, roles: &[&str]| {
+        let m = reg.get(id).unwrap();
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        req.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
+        req["reference_images"] = roles
+            .iter()
+            .enumerate()
+            .map(|(i, role)| serde_json::json!({ "type": "url", "value": format!("https://example.com/{i}.png"), "role": role }))
+            .collect();
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    use serde_json::json as j;
+    for (id, params, roles, usd) in [
+        // "| `veo3.1 (no audio)` | 20 credits per second"; fast "(no audio) | 10".
+        ("runway/veo3.1", j!({ "audio": false }), &[][..], 1.6),
+        ("runway/veo3.1_fast", j!({ "audio": false, "duration_seconds": 4 }), &[][..], 0.4),
+        // "Kling 3.0 Standard and Pro use the no-audio rate when `audio` is `false`"; O3 does not.
+        ("runway/kling3.0_pro", j!({ "audio": false, "duration_seconds": 10 }), &[][..], 1.2),
+        ("runway/klingO3_pro", j!({ "audio": false }), &[][..], 0.85),
+        ("runway/kling_4", j!({ "resolution": "720p", "duration_seconds": 5 }), &[][..], 0.785),
+        // hailuo3 "15 credits per second, plus 2 credits per reference image".
+        ("runway/hailuo3", j!({ "resolution": "2K", "duration_seconds": 10 }), &["reference", "reference", "reference"][..], 1.56),
+        ("runway/h3_max", j!({ "resolution": "480P" }), &[][..], 0.25),
+        ("runway/seedance2", j!({ "resolution": "4k" }), &[][..], 7.5),
+        // Seedance 2.5 "A preview (`draft: true` …) bills at the 480p rate".
+        ("runway/seedance2_5", j!({ "extra": { "draft": true } }), &[][..], 1.0),
+        ("runway/seedance2_5", j!({ "resolution": "1080p", "duration_seconds": 10 }), &[][..], 6.8),
+        ("runway/gemini_omni_flash", j!({}), &["first_frame"][..], 0.51),
+        ("runway/gemini_omni_flash_1.1", j!({ "resolution": "4k" }), &["first_frame"][..], 1.51),
+        ("runway/gemini_omni_flash_1.2", j!({ "resolution": "360p", "duration_seconds": 3 }), &["reference", "reference"][..], 0.08),
+        ("runway/grok_imagine_1_5", j!({ "resolution": "1080p" }), &["reference"][..], 1.46),
+        ("runway/grok_imagine_1_5_lite", j!({ "resolution": "480p" }), &["first_frame"][..], 0.11),
+        ("runway/wan3_prime", j!({ "resolution": "1080p", "duration_seconds": 10 }), &[][..], 2.8),
+        ("runway/happyhorse_1_0", j!({ "resolution": "1080p" }), &[][..], 1.5),
+    ] {
+        let got = price(id, params.clone(), roles);
+        assert!((got - usd).abs() < 1e-9, "{id} {params} {roles:?}: {got} (want {usd})");
+    }
 }
 
 /// #9: gen4.5's `outputFormat` turns the output into "a ProRes .mov", "a .zip
@@ -822,6 +1164,40 @@ fn gemini_3_pro_and_2_5_flash_image_advertise_the_ten_documented_aspect_ratios()
     }
 }
 
+/// Gemini 2.5 Flash Image: "Maximum images per prompt: 3" (Google's model
+/// page) and "`gemini-2.5-flash-image` works best with up to 3 images as
+/// input" (the Gemini API image page). The row took one.
+/// @see <https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-image> (2026-11-03)
+/// @see <https://ai.google.dev/gemini-api/docs/image-generation> (2026-11-03)
+#[test]
+fn gemini_2_5_flash_image_takes_three_input_images() {
+    let reg = registry();
+    let refs = reg
+        .get("google/gemini-2.5-flash-image")
+        .expect("gemini-2.5-flash-image missing")
+        .ref_inputs
+        .as_ref()
+        .expect("gemini-2.5-flash-image declares no ref_inputs");
+    assert_eq!(refs.max_total, 3, "up to 3 input images");
+    assert_eq!(refs.roles.get("init").map(|r| r.max_count), Some(3), "the init role must allow all 3");
+}
+
+/// No Gemini image row declares `seed`. `GenerationConfig.seed` (int32) is a
+/// generic generateContent field, but Google's image-model pages name only
+/// "Temperature: 0.0-2.0 (default 1.0) topP: 0.0-1.0 (default 0.95) topK: 64
+/// (fixed) candidateCount: 1" and promise no reproducible image: advertising a
+/// seed promises what the vendor does not document (the conservative reading).
+/// @see <https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-image> (2026-11-03)
+#[test]
+fn gemini_image_rows_declare_no_seed() {
+    let reg = registry();
+    let rows: Vec<_> = reg.served().into_iter().filter(|m| m.provider == "google").collect();
+    assert!(!rows.is_empty());
+    for m in rows {
+        assert!(!m.params.contains_key("seed"), "{} declares a seed Google does not document for its image models", m.id);
+    }
+}
+
 /// "Gemini 3 image models let you to mix up to 14 reference images": 14 objects
 /// on 3.1 Flash Lite, 10 objects + 4 characters on 3.1 Flash, 6 objects +
 /// 5 characters + 3 style references on 3 Pro. The catalog capped them at 3.
@@ -1005,26 +1381,69 @@ fn recraft_v4_1_pro_sizes_are_the_v4_pro_table() {
     assert_eq!(recraft_sizes(&registry(), "recraft/recraftv4_1_pro"), pro);
 }
 
-/// Recraft V2 / V3 raster sizes: the Appendix gives 16:9 as 1820x1024 and 9:16
-/// as 1024x1820, which we did not advertise; everything we do advertise must be
-/// in the spec's V2/V3 block (which also keeps the legacy 1707x1024).
-/// @see <https://www.recraft.ai/docs/api-reference/appendix.md>
-/// @see <https://external.api.recraft.ai/doc/spec/external-api.yaml> (ImageSize), read 2026-09-11
+/// Recraft V2 / V3 raster sizes are the Appendix's V2/V3 column, all 14 of it:
+/// "Exact size `WxH` … Must be one of the sizes listed for the model; any other
+/// value is rejected." The OpenAPI `ImageSize` enum also lists 1707x1024 (10:6),
+/// which the column doesn't: the vendor contradicts itself, so the conservative
+/// reading (the per-model column) holds.
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("Image sizes"), read 2026-11-03
+/// @see <https://external.api.recraft.ai/doc/spec/external-api.yaml> (ImageSize), read 2026-11-03
 #[test]
 fn recraft_v2_v3_sizes_are_the_v2_v3_table() {
-    const V2_V3_SIZES: [(u32, u32); 15] = [
-        (1024, 1024), (1365, 1024), (1024, 1365), (1536, 1024), (1024, 1536), (1820, 1024),
-        (1024, 1820), (1024, 2048), (2048, 1024), (1434, 1024), (1024, 1434), (1024, 1280),
-        (1280, 1024), (1024, 1707), (1707, 1024),
+    let mut v2_v3: Vec<(u32, u32)> = vec![
+        (1024, 1024), (2048, 1024), (1024, 2048), (1536, 1024), (1024, 1536), (1365, 1024),
+        (1024, 1365), (1280, 1024), (1024, 1280), (1024, 1707), (1434, 1024), (1024, 1434),
+        (1820, 1024), (1024, 1820),
     ];
+    v2_v3.sort();
     let reg = registry();
     for id in ["recraft/recraftv3", "recraft/recraftv2"] {
-        let ours = recraft_sizes(&reg, id);
-        for s in &ours {
-            assert!(V2_V3_SIZES.contains(s), "{id} advertises {s:?}, not a V2/V3 size");
-        }
-        for s in [(1820, 1024), (1024, 1820)] {
-            assert!(ours.contains(&s), "{id} does not advertise {s:?} (16:9 / 9:16)");
+        assert_eq!(recraft_sizes(&reg, id), v2_v3, "{id}");
+    }
+}
+
+/// Recraft V4.1 Flash (new 2026-11-03): "The fastest and cheapest Recraft API
+/// model: about 1.3 seconds and $0.007 per image … Raster only, no styles";
+/// `model` "recraftv4_1_flash", prompt "Up to 10,000 characters", the 1K
+/// sizes of V4.1, `random_seed` and `controls.colors`; "Not supported by
+/// Flash: `style`, `style_id`, `style_match`, style references,
+/// `negative_prompt`, and `text_layout`".
+/// @see <https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash.md> (2026-11-03)
+/// @see <https://www.recraft.ai/docs/api-reference/pricing.md> (2026-11-03)
+#[test]
+fn recraft_v4_1_flash_is_carried_with_its_documented_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let flash = reg.get("recraft/recraftv4_1_flash").expect("recraftv4_1_flash missing");
+    let v41 = reg.get("recraft/recraftv4_1").expect("recraftv4_1 missing");
+    assert!((flash.pricing.base_cost_usd - 0.007).abs() < 1e-9);
+    assert!(flash.capabilities.text_to_image && !flash.capabilities.image_to_image, "generate image only");
+    assert_eq!(flash.prompt.max_length, Some(10000));
+    for k in ["style", "negative_prompt"] {
+        assert!(!flash.params.contains_key(k), "Flash takes no {k}");
+    }
+    assert_eq!(flash.extra_allowlist, ["controls"], "no style_id on Flash");
+    assert!(matches!(flash.params.get("seed"), Some(ParamSpec::Seed(_))) && flash.params.contains_key("palette"));
+    match (flash.params.get("size"), v41.params.get("size")) {
+        (Some(ParamSpec::Size(SizeSpec::Enum(a))), Some(ParamSpec::Size(SizeSpec::Enum(b)))) => assert_eq!(a.values, b.values, "the 1K table"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Every Recraft generation model takes an aspect ratio as `size: "w:h"`, the
+/// Appendix's 14 ratios: "**Aspect ratio** `w:h`, for example `16:9`. Works
+/// with every model. Prefer it." Vector models take only that form.
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("Image sizes"), read 2026-11-03
+#[test]
+fn every_recraft_generation_model_takes_the_appendix_aspect_ratios() {
+    use litegen::capabilities::ParamSpec;
+    let ratios = ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"];
+    let reg = registry();
+    // The text-to-image rows; remove- and replace-background take an image.
+    for m in reg.for_provider("recraft").filter(|m| m.capabilities.text_to_image) {
+        match m.params.get("aspect_ratio") {
+            Some(ParamSpec::AspectRatio(a)) => assert_eq!(a.allowed, ratios, "{}", m.id),
+            other => panic!("{} takes no aspect_ratio: {other:?}", m.id),
         }
     }
 }
@@ -1146,9 +1565,132 @@ fn vidu_rows_allowlist_only_fields_their_bodies_take() {
             assert!(!m.extra_allowlist.iter().any(|a| a == k), "{} allowlists `{k}`", m.id);
         }
     }
+    // E4a: `callback_url` was their only key, and it is litegen's.
     for id in ["vidu/viduq2-pro", "vidu/viduq2-pro-fast"] {
-        assert_eq!(reg.get(id).unwrap().extra_allowlist, ["callback_url"], "{id}");
+        assert!(reg.get(id).unwrap().extra_allowlist.is_empty(), "{id}");
     }
+}
+
+/// E4b, N3: a price compares the extra it reads exactly as sent, so every
+/// extra a pricing rule reads is typed (`true` and `"true"` are not one
+/// value): fal/hyper3d-rodin `addons`, runway/ideogram_4_5 `preciseEdit`,
+/// runway/seedance2_5 `draft`.
+#[test]
+fn every_extra_a_price_reads_is_typed() {
+    let reg = registry();
+    let mut read = Vec::new();
+    for m in reg.all() {
+        let served = serde_json::to_value(m).unwrap();
+        for rule in &m.pricing.variable_pricing {
+            for key in rule.when.keys().filter_map(|k| k.strip_prefix("extra.")) {
+                let kind = served["extra_params"][key]["kind"].as_str().map(str::to_string);
+                read.push((m.id.clone(), key.to_string(), kind));
+            }
+        }
+    }
+    read.sort();
+    let want: Vec<(String, String, Option<String>)> = [
+        ("fal/hyper3d-rodin", "addons", "string"),
+        ("runway/ideogram_4_5", "preciseEdit", "bool"),
+        ("runway/seedance2_5", "draft", "bool"),
+    ]
+    .iter()
+    .map(|(id, key, kind)| (id.to_string(), key.to_string(), Some(kind.to_string())))
+    .collect();
+    assert_eq!(read, want);
+}
+
+/// E4c: `safety_tolerance` is a string on fal's FLUX.1 [pro] and FLUX.2 rows
+/// ("1"-"6", "1"-"5"), an integer on fal's FLUX 3 rows (0-4), and an
+/// integer on BFL (0-6 or 0-7, per endpoint) and Replicate. A client cannot
+/// tell from the name, so each row types it as its own endpoint takes it.
+#[test]
+fn safety_tolerance_is_typed_as_each_vendor_takes_it() {
+    let reg = registry();
+    let mut seen = Vec::new();
+    for m in reg.all().filter(|m| m.provider != "mock" && m.extra_allowlist.iter().any(|k| k == "safety_tolerance")) {
+        let t = serde_json::to_value(m).unwrap()["extra_params"]["safety_tolerance"].clone();
+        let want = match m.id.as_str() {
+            "fal/flux-pro" | "fal/flux-kontext-pro" | "fal/flux-kontext-max" => serde_json::json!({ "kind": "string", "enum_values": ["1", "2", "3", "4", "5", "6"], "default": "2" }),
+            "fal/flux-2-pro" | "fal/flux-2-max" | "fal/flux-2-flex" => serde_json::json!({ "kind": "string", "enum_values": ["1", "2", "3", "4", "5"], "default": "2" }),
+            id if id.starts_with("fal/flux-3-") => serde_json::json!({ "kind": "int", "min": 0, "max": 4, "default": 2 }),
+            id if id.starts_with("fal/") => serde_json::json!({ "kind": "string" }),
+            "bfl/flux-2-pro" | "bfl/flux-2-max" | "bfl/flux-2-klein-9b" | "bfl/flux-2-flex" | "bfl/flux-3-image" | "bfl/flux-3-image-klein" => {
+                serde_json::json!({ "kind": "int", "min": 0, "max": 7, "default": 2 })
+            }
+            id if id.starts_with("bfl/") => serde_json::json!({ "kind": "int", "min": 0, "max": 6, "default": 2 }),
+            "replicate/flux-3-image" => serde_json::json!({ "kind": "int", "min": 0, "max": 4 }),
+            id if id.starts_with("replicate/") => serde_json::json!({ "kind": "int", "min": 1, "max": 6, "default": 2 }),
+            id => panic!("{id} allowlists safety_tolerance; say how its endpoint takes it"),
+        };
+        // The served spec carries `values: []`-style empties only when set.
+        let got: serde_json::Map<String, serde_json::Value> = t.as_object().cloned().unwrap_or_default().into_iter().filter(|(_, v)| !v.is_null() && v != &serde_json::json!([])).collect();
+        assert_eq!(serde_json::Value::Object(got), want, "{}", m.id);
+        seen.push(m.id.clone());
+    }
+    assert_eq!(seen.len(), 27, "{seen:?}");
+}
+
+/// E4c: every key a vendor row allowlists is typed in `extra_params`, from
+/// evidence in the repo (a drift snapshot of the vendor's schema, the row's
+/// own comment quoting the vendor, or the adapter and its tests), except
+/// these: values that are JSON objects or integer lists, which no extra kind
+/// describes, and keys with no evidence of their type. The mock rows stay
+/// untyped: they test passthrough of any value.
+#[test]
+fn every_allowlisted_extra_is_typed_or_named_untyped() {
+    const UNTYPED: &[(&str, &str)] = &[
+        ("background_color", "an object {r, g, b} (fal Recraft V4)"),
+        ("bbox_condition", "an integer list (fal Rodin)"),
+        ("color_palette", "an object (Ideogram 3.0)"),
+        ("controls", "an object (Recraft)"),
+        ("contentModeration", "an object (Runway)"),
+        ("providerSettings", "an object (Runway)"),
+        ("optimize_prompt_options", "an object (TokenHub Seedream)"),
+        ("use_search_tool", "an object (TokenHub Hunyuan)"),
+        ("Style", "no evidence (Hunyuan image)"),
+        ("contextWindow", "no evidence (Runway Ideogram 4.5)"),
+        ("promptExpansionMode", "no evidence (Runway H3 Max)"),
+        ("thinkingLevel", "no evidence (Runway Nano Banana 2.1)"),
+        ("camera_movement", "no evidence (TokenHub PixVerse)"),
+    ];
+    let reg = registry();
+    let (mut typed, mut untyped, mut missing) = (0, 0, Vec::new());
+    for m in reg.all().filter(|m| m.provider != "mock") {
+        let served = serde_json::to_value(m).unwrap();
+        for key in &m.extra_allowlist {
+            if served["extra_params"][key]["kind"].is_string() {
+                typed += 1;
+            } else if UNTYPED.iter().any(|(k, _)| k == key) {
+                untyped += 1;
+            } else {
+                missing.push(format!("{} {key}", m.id));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "allowlisted with no type:\n{}", missing.join("\n"));
+    assert_eq!((typed, untyped), (208 + 3, 47), "typed and untyped allowlist entries");
+}
+
+/// D2: a param description is a whole sentence. In a YAML flow mapping a
+/// plain scalar ends at ", ", so an unquoted description with a comma was cut
+/// there (and the rest became a key); the twelve such lines are quoted.
+#[test]
+fn every_param_description_is_a_whole_sentence() {
+    let reg = registry();
+    let mut cut = Vec::new();
+    for m in reg.all() {
+        for (name, spec) in &m.params {
+            let v = serde_json::to_value(spec).unwrap();
+            if let Some(d) = v["description"].as_str() {
+                if !d.trim_end().ends_with(['.', ')', '!', '?', '"', '\'', '\u{201d}', '\u{2019}']) {
+                    cut.push(format!("{} {name}: {d:?}", m.id));
+                }
+            }
+        }
+    }
+    cut.sort();
+    assert!(cut.is_empty(), "{} descriptions end mid-sentence:\n{}", cut.len(), cut.join("\n"));
 }
 
 /// viduq2-pro: 540p/720p/1080p and 1-10s on img2video, start-end2video and
@@ -1209,6 +1751,25 @@ fn pixverse_generate_audio_switch_is_not_allowlisted_below_v5_5() {
 }
 
 // ─── Kling: vendor facts re-read 2026-09-11 (model-drift) ──────────────────
+
+// ─── Luma: vendor feature audit, 2026-11-03 ─────────────────────────────────
+
+/// Photon (`POST /generations/image`): "format … The format of the image",
+/// the ImageFormat enum `jpg | png` ("default": "jpg"). PixelGenie L9's
+/// "Luma always returns JPEG" no longer holds, so the rows offer both, and
+/// `format` is litegen's to send (never an extra).
+/// @see <https://docs.lumalabs.ai/reference/generateimage.md> (2026-11-03)
+#[test]
+fn luma_photon_returns_jpeg_or_png() {
+    let reg = registry();
+    for id in ["luma/photon-1", "luma/photon-flash-1"] {
+        let mut formats = enum_values(&reg, id, "output_format");
+        formats.sort();
+        assert_eq!(formats, ["jpeg", "png"], "{id}: ImageFormat jpg | png");
+        let schema = reg.get(id).unwrap();
+        assert!(!schema.extra_allowlist.iter().any(|k| k == "format"), "{id}: format is derived from output_format");
+    }
+}
 
 // ─── Luma: vendor facts re-read 2026-09-11 (model-drift) ────────────────────
 
@@ -1365,8 +1926,10 @@ fn bytedance_seedream_4_0_accepts_14_reference_images() {
     );
 }
 
-/// "Dreamina Seedance 1.0 pro: Default 5; supports [2, 12]."
-/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> (read 2026-09-11)
+/// "Dreamina Seedance 1.0 pro: Default 5; supports [2, 12]." The field is
+/// "duration `integer`" (C5): declared in whole seconds, a fraction is rounded
+/// before the per-second price, never billed as 5.4 s and sent as 5.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> (read 2026-09-11; integer re-read 2026-11-03)
 #[test]
 fn bytedance_seedance_1_0_pro_duration_range_matches_the_api() {
     let reg = registry();
@@ -1374,10 +1937,10 @@ fn bytedance_seedance_1_0_pro_duration_range_matches_the_api() {
         .get("bytedance/doubao-seedance-1-0-pro-250528")
         .expect("seedance-1-0-pro missing");
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(2.0), "Seedance 1.0 pro accepts 2s");
-            assert_eq!(f.max, Some(12.0), "Seedance 1.0 pro tops out at 12s");
-            assert_eq!(f.default, Some(5.0), "vendor default is 5s");
+        Some(ParamSpec::Int(f)) => {
+            assert_eq!(f.min, Some(2), "Seedance 1.0 pro accepts 2s");
+            assert_eq!(f.max, Some(12), "Seedance 1.0 pro tops out at 12s");
+            assert_eq!(f.default, Some(5), "vendor default is 5s");
         }
         other => panic!("seedance-1-0-pro duration_seconds is {other:?}"),
     }
@@ -1457,6 +2020,19 @@ fn leonardo_motion2_matches_the_motion_2_0_contract() {
         vec!["480p".to_string(), "720p".to_string()],
         "Motion 2.0 renders at 480p or 720p only"
     );
+}
+
+// ─── fal: vendor feature audit, 2026-11-03 ──────────────────────────────────
+
+/// fal-ai/fast-sdxl's "format" ("enum": ["jpeg", "png"], default "jpeg") is
+/// the canonical `output_format`; the row declared none.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/fast-sdxl> (2026-11-03)
+#[test]
+fn fal_fast_sdxl_returns_jpeg_or_png() {
+    let reg = registry();
+    let mut formats = enum_values(&reg, "fal/sdxl", "output_format");
+    formats.sort();
+    assert_eq!(formats, ["jpeg", "png"]);
 }
 
 // ─── fal: vendor facts re-read 2026-09-11 (model-drift) ─────────────────────
@@ -1615,6 +2191,23 @@ fn fal_video_does_not_advertise_a_duration() {
 }
 
 // ─── Replicate: vendor facts re-read 2026-09-11 (model-drift) ───────────────
+
+/// flux-dev and SDXL take an image with "prompt_strength … Prompt strength
+/// when using img2img. 1.0 corresponds to full destruction of information in
+/// image" (0–1, default 0.8): the canonical `strength`, which the adapter sends
+/// as `prompt_strength` but neither row declared.
+/// @see <https://replicate.com/black-forest-labs/flux-dev/api/schema> (2026-11-03)
+/// @see <https://replicate.com/stability-ai/sdxl/api/schema> (2026-11-03)
+#[test]
+fn replicate_img2img_rows_take_a_strength() {
+    let reg = registry();
+    for id in ["replicate/flux-dev", "replicate/sdxl"] {
+        match reg.get(id).unwrap_or_else(|| panic!("{id} missing")).params.get("strength") {
+            Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max, f.default), (Some(0.0), Some(1.0), Some(0.8)), "{id}: prompt_strength 0-1, default 0.8"),
+            other => panic!("{id} strength is {other:?}"),
+        }
+    }
+}
 
 /// `black-forest-labs/flux-pro` `aspect_ratio` enum is
 /// `custom, 1:1, 16:9, 3:2, 2:3, 4:5, 5:4, 9:16, 3:4, 4:3` — no `21:9` or
@@ -1880,7 +2473,7 @@ fn bytedance_seedream_5_0_lite_and_4_5_are_advertised_with_their_size_floor() {
             "{id}: text-to-image and (multi-)reference image-to-image"
         );
         assert!(
-            schema.params.get("seed").is_none(),
+            !schema.params.contains_key("seed"),
             "{id}: the Image generation API has no seed parameter"
         );
         match schema.params.get("size") {
@@ -1892,6 +2485,99 @@ fn bytedance_seedream_5_0_lite_and_4_5_are_advertised_with_their_size_floor() {
         }
         let refs = schema.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
         assert_eq!(refs.max_total, 14, "{id}: up to 14 reference images");
+    }
+}
+
+/// Each Seedream size rule is a pixel range and a ratio, not just an edge box:
+/// 4.0 "Total pixels range: [`1280x720=921,600`, `4096x4096=16,777,216`]",
+/// 4.5 and 5.0 lite "[`2560x1440`(3,686,400), `4096x4096`(16,777,216)]", all
+/// with "Aspect ratio range: [1/16, 16]". The box alone let through the size
+/// the page calls invalid ("Invalid example: `1500x1500`"), which the vendor
+/// then refused. Every documented valid size must pass the declared rule, and
+/// the invalid one must not.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1541523> (2026-11-03)
+#[test]
+fn bytedance_seedream_sizes_carry_the_vendors_pixel_range_and_ratio() {
+    use litegen::capabilities::schema::SizeSpec;
+    let fits = |f: &litegen::capabilities::schema::SizeSpecFreeform, w: u32, h: u32| {
+        let pixels = u64::from(w) * u64::from(h);
+        let aspect = f64::from(w.max(h)) / f64::from(w.min(h));
+        (f.min_width..=f.max_width).contains(&w)
+            && (f.min_height..=f.max_height).contains(&h)
+            && f.min_pixels.is_none_or(|m| pixels >= m)
+            && f.max_pixels.is_none_or(|m| pixels <= m)
+            && f.max_aspect.is_none_or(|m| aspect <= m + 1e-9)
+    };
+    let reg = registry();
+    for (id, min_pixels, valid, invalid) in [
+        ("bytedance/seedream-4-0-250828", 921_600u64, &[(1280u32, 720u32), (1600, 600), (1512, 648), (6240, 2656)][..], &[(800u32, 800u32), (4097, 4097)][..]),
+        ("bytedance/seedream-4-5-251128", 3_686_400, &[(2560, 1440), (3750, 1250), (2048, 2048), (6240, 2656)][..], &[(1500, 1500), (1024, 1024)][..]),
+        ("bytedance/seedream-5-0-lite-260128", 3_686_400, &[(2560, 1440), (3750, 1250), (2048, 2048), (6240, 2656)][..], &[(1500, 1500), (1024, 1024)][..]),
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+        let Some(ParamSpec::Size(SizeSpec::Freeform(f))) = schema.params.get("size") else {
+            panic!("{id} size is not a freeform WxH size");
+        };
+        assert_eq!(f.min_pixels, Some(min_pixels), "{id}: the vendor's pixel floor");
+        assert_eq!(f.max_pixels, Some(16_777_216), "{id}: the vendor's pixel cap, 4096x4096");
+        assert_eq!(f.max_aspect, Some(16.0), "{id}: aspect ratio range [1/16, 16]");
+        for &(w, h) in valid {
+            assert!(fits(f, w, h), "{id} refuses the documented size {w}x{h}");
+        }
+        for &(w, h) in invalid {
+            assert!(!fits(f, w, h), "{id} admits {w}x{h}, outside the vendor's pixel range");
+        }
+        // 16:1 is the widest the vendor makes; 17:1 is not.
+        assert!(!fits(f, 17 * 512, 512), "{id} admits 17:1");
+    }
+}
+
+/// "output_format `string` `Default: jpeg` · values: `png`, `jpeg` ·
+/// supported models: Seedream 5.0 lite". The other Seedream rows must not
+/// promise it: their endpoint ignores the field.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1541523> (2026-11-03)
+#[test]
+fn bytedance_only_seedream_5_0_lite_takes_an_output_format() {
+    let reg = registry();
+    let lite = reg.get("bytedance/seedream-5-0-lite-260128").expect("seedream-5-0-lite missing");
+    match lite.params.get("output_format") {
+        Some(ParamSpec::String(s)) => {
+            assert_eq!(s.enum_values, vec!["png".to_string(), "jpeg".to_string()], "png or jpeg");
+            assert_eq!(s.default.as_deref(), Some("jpeg"), "the vendor's default is jpeg");
+        }
+        other => panic!("seedream-5-0-lite output_format is {other:?}, expected png|jpeg"),
+    }
+    for id in ["bytedance/seedream-4-0-250828", "bytedance/seedream-4-5-251128"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+        assert!(!schema.params.contains_key("output_format"), "{id}: output_format is a Seedream 5.0 lite field");
+    }
+}
+
+/// Seedream 5.0 pro and 5.0 flash on the same Image generation API (new
+/// 2026-11-03): "Seedream 5.0 pro and Seedream 5.0 flash support up to 10
+/// reference images"; WxH "Total pixels range: [`1280x720`(921,600),
+/// `2048x2048x1.1025`(4,624,220)]" and "Aspect ratio range: [1/16, 16]";
+/// `output_format` png | jpeg; no `seed` (the page documents none). Prices:
+/// "dola-seedream-5-0-flash-260915 | Free | $0.018" and pro "More than 2.61
+/// million pixels (higher than 1.5K): $0.09" for the default 2K.
+/// @see <https://docs.byteplus.com/en/docs/modelark/image-generation-api> (2026-11-03)
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1544106> (2026-11-03)
+#[test]
+fn bytedance_seedream_5_0_pro_and_flash_are_carried_with_their_documented_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    for (id, price) in [("bytedance/dola-seedream-5-0-pro-260628", 0.09), ("bytedance/dola-seedream-5-0-flash-260915", 0.018)] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(schema.capabilities.text_to_image && schema.capabilities.image_to_image, "{id}");
+        let Some(ParamSpec::Size(SizeSpec::Freeform(f))) = schema.params.get("size") else { panic!("{id} size") };
+        assert_eq!((f.min_pixels, f.max_pixels, f.max_aspect), (Some(921_600), Some(4_624_220), Some(16.0)), "{id}");
+        assert_eq!((f.min_width, f.max_width), (240, 8601), "{id}: the pixel rule's extremes");
+        assert_eq!(schema.ref_inputs.as_ref().unwrap().max_total, 10, "{id}: up to 10 references");
+        let mut formats = enum_values(&reg, id, "output_format");
+        formats.sort();
+        assert_eq!(formats, ["jpeg", "png"], "{id}");
+        assert!(!schema.params.contains_key("seed"), "{id}");
+        assert!((schema.pricing.base_cost_usd - price).abs() < 1e-9, "{id}");
     }
 }
 
@@ -1912,7 +2598,8 @@ fn bytedance_seedance_1_0_pro_fast_is_first_frame_only() {
         "1.0 pro fast has no first-and-last-frame mode; a last_frame role promises one"
     );
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max), (Some(2.0), Some(12.0)), "duration [2, 12]"),
+        // "duration `integer`" (C5): whole seconds.
+        Some(ParamSpec::Int(f)) => assert_eq!((f.min, f.max), (Some(2), Some(12)), "duration [2, 12]"),
         other => panic!("{id} duration_seconds is {other:?}"),
     }
     assert_eq!(enum_values(&reg, id, "resolution"), ["480p", "720p", "1080p"]);
@@ -1942,10 +2629,11 @@ fn bytedance_seedance_2_0_mini_advertises_only_frame_roles_and_its_bounds() {
     assert_eq!(roles, ["first_frame", "last_frame"], "no reference_image/_video/_audio roles");
     assert_eq!(enum_values(&reg, id, "resolution"), ["480p", "720p"], "2.0 mini has no 1080p/4k");
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max), (Some(4.0), Some(15.0)), "duration [4, 15]"),
+        // "duration `integer`" (C5): whole seconds.
+        Some(ParamSpec::Int(f)) => assert_eq!((f.min, f.max), (Some(4), Some(15)), "duration [4, 15]"),
         other => panic!("{id} duration_seconds is {other:?}"),
     }
-    assert!(schema.params.get("seed").is_none(), "seed is not a 2.0-series parameter");
+    assert!(!schema.params.contains_key("seed"), "seed is not a 2.0-series parameter");
 }
 
 // ─── kling: 2026-09-11 drift decisions applied ──────────────────────────────
@@ -2015,7 +2703,13 @@ fn kling_v2_5_turbo_and_v2_6_video_match_the_capability_map() {
                 "{id} allowlists {key}, which Kling 2.5 Turbo / 2.6 do not support"
             );
         }
-        assert!(schema.extra_allowlist.iter().any(|k| k == "mode"), "{id}: mode selects 720p/1080p");
+        // The capability map's "Resolution | 720P, 1080P" is the canonical
+        // `resolution`, sent as the legacy `mode` (std = 720p, pro = 1080p);
+        // `mode` is litegen's to send, never an extra (2026-11-03).
+        let mut res = enum_values(&reg, id, "resolution");
+        res.sort();
+        assert_eq!(res, ["1080p", "720p"], "{id}: 720p or 1080p");
+        assert!(!schema.extra_allowlist.iter().any(|k| k == "mode"), "{id}: mode is derived from resolution");
     }
     // PixelGenie L10: native audio is the canonical `audio`, sent as `sound`.
     let has_sound = |id: &str| matches!(reg.get(id).unwrap().params.get("audio"), Some(ParamSpec::Bool(_)));
@@ -2083,6 +2777,46 @@ fn hunyuan_video_extra_allowlist_names_only_submit_hunyuan_to_video_job_paramete
     }
 }
 
+// ─── leonardo: vendor feature audit, 2026-11-03 ─────────────────────────────
+
+/// Motion 2.0 on `POST /generations-image-to-video`: the body's `seed` and
+/// `negativePrompt`, which Leonardo's model list documents for `motion_2.0` as
+/// "seed {"type":"number","minimum":0,"maximum":2147483637}" and
+/// "negative_prompt {"type":"string","maxLength":1000}". The row declared
+/// neither.
+/// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (2026-11-03)
+#[test]
+fn leonardo_motion2_takes_a_seed_and_a_negative_prompt() {
+    let reg = registry();
+    let schema = reg.get("leonardo/motion2").expect("motion2 missing");
+    match schema.params.get("seed") {
+        Some(ParamSpec::Seed(s)) => assert_eq!((s.min, s.max), (0, 2147483637)),
+        other => panic!("motion2 seed is {other:?}"),
+    }
+    match schema.params.get("negative_prompt") {
+        Some(ParamSpec::String(s)) => assert_eq!(s.max_length, Some(1000)),
+        other => panic!("motion2 negative_prompt is {other:?}"),
+    }
+}
+
+/// Diffusion XL on `POST /generations`: "guidance_scale … Must be between 1
+/// and 20" ("7 is recommended") and "num_inference_steps … Must be between 10
+/// and 60. Default is 15" are the canonical `guidance_scale` and `steps`; the
+/// row declared neither.
+/// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-11-03)
+#[test]
+fn leonardo_diffusion_xl_takes_guidance_and_steps() {
+    let reg = registry();
+    let schema = reg.get("leonardo/diffusion-xl").expect("diffusion-xl missing");
+    match (schema.params.get("guidance_scale"), schema.params.get("steps")) {
+        (Some(ParamSpec::Float(g)), Some(ParamSpec::Int(st))) => {
+            assert_eq!((g.min, g.max, g.default), (Some(1.0), Some(20.0), Some(7.0)), "guidance 1-20, 7 recommended");
+            assert_eq!((st.min, st.max, st.default), (Some(10), Some(60), Some(15)), "steps 10-60, default 15");
+        }
+        other => panic!("diffusion-xl guidance_scale / steps are {other:?}"),
+    }
+}
+
 // ─── leonardo: 2026-09-11 drift decisions applied ───────────────────────────
 
 /// Veo 3.1 (`VEO3_1`): "duration ... Set to 4, 6, or 8", "resolution ... Set
@@ -2098,10 +2832,12 @@ fn leonardo_veo3_1_matches_the_veo_3_1_contract() {
         vec!["720p".to_string(), "1080p".to_string()],
         "Veo 3.1 renders at 720p or 1080p"
     );
+    // "duration {"type":"integer","enum":[4,6,8],"default":8}" (Leonardo's v2
+    // model list, 2026-11-03): 5 and 7 s were advertised and then refused.
     match schema.params.get("duration_seconds") {
         Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(4.0), "Veo 3.1: 4, 6 or 8 s");
-            assert_eq!(f.max, Some(8.0), "Veo 3.1: 4, 6 or 8 s");
+            assert_eq!(f.values, vec![4.0, 6.0, 8.0], "Veo 3.1: 4, 6 or 8 s, nothing between");
+            assert_eq!(f.default, Some(8.0), "Veo 3.1 defaults to 8 s");
         }
         other => panic!("veo3.1 duration_seconds is {other:?}"),
     }
@@ -2134,12 +2870,18 @@ fn leonardo_kling2_5_matches_the_kling_2_5_turbo_contract() {
 
 // ─── vidu: 2026-09-11 drift decisions applied ───────────────────────────────
 
-/// viduq3-turbo is in the `model` values of all four endpoints the adapter
-/// routes between (text2video, img2video, start-end2video, reference2video),
-/// so it advertises both modes and all three ref roles. reference2video takes
-/// 3-16s (the others 1-16s), so 3-16s is the range every endpoint accepts.
-/// @see <https://platform.vidu.com/docs/model-map.md>
-/// @see <https://platform.vidu.com/docs/reference-to-video.md>, read 2026-09-11
+/// viduq3-turbo is in the `model` values of text2video, img2video and
+/// start-end2video, so it advertises both modes and the first and last frame
+/// roles, and each of those operations takes "1 - 16" (img2video,
+/// start-end2video) or "available range: 1–16" (text2video) seconds. On
+/// reference2video Vidu documents viduq3-turbo only as "Subjects-Reference to
+/// Video", where `subjects` is "Required"; the `images` form the adapter sends
+/// names `viduq3` alone ("Accepted values: `viduq3`"). So the row offers no
+/// `reference` role.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md> (2026-11-09)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-09)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md> (2026-11-09)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/start-end-to-video.md> (2026-11-09)
 #[test]
 fn vidu_q3_turbo_serves_every_endpoint_the_adapter_routes_to() {
     let reg = registry();
@@ -2151,12 +2893,13 @@ fn vidu_q3_turbo_serves_every_endpoint_the_adapter_routes_to() {
         .as_ref()
         .expect("vidu/viduq3-turbo declares no ref_inputs")
         .roles;
-    for role in ["first_frame", "last_frame", "reference"] {
+    for role in ["first_frame", "last_frame"] {
         assert!(roles.contains_key(role), "vidu/viduq3-turbo is missing the {role} role");
     }
+    assert!(!roles.contains_key("reference"), "reference2video documents only the subjects form for viduq3-turbo");
     match schema.params.get("duration_seconds") {
         Some(ParamSpec::Int(f)) => {
-            assert_eq!(f.min, Some(3), "reference2video takes viduq3-turbo from 3s");
+            assert_eq!(f.min, Some(1), "text2video, img2video and start-end2video take viduq3-turbo from 1s");
             assert_eq!(f.max, Some(16), "q3 models go to 16s");
         }
         other => panic!("viduq3-turbo duration_seconds is {other:?}"),
@@ -2290,10 +3033,13 @@ fn pixverse_v6_and_c1_are_carried_with_their_documented_contract() {
         let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(schema.capabilities.text_to_video, "{id} serves text/generate");
         assert!(schema.capabilities.image_to_video, "{id} serves img/generate");
+        // "duration: type: integer, minimum: 1, maximum: 15" (C5): declared in
+        // whole seconds, a fraction is rounded before the per-second price —
+        // the adapter used to truncate 5.5 s to 5 after billing 5.5 (2026-11-03).
         match schema.params.get("duration_seconds") {
-            Some(ParamSpec::Float(f)) => {
-                assert_eq!(f.min, Some(1.0), "{id} takes 1-15s");
-                assert_eq!(f.max, Some(15.0), "{id} takes 1-15s");
+            Some(ParamSpec::Int(f)) => {
+                assert_eq!(f.min, Some(1), "{id} takes 1-15s");
+                assert_eq!(f.max, Some(15), "{id} takes 1-15s");
             }
             other => panic!("{id} duration_seconds is {other:?}"),
         }
@@ -2310,6 +3056,32 @@ fn pixverse_v6_and_c1_are_carried_with_their_documented_contract() {
             "{id} is missing audio (generate_audio_switch)"
         );
     }
+}
+
+/// PixVerse V6 Max (new 2026-11-03): "V6 MAX (v6-max) Only support
+/// text-to-video/image-to-video now" — no first-and-last-frame transition —
+/// with the capability map's "1-15 seconds", "360p / 540p / 720p / 1080p",
+/// "16:9 / 9:16 / 4:3 / 3:4 / 1:1 / 2:3 / 3:2 / 21:9" and "optional native
+/// audio"; no multi-clip switch ("V5.5 or V6"). Priced per second: "V6 Max |
+/// Off | … 9 Credits/s USD 0.040/s" at 540p, so the default 5 s clip is $0.20.
+/// @see <https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md> (2026-11-03)
+/// @see <https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md> (2026-11-03)
+#[test]
+fn pixverse_v6_max_is_carried_with_its_documented_contract() {
+    let id = "pixverse/v6-max";
+    let reg = registry();
+    let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+    assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video);
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(1), Some(15), Some(5))),
+        other => panic!("{id} duration_seconds is {other:?}"),
+    }
+    let roles: Vec<&str> = schema.ref_inputs.as_ref().unwrap().roles.keys().map(String::as_str).collect();
+    assert_eq!(roles, ["first_frame"], "no last frame on V6 Max");
+    assert_eq!(aspect_ratios(&reg, id).len(), 8);
+    assert!(matches!(schema.params.get("audio"), Some(ParamSpec::Bool(_))), "optional native audio");
+    assert!(!schema.extra_allowlist.iter().any(|k| k == "generate_multi_clip_switch"), "multi-clip is V5.5 / V6 only");
+    assert!((schema.pricing.base_cost_usd - 0.2).abs() < 1e-9);
 }
 
 /// `generate_multi_clip_switch` is "Supported in v5.5/v6 models"; C1 does
@@ -2561,6 +3333,444 @@ fn bfl_flux_2_klein_9b_is_advertised_without_prompt_upsampling_controls() {
     );
 }
 
+// ─── bfl: vendor feature audit, 2026-11-03 ──────────────────────────────────
+
+/// FLUX.1 [dev] (`POST /v1/flux-dev`): "steps … Number of steps for the image
+/// generation process" (1–50, default 28) and "guidance … Guidance scale for
+/// image generation" (1.5–5, default 3) are the canonical `steps` and
+/// `guidance_scale`, not extras; "image_prompt … Optional base64 encoded image
+/// to use as a prompt for generation" is a Redux reference.
+/// @see <https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux1-%5Bdev%5D> (2026-11-03)
+#[test]
+fn bfl_flux_dev_declares_steps_guidance_and_a_redux_reference() {
+    let id = "bfl/flux-dev";
+    let reg = registry();
+    let schema = reg.get(id).expect("flux-dev missing");
+    match (schema.params.get("steps"), schema.params.get("guidance_scale")) {
+        (Some(ParamSpec::Int(s)), Some(ParamSpec::Float(g))) => {
+            assert_eq!((s.min, s.max, s.default), (Some(1), Some(50), Some(28)), "steps 1-50, default 28");
+            assert_eq!((g.min, g.max, g.default), (Some(1.5), Some(5.0), Some(3.0)), "guidance 1.5-5, default 3");
+        }
+        other => panic!("{id} steps / guidance_scale are {other:?}"),
+    }
+    for k in ["steps", "guidance"] {
+        assert!(!schema.extra_allowlist.iter().any(|a| a == k), "{id}: {k} is a declared param, not an extra");
+    }
+    let refs = schema.ref_inputs.as_ref().expect("flux-dev declares no ref_inputs");
+    assert_eq!(refs.roles.get("redux").map(|r| r.max_count), Some(1), "{id}: one image_prompt");
+    assert!(schema.capabilities.image_to_image, "{id}: an image prompt is image-to-image");
+}
+
+/// FLUX 1.1 [pro] Ultra: "image_prompt … Optional image to remix in base64
+/// format", with "image_prompt_strength … Blend between the prompt and the
+/// image prompt" (0–1, default 0.1). The blend is the vendor's own extra, not
+/// `strength`: there 1 keeps less of the image, here more.
+/// @see <https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D-ultra-mode> (2026-11-03)
+#[test]
+fn bfl_flux_ultra_takes_an_image_prompt_to_remix() {
+    let id = "bfl/flux-pro-1.1-ultra";
+    let reg = registry();
+    let schema = reg.get(id).expect("flux-pro-1.1-ultra missing");
+    let refs = schema.ref_inputs.as_ref().expect("ultra declares no ref_inputs");
+    assert_eq!(refs.roles.get("redux").map(|r| r.max_count), Some(1), "{id}: one image_prompt");
+    assert!(schema.capabilities.image_to_image, "{id}: an image prompt is image-to-image");
+    assert!(schema.extra_allowlist.iter().any(|a| a == "image_prompt_strength"), "{id}: the blend passes through");
+}
+
+/// FLUX.2: "Reference multiple images simultaneously - up to 8 via API".
+/// [pro] and [max] take `input_image` … `input_image_8` ("Path to the eighth
+/// input image"), [klein] 9B `input_image` … `input_image_4`. Each row took one.
+/// @see <https://docs.bfl.ml/flux_2/flux2_image_editing.md> (2026-11-03)
+/// @see <https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bpro%5D> (2026-11-03)
+#[test]
+fn bfl_flux_2_rows_take_every_input_image_the_api_does() {
+    let reg = registry();
+    for (id, n) in [("bfl/flux-2-pro", 8), ("bfl/flux-2-max", 8), ("bfl/flux-2-klein-9b", 4)] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        let refs = schema.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+        assert_eq!(refs.max_total, n, "{id}: {n} input images");
+        assert_eq!(refs.roles.get("init").map(|r| r.max_count), Some(n), "{id}: the init role takes all {n}");
+    }
+}
+
+// ─── ideogram: Ideogram 4.5, 2026-11-03 ──────────────────────────────────────
+
+/// Ideogram 4.5 (`POST /v2/image/generate/ideogram-4-5`, multipart): prompt,
+/// `images` ("max 5 … The first image is the one being edited"), `mask`,
+/// `size` ("Without source images, an exact size must be one of the supported
+/// 1K/2K presets"; with them "both sides a multiple of 32 … at most 2048x2048
+/// pixels"), `background`, `quality` ("Defaults to `medium` with source
+/// images and `high` without. `very_low` … requires source images"), `seed`.
+/// Price (rendered): Generate Low / Medium / High $0.03 / $0.06 / $0.10, and
+/// "with source images" Very Low / Low / Medium / High $0.008 / $0.03 /
+/// $0.06 / $0.22, 1K and 2K alike.
+/// @see <https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5.md> (2026-11-03)
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (ResolutionV4, 2026-11-03)
+/// @see <https://ideogram.ai/pricing/?pricing_tab=api> (rendered 2026-11-03)
+#[test]
+fn ideogram_4_5_is_carried_with_its_documented_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let id = "ideogram/ideogram-4-5";
+    let m = reg.get(id).expect("ideogram/ideogram-4-5 missing");
+    assert_eq!(m.docs_url.as_deref(), Some("https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5"));
+    assert!(m.capabilities.text_to_image && m.capabilities.image_to_image);
+    assert!((m.pricing.base_cost_usd - 0.10).abs() < 1e-9, "text-to-image defaults to high");
+    match m.params.get("quality") {
+        Some(ParamSpec::String(q)) => {
+            assert_eq!(q.enum_values, ["very_low", "low", "medium", "high"]);
+            assert!(q.default.is_none(), "the vendor's default differs by mode, so none is declared");
+        }
+        other => panic!("{id} quality: {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "background"), ["transparent", "opaque"]);
+    match m.params.get("size") {
+        Some(ParamSpec::Size(SizeSpec::Enum(s))) => {
+            assert_eq!(s.values.len(), 32, "ResolutionV4's presets with both sides a multiple of 32");
+            assert!(s.values.contains(&(1024, 1024)) && s.values.contains(&(2048, 2048)) && s.values.contains(&(1440, 2880)));
+            assert!(s.values.iter().all(|(w, h)| w % 32 == 0 && h % 32 == 0 && (*w as u64) * (*h as u64) <= 2048 * 2048));
+        }
+        other => panic!("{id} size: {other:?}"),
+    }
+    let refs = m.ref_inputs.as_ref().expect("refs");
+    assert_eq!(refs.roles.get("init").map(|r| r.max_count), Some(1));
+    assert_eq!(refs.roles.get("reference").map(|r| r.max_count), Some(4), "five images in all");
+    assert!(refs.roles.contains_key("mask"));
+    assert_eq!(m.extra_allowlist, ["magic_prompt", "enable_copyright_detection"]);
+}
+
+// ─── replicate: FLUX 3 Image, 2026-11-03 ─────────────────────────────────────
+
+/// FLUX 3 Image on Replicate (`black-forest-labs/flux-3-image`, an official
+/// model served versionless): `images` ("Up to 10 reference images"),
+/// `resolution` 768sq … 4k (default 1k), 15 aspect ratios or auto,
+/// `output_format` webp / jpg / png, `grounding`, `safety_tolerance` 0–4,
+/// `output_quality`; no width/height, no seed. "$0.0205 per output image …
+/// when target resolution equals 768sq", $0.024 at 1k, $0.035 at 1.5k, $0.05
+/// at 2k, $0.3035 at 4k.
+/// @see <https://replicate.com/black-forest-labs/flux-3-image/api/schema> (2026-11-03)
+#[test]
+fn replicate_flux_3_image_is_carried_with_its_documented_contract() {
+    let reg = registry();
+    let id = "replicate/flux-3-image";
+    let m = reg.get(id).expect("replicate/flux-3-image missing");
+    assert_eq!(m.docs_url.as_deref(), Some("https://replicate.com/black-forest-labs/flux-3-image/api/schema"));
+    assert!(m.capabilities.text_to_image && m.capabilities.image_to_image);
+    assert!((m.pricing.base_cost_usd - 0.024).abs() < 1e-9, "1k");
+    for (tier, usd) in [("0.75K", 0.0205), ("1.5K", 0.035), ("2K", 0.05), ("4K", 0.3035)] {
+        let rule = m.pricing.variable_pricing.iter().find(|r| r.when.get("resolution") == Some(&serde_json::json!(tier)));
+        assert!(rule.and_then(|r| r.usd).is_some_and(|p| (p - usd).abs() < 1e-9), "{tier} is ${usd}");
+    }
+    assert_eq!(enum_values(&reg, id, "resolution"), ["0.75K", "1K", "1.5K", "2K", "4K"]);
+    assert_eq!(aspect_ratios(&reg, id), ["21:9", "2:1", "16:9", "3:2", "7:5", "4:3", "5:4", "1:1", "4:5", "3:4", "5:7", "2:3", "9:16", "1:2", "9:21"]);
+    assert_eq!(enum_values(&reg, id, "output_format"), ["png", "webp", "jpeg"]);
+    for k in ["seed", "size", "steps", "guidance_scale"] {
+        assert!(!m.params.contains_key(k), "{id} declares no {k}");
+    }
+    let refs = m.ref_inputs.as_ref().expect("refs");
+    assert_eq!((refs.max_total, refs.roles.get("init").map(|r| r.max_count)), (10, Some(10)));
+    for k in ["grounding", "safety_tolerance", "output_quality"] {
+        assert!(m.extra_allowlist.iter().any(|a| a == k), "{k} passes through");
+    }
+}
+
+// ─── vidu: Q4 Preview, 2026-11-03 ────────────────────────────────────────────
+
+/// Vidu Q4 Preview ("Next-gen flagship for expressive audio & video"):
+/// image-to-video (`images` "Only 1 image is accepted") and
+/// reference-to-video ("supports uploading 1 to 15 images"); no text-to-video
+/// or first-last frame page. Duration "3 - 16" (default 5); resolution
+/// `540p` / `720p` / `1080p` / `2K` / `4K` (default 720p); aspect ratio on
+/// reference-to-video `1:1` / `9:16` / `16:9` / `3:4` / `4:3`; `audio`
+/// (default true) on both; prompts up to 20000 characters. Price: 9 / 19 /
+/// 24 / 38 / 78 credits a second by resolution, at the $0.005 a credit every
+/// Vidu row uses.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/reference-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/pricing.md> (2026-11-03)
+#[test]
+fn vidu_q4_preview_is_carried_with_its_documented_contract() {
+    let reg = registry();
+    let id = "vidu/viduq4-preview";
+    let m = reg.get(id).expect("vidu/viduq4-preview missing");
+    assert!(m.capabilities.image_to_video && !m.capabilities.text_to_video, "image or references to video only");
+    assert_eq!(m.docs_url.as_deref(), Some("https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/image-to-video"));
+    assert_eq!(m.prompt.max_length, Some(20000));
+    match m.params.get("duration_seconds") {
+        Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(3), Some(16), Some(5))),
+        other => panic!("{id} duration: {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "resolution"), ["540p", "720p", "1080p", "2K", "4K"]);
+    let mut ratios = aspect_ratios(&reg, id);
+    ratios.sort();
+    assert_eq!(ratios, ["16:9", "1:1", "3:4", "4:3", "9:16"]);
+    let refs = m.ref_inputs.as_ref().expect("refs");
+    assert_eq!(refs.roles.get("first_frame").map(|r| r.max_count), Some(1));
+    assert_eq!(refs.roles.get("reference").map(|r| r.max_count), Some(15));
+    assert!(!refs.roles.contains_key("last_frame"), "no first-last frame");
+    assert!(m.params.contains_key("audio"), "audio on both endpoints");
+    assert!((m.pricing.base_cost_usd - 0.475).abs() < 1e-9, "720p, 5 s: 19 x 5 credits");
+}
+
+/// The Vidu models carried since 2026-11-03 (skipped 2026-09-11 as
+/// "optional"), each on the endpoints its own operation documents and the
+/// modes Vidu prices, at $0.005 a credit:
+/// - viduq3: reference2video ("The viduq3 series models support uploading 1
+///   to 7 images"), 3–16 s, 540p / 720p / 1080p, audio; 7 / 12 / 15 credits/s.
+/// - viduq3-mix: reference2video (1 to 7 images), "available options: 3-15",
+///   720p / 1080p, no audio switch; 24 / 29 credits/s.
+/// - viduq3-pro-fast: img2video, 1–16 s, 720p / 1080p (start-end2video has
+///   no price), audio; 12 / 15 credits/s.
+/// - viduq2: text2video, 1–10 s, 540p / 720p / 1080p, audio; 10 / 15 / 20
+///   credits the first second + 2 / 5 / 10 a second after.
+/// - viduq2-turbo: img2video + start-end, 2–8 s (img2video's resolutions are
+///   given "viduq2-turbo (2-8s)"), 540p / 720p / 1080p, audio on img2video.
+/// - viduq1-classic: img2video + start-end, 5 s, 1080p; 80 credits.
+///
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/image-to-video.md> (2026-11-03)
+/// @see <https://platform.vidu.com/docs/pricing.md> (2026-11-03)
+#[test]
+fn vidu_models_skipped_as_optional_are_carried_with_their_documented_contracts() {
+    let reg = registry();
+    for (id, t2v, roles, (dmin, dmax), res, prompt, audio, price) in [
+        ("vidu/viduq3", false, &["reference"][..], (3, 16), &["540p", "720p", "1080p"][..], 5000, true, 0.30),
+        ("vidu/viduq3-mix", false, &["reference"][..], (3, 15), &["720p", "1080p"][..], 5000, false, 0.60),
+        ("vidu/viduq3-pro-fast", false, &["first_frame"][..], (1, 16), &["720p", "1080p"][..], 20000, true, 0.30),
+        ("vidu/viduq2", true, &[][..], (1, 10), &["540p", "720p", "1080p"][..], 5000, true, 0.175),
+        ("vidu/viduq2-turbo", false, &["first_frame", "last_frame"][..], (2, 8), &["540p", "720p", "1080p"][..], 2000, true, 0.24),
+        ("vidu/viduq1-classic", false, &["first_frame", "last_frame"][..], (5, 5), &["1080p"][..], 2000, true, 0.40),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(m.docs_url.as_deref().is_some_and(|u| u.starts_with("https://platform.vidu.com/docs/api-reference/video-models/")), "{id}");
+        assert_eq!((m.capabilities.text_to_video, m.capabilities.image_to_video), (t2v, !t2v), "{id} modes");
+        let mut got: Vec<&str> = m.ref_inputs.as_ref().map(|r| r.roles.keys().map(String::as_str).collect()).unwrap_or_default();
+        got.sort();
+        let mut want = roles.to_vec();
+        want.sort();
+        assert_eq!(got, want, "{id} roles");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(dmin), Some(dmax), Some(5)), "{id} duration"),
+            other => panic!("{id} duration: {other:?}"),
+        }
+        assert_eq!(enum_values(&reg, id, "resolution"), res, "{id}");
+        assert_eq!(m.prompt.max_length, Some(prompt), "{id} prompt");
+        assert_eq!(m.params.contains_key("audio"), audio, "{id} audio");
+        assert!((m.pricing.base_cost_usd - price).abs() < 1e-9, "{id}: ${price}");
+    }
+}
+
+// ─── bfl: FLUX.2 [flex], 2026-11-03 ──────────────────────────────────────────
+
+/// FLUX.2 [flex] (`POST /v1/flux-2-flex`, `Flux2FlexInputs`): "Quality with
+/// control", "Adjustable steps & guidance" — `steps` (1–50, default 50) and
+/// `guidance` (1.5–10, default 5) — "Up to 8 (API)" references
+/// (`input_image` … `input_image_8`), `prompt_upsampling`. Priced per
+/// megapixel: the pricing page's firstMpPrice 5 and mpPrice 5 credits ($0.05
+/// the first and each further megapixel).
+/// @see <https://api.bfl.ai/openapi.json> (/v1/flux-2-flex, 2026-11-03)
+/// @see <https://docs.bfl.ml/flux_2/flux2_overview.md> (2026-11-03)
+/// @see <https://docs.bfl.ml/quick_start/pricing> (2026-11-03)
+#[test]
+fn bfl_flux_2_flex_is_carried_with_its_documented_contract() {
+    let reg = registry();
+    let m = reg.get("bfl/flux-2-flex").expect("bfl/flux-2-flex missing");
+    assert_eq!(m.docs_url.as_deref(), Some("https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bflex%5D"));
+    assert!(m.capabilities.text_to_image && m.capabilities.image_to_image);
+    assert!((m.pricing.base_cost_usd - 0.05).abs() < 1e-9, "$0.05 for the first megapixel");
+    match (m.params.get("steps"), m.params.get("guidance_scale")) {
+        (Some(ParamSpec::Int(s)), Some(ParamSpec::Float(g))) => {
+            assert_eq!((s.min, s.max, s.default), (Some(1), Some(50), Some(50)), "steps");
+            assert_eq!((g.min, g.max, g.default), (Some(1.5), Some(10.0), Some(5.0)), "guidance");
+        }
+        other => panic!("steps / guidance_scale: {other:?}"),
+    }
+    let refs = m.ref_inputs.as_ref().expect("flex takes references");
+    assert_eq!((refs.max_total, refs.roles.get("init").map(|r| r.max_count)), (8, Some(8)));
+    assert!(m.extra_allowlist.iter().any(|k| k == "prompt_upsampling"), "prompt_upsampling passes through");
+    assert_eq!(enum_values(&reg, "bfl/flux-2-flex", "output_format"), ["png", "webp", "jpeg"]);
+}
+
+// ─── bfl: FLUX 3 Image and FLUX 3 Image Klein, 2026-11-03 ───────────────────
+
+/// FLUX 3 Image (`POST /v1/flux-3-image`, 2026-10-01) and FLUX 3 Image Klein
+/// (`POST /v1/flux-3-image-klein`, 2026-10-15) generate and edit at one
+/// endpoint each: "Same request as FLUX 3 Image: `prompt`, `images`,
+/// `aspect_ratio`, `resolution` …". References are one `images` list, "one to
+/// 10 total"; 15 aspect ratios (or `auto`, the default); `resolution` is the
+/// price tier ("Per image, by `resolution`"; 1k when omitted). Both refuse a
+/// field they lack (`additionalProperties: false`): FLUX 3 Image has no seed,
+/// steps or output_format, and takes `grounding`; Klein adds "`seed`, `steps`,
+/// and `output_format`" (jpeg | png) and its width/height "start at 64 pixels"
+/// (up to 6256, 16,822,272 px). A custom size is "billed at the smallest
+/// `resolution` with at least as many pixels. Anything above `2k` (about 4MP)
+/// is billed as `4k`" (price ranges). Prices: the page's rates in credits,
+/// "1 credit = $0.01 USD".
+/// @see <https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3> (2026-11-03)
+/// @see <https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3-klein> (2026-11-03)
+/// @see <https://docs.bfl.ml/flux_3/flux3_image_klein.md> (2026-11-03)
+/// @see <https://docs.bfl.ml/release-notes> (October 1, 15 and 22, 2026)
+/// @see <https://docs.bfl.ml/quick_start/pricing> (2026-11-03)
+#[test]
+fn bfl_flux_3_image_and_klein_are_carried_with_their_documented_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let ratios = ["21:9", "2:1", "16:9", "3:2", "7:5", "4:3", "5:4", "1:1", "4:5", "3:4", "5:7", "2:3", "9:16", "1:2", "9:21"];
+    // (id, its endpoint's API page, the 1k price, the other tiers' prices)
+    for (id, page, base, tiers) in [
+        ("bfl/flux-3-image", "generate-an-image-with-flux-3", 0.048, [("0.75K", 0.041), ("1.5K", 0.07), ("2K", 0.10), ("4K", 0.607)]),
+        ("bfl/flux-3-image-klein", "generate-an-image-with-flux-3-klein", 0.009, [("0.75K", 0.008), ("1.5K", 0.011), ("2K", 0.014), ("4K", 0.036)]),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.docs_url.as_deref(), Some(format!("https://docs.bfl.ml/api-reference/utility/{page}").as_str()), "{id}");
+        assert!(m.capabilities.text_to_image && m.capabilities.image_to_image, "{id}: generate or edit");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: the 1k default is ${base}");
+        for (tier, usd) in tiers {
+            let rule = m.pricing.variable_pricing.iter().find(|r| r.when.get("resolution") == Some(&serde_json::json!(tier)));
+            assert!(rule.and_then(|r| r.usd).is_some_and(|p| (p - usd).abs() < 1e-9), "{id}: {tier} is ${usd}");
+        }
+        let refs = m.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+        assert_eq!((refs.max_total, refs.roles.get("init").map(|r| r.max_count)), (10, Some(10)), "{id}: one to 10 images");
+        assert_eq!(aspect_ratios(&reg, id), ratios, "{id}");
+        assert!(m.extra_allowlist.iter().any(|a| a == "safety_tolerance"), "{id}: safety_tolerance passes through");
+        assert!(!m.params.contains_key("guidance_scale"), "{id}: no guidance");
+    }
+    let image = reg.get("bfl/flux-3-image").unwrap();
+    for k in ["seed", "steps", "output_format"] {
+        assert!(!image.params.contains_key(k), "FLUX 3 Image declares no {k}");
+    }
+    // "Exact output width in pixels, [256, 6256]"; "width x height at most
+    // 16822272 pixels"; "at aspect ratios up to 8:1" (the 4 MP limit with
+    // references is the adapter's to refuse).
+    match image.params.get("size") {
+        Some(ParamSpec::Size(SizeSpec::Freeform(s))) => {
+            assert_eq!((s.min_width, s.max_width, s.min_height, s.max_height), (256, 6256, 256, 6256), "width/height");
+            assert_eq!((s.max_pixels, s.max_aspect, s.multiple_of), (Some(16_822_272), Some(8.0), None), "16.8 MP, up to 8:1");
+        }
+        other => panic!("FLUX 3 Image size: {other:?}"),
+    }
+    assert!(image.extra_allowlist.iter().any(|a| a == "grounding"), "grounding passes through");
+    let klein = reg.get("bfl/flux-3-image-klein").unwrap();
+    assert!(!klein.extra_allowlist.iter().any(|a| a == "grounding"), "Klein has no grounding");
+    match (klein.params.get("seed"), klein.params.get("steps"), klein.params.get("size")) {
+        (Some(ParamSpec::Seed(seed)), Some(ParamSpec::Int(steps)), Some(ParamSpec::Size(SizeSpec::Freeform(s)))) => {
+            assert_eq!((seed.min, seed.max), (0, 4_294_967_295), "seed");
+            assert_eq!((steps.min, steps.max, steps.default), (Some(1), Some(16), Some(16)), "steps 1-16, default 16");
+            assert_eq!((s.min_width, s.max_width, s.min_height, s.max_height), (64, 6256, 64, 6256), "width/height");
+            assert_eq!((s.max_pixels, s.max_aspect, s.multiple_of), (Some(16_822_272), Some(8.0), None), "16.8 MP, up to 8:1");
+        }
+        other => panic!("Klein seed / steps / size: {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, "bfl/flux-3-image-klein", "output_format"), ["png", "jpeg"], "jpeg | png, no webp");
+    // Bounding boxes: "Write a description using `<id>` to name each element,
+    // then append a JSON array of rows" — litegen's `layout`, object and
+    // text boxes, on both rows (text-to-image, as litegen's layout is).
+    for id in ["bfl/flux-3-image", "bfl/flux-3-image-klein"] {
+        match reg.get(id).unwrap().params.get("layout") {
+            Some(ParamSpec::Layout(l)) => {
+                assert_eq!(l.kinds, [litegen::capabilities::LayoutKind::Object, litegen::capabilities::LayoutKind::Text], "{id}");
+                assert!(!l.single_word_text, "{id}: a text box may hold a line");
+            }
+            other => panic!("{id} layout: {other:?}"),
+        }
+    }
+}
+
+// ─── stability: vendor feature audit, 2026-11-03 ────────────────────────────
+
+const STABILITY_STYLE_PRESETS: [&str; 17] = [
+    "3d-model", "analog-film", "anime", "cinematic", "comic-book", "digital-art", "enhance", "fantasy-art",
+    "isometric", "line-art", "low-poly", "modeling-compound", "neon-punk", "origami", "photographic", "pixel-art",
+    "tile-texture",
+];
+
+/// Every route that takes `style_preset` ("StylePreset … Guides the image model
+/// towards a particular style": the same 17 values on /generate/sd3, /ultra,
+/// /core, /edit/inpaint, /outpaint, /search-and-replace and the v1 SDXL
+/// engine) declares it as the canonical `style`, never as an extra. Only Core
+/// declared it.
+/// @see <https://docs.stability.ai/openapi.json> (2026-11-03)
+/// @see <https://docs.stability.ai/openapi-v1.json> (2026-11-03)
+#[test]
+fn stability_style_presets_are_the_canonical_style_wherever_a_route_takes_them() {
+    let reg = registry();
+    for id in [
+        "stability/sd3-large", "stability/sd3.5-medium", "stability/sd3-turbo", "stability/core", "stability/ultra",
+        "stability/sdxl", "stability/inpaint", "stability/outpaint", "stability/search-and-replace",
+    ] {
+        let mut got = enum_values(&reg, id, "style");
+        got.sort();
+        assert_eq!(got, STABILITY_STYLE_PRESETS, "{id}: style_preset's 17 values");
+        let schema = reg.get(id).unwrap();
+        assert!(!schema.extra_allowlist.iter().any(|k| k == "style_preset"), "{id}: style_preset is `style`, not an extra");
+    }
+    assert!(enum_values(&reg, "stability/remove-background", "style").is_empty(), "remove-background takes no style_preset");
+}
+
+/// /generate/sd3: "cfg_scale … How strictly the diffusion process adheres to
+/// the prompt text" (1–10): "The _Large_ and _Medium_ models use a default of
+/// `4`. The _Turbo_ and _Flash_ model uses a default of `1`." It is the
+/// canonical `guidance_scale`; no sd3 row declared it.
+/// @see <https://docs.stability.ai/openapi.json> (2026-11-03)
+#[test]
+fn stability_sd3_rows_take_cfg_scale_as_guidance() {
+    let reg = registry();
+    for (id, default) in [("stability/sd3-large", 4.0), ("stability/sd3.5-medium", 4.0), ("stability/sd3-turbo", 1.0)] {
+        match reg.get(id).unwrap_or_else(|| panic!("{id} missing")).params.get("guidance_scale") {
+            Some(ParamSpec::Float(g)) => assert_eq!((g.min, g.max, g.default), (Some(1.0), Some(10.0), Some(default)), "{id}"),
+            other => panic!("{id} guidance_scale is {other:?}"),
+        }
+    }
+}
+
+/// /generate/ultra: "image … The image to use as the starting point for the
+/// generation", with "strength … required when `image` is provided" (0–1).
+/// /generate/sd3 takes `image` + `strength` in `mode: image-to-image` for
+/// every model in its enum, sd3.5-large-turbo included. Neither row took one.
+/// @see <https://docs.stability.ai/openapi.json> (2026-11-03)
+#[test]
+fn stability_ultra_and_sd3_turbo_take_an_image_to_start_from() {
+    let reg = registry();
+    for id in ["stability/ultra", "stability/sd3-turbo"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(schema.capabilities.image_to_image, "{id}: image-to-image");
+        let refs = schema.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+        assert_eq!(refs.roles.get("init").map(|r| (r.required, r.max_count)), Some((false, 1)), "{id}: one optional starting image");
+        match &refs.provider_format {
+            litegen::capabilities::schema::RefProviderFormat::Multipart(m) => {
+                assert_eq!(m.field_map.get("init").map(String::as_str), Some("image"), "{id}: sent as `image`")
+            }
+            other => panic!("{id} refs go as {other:?}"),
+        }
+        match schema.params.get("strength") {
+            Some(ParamSpec::Float(s)) => assert_eq!((s.min, s.max), (Some(0.0), Some(1.0)), "{id}"),
+            other => panic!("{id} strength is {other:?}"),
+        }
+    }
+}
+
+/// /edit/inpaint's `prompt` and `negative_prompt` are the shared Prompt and
+/// NegativePrompt schemas ("maxLength": 10000), and it takes "output_format …
+/// jpeg | png | webp" (default png; "Dictates the `content-type` of the
+/// generated image"). The row had neither limit and no output_format.
+/// @see <https://docs.stability.ai/openapi.json> (2026-11-03)
+#[test]
+fn stability_inpaint_carries_its_prompt_limits_and_output_format() {
+    let reg = registry();
+    let schema = reg.get("stability/inpaint").expect("inpaint missing");
+    assert_eq!(schema.prompt.max_length, Some(10000), "Prompt maxLength 10000");
+    match schema.params.get("negative_prompt") {
+        Some(ParamSpec::String(s)) => assert_eq!(s.max_length, Some(10000), "NegativePrompt maxLength 10000"),
+        other => panic!("inpaint negative_prompt is {other:?}"),
+    }
+    let mut formats = enum_values(&reg, "stability/inpaint", "output_format");
+    formats.sort();
+    assert_eq!(formats, ["jpeg", "png", "webp"]);
+}
+
 // ─── stability: 2026-09-11 drift decisions applied ──────────────────────────
 
 /// SD 3.5 Medium runs on `/v2beta/stable-image/generate/sd3` (`model:
@@ -2635,7 +3845,7 @@ fn replicate_flux_1_1_pro_matches_the_model_input_schema() {
     }
     for param in ["guidance_scale", "steps", "negative_prompt"] {
         assert!(
-            schema.params.get(param).is_none(),
+            !schema.params.contains_key(param),
             "{id} declares `{param}`, which black-forest-labs/flux-1.1-pro does not take"
         );
     }
@@ -2645,9 +3855,10 @@ fn replicate_flux_1_1_pro_matches_the_model_input_schema() {
 
 /// `fal-ai/flux-2` (FLUX.2 [dev]) input: `guidance_scale` 0-20 (default
 /// 2.5), `num_inference_steps` 4-50 (default 28), and `image_size` width and
-/// height 512-2048. Text-to-image only: editing is the separate
-/// `fal-ai/flux-2/edit` endpoint.
+/// height 512-2048. Since 2026-11-04 images go to its /edit twin,
+/// `fal-ai/flux-2/edit` (`image_urls`, "A maximum of 4 images").
 /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2> (2026-09-11)
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/edit> (2026-11-04)
 #[test]
 fn fal_flux_2_matches_the_endpoint_input_schema() {
     let id = "fal/flux-2";
@@ -2656,9 +3867,10 @@ fn fal_flux_2_matches_the_endpoint_input_schema() {
         .get(id)
         .unwrap_or_else(|| panic!("{id} missing from the catalog"));
     assert!(
-        schema.capabilities.text_to_image && !schema.capabilities.image_to_image,
-        "{id}: fal-ai/flux-2 has no image input"
+        schema.capabilities.text_to_image && schema.capabilities.image_to_image,
+        "{id}: text at fal-ai/flux-2, images at fal-ai/flux-2/edit"
     );
+    assert_eq!(schema.ref_inputs.as_ref().map(|r| r.max_total), Some(4), "{id}: \"A maximum of 4 images\"");
     match schema.params.get("guidance_scale") {
         Some(ParamSpec::Float(f)) => assert_eq!(
             (f.min, f.max, f.default),
@@ -2719,15 +3931,79 @@ fn kling_image_3_0_matches_the_image_3_0_contract() {
         .as_ref()
         .expect("Image 3.0 takes a reference image");
     assert_eq!(refs.max_total, 1, "`image` is a single image");
-    assert!(
-        schema.extra_allowlist.iter().any(|k| k == "resolution"),
-        "resolution selects 1k/2k"
-    );
+    assert_eq!(enum_values(&reg, "kling/kling-v3", "resolution"), ["1K", "2K"], "resolution selects 1k/2k");
     for key in ["image_reference", "image_fidelity", "human_fidelity"] {
         assert!(
             !schema.extra_allowlist.iter().any(|k| k == key),
             "kling/kling-v3 allowlists {key}, which Image 3.0 does not support"
         );
+    }
+}
+
+/// Two new Kling video models on the current design (2026-11-03):
+/// - Kling 3.0 Turbo: "`settings.duration` | int | … `3` … `15`",
+///   "`settings.resolution` … `720p`, `1080p`", "`settings.aspect_ratio` …
+///   `16:9`, `9:16`, `1:1`"; image-to-video "`contents[].type` … `prompt`,
+///   `first_frame`" (no last frame); its prompt item "cannot exceed 2500
+///   characters"; no `settings.audio` (priced only "With Native Audio").
+/// - Kling 4.0: duration `3` … `30` (default 10), resolution `720p`, `1080p`
+///   (default 1080p), aspect ratio `21:9`, `16:9`, `9:16`, `1:1`, frames
+///   first / middle / last (the middle frame is not carried), a prompt of "up
+///   to 11,000 characters" for non-English input; no `settings.audio`.
+///
+/// @see <https://kling.ai/document-api/api/video/3-0-turbo/text-to-video.md> (2026-11-03)
+/// @see <https://kling.ai/document-api/api/video/4-0/text-to-video.md> (2026-11-03)
+/// @see <https://kling.ai/document-api/pricing/base/video.md> (2026-11-03)
+#[test]
+fn kling_3_0_turbo_and_4_0_are_carried_with_their_documented_contract() {
+    let reg = registry();
+    for (id, (min, max, default), res, res_default, ratios, roles, prompt, price) in [
+        ("kling/video-kling-v3-turbo", (3, 15, 5), &["1080p", "720p"][..], "720p", &["16:9", "1:1", "9:16"][..], &["first_frame"][..], 2500, 0.56),
+        ("kling/video-kling-v4", (3, 30, 10), &["1080p", "720p"][..], "1080p", &["16:9", "1:1", "21:9", "9:16"][..], &["first_frame", "last_frame"][..], 11000, 2.35),
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video, "{id}");
+        match schema.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(min), Some(max), Some(default)), "{id}"),
+            other => panic!("{id} duration_seconds is {other:?}"),
+        }
+        let mut got = enum_values(&reg, id, "resolution");
+        got.sort();
+        assert_eq!(got, res, "{id}");
+        match schema.params.get("resolution") {
+            Some(ParamSpec::String(r)) => assert_eq!(r.default.as_deref(), Some(res_default), "{id}: the vendor's default"),
+            other => panic!("{id} resolution is {other:?}"),
+        }
+        let mut got = aspect_ratios(&reg, id);
+        got.sort();
+        assert_eq!(got, ratios, "{id}");
+        let mut got: Vec<&str> = schema.ref_inputs.as_ref().unwrap().roles.keys().map(String::as_str).collect();
+        got.sort();
+        assert_eq!(got, roles, "{id}");
+        assert_eq!(schema.prompt.max_length, Some(prompt), "{id}");
+        assert!(!schema.params.contains_key("audio"), "{id}: no settings.audio switch");
+        assert!(!schema.params.contains_key("negative_prompt"), "{id}");
+        assert!((schema.pricing.base_cost_usd - price).abs() < 1e-9, "{id}: the default request's price");
+    }
+}
+
+/// Kling's current API design (2026-11-03): the text-to-video body is
+/// `prompt` ("The prompt can include positive and negative descriptions"),
+/// `settings` and `options`, and image-to-video's is `contents`, `settings`
+/// and `options` — no negative prompt anywhere, so no video row declares one;
+/// Kling 3.0's only allowlisted extra is `settings.multi_shot` (multi-shot is
+/// written in the prompt, "shot n, m, words;", so the legacy `shot_type` and
+/// `multi_prompt` are gone).
+/// @see <https://kling.ai/document-api/api/video/2-6/text-to-video.md> (2026-11-03)
+/// @see <https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md> (2026-11-03)
+#[test]
+fn kling_video_rows_match_the_current_api_design() {
+    let reg = registry();
+    for id in ["kling/video-kling-v2-5-turbo", "kling/video-kling-v2-6", "kling/video-kling-v3"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(!schema.params.contains_key("negative_prompt"), "{id}: the current body has no negative prompt");
+        let want: &[&str] = if id.ends_with("v3") { &["multi_shot"] } else { &[] };
+        assert_eq!(schema.extra_allowlist, want, "{id}");
     }
 }
 
@@ -2766,12 +4042,12 @@ fn kling_v3_video_matches_the_capability_map() {
     want.sort();
     assert_eq!(got, want, "{id} aspect ratios");
     assert!(matches!(schema.params.get("audio"), Some(ParamSpec::Bool(_))), "{id}: Kling 3.0 documents sound (canonical audio)");
-    for key in ["mode"] {
-        assert!(
-            schema.extra_allowlist.iter().any(|k| k == key),
-            "{id}: Kling 3.0 documents {key}"
-        );
-    }
+    // "Kling 3.0 | … | 720P, 1080P, 4K" is the canonical `resolution`, sent as
+    // the legacy `mode` (std | pro | 4k), never an extra (2026-11-03).
+    let mut res = enum_values(&reg, id, "resolution");
+    res.sort();
+    assert_eq!(res, ["1080p", "4k", "720p"], "{id}: 720p, 1080p or 4k");
+    assert!(!schema.extra_allowlist.iter().any(|k| k == "mode"), "{id}: mode is derived from resolution");
     for key in ["cfg_scale", "camera_control"] {
         assert!(
             !schema.extra_allowlist.iter().any(|k| k == key),
@@ -2805,13 +4081,69 @@ fn leonardo_veo3_1_fast_matches_the_veo_3_1_fast_contract() {
         "Veo 3.1 Fast renders at 720p or 1080p on the v1 API"
     );
     assert_eq!(schema.prompt.max_length, Some(9999), "Veo 3.1 Fast prompt limit");
+    // "duration {"type":"integer","enum":[4,6,8],"default":8}" (Leonardo's v2
+    // model list, 2026-11-03): 5 and 7 s were advertised and then refused.
     match schema.params.get("duration_seconds") {
         Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(4.0), "Veo 3.1 Fast: 4, 6 or 8 s");
-            assert_eq!(f.max, Some(8.0), "Veo 3.1 Fast: 4, 6 or 8 s");
+            assert_eq!(f.values, vec![4.0, 6.0, 8.0], "Veo 3.1 Fast: 4, 6 or 8 s, nothing between");
             assert_eq!(f.default, Some(8.0), "Veo 3.1 Fast defaults to 8 s");
         }
         other => panic!("veo3.1-fast duration_seconds is {other:?}"),
+    }
+}
+
+// ─── ideogram: vendor feature audit, 2026-11-03 ─────────────────────────────
+
+/// Ideogram 3.0 (`POST /v1/ideogram-v3/generate`): "resolution … The
+/// resolutions supported for Ideogram 3.0" (69 WxH values) is the canonical
+/// `size`, and "aspect_ratio … Cannot be combined with resolution". No 3.0
+/// row declared a size, so the adapter's `resolution` mapping was unreachable.
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v1.json> (2026-11-03)
+#[test]
+fn ideogram_v3_rows_take_the_documented_resolutions_as_size() {
+    use litegen::capabilities::schema::SizeSpec;
+    const RESOLUTION_V3: &str = "512x1536 576x1408 576x1472 576x1536 640x1344 640x1408 640x1472 640x1536 \
+        704x1152 704x1216 704x1280 704x1344 704x1408 704x1472 736x1312 768x1088 768x1216 768x1280 768x1344 \
+        800x1280 832x960 832x1024 832x1088 832x1152 832x1216 832x1248 864x1152 896x960 896x1024 896x1088 \
+        896x1120 896x1152 960x832 960x896 960x1024 960x1088 1024x832 1024x896 1024x960 1024x1024 1088x768 \
+        1088x832 1088x896 1088x960 1120x896 1152x704 1152x832 1152x864 1152x896 1216x704 1216x768 1216x832 \
+        1248x832 1280x704 1280x768 1280x800 1312x736 1344x640 1344x704 1344x768 1408x576 1408x640 1408x704 \
+        1472x576 1472x640 1472x704 1536x512 1536x576 1536x640";
+    let mut want: Vec<String> = RESOLUTION_V3.split_whitespace().map(str::to_string).collect();
+    want.sort();
+    assert_eq!(want.len(), 69);
+    let reg = registry();
+    for id in ["ideogram/ideogram-v3", "ideogram/ideogram-v3-turbo", "ideogram/ideogram-v3-quality"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        match schema.params.get("size") {
+            Some(ParamSpec::Size(SizeSpec::Enum(e))) => {
+                let mut got: Vec<String> = e.values.iter().map(|(w, h)| format!("{w}x{h}")).collect();
+                got.sort();
+                assert_eq!(got, want, "{id}: the ResolutionV3 enum");
+            }
+            other => panic!("{id} size is {other:?}, expected the 3.0 resolution enum"),
+        }
+    }
+}
+
+/// 4.5 Precise Edit: "`reference_images` (files, optional) — Optional images
+/// to guide the edit (max 4 …). They are never edited themselves … A request
+/// with a `mask` can include at most three, because the mask takes up one
+/// reference slot." The row took none. Image + mask + references ≤ 5 holds the
+/// slot rule for a mask the caller sends (a drawn one is the adapter's check).
+/// @see <https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md> (2026-11-03)
+#[test]
+fn ideogram_precise_edit_takes_up_to_four_guiding_references() {
+    let reg = registry();
+    let m = reg.get("ideogram/ideogram-4-5-precise-edit").expect("the row");
+    let ri = m.ref_inputs.as_ref().expect("precise edit declares no ref_inputs");
+    assert_eq!(ri.roles.get("reference").map(|r| (r.required, r.max_count)), Some((false, 4)), "up to 4 guiding images");
+    assert_eq!(ri.max_total, 5, "the image, and a mask and the references sharing 4 slots");
+    match &ri.provider_format {
+        litegen::capabilities::schema::RefProviderFormat::Multipart(mp) => {
+            assert_eq!(mp.field_map.get("reference").map(String::as_str), Some("reference_images"))
+        }
+        other => panic!("precise edit refs go as {other:?}"),
     }
 }
 
@@ -3074,10 +4406,9 @@ fn stability_inpaint_takes_a_white_mask_and_grows_it_itself() {
     assert_eq!((mask.convention, mask.native_grow), (Some(MaskConvention::WhiteEdits), true));
     assert!((m.pricing.base_cost_usd - 0.05).abs() < 1e-9);
     // OpenAI reads transparency, the other way round from a white mask.
-    for id in ["openai/gpt-image-2", "openai/gpt-image-2.5"] {
-        if let Some(o) = reg.get(id) {
-            assert_eq!(o.ref_inputs.as_ref().unwrap().roles["mask"].convention, Some(MaskConvention::TransparentEdits), "{id}");
-        }
+    for id in ["openai/gpt-image-2", "openai/gpt-image-2.5-sunburst", "openai/gpt-image-2.5-flare"] {
+        let o = reg.get(id).unwrap_or_else(|| panic!("{id} is a carried row"));
+        assert_eq!(o.ref_inputs.as_ref().unwrap().roles["mask"].convention, Some(MaskConvention::TransparentEdits), "{id}");
     }
 }
 
@@ -3451,15 +4782,96 @@ fn gemini_flash_lite_image_takes_no_image_size() {
     let reg = registry();
     let lite = reg.get("google/gemini-3.1-flash-lite-image").expect("lite");
     assert!(!lite.extra_allowlist.iter().any(|k| k == "imageSize"), "{:?}", lite.extra_allowlist);
+    assert!(!lite.params.contains_key("resolution"), "1K only: no tier to pick");
+}
+
+/// One output tier for every image vendor (2026-11-03): `resolution`, on
+/// litegen's scale (`0.5K` … `4K`, about that many thousand pixels a side),
+/// wherever a vendor has tiers, never a vendor-named extra. Google's
+/// imageSize: "Supported values are `512`, `1K`, `2K`, `4K`" (3.1 Flash
+/// Image "adds the smaller 512px (0.5K) resolution (not supported on Gemini
+/// Nano Banana 2.1)"); Kling Image 2.1 / 3.0: "1k (default) | 2k"; FLUX 3:
+/// "`768sq`, `1k` (default), `1.5k`, `2k`, or `4k`", FLUX 3 Image also
+/// `match_input`.
+/// @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> (ImageConfig, 2026-11-03)
+/// @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation> (2026-11-03)
+/// @see <https://kling.ai/document-api/api/image/2-1/image-generation.md> (2026-11-03)
+/// @see <https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3> (2026-11-03)
+#[test]
+fn image_tiers_are_one_resolution_param_on_one_scale() {
+    let reg = registry();
+    // 3K: Runway's Seedream 5.0 Lite tier of 3072-a-side sizes (2026-11-10).
+    let scale = ["0.5K", "0.75K", "1K", "1.5K", "2K", "3K", "4K", "match_input"];
+    for m in reg.all().filter(|m| m.media_type == litegen::capabilities::MediaType::Image) {
+        for k in ["imageSize", "image_size", "resolution"] {
+            assert!(!m.extra_allowlist.iter().any(|a| a == k), "{}: the tier is `resolution`, not extra.{k}", m.id);
+        }
+        if let Some(ParamSpec::String(s)) = m.params.get("resolution") {
+            assert!(s.enum_values.iter().all(|v| scale.contains(&v.as_str())), "{}: {:?}", m.id, s.enum_values);
+            // The vendor's own default: 1K on every row but TokenHub's Hy-Image-3.5
+            // ("2359296（1.5K，默认）") and TokenHub's Seedream ("默认值：2K").
+            let want = match m.id.as_str() {
+                "tokenhub/hy-image-v3.5-preview" => "1.5K",
+                id if id.starts_with("tokenhub/seedream-") => "2K",
+                // Runway's Seedream 5.0 Lite has no 1K tier: its `ratio`
+                // enum starts at 2048:2048 (openapi.json, 2026-11-10).
+                "runway/seedream5_lite" => "2K",
+                _ => "1K",
+            };
+            assert_eq!(s.default.as_deref(), Some(want), "{}: the vendor's default tier", m.id);
+            assert!(s.enum_values.iter().any(|v| Some(v.as_str()) == s.default.as_deref()), "{}: the default is a tier", m.id);
+        }
+    }
+    for (id, want) in [
+        ("google/gemini-3.1-flash-image", &["0.5K", "1K", "2K", "4K"][..]),
+        ("google/gemini-nano-banana-2.1", &["1K", "2K", "4K"][..]),
+        ("google/gemini-3-pro-image", &["1K", "2K", "4K"][..]),
+        ("kling/kling-v2-1", &["1K", "2K"][..]),
+        ("kling/kling-v3", &["1K", "2K"][..]),
+        ("bfl/flux-3-image", &["0.75K", "1K", "1.5K", "2K", "4K", "match_input"][..]),
+        ("bfl/flux-3-image-klein", &["0.75K", "1K", "1.5K", "2K", "4K"][..]),
+        ("replicate/flux-3-image", &["0.75K", "1K", "1.5K", "2K", "4K"][..]),
+        ("tokenhub/hy-image-v3.5-preview", &["1K", "1.5K", "2K"][..]),
+        ("tokenhub/seedream-image-v5.0-pro", &["1K", "1.5K", "2K"][..]),
+    ] {
+        assert_eq!(enum_values(&reg, id, "resolution"), want, "{id}");
+    }
 }
 
 /// C3: every Google and OpenAI row names the vendor page its fields were
-/// read from.
+/// read from. Google's docs moved from ai.google.dev to aistudio.google.com:
+/// `https://ai.google.dev/gemini-api/docs/generate-content/image-generation`
+/// answers 301 to `https://aistudio.google.com/docs/image-generation?generate-content=true`.
+/// @see <https://aistudio.google.com/docs/image-generation?generate-content=true> (2026-11-09)
 #[test]
 fn every_google_and_openai_row_names_its_docs_url() {
     for m in registry().all().filter(|m| m.provider == "google" || m.provider == "openai") {
         let url = m.docs_url.as_deref().unwrap_or_else(|| panic!("{} names no docs_url", m.id));
-        assert!(url.starts_with("https://ai.google.dev/") || url.starts_with("https://developers.openai.com/"), "{}: {url}", m.id);
+        let home = if m.provider == "google" { "https://aistudio.google.com/docs/" } else { "https://developers.openai.com/" };
+        assert!(url.starts_with(home), "{}: {url}", m.id);
+    }
+}
+
+/// GPT image edits: "You can use one or more images as a reference to
+/// generate a new image" — `image` is "an array of images" (maxItems 16) —
+/// and "If you provide multiple input images, the mask will be applied to
+/// the first image". So the edited image (`init`) plus up to 15 `reference`
+/// images, and the mask; every row took one image.
+/// @see <https://developers.openai.com/api/docs/guides/image-generation.md> (2026-11-03)
+#[test]
+fn openai_gpt_image_rows_take_up_to_sixteen_input_images() {
+    let reg = registry();
+    for id in ["openai/gpt-image-2", "openai/gpt-image-2.5-sunburst", "openai/gpt-image-2.5-flare"] {
+        let ri = reg.get(id).unwrap_or_else(|| panic!("{id} missing")).ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+        assert_eq!(ri.roles.get("init").map(|r| r.max_count), Some(1), "{id}: one edited image");
+        assert_eq!(ri.roles.get("reference").map(|r| (r.required, r.max_count)), Some((false, 15)), "{id}: up to 15 more");
+        assert_eq!(ri.max_total, 17, "{id}: 16 images and a mask");
+        match &ri.provider_format {
+            litegen::capabilities::schema::RefProviderFormat::Multipart(m) => {
+                assert_eq!(m.field_map.get("reference").map(String::as_str), Some("image"), "{id}: every image is an `image` part")
+            }
+            other => panic!("{id} refs go as {other:?}"),
+        }
     }
 }
 
@@ -3778,4 +5190,1291 @@ fn every_model_that_takes_a_mask_takes_a_region() {
         }
     }
     assert!(lacking.is_empty(), "take a mask but no region: {lacking:?}");
+}
+
+// ─── tokenhub: Tencent TokenHub, 2026-11-04 ──────────────────────────────────
+
+/// Hy-Image-3.5-preview on TokenHub (`POST /v1/wand/hunyuan-image/v35-generation`,
+/// synchronous): `messages` ("服务端会取数组中最后一个 role=user 的消息作为本轮生图指令"),
+/// `size` ("宽、高均为正整数，取值范围 [256, 8192] … 面积不超过 16777216"), `seed`
+/// ("int64 类型，范围 [0, 2^63-1]；为 0 或不传时服务端随机分配"), `generate_max_pixels`
+/// ("1048576（1K）、2359296（1.5K，默认）、4194304（2K）… 仅在未传 size 时生效"),
+/// `footnote`, `use_search_tool`; images "图片总数量 ≤ 20 张". Price: 1K and 2K
+/// 15,000 tokens (¥0.15), 4K 20,000 tokens (¥0.20) at 10 ¥/M tokens; 1 CNY =
+/// 0.14987 USD (ECB, 2026-11-03).
+/// @see <https://cloud.tencent.com/document/product/1823/135745> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_hy_image_3_5_preview_is_carried_with_its_documented_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let id = "tokenhub/hy-image-v3.5-preview";
+    let m = reg.get(id).expect("tokenhub/hy-image-v3.5-preview missing");
+    assert_eq!(m.provider, "tokenhub");
+    assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/135745"));
+    assert!(m.capabilities.text_to_image && m.capabilities.image_to_image);
+    assert!((m.pricing.base_cost_usd - 0.0225).abs() < 1e-9, "¥0.15 at 1K/1.5K/2K");
+    let four_k = m.pricing.variable_pricing.iter().find(|r| r.when.contains_key("megapixels"));
+    assert_eq!(four_k.map(|r| r.when.get("megapixels").cloned()), Some(Some(serde_json::json!({ "gt": 4.194304 }))), "above the 2K tier is 4K");
+    assert!(four_k.and_then(|r| r.usd).is_some_and(|p| (p - 0.03).abs() < 1e-9), "¥0.20 at 4K");
+    match m.params.get("size") {
+        Some(ParamSpec::Size(SizeSpec::Freeform(s))) => {
+            assert_eq!((s.min_width, s.max_width, s.min_height, s.max_height), (256, 8192, 256, 8192));
+            assert_eq!(s.max_pixels, Some(16_777_216));
+        }
+        other => panic!("{id} size: {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "resolution"), ["1K", "1.5K", "2K"], "generate_max_pixels' tiers; 4K only as a size");
+    match m.params.get("resolution") {
+        Some(ParamSpec::String(s)) => assert_eq!(s.default.as_deref(), Some("1.5K"), "\"2359296（1.5K，默认）\""),
+        other => panic!("{id} resolution: {other:?}"),
+    }
+    assert!(!aspect_ratios(&reg, id).is_empty(), "a ratio goes as a size beside generate_max_pixels");
+    match m.params.get("seed") {
+        Some(ParamSpec::Seed(s)) => assert_eq!((s.min, s.max), (1, i64::MAX), "0 is the vendor's random seed"),
+        other => panic!("{id} seed: {other:?}"),
+    }
+    for k in ["negative_prompt", "steps", "guidance_scale", "quality"] {
+        assert!(!m.params.contains_key(k), "{id} declares no {k}");
+    }
+    let refs = m.ref_inputs.as_ref().expect("refs");
+    assert_eq!((refs.max_total, refs.roles.get("init").map(|r| r.max_count)), (20, Some(20)));
+    assert_eq!(m.extra_allowlist, ["footnote", "use_search_tool"]);
+}
+
+/// Hy-Video 1.5 on TokenHub (`POST /v1/wand/hunyuan-video/generation`,
+/// `model` "hy-video-v1.5"): prompt "文生视频必选；图生视频可选", negative_prompt,
+/// one image ("图片（单张）… jpg/jpeg/png"), duration "当前版本固定生成 5 秒",
+/// resolution "当前版本固定输出 720p", aspect_ratio "仅文生视频有效。枚举：16:9 / 9:16 /
+/// 1:1 / 4:3 / 3:4". Price "30,000 tokens/秒 | 0.3 元/秒": 5 s = ¥1.5.
+/// @see <https://cloud.tencent.com/document/product/1823/137202> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_hy_video_1_5_is_carried_with_its_documented_contract() {
+    let reg = registry();
+    let id = "tokenhub/hy-video-v1.5";
+    let m = reg.get(id).expect("tokenhub/hy-video-v1.5 missing");
+    assert_eq!(m.provider, "tokenhub");
+    assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/137202"));
+    assert!(m.capabilities.text_to_video && m.capabilities.image_to_video);
+    assert!((m.pricing.base_cost_usd - 0.2248).abs() < 1e-9, "¥1.5 for 5 s");
+    match m.params.get("duration_seconds") {
+        Some(ParamSpec::Float(d)) => assert_eq!((d.min, d.max, d.default), (Some(5.0), Some(5.0), Some(5.0))),
+        other => panic!("{id} duration_seconds: {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "resolution"), ["720p"]);
+    assert_eq!(aspect_ratios(&reg, id), ["16:9", "9:16", "1:1", "4:3", "3:4"]);
+    assert!(m.params.contains_key("negative_prompt"));
+    assert!(!m.params.contains_key("seed"), "the vendor does not promise its effect");
+    let refs = m.ref_inputs.as_ref().expect("refs");
+    assert_eq!((refs.max_total, refs.roles.get("first_frame").map(|r| (r.required, r.max_count))), (1, Some((false, 1))));
+    assert!(!refs.roles.contains_key("last_frame"));
+    assert_eq!(m.extra_allowlist, ["revise", "footnote"]);
+}
+
+/// WAND-Vega-Video-1.0-Lite on TokenHub (`POST /v1/wand/vega-videos/tasks`):
+/// "三种生成形态（文生、首尾帧生、参考生）"; resolution "Lite 取值：768P、1080P、2K、4K"
+/// (no documented default: litegen sends 768P); ratio "21:9、16:9、4:3、1:1、
+/// 3:4、9:16、adaptive（默认）"; duration "4 ~ 15 的整数，默认 5"; "首帧（role=first_frame）
+/// 最多 1 张，尾帧（role=last_frame）最多 1 张"; "建议参考图不超过 9 张". Price per output
+/// second: 768P ¥0.375, 1080P ¥0.5, 2K ¥0.625, 4K ¥0.75; "输入图片前5张免费
+/// 第6张起0.15元/张".
+/// @see <https://cloud.tencent.com/document/product/1823/138195> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_wand_vega_video_lite_is_carried_with_its_documented_contract() {
+    let reg = registry();
+    let id = "tokenhub/wand-vega-video-1.0-lite";
+    let m = reg.get(id).expect("tokenhub/wand-vega-video-1.0-lite missing");
+    assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/138195"));
+    assert!(m.capabilities.text_to_video && m.capabilities.image_to_video);
+    assert!((m.pricing.base_cost_usd - 0.281).abs() < 1e-9, "5 s at 768P: ¥1.875");
+    match m.params.get("duration_seconds") {
+        Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(4), Some(15), Some(5))),
+        other => panic!("{id} duration_seconds: {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "resolution"), ["768P", "1080P", "2K", "4K"]);
+    assert_eq!(aspect_ratios(&reg, id), ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]);
+    let per_second = |res: Option<&str>| {
+        m.pricing.variable_pricing.iter().find(|r| r.when.get("resolution").and_then(|v| v.as_str()) == res && r.per_second_usd.is_some()).and_then(|r| r.per_second_usd)
+    };
+    for (res, usd) in [(None, 0.0562), (Some("1080P"), 0.0749), (Some("2K"), 0.0937), (Some("4K"), 0.1124)] {
+        assert!(per_second(res).is_some_and(|p| (p - usd).abs() < 1e-9), "{res:?} is ${usd}/s");
+    }
+    let refs = m.ref_inputs.as_ref().expect("refs");
+    assert_eq!(refs.roles.get("first_frame").map(|r| r.max_count), Some(1));
+    assert_eq!(refs.roles.get("last_frame").map(|r| r.max_count), Some(1));
+    assert_eq!(refs.roles.get("reference").map(|r| r.max_count), Some(9));
+    for n in 6..=9 {
+        let rule = m.pricing.variable_pricing.iter().find(|r| r.when.get("references") == Some(&serde_json::json!(n)));
+        assert!(rule.and_then(|r| r.add_usd).is_some_and(|a| (a - 0.0225 * (n - 5) as f64).abs() < 1e-9), "{n} images: the 6th on is ¥0.15 each");
+    }
+}
+
+// ─── bedrock: Stability on Bedrock, 2026-11-04 ───────────────────────────────
+
+/// The three Stability text-to-image models Bedrock hosts (InvokeModel,
+/// Stability's own body; "Support for all other Stability AI models are in
+/// the process of being deprecated"): SD3.5 Large (prompt and negative prompt
+/// "Maximum 10,000 characters", aspect_ratio "Enum: 16:9, 1:1, 21:9, 2:3, 3:2,
+/// 4:5, 5:4, 9:16, 9:21. Default 1:1", mode text-to-image | image-to-image
+/// with image + strength, seed 0–4294967294, output_format jpeg | png | webp);
+/// Stable Image Core (text-to-image only, JPEG / PNG, seed 0–4294967295); Stable
+/// Image Ultra (+ image and strength "Default: 0.35"). Prices "per generated
+/// image": $0.08, $0.04, $0.14 (AWS's metered unit map, us-west-2). Each card:
+/// "us-west-2 (Oregon)" In-Region only.
+/// @see <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-stability-diffusion.md> (2026-11-04)
+/// @see <https://aws.amazon.com/bedrock/pricing/> (2026-11-04)
+#[test]
+fn bedrock_stability_rows_are_carried_with_their_documented_contract() {
+    let reg = registry();
+    for (id, usd, i2i, formats, seed_max) in [
+        ("bedrock/stability.sd3-5-large-v1:0", 0.08, true, &["png", "jpeg", "webp"][..], 4_294_967_294i64),
+        ("bedrock/stability.stable-image-core-v1:1", 0.04, false, &["png", "jpeg"][..], 4_294_967_295),
+        ("bedrock/stability.stable-image-ultra-v1:1", 0.14, true, &["png", "jpeg"][..], 4_294_967_295),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(m.docs_url.as_deref().is_some_and(|u| u.starts_with("https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-")), "{id}");
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id} is ${usd}");
+        assert!(m.capabilities.text_to_image);
+        assert_eq!(m.capabilities.image_to_image, i2i, "{id}");
+        assert_eq!(m.ref_inputs.as_ref().map(|r| r.max_total).unwrap_or(0), u32::from(i2i), "{id}: one init image exactly when it does image-to-image");
+        assert_eq!(m.params.contains_key("strength"), i2i, "{id}");
+        assert_eq!(enum_values(&reg, id, "output_format"), formats, "{id}");
+        assert_eq!(aspect_ratios(&reg, id), ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"], "{id}");
+        match m.params.get("seed") {
+            Some(ParamSpec::Seed(s)) => assert_eq!((s.min, s.max), (0, seed_max), "{id}"),
+            other => panic!("{id} seed: {other:?}"),
+        }
+        assert_eq!(m.prompt.max_length, Some(10_000), "{id}");
+        for k in ["steps", "guidance_scale", "size", "style"] {
+            assert!(!m.params.contains_key(k), "{id} declares no {k}");
+        }
+    }
+}
+
+/// Luma Ray 2 on Bedrock (`StartAsyncInvoke`, the MP4 written to the
+/// caller's S3 bucket), carried beside luma/ray-2 under the hub-route policy
+/// (2026-11-04):
+/// - prompt "1–5,000 characters";
+/// - aspect_ratio "1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21";
+/// - duration "5s", "9s"; resolution "540p", "720p";
+/// - `loop`; keyframes frame0 and frame1, base64 JPEG or PNG.
+///
+/// Price per second of video: 720p $1.50, 540p $0.75 (AWS's metered unit
+/// map; US West (Oregon) only, the card's one In-Region endpoint).
+/// @see <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-luma.md> (2026-11-10)
+/// @see <https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-luma-ai-ray2.md> (2026-11-10)
+/// @see <https://aws.amazon.com/bedrock/pricing/> (2026-11-10)
+#[test]
+fn bedrock_luma_ray_2_is_carried_with_bedrocks_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    let id = "bedrock/luma.ray-v2:0";
+    let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+    assert_eq!(m.media_type, litegen::capabilities::MediaType::Video);
+    assert_eq!(m.docs_url.as_deref(), Some("https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-luma.html"));
+    assert!(m.capabilities.text_to_video && m.capabilities.image_to_video);
+    assert_eq!(m.prompt.max_length, Some(5000));
+    assert_eq!(aspect_ratios(&reg, id), ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21"]);
+    assert_eq!(enum_values(&reg, id, "resolution"), ["540p", "720p"]);
+    match m.params.get("duration_seconds") {
+        Some(ParamSpec::Float(d)) => assert_eq!((d.min, d.max, d.default, d.values.clone()), (Some(5.0), Some(9.0), Some(5.0), vec![5.0, 9.0])),
+        other => panic!("duration_seconds: {other:?}"),
+    }
+    assert!(matches!(m.params.get("loop"), Some(ParamSpec::Bool(_))));
+    let refs = m.ref_inputs.as_ref().expect("keyframes");
+    assert_eq!((refs.roles["first_frame"].max_count, refs.roles["last_frame"].max_count), (1, 1));
+    assert!(refs.roles.values().all(|r| !r.required), "text-to-video needs no frame");
+    let price = |params: serde_json::Value| {
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        req.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    for (params, usd) in [
+        (serde_json::json!({}), 7.5),
+        (serde_json::json!({ "duration_seconds": 9 }), 13.5),
+        (serde_json::json!({ "resolution": "540p" }), 3.75),
+        (serde_json::json!({ "resolution": "540p", "duration_seconds": 9 }), 6.75),
+    ] {
+        let got = price(params.clone());
+        assert!((got - usd).abs() < 1e-9, "{params}: {got} (want {usd})");
+    }
+}
+
+/// Kling video resold on TokenHub (`POST /v1/wand/kling/text-to-video`,
+/// `/image-to-video`, `model` in the body): "v4：3~30 整数；V3 / V3 Turbo：3~15 整数；
+/// V2.6 / V2.5 Turbo：5 / 10"; resolution "V3：720p / 1080p / 4k；其余：720p / 1080p。
+/// 默认值：v4 为 1080p，其余为 720p"; aspect_ratio "16:9 / 9:16 / 1:1（v4 另支持 21:9）";
+/// audio "仅 V3 / V2.6"; types "V3 Turbo：prompt / first_frame" (no last frame);
+/// prompt "V3 Turbo / V2.6 / V2.5 Turbo：≤ 2500 字符", v4 "纯非英文 ≤ 11000 字符". Price
+/// per second (10 ¥/M tokens): V2.5 Turbo 720P ¥0.3 / 1080P ¥0.5; V2.6 无声 ¥0.3 /
+/// ¥0.5, 有声 1080P ¥1.0; V3 无声 ¥0.6 / ¥0.8 / 4K ¥3, 有声 ¥0.9 / ¥1.2 / ¥3; V3
+/// Turbo 有声 ¥0.8 / ¥1.0; v4 ¥1 / ¥1.5.
+/// @see <https://cloud.tencent.com/document/product/1823/135742> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_kling_video_rows_are_carried_with_tokenhubs_contract() {
+    let reg = registry();
+    let int = |id: &str| match reg.get(id).and_then(|m| m.params.get("duration_seconds")) {
+        Some(ParamSpec::Int(d)) => (d.min, d.max, d.default, d.values.clone()),
+        other => panic!("{id} duration_seconds: {other:?}"),
+    };
+    // (id, durations, values, resolutions, default resolution, ratios, audio, last frame, prompt limit, base, per second at the default)
+    for (id, (min, max), values, res, res_default, ratios, audio, last, prompt_max, base) in [
+        ("tokenhub/kling-video-v2.5-turbo", (5, 10), vec![5, 10], &["720p", "1080p"][..], "720p", &["16:9", "9:16", "1:1"][..], false, true, 2500, 0.225),
+        ("tokenhub/kling-video-v2.6", (5, 10), vec![5, 10], &["720p", "1080p"][..], "720p", &["16:9", "9:16", "1:1"][..], true, true, 2500, 0.225),
+        ("tokenhub/kling-video-v3", (3, 15), vec![], &["720p", "1080p", "4k"][..], "720p", &["16:9", "9:16", "1:1"][..], true, true, 2500, 0.4495),
+        ("tokenhub/kling-video-v3-turbo", (3, 15), vec![], &["720p", "1080p"][..], "720p", &["16:9", "9:16", "1:1"][..], false, false, 2500, 0.5995),
+        ("tokenhub/kling-video-v4", (3, 30), vec![], &["720p", "1080p"][..], "1080p", &["21:9", "16:9", "9:16", "1:1"][..], false, true, 11000, 1.124),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/135742"), "{id}");
+        assert!(m.capabilities.text_to_video && m.capabilities.image_to_video, "{id}");
+        assert_eq!(int(id), (Some(min), Some(max), Some(5), values), "{id}");
+        assert_eq!(enum_values(&reg, id, "resolution"), res, "{id}");
+        match m.params.get("resolution") {
+            Some(ParamSpec::String(s)) => assert_eq!(s.default.as_deref(), Some(res_default), "{id}"),
+            other => panic!("{id} resolution: {other:?}"),
+        }
+        assert_eq!(aspect_ratios(&reg, id), ratios, "{id}");
+        assert_eq!(m.params.contains_key("audio"), audio, "{id}");
+        let refs = m.ref_inputs.as_ref().expect("refs");
+        assert_eq!(refs.roles.contains_key("last_frame"), last, "{id}");
+        assert_eq!(refs.roles.get("first_frame").map(|r| r.max_count), Some(1), "{id}");
+        assert_eq!(m.prompt.max_length, Some(prompt_max), "{id}");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: ${base} for its default request");
+        assert!(!m.params.contains_key("negative_prompt"), "{id}: the prompt carries negatives");
+    }
+}
+
+/// Seedream resold on TokenHub (`POST /v1/wand/si-image/generation`,
+/// synchronous): prompt "≤ 600 字符"; images "seedream-image-v5.0-pro、
+/// seedream-image-v5.0-flash 支持最多10 张"; size either a tier "可选值：1K、1.5K、2K"
+/// ("默认值：2K") or "宽 x 高 … 总像素取值范围：[1280x720（921600）, 2048x2048x1.1025
+/// （4624220）] 宽高比取值范围：[1/16, 16]", "不可混用"; output_format png | jpeg;
+/// background transparent | opaque. Price: Pro "输出图≤261万像素 … 0.3 元/张", "&gt;261万像素
+/// … 0.6 元/张", "输入图片首张免费，第二张起0.02 元/张"; Flash "0.12 元/张".
+/// @see <https://cloud.tencent.com/document/product/1823/136609> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_seedream_rows_are_carried_with_tokenhubs_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    for (id, base) in [("tokenhub/seedream-image-v5.0-pro", 0.0899), ("tokenhub/seedream-image-v5.0-flash", 0.018)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/136609"), "{id}");
+        assert!(m.capabilities.text_to_image && m.capabilities.image_to_image);
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: ${base} at its 2K default");
+        assert_eq!(m.prompt.max_length, Some(600), "{id}");
+        assert_eq!(enum_values(&reg, id, "resolution"), ["1K", "1.5K", "2K"], "{id}");
+        match m.params.get("resolution") {
+            Some(ParamSpec::String(s)) => assert_eq!(s.default.as_deref(), Some("2K"), "{id}: \"默认值：2K\""),
+            other => panic!("{id} resolution: {other:?}"),
+        }
+        match m.params.get("size") {
+            Some(ParamSpec::Size(SizeSpec::Freeform(s))) => {
+                assert_eq!((s.min_pixels, s.max_pixels, s.max_aspect), (Some(921_600), Some(4_624_220), Some(16.0)), "{id}");
+            }
+            other => panic!("{id} size: {other:?}"),
+        }
+        assert_eq!(enum_values(&reg, id, "output_format"), ["png", "jpeg"], "{id}");
+        assert_eq!(enum_values(&reg, id, "background"), ["transparent", "opaque"], "{id}");
+        let refs = m.ref_inputs.as_ref().expect("refs");
+        assert_eq!((refs.max_total, refs.roles.get("init").map(|r| r.max_count)), (10, Some(10)), "{id}");
+    }
+    let pro = reg.get("tokenhub/seedream-image-v5.0-pro").unwrap();
+    let rule = |k: &str, v: serde_json::Value| pro.pricing.variable_pricing.iter().find(|r| r.when.get(k) == Some(&v)).cloned();
+    assert!(rule("resolution", serde_json::json!("1.5K")).and_then(|r| r.usd).is_some_and(|u| (u - 0.045).abs() < 1e-9), "1.5K is ≤ 2.61 MP");
+    assert!(rule("references", serde_json::json!(10)).and_then(|r| r.add_usd).is_some_and(|a| (a - 0.027).abs() < 1e-9), "nine billed input images");
+}
+
+/// MiniMax resold on TokenHub: v2.3 / v2.3-fast in the flat shape (`POST
+/// /v1/wand/minimax-video/generation`: "768P：6 或 10；1080P：仅 6", resolution "768P（默认）
+/// / 1080P", prompt "≤ 2000 字符"; v2.3-fast "仅支持图生"), H3 / H3-Max in the
+/// `content` shape (`/v1/wand/minimax-video-v2/generation`: "h3：4 ~ 15 的整数。
+/// h3-max：5 ~ 15", "h3：768P / 2K … h3-max：仅 480P / 768P", ratio "21:9 / 16:9 / 4:3 /
+/// 1:1 / 3:4 / 9:16", H3 "参考图 ≤ 9 张"). Price: v2.3 6 s 768P ¥0.333333/s, 1080P
+/// ¥0.583333/s, 10 s 768P ¥0.4/s; v2.3-fast ¥0.225 / ¥0.385 / ¥0.225; H3 768P ¥0.5/s,
+/// 2K ¥0.8/s, "输入图片前5张免费第六张起0.2元/张"; H3-Max 480P ¥0.33/s, 768P ¥0.5/s.
+/// @see <https://cloud.tencent.com/document/product/1823/135737> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_minimax_rows_are_carried_with_tokenhubs_contract() {
+    let reg = registry();
+    let int = |id: &str| match reg.get(id).and_then(|m| m.params.get("duration_seconds")) {
+        Some(ParamSpec::Int(d)) => (d.min, d.max, d.default, d.values.clone()),
+        other => panic!("{id} duration_seconds: {other:?}"),
+    };
+    for (id, durations, res, base, t2v, refs) in [
+        ("tokenhub/minimax-video-v2.3", (Some(6), Some(10), Some(6), vec![6, 10]), &["768P", "1080P"][..], 0.2997, true, 0),
+        ("tokenhub/minimax-video-v2.3-fast", (Some(6), Some(10), Some(6), vec![6, 10]), &["768P", "1080P"][..], 0.2023, false, 0),
+        ("tokenhub/minimax-video-h3", (Some(4), Some(15), Some(5), vec![]), &["768P", "2K"][..], 0.3745, true, 9),
+        ("tokenhub/minimax-video-h3-max", (Some(5), Some(15), Some(5), vec![]), &["480P", "768P"][..], 0.3745, true, 0),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/135737"), "{id}");
+        assert_eq!(m.capabilities.text_to_video, t2v, "{id}");
+        assert!(m.capabilities.image_to_video, "{id}");
+        assert_eq!(int(id), durations, "{id}");
+        assert_eq!(enum_values(&reg, id, "resolution"), res, "{id}");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: ${base}");
+        let r = m.ref_inputs.as_ref().expect("refs");
+        assert_eq!(r.roles.get("reference").map(|x| x.max_count).unwrap_or(0), refs, "{id}");
+        assert_eq!(r.roles.get("first_frame").map(|x| x.required), Some(!t2v), "{id}: image-to-video only needs its first frame");
+    }
+    let h3 = reg.get("tokenhub/minimax-video-h3").unwrap();
+    assert_eq!(aspect_ratios(&reg, "tokenhub/minimax-video-h3"), ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]);
+    for n in 6..=9 {
+        let rule = h3.pricing.variable_pricing.iter().find(|r| r.when.get("references") == Some(&serde_json::json!(n)));
+        assert!(rule.and_then(|r| r.add_usd).is_some_and(|a| (a - 0.03 * (n - 5) as f64).abs() < 1e-9), "{n} images");
+    }
+}
+
+/// PixVerse resold on TokenHub (`/v1/wand/pixverse/{text,image,start-end,
+/// reference}-to-video`): duration "v5.6：5/8/10（1080p 不支持 10）；v6.0/c1：1~15。默认值：5",
+/// quality "360p / 540p / 720p / 1080p", aspect_ratio "v5.6：16:9 / 4:3 / 1:1 / 3:4 /
+/// 9:16；v6.0/c1 额外支持 2:3 / 3:2 / 21:9", seed "0 ~ 2147483647", image_references "最多支持 7
+/// 项". Price per second at 540p silent: v6 ¥0.20531, v5.6 ¥0.20531, c1 ¥0.23464.
+/// @see <https://cloud.tencent.com/document/product/1823/135325> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_pixverse_rows_are_carried_with_tokenhubs_contract() {
+    let reg = registry();
+    let wide = ["16:9", "4:3", "1:1", "3:4", "9:16", "2:3", "3:2", "21:9"];
+    for (id, durations, ratios, base) in [
+        ("tokenhub/pixverse-video-v6.0", (Some(1), Some(15), Some(5), vec![]), &wide[..], 0.154),
+        ("tokenhub/pixverse-video-c1", (Some(1), Some(15), Some(5), vec![]), &wide[..], 0.176),
+        ("tokenhub/pixverse-video-v5.6", (Some(5), Some(10), Some(5), vec![5, 8, 10]), &wide[..5], 0.154),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/135325"), "{id}");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default, d.values.clone()), durations, "{id}"),
+            other => panic!("{id}: {other:?}"),
+        }
+        assert_eq!(enum_values(&reg, id, "resolution"), ["360p", "540p", "720p", "1080p"], "{id}");
+        assert_eq!(aspect_ratios(&reg, id), ratios, "{id}");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: ${base} for 5 s at 540p silent");
+        assert!(m.params.contains_key("audio"), "{id}");
+        let refs = m.ref_inputs.as_ref().expect("refs");
+        assert_eq!(refs.roles.get("reference").map(|r| r.max_count), Some(7), "{id}");
+        assert!(refs.roles.contains_key("first_frame") && refs.roles.contains_key("last_frame"), "{id}");
+    }
+}
+
+/// Kling and Vidu images resold on TokenHub (asynchronous: submit, then poll).
+/// Kling (`/v1/wand/kling-image/generation`): v3 "image … 参考图片（单图）", o1 and
+/// v3-omni "image_list … 最多 10 张"; resolution "1k … 2k" ("4K 仅 kling-image-v3-omni
+/// 支持"); aspect_ratio "16:9、9:16、1:1、4:3、3:4、3:2、2:3、21:9"; prompt "≤ 2500 字符";
+/// "0.2 元/张" (v3-omni 4K "0.4 元/张"). Vidu (`/v1/wand/vidu-image/generation`):
+/// images "0张-7张", resolution "1080p / 2K / 4K" (litegen's 1K is its 1080p),
+/// prompt "≤ 2000 字符"; 文生图 ¥0.1875 / ¥0.25 / ¥0.3125, 参考生图（1~3张）¥0.25 /
+/// ¥0.375 / ¥0.625, （4~7张）¥0.3125 / ¥0.5 / ¥0.9375.
+/// @see <https://cloud.tencent.com/document/product/1823/138803> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/135746> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_kling_and_vidu_image_rows_are_carried_with_tokenhubs_contract() {
+    let reg = registry();
+    for (id, tiers, refs, base) in [
+        ("tokenhub/kling-image-v3", &["1K", "2K"][..], 1, 0.03),
+        ("tokenhub/kling-image-o1", &["1K", "2K"][..], 10, 0.03),
+        ("tokenhub/kling-image-v3-omni", &["1K", "2K", "4K"][..], 10, 0.03),
+        ("tokenhub/vidu-image-q2", &["1K", "2K", "4K"][..], 7, 0.0281),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(m.docs_url.as_deref().is_some_and(|u| u.starts_with("https://cloud.tencent.com/document/product/1823/")), "{id}");
+        assert!(m.capabilities.text_to_image && m.capabilities.image_to_image, "{id}");
+        assert_eq!(enum_values(&reg, id, "resolution"), tiers, "{id}");
+        assert_eq!(m.ref_inputs.as_ref().map(|r| r.max_total), Some(refs), "{id}");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: ${base}");
+    }
+    assert_eq!(aspect_ratios(&reg, "tokenhub/kling-image-v3"), ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"]);
+    assert!(reg.get("tokenhub/kling-image-v3").unwrap().params.contains_key("negative_prompt"), "v3 text-to-image takes one");
+    assert!(!reg.get("tokenhub/kling-image-o1").unwrap().params.contains_key("negative_prompt"), "omni: the prompt carries negatives");
+    let vidu = reg.get("tokenhub/vidu-image-q2").unwrap();
+    let price = |when: serde_json::Value| vidu.pricing.variable_pricing.iter().find(|r| serde_json::to_value(&r.when).ok() == Some(when.clone())).and_then(|r| r.usd);
+    assert_eq!(price(serde_json::json!({ "references": { "gte": 4 }, "resolution": "4K" })), Some(0.1405), "4~7 references at 4K: ¥0.9375");
+}
+
+/// Vidu Q3 / Q4 video resold on TokenHub (`/v1/wand/vidu/{text,image,start-end,
+/// reference}-to-video`): text-to-video "取值：vidu-video-q3-turbo、vidu-video-q3-pro、
+/// vidu-video-q2"; image-to-video "vidu-video-q4-preview、vidu-video-q3-turbo、
+/// vidu-video-q3-pro、vidu-video-q2-pro、vidu-video-q2-turbo"; reference
+/// "vidu-video-q4-preview、vidu-video-q3-turbo、vidu-video-q3、vidu-video-q2-pro、
+/// vidu-video-q2"; start-end "vidu-video-q3-turbo、vidu-video-q3-pro、vidu-video-q2-pro、
+/// vidu-video-q2-turbo". Durations (速查表): q4-preview 3 ~ 16; q3 series 1 ~ 16
+/// (references 3 ~ 16: one range serves every endpoint a row reaches). Resolution
+/// 540p / 720p / 1080p (q4-preview + 2K / 4K).
+/// Price per second: q4-preview ¥0.28125 / ¥0.59375 / ¥0.75 / ¥1.1875 / ¥2.4375;
+/// q3-pro ¥0.28125 / ¥0.625 / ¥0.75; q3-turbo ¥0.21875 / ¥0.375 / ¥0.40625 (with
+/// references ¥0.125 / ¥0.3125 / ¥0.40625); q3 ¥0.21875 / ¥0.375 / ¥0.46875.
+/// @see <https://cloud.tencent.com/document/product/1823/135756> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_vidu_q3_and_q4_rows_are_carried_with_tokenhubs_contract() {
+    let reg = registry();
+    let caps = |id: &str| reg.get(id).map(|m| (m.capabilities.text_to_video, m.capabilities.image_to_video));
+    for (id, t2v, durations, res, base) in [
+        ("tokenhub/vidu-video-q4-preview", false, (3, 16), &["540p", "720p", "1080p", "2K", "4K"][..], 0.445),
+        ("tokenhub/vidu-video-q3-pro", true, (1, 16), &["540p", "720p", "1080p"][..], 0.4685),
+        ("tokenhub/vidu-video-q3-turbo", true, (3, 16), &["540p", "720p", "1080p"][..], 0.281),
+        ("tokenhub/vidu-video-q3", false, (3, 16), &["540p", "720p", "1080p"][..], 0.281),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/135756"), "{id}");
+        assert_eq!(caps(id), Some((t2v, true)), "{id}");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(durations.0), Some(durations.1), Some(5)), "{id}"),
+            other => panic!("{id}: {other:?}"),
+        }
+        assert_eq!(enum_values(&reg, id, "resolution"), res, "{id}");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: ${base} for 5 s at its default 720p");
+    }
+    let refs = |id: &str| reg.get(id).and_then(|m| m.ref_inputs.as_ref()).map(|r| (r.roles.get("reference").map(|x| x.max_count), r.roles.contains_key("last_frame"), r.roles.contains_key("first_frame")));
+    assert_eq!(refs("tokenhub/vidu-video-q4-preview"), Some((Some(15), false, true)), "\"参考图最多 15 张\"; no start-end");
+    assert_eq!(refs("tokenhub/vidu-video-q3-pro"), Some((None, true, true)), "no reference endpoint");
+    assert_eq!(refs("tokenhub/vidu-video-q3-turbo"), Some((Some(3), true, true)));
+    assert_eq!(refs("tokenhub/vidu-video-q3"), Some((Some(3), false, false)), "reference-to-video only");
+}
+
+/// Vidu Q2 resold on TokenHub: q2 text and references (no audio: text-to-video
+/// "仅 q3 系列支持", references "非主体调用时仅 q3 支持"), q2-pro image / start-end /
+/// references (audio on image-to-video), q2-turbo image / start-end; "1 ~ 10"
+/// (start-end "1 ~ 8", refused above 8 s).
+/// @see <https://cloud.tencent.com/document/product/1823/135756> (2026-11-04)
+#[test]
+fn tokenhub_vidu_q2_rows_are_carried_with_tokenhubs_contract() {
+    let reg = registry();
+    for (id, t2v, audio, base) in [
+        ("tokenhub/vidu-video-q2", true, false, 0.1638),
+        ("tokenhub/vidu-video-q2-pro", false, true, 0.2574),
+        ("tokenhub/vidu-video-q2-turbo", false, true, 0.2246),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.capabilities.text_to_video, t2v, "{id}");
+        assert_eq!(m.params.contains_key("audio"), audio, "{id}");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: ${base}");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max), (Some(1), Some(10)), "{id}"),
+            other => panic!("{id}: {other:?}"),
+        }
+    }
+    assert_eq!(reg.get("tokenhub/vidu-video-q2-turbo").and_then(|m| m.ref_inputs.as_ref()).and_then(|r| r.roles.get("first_frame")).map(|r| r.required), Some(true));
+}
+
+/// YouTu image-to-video on TokenHub (`POST /v1/api/video/submit` | `/query`,
+/// "model": "yt-video-2.0"): "请求的具体参数与原接口一致（YT-Video-2.0为 图生视频接口）… 参数统一
+/// 以小写下划线形式呈现" — SubmitImageToVideoGeneralJob's Image, Prompt (≤ 200),
+/// Resolution 480p | 720p | 1080p, Fps 16 | 24 | 30, a 5 s clip. "按次计算消耗。480p：
+/// 2 积分/次 720p/1080p：5 积分/次" at 1.0 ¥ per credit.
+/// @see <https://cloud.tencent.com/document/product/1823/135716> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_yt_video_2_0_is_carried_with_tokenhubs_contract() {
+    let reg = registry();
+    let id = "tokenhub/yt-video-2.0";
+    let m = reg.get(id).expect("tokenhub/yt-video-2.0 missing");
+    assert_eq!(m.docs_url.as_deref(), Some("https://cloud.tencent.com/document/product/1823/135716"));
+    assert!(!m.capabilities.text_to_video && m.capabilities.image_to_video);
+    assert!((m.pricing.base_cost_usd - 0.7494).abs() < 1e-9, "720p: 5 credits = ¥5");
+    assert!(m.pricing.variable_pricing.iter().any(|r| r.when.get("resolution") == Some(&serde_json::json!("480p")) && r.usd.is_some_and(|u| (u - 0.2997).abs() < 1e-9)));
+    assert_eq!(enum_values(&reg, id, "resolution"), ["480p", "720p", "1080p"]);
+    assert_eq!(m.prompt.max_length, Some(200));
+    assert_eq!(m.ref_inputs.as_ref().and_then(|r| r.roles.get("first_frame")).map(|r| r.required), Some(true));
+}
+
+/// Kling Omni resold on TokenHub (`POST /v1/wand/kling/omni-video`): "model … 取值：
+/// kling-video-v4、kling-video-v3-omni、kling-video-o1"; resolution "V3 Omni 另支持 4k" (O1
+/// 720p / 1080p); aspect_ratio "V3 Omni / O1：16:9 / 9:16 / 1:1，默认 16:9"; duration "V3
+/// Omni：3~15；O1：3~10（O1 仅用首帧且无其他参考时仅支持 5 / 10）"; audio "V3 Omni：native /
+/// original / off … O1：original / off" (original keeps a reference video's sound,
+/// which litegen does not send). Carried with text and first/last frames, at the
+/// "无参考视频" prices: V3 Omni silent ¥0.6 / ¥0.8 / ¥3, with sound ¥0.8 / ¥1 / ¥3; O1
+/// ¥0.6 / ¥0.8 per second.
+/// @see <https://cloud.tencent.com/document/product/1823/135742> (2026-11-04)
+/// @see <https://cloud.tencent.com/document/product/1823/130055> (2026-11-04)
+#[test]
+fn tokenhub_kling_omni_rows_are_carried_with_text_and_frames() {
+    let reg = registry();
+    for (id, max, res, audio) in [
+        ("tokenhub/kling-video-v3-omni", 15, &["720p", "1080p", "4k"][..], true),
+        ("tokenhub/kling-video-o1", 10, &["720p", "1080p"][..], false),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(m.capabilities.text_to_video && m.capabilities.image_to_video, "{id}");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(3), Some(max), Some(5)), "{id}"),
+            other => panic!("{id}: {other:?}"),
+        }
+        assert_eq!(enum_values(&reg, id, "resolution"), res, "{id}");
+        assert_eq!(m.params.contains_key("audio"), audio, "{id}");
+        assert!((m.pricing.base_cost_usd - 0.4495).abs() < 1e-9, "{id}: 5 s at 720p silent, ¥0.6/s");
+        let refs = m.ref_inputs.as_ref().expect("refs");
+        assert!(!refs.roles.contains_key("reference"), "{id}: refer_image's count is not documented for this model");
+    }
+}
+
+/// P-Image on Ideogram v2 (`/v2/image/generate/p-image-ideogram`, JSON):
+/// quality "very_low" … "very_high" ("Defaults to `medium`"), resolution
+/// "1k" | "2k" ("Defaults to `1k`"), 15 aspect ratios, seed; text to image
+/// only. Ideogram's price page (rendered 2026-11-04): "P-Image Ideogram Very
+/// Low 1K … US $0.003" through "Very High 2K … US $0.066".
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-04)
+/// @see <https://ideogram.ai/pricing/?pricing_tab=api> (rendered 2026-11-04)
+#[test]
+fn ideogram_p_image_is_carried_with_ideograms_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    let id = "ideogram/p-image-ideogram";
+    let m = reg.get(id).expect("ideogram/p-image-ideogram missing");
+    assert!(m.capabilities.text_to_image && !m.capabilities.image_to_image);
+    assert_eq!(m.prompt.max_length, Some(10000));
+    assert_eq!(enum_values(&reg, id, "quality"), ["very_low", "low", "medium", "high", "very_high"]);
+    assert_eq!(enum_values(&reg, id, "resolution"), ["1K", "2K"]);
+    assert_eq!(aspect_ratios(&reg, id).len(), 15);
+    assert!(m.ref_inputs.is_none(), "text to image only");
+    let price = |quality: Option<&str>, resolution: Option<&str>| {
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        if let Some(q) = quality {
+            req["quality"] = q.into();
+        }
+        if let Some(r) = resolution {
+            req["resolution"] = r.into();
+        }
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    assert!((price(None, None) - 0.01).abs() < 1e-9, "medium, 1K by default");
+    for (q, one, two) in [("very_low", 0.003, 0.006), ("low", 0.0075, 0.015), ("medium", 0.01, 0.02), ("high", 0.015, 0.03), ("very_high", 0.033, 0.066)] {
+        assert!((price(Some(q), Some("1K")) - one).abs() < 1e-9, "{q} 1K");
+        assert!((price(Some(q), Some("2K")) - two).abs() < 1e-9, "{q} 2K");
+    }
+}
+
+/// The video models Ideogram resells on v2 (`POST /v2/video/generate/
+/// {model}-{text,image,reference}-to-video`, polled at `GET /v2/generations/
+/// {generation_id}`), carried as Ideogram routes (the hub-route policy,
+/// 2026-11-04):
+/// - Kling 3.0 Standard: prompt ≤ 2,000, duration 3–15, aspect 16x9 | 9x16 |
+///   1x1, generate_audio, negative_prompt; "1080p | silent $0.084, audio $0.126"
+///   a second.
+/// - MiniMax H3 (Hailuo 3): duration 5–15, resolution 480P | 768P | 2K | 4K
+///   (default 2K), six aspects; $0.05 / $0.08 / $0.13 / $0.16 a second; "The
+///   first five reference images are free; each one after that adds US $0.04".
+/// - Seedance 2.0: prompt ≤ 2,000, duration 4–15, 480p | 720p, six aspects or
+///   auto; $0.07 / $0.16 a second.
+/// - Seedance 2.5: prompt ≤ 30,000, duration 4–30, 480p | 720p | 1080p;
+///   $0.103 / $0.231 / $0.614 a second.
+///
+/// Kling 4.0 is priced but has no endpoint in the spec or the docs: not carried.
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-10)
+/// @see <https://ideogram.ai/api/usage-pricing/catalog> (2026-11-10)
+#[test]
+fn ideogram_video_resales_are_carried_with_ideograms_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    // (id, prompt max, aspects, resolutions, duration (min, max), references, audio, base)
+    for (id, prompt_max, aspects, resolutions, (min, max), references, audio, base) in [
+        ("ideogram/kling-3-standard", 2000, &["16:9", "9:16", "1:1"][..], &[][..], (3, 15), 0, true, 0.42),
+        ("ideogram/minimax-h3", 2000, &["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"][..], &["480P", "768P", "2K", "4K"][..], (5, 15), 9, false, 0.65),
+        ("ideogram/seedance-2", 2000, &["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"][..], &["480p", "720p"][..], (4, 15), 9, true, 0.8),
+        ("ideogram/seedance-2-5", 30000, &["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"][..], &["480p", "720p", "1080p"][..], (4, 30), 9, true, 1.155),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.media_type, litegen::capabilities::MediaType::Video, "{id}");
+        assert!(m.capabilities.text_to_video && m.capabilities.image_to_video, "{id}");
+        assert!(m.docs_url.as_deref().is_some_and(|u| u.starts_with("https://developer.ideogram.ai/v2/api-reference/video/generate/")), "{id}: {:?}", m.docs_url);
+        assert_eq!(m.prompt.max_length, Some(prompt_max), "{id}");
+        assert_eq!(aspect_ratios(&reg, id), aspects, "{id}");
+        assert_eq!(enum_values(&reg, id, "resolution"), resolutions, "{id}");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(min), Some(max), Some(5)), "{id}"),
+            other => panic!("{id} duration_seconds: {other:?}"),
+        }
+        assert_eq!(m.params.contains_key("audio"), audio, "{id}: generate_audio");
+        let roles = &m.ref_inputs.as_ref().unwrap().roles;
+        assert_eq!((roles["first_frame"].max_count, roles["last_frame"].max_count), (1, 1), "{id}: image and end_image");
+        assert_eq!(roles.get("reference").map_or(0, |r| r.max_count), references, "{id}: reference_images");
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: {} (want {base})", m.pricing.base_cost_usd);
+        assert!(!m.extra_allowlist.iter().any(|k| k == "webhook_url"), "{id}: litegen fires its own webhooks");
+    }
+    let price = |id: &str, params: serde_json::Value, references: usize| {
+        let m = reg.get(id).unwrap();
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        req.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
+        req["reference_images"] = (0..references).map(|i| serde_json::json!({ "type": "url", "value": format!("https://e.com/{i}.png"), "role": "reference" })).collect();
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    use serde_json::json as j;
+    for (id, params, references, usd) in [
+        ("ideogram/kling-3-standard", j!({ "audio": true, "duration_seconds": 10 }), 0, 1.26),
+        ("ideogram/minimax-h3", j!({ "resolution": "480P" }), 0, 0.25),
+        ("ideogram/minimax-h3", j!({ "resolution": "4K", "duration_seconds": 10 }), 7, 1.68),
+        ("ideogram/minimax-h3", j!({}), 5, 0.65),
+        ("ideogram/seedance-2", j!({ "resolution": "480p", "duration_seconds": 15 }), 0, 1.05),
+        ("ideogram/seedance-2-5", j!({ "resolution": "1080p", "duration_seconds": 30 }), 0, 18.42),
+    ] {
+        let got = price(id, params.clone(), references);
+        assert!((got - usd).abs() < 1e-9, "{id} {params} + {references} refs: {got} (want {usd})");
+    }
+}
+
+/// Nano Banana resold on Ideogram v2 (`/v2/image/generate/nano-banana-2` and
+/// `nano-banana-pro`, multipart): "images … max 10", aspect_ratio "auto","1:1",…
+/// (2: + "4:1","1:4","8:1","1:8"), "resolution_tier … 1K, 2K, 4K". Ideogram's
+/// price (rendered): "Nano Banana 2 Generate 1K | US $0.0672", 2K $0.1008, 4K
+/// $0.1512; "Nano Banana Pro Generate 1K | US $0.1344", 2K $0.1344, 4K $0.24.
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-03)
+/// @see <https://ideogram.ai/pricing/?pricing_tab=api> (rendered 2026-11-03)
+#[test]
+fn ideogram_resold_nano_banana_rows_are_carried() {
+    let reg = registry();
+    for (id, base, four_k, ratios) in [("ideogram/nano-banana-2", 0.0672, 0.1512, 14), ("ideogram/nano-banana-pro", 0.1344, 0.24, 10)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - base).abs() < 1e-9, "{id}: 1K ${base}");
+        assert!(m.pricing.variable_pricing.iter().any(|r| r.when.get("resolution") == Some(&serde_json::json!("4K")) && r.usd.is_some_and(|u| (u - four_k).abs() < 1e-9)), "{id}: 4K ${four_k}");
+        assert_eq!(enum_values(&reg, id, "resolution"), ["1K", "2K", "4K"], "{id}");
+        assert_eq!(aspect_ratios(&reg, id).len(), ratios, "{id}");
+        assert_eq!(m.ref_inputs.as_ref().map(|r| r.max_total), Some(10), "{id}");
+    }
+}
+
+/// SD 3.5 on Replicate (official models, versionless): inputs prompt,
+/// aspect_ratio ("16:9", "1:1", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16",
+/// "9:21"), cfg (1-10; Large and Medium default 5, Large Turbo 1), seed,
+/// image, output_format (webp, jpg, png), negative_prompt, prompt_strength
+/// (0-1, default 0.85). Price "per output image": $0.065, $0.04, $0.035.
+/// @see <https://replicate.com/stability-ai/stable-diffusion-3.5-large/llms.txt> (2026-11-04)
+#[test]
+fn replicate_sd3_5_rows_are_carried_with_their_documented_contract() {
+    let reg = registry();
+    for (id, usd, cfg_default) in [("replicate/sd3.5-large", 0.065, 5.0), ("replicate/sd3.5-large-turbo", 0.04, 1.0), ("replicate/sd3.5-medium", 0.035, 5.0)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id}");
+        assert!(m.capabilities.text_to_image && m.capabilities.image_to_image, "{id}");
+        match m.params.get("guidance_scale") {
+            Some(ParamSpec::Float(g)) => assert_eq!((g.min, g.max, g.default), (Some(1.0), Some(10.0), Some(cfg_default)), "{id}"),
+            other => panic!("{id}: {other:?}"),
+        }
+        assert!(!m.params.contains_key("steps"), "{id}: no steps input");
+        assert_eq!(aspect_ratios(&reg, id), ["16:9", "1:1", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"], "{id}");
+        assert_eq!(enum_values(&reg, id, "output_format"), ["webp", "jpeg", "png"], "{id}");
+    }
+}
+
+/// FLUX 3 on fal. FLUX 3 Image (`blackforestlabs/flux-3/text-to-image`,
+/// `/edit-image`): resolution "768sq" … "4k", aspect_ratio "auto" + 14,
+/// output_format jpeg | png, edits "image_urls … maxItems 10"; fal prices it only
+/// at 1K ("A 1K (1 MP) image costs $0.048"), so the row offers 1K. Klein
+/// (`…/klein/text-to-image`, `/klein/edit-image`): image_size "Each side can be
+/// 256 to 4096 pixels" (multiple_of 16, max_area 16777216), seed, output_format
+/// jpeg | png | webp; "$0.008 at 768 × 768, $0.009 at 1K, $0.011 at 1.5K, $0.014
+/// at 2K, and $0.036 at 4K" by output pixels.
+/// @see <https://fal.ai/models/blackforestlabs/flux-3/text-to-image/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/blackforestlabs/flux-3/klein/text-to-image/llms.txt> (2026-11-04)
+#[test]
+fn fal_flux_3_rows_are_carried_with_fals_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let image = reg.get("fal/flux-3-image").expect("fal/flux-3-image missing");
+    assert!((image.pricing.base_cost_usd - 0.048).abs() < 1e-9);
+    assert_eq!(enum_values(&reg, "fal/flux-3-image", "resolution"), ["1K"], "only 1K is priced");
+    assert_eq!(enum_values(&reg, "fal/flux-3-image", "output_format"), ["jpeg", "png"]);
+    assert!(!image.params.contains_key("size") && !image.params.contains_key("seed"));
+    let klein = reg.get("fal/flux-3-image-klein").expect("fal/flux-3-image-klein missing");
+    assert!((klein.pricing.base_cost_usd - 0.009).abs() < 1e-9, "square_hd (1024²) by default");
+    match klein.params.get("size") {
+        Some(ParamSpec::Size(SizeSpec::Freeform(s))) => {
+            assert_eq!((s.min_width, s.max_width, s.multiple_of, s.max_pixels), (256, 4096, Some(16), Some(16_777_216)));
+        }
+        other => panic!("klein size: {other:?}"),
+    }
+    assert!(!klein.params.contains_key("resolution"));
+    assert_eq!(enum_values(&reg, "fal/flux-3-image-klein", "output_format"), ["png", "jpeg", "webp"]);
+    assert!(klein.pricing.variable_pricing.iter().any(|r| r.when.get("megapixels") == Some(&serde_json::json!({ "gt": 4.194304 })) && r.usd.is_some_and(|u| (u - 0.036).abs() < 1e-9)));
+    for id in ["fal/flux-3-image", "fal/flux-3-image-klein"] {
+        assert_eq!(reg.get(id).and_then(|m| m.ref_inputs.as_ref()).map(|r| r.max_total), Some(10), "{id}");
+    }
+}
+
+/// FLUX 3 Klein *base* on fal ("undistilled, CFG"), a model of its own, which
+/// fal serves only at `…/klein/base/text-to-image/lora` and
+/// `…/klein/base/edit-image/lora`. `loras` is optional ("Default: `[]`"), so
+/// the row calls them with none. "Same inputs as the text-to-image endpoint":
+/// image_size 256 to 4096 a side (multiple_of 16), seed, output_format jpeg |
+/// png | webp, edits from at most 10 `image_urls`. "$0.035 per megapixel of
+/// output … up to 1024x1024 counts as 1 megapixel, 2048x2048 as 1.56", so
+/// $0.035 up to 1 MP and $0.0546 (1.56 × $0.035) above it. fal prices nothing
+/// past 2048², so the row stops at 4,194,304 pixels.
+/// @see <https://fal.ai/models/blackforestlabs/flux-3/klein/base/text-to-image/lora/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/blackforestlabs/flux-3/klein/base/edit-image/lora/llms.txt> (2026-11-04)
+#[test]
+fn fal_flux_3_klein_base_is_carried_with_fals_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let id = "fal/flux-3-image-klein-base";
+    let m = reg.get(id).expect("fal/flux-3-image-klein-base missing");
+    assert_eq!(m.docs_url.as_deref(), Some("https://fal.ai/models/blackforestlabs/flux-3/klein/base/text-to-image/lora/api"));
+    match m.params.get("size") {
+        Some(ParamSpec::Size(SizeSpec::Freeform(s))) => {
+            assert_eq!(
+                (s.min_width, s.max_width, s.min_height, s.max_height, s.multiple_of, s.max_pixels),
+                (256, 4096, 256, 4096, Some(16), Some(4_194_304)),
+                "fal prices sizes only up to 2048²"
+            );
+        }
+        other => panic!("klein base size: {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "output_format"), ["png", "jpeg", "webp"]);
+    assert!(m.params.contains_key("seed") && !m.params.contains_key("resolution"));
+    assert_eq!(m.ref_inputs.as_ref().map(|r| r.max_total), Some(10));
+    assert!(!m.extra_allowlist.iter().any(|k| k == "loras"), "litegen takes no LoRA input: {:?}", m.extra_allowlist);
+    let price = |size: Option<&str>| {
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        if let Some(s) = size {
+            req["size"] = s.into();
+        }
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    for (size, usd) in [(None, 0.035), (Some("768x768"), 0.035), (Some("1024x1024"), 0.035), (Some("1536x1536"), 0.0546), (Some("2048x2048"), 0.0546), (Some("4096x1024"), 0.0546)] {
+        assert!((price(size) - usd).abs() < 1e-9, "{size:?}: {} (want {usd})", price(size));
+    }
+}
+
+/// Recraft V4 and V4.1 on fal, carried as fal routes beside recraft/* (the
+/// hub-route policy, 2026-11-04). Each takes a prompt up to 10,000 characters,
+/// `image_size` and `colors`, and has no seed or style. The 1K models (standard,
+/// vector, utility, flash) use Recraft's 1K size table and the pro models its
+/// 2K one (Recraft's appendix, as on recraft/recraftv4_1 and _pro). Prices
+/// "per images": V4 $0.04, pro $0.25, vector $0.08, pro vector $0.30; V4.1
+/// $0.035, pro $0.21, vector $0.08, pro vector $0.30, utility $0.035, utility
+/// pro $0.21, flash $0.007.
+/// @see <https://fal.ai/models/fal-ai/recraft/v4/text-to-image/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/recraft/v4.1/pro/text-to-vector/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/recraft/v4.1/flash/text-to-image/llms.txt> (2026-11-04)
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> (2026-11-03)
+#[test]
+fn fal_recraft_v4_rows_are_carried_with_fals_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    let one_k: Vec<(u32, u32)> = vec![(1024, 1024), (1536, 768), (768, 1536), (1280, 832), (832, 1280), (1216, 896), (896, 1216), (1152, 896), (896, 1152), (832, 1344), (1280, 896), (896, 1280), (1344, 768), (768, 1344)];
+    let two_k: Vec<(u32, u32)> = vec![(2048, 2048), (3072, 1536), (1536, 3072), (2560, 1664), (1664, 2560), (2432, 1792), (1792, 2432), (2304, 1792), (1792, 2304), (1664, 2688), (2560, 1792), (1792, 2560), (2688, 1536), (1536, 2688)];
+    for (id, usd, pro, vector) in [
+        ("fal/recraft-v4", 0.04, false, false),
+        ("fal/recraft-v4-pro", 0.25, true, false),
+        ("fal/recraft-v4-vector", 0.08, false, true),
+        ("fal/recraft-v4-pro-vector", 0.30, true, true),
+        ("fal/recraft-v4.1", 0.035, false, false),
+        ("fal/recraft-v4.1-pro", 0.21, true, false),
+        ("fal/recraft-v4.1-vector", 0.08, false, true),
+        ("fal/recraft-v4.1-pro-vector", 0.30, true, true),
+        ("fal/recraft-v4.1-utility", 0.035, false, false),
+        ("fal/recraft-v4.1-utility-pro", 0.21, true, false),
+        ("fal/recraft-v4.1-flash", 0.007, false, false),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id}: {}", m.pricing.base_cost_usd);
+        assert!(m.capabilities.text_to_image && !m.capabilities.image_to_image, "{id}");
+        assert_eq!(m.prompt.max_length, Some(10000), "{id}");
+        assert!(m.docs_url.as_deref().is_some_and(|u| u.starts_with("https://fal.ai/models/") && u.contains("recraft/v4")), "{id}: {:?}", m.docs_url);
+        match m.params.get("size") {
+            Some(ParamSpec::Size(SizeSpec::Enum(s))) => {
+                assert_eq!(s.values, if pro { two_k.clone() } else { one_k.clone() }, "{id}: Recraft's {} table", if pro { "2K" } else { "1K" });
+            }
+            other => panic!("{id} size: {other:?}"),
+        }
+        assert!(matches!(m.params.get("palette"), Some(ParamSpec::Palette(p)) if p.max_colors == 10 && !p.forced), "{id}: palette as fal's colors");
+        assert!(!m.params.contains_key("seed") && !m.params.contains_key("style"), "{id}: fal takes neither");
+        assert_eq!(m.tags.iter().any(|t| t == "vector"), vector, "{id}");
+    }
+    // Recraft V2 (fal-ai/recraft-20b 308-redirects to fal-ai/recraft/v2/text-to-image):
+    // "$0.022 per image (or $0.044 if you are using a vector style)", prompt maxLength
+    // 1000, the three base styles, as fal/recraft-v3.
+    let v2 = reg.get("fal/recraft-v2").expect("fal/recraft-v2 missing");
+    assert!((v2.pricing.base_cost_usd - 0.022).abs() < 1e-9);
+    assert!(v2.pricing.variable_pricing.iter().any(|r| r.when.get("style") == Some(&serde_json::json!("vector_illustration")) && r.multiply == Some(2.0)));
+    assert_eq!(enum_values(&reg, "fal/recraft-v2", "style"), ["realistic_image", "digital_illustration", "vector_illustration"]);
+    assert_eq!(v2.prompt.max_length, Some(1000));
+    assert!(matches!(v2.params.get("palette"), Some(ParamSpec::Palette(p)) if p.max_colors == 10));
+}
+
+/// The rest of Recraft on fal (2026-11-04):
+/// - V3 takes an image through its `/image-to-image` twin ("$0.04 per image (or
+///   $0.08 if you are using a vector style)"), with `strength` 0-1 (default
+///   0.5) and a negative prompt there only.
+/// - V4 style references, `recraft/v4/style/{,pro/}text-to-{image,vector}`:
+///   up to 10 `image_urls` as `style` references, at "$0.035", "$0.10",
+///   "$0.05" and "$0.12" with a style_id, plus "$0.005 extra" when the style is
+///   made from the images.
+/// - vectorize "$0.01", upscale crisp "$0.004" and creative "$0.25 per
+///   images": one image in, one out, no prompt.
+///
+/// @see <https://fal.ai/models/fal-ai/recraft/v3/image-to-image/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/recraft/v4/style/text-to-image/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/recraft/vectorize/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/recraft/upscale/creative/llms.txt> (2026-11-04)
+#[test]
+fn fal_recraft_operations_are_carried_with_fals_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    let v3 = reg.get("fal/recraft-v3").expect("fal/recraft-v3 missing");
+    assert!(v3.capabilities.text_to_image && v3.capabilities.image_to_image, "V3: text, or an image through its twin");
+    assert_eq!(v3.ref_inputs.as_ref().and_then(|r| r.roles.get("init")).map(|r| (r.required, r.max_count)), Some((false, 1)));
+    assert!(matches!(v3.params.get("strength"), Some(ParamSpec::Float(s)) if (s.min, s.max, s.default) == (Some(0.0), Some(1.0), Some(0.5))));
+    let price = |id: &str, refs: usize, extra: Option<serde_json::Value>| {
+        let m = reg.get(id).unwrap();
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        if refs > 0 {
+            req["reference_images"] = (0..refs).map(|i| serde_json::json!({ "type": "url", "value": format!("https://cdn.example/{i}.png"), "role": "style" })).collect();
+        }
+        if let Some(e) = extra {
+            req["extra"] = e;
+        }
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    for (id, usd) in [("fal/recraft-v4-style", 0.035), ("fal/recraft-v4-style-pro", 0.10), ("fal/recraft-v4-style-vector", 0.05), ("fal/recraft-v4-style-pro-vector", 0.12)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id}");
+        assert_eq!(m.ref_inputs.as_ref().and_then(|r| r.roles.get("style")).map(|r| (r.required, r.max_count)), Some((false, 10)), "{id}: style references");
+        assert!(m.extra_allowlist.iter().any(|k| k == "style_id"), "{id}");
+        assert!((price(id, 2, None) - (usd + 0.005)).abs() < 1e-9, "{id}: a style made from the images");
+        assert!((price(id, 0, Some(serde_json::json!({ "style_id": "s-1" }))) - usd).abs() < 1e-9, "{id}: a given style_id");
+    }
+    for (id, usd) in [("fal/recraft-vectorize", 0.01), ("fal/recraft-upscale-crisp", 0.004), ("fal/recraft-upscale-creative", 0.25)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id}");
+        assert!(m.capabilities.image_to_image && !m.capabilities.text_to_image, "{id}");
+        assert_eq!(m.prompt.max_length, Some(0), "{id}: no prompt");
+        assert_eq!(m.ref_inputs.as_ref().and_then(|r| r.roles.get("init")).map(|r| (r.required, r.max_count)), Some((true, 1)), "{id}");
+    }
+}
+
+/// FLUX.1 [pro] on fal, carried as fal routes beside bfl/flux-kontext-* and
+/// bfl/flux-pro-1.1-ultra (the hub-route policy, 2026-11-04):
+/// - Kontext [pro] and [max]: "$0.04" and "$0.08 per images". No image goes to
+///   `…/kontext[/max]/text-to-image`, one to `…/kontext[/max]` (`image_url`),
+///   and 2 to 4 to `…/multi` (`image_urls`; BFL: `input_image` … `input_image_4`).
+/// - 1.1 [pro] ultra: "$0.06 per images", with an optional image prompt
+///   (`image_url`).
+/// - Redux on 1.1 [pro] and on ultra: "$0.05 per megapixels"; ultra's output
+///   is BFL's "4MP", billed as its 2752 × 1536.
+/// - Fill: "$0.05 per megapixels", a mask where "white areas (100%) specify
+///   areas for inpainting" (BFL).
+/// - Erase: "$0.03 for the first megapixel generated … Each reference megapixel
+///   also costs $0.004 set at 3 MP minimum", so $0.042 at least; its mask's
+///   "white (255) marks pixels to erase", and it takes no prompt.
+///
+/// Fill and erase take a `region` too, drawn as their mask, as every
+/// mask-taking row does.
+/// @see <https://fal.ai/models/fal-ai/flux-pro/kontext/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-pro/v1.1/redux/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-pro/v1/fill/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-pro/v1/erase/llms.txt> (2026-11-04)
+/// @see <https://api.bfl.ai/openapi.json> (2026-11-04)
+#[test]
+fn fal_flux_1_pro_rows_are_carried_with_fals_contract() {
+    use litegen::capabilities::MaskConvention;
+    let reg = registry();
+    let kontext_ratios = ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"];
+    for (id, usd) in [("fal/flux-kontext-pro", 0.04), ("fal/flux-kontext-max", 0.08)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id}");
+        assert!(m.capabilities.text_to_image && m.capabilities.image_to_image, "{id}");
+        assert_eq!(m.ref_inputs.as_ref().map(|r| r.max_total), Some(4), "{id}: input_image … input_image_4");
+        assert_eq!(aspect_ratios(&reg, id), kontext_ratios, "{id}");
+        assert!(matches!(m.params.get("guidance_scale"), Some(ParamSpec::Float(g)) if (g.min, g.max, g.default) == (Some(1.0), Some(20.0), Some(3.5))), "{id}");
+    }
+    let ultra = reg.get("fal/flux-pro-1.1-ultra").expect("fal/flux-pro-1.1-ultra missing");
+    assert!((ultra.pricing.base_cost_usd - 0.06).abs() < 1e-9);
+    assert_eq!(ultra.ref_inputs.as_ref().and_then(|r| r.roles.get("redux")).map(|r| (r.required, r.max_count)), Some((false, 1)), "an optional image prompt");
+    assert_eq!(aspect_ratios(&reg, "fal/flux-pro-1.1-ultra"), kontext_ratios);
+    for (id, usd) in [("fal/flux-pro-1.1-redux", 0.05), ("fal/flux-pro-1.1-ultra-redux", 0.211_353_6)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id}: {}", m.pricing.base_cost_usd);
+        assert!(m.capabilities.image_to_image && !m.capabilities.text_to_image && !m.prompt.required, "{id}: a variation of one image, the prompt optional");
+        assert_eq!(m.ref_inputs.as_ref().and_then(|r| r.roles.get("init")).map(|r| (r.required, r.max_count)), Some((true, 1)), "{id}");
+    }
+    for (id, usd, prompt) in [("fal/flux-pro-fill", 0.05, true), ("fal/flux-pro-erase", 0.042, false)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((m.pricing.base_cost_usd - usd).abs() < 1e-9, "{id}");
+        assert!(m.capabilities.inpainting, "{id}");
+        let roles = &m.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} refs")).roles;
+        assert_eq!(roles.get("init").map(|r| (r.required, r.max_count)), Some((true, 1)), "{id}");
+        assert_eq!(roles.get("mask").map(|r| (r.max_count, r.convention)), Some((1, Some(MaskConvention::WhiteEdits))), "{id}");
+        assert!(matches!(m.params.get("region"), Some(ParamSpec::Region(_))), "{id}: a region, drawn as the mask");
+        assert_eq!(m.prompt.required, prompt, "{id}");
+        assert_eq!(m.prompt.max_length == Some(0), !prompt, "{id}: erase takes no prompt");
+    }
+}
+
+/// FLUX.2 [pro] outpaint on fal (`fal-ai/flux-2-pro/outpaint`): the init image
+/// and "Pixels to expand on the left of the image" (`expand_left`, `_top`,
+/// `_right`, `_bottom`, each 0 to 2048), with mode high | fast and auto_crop,
+/// and no prompt. "$0.03 for the first megapixel of output, plus $0.015 per
+/// extra megapixel of input and output": $0.045, one megapixel in and one out,
+/// is the least an outpaint costs.
+/// @see <https://fal.ai/models/fal-ai/flux-2-pro/outpaint/llms.txt> (2026-11-04)
+#[test]
+fn fal_flux_2_pro_outpaint_is_carried_with_fals_contract() {
+    let reg = registry();
+    let id = "fal/flux-2-pro-outpaint";
+    let m = reg.get(id).expect("fal/flux-2-pro-outpaint missing");
+    assert_eq!(m.docs_url.as_deref(), Some("https://fal.ai/models/fal-ai/flux-2-pro/outpaint/api"));
+    assert!((m.pricing.base_cost_usd - 0.045).abs() < 1e-9);
+    assert!(m.capabilities.image_to_image && !m.capabilities.text_to_image);
+    match m.params.get("expand") {
+        Some(ParamSpec::Expand(e)) => assert_eq!((e.max_px, e.centered_only), (Some(2048), false)),
+        other => panic!("{id} expand: {other:?}"),
+    }
+    assert_eq!(m.prompt.max_length, Some(0), "the endpoint takes no prompt");
+    let init = m.ref_inputs.as_ref().and_then(|r| r.roles.get("init")).map(|r| (r.required, r.min_count, r.max_count));
+    assert_eq!(init, Some((true, 1, 1)));
+    assert_eq!(enum_values(&reg, id, "output_format"), ["jpeg", "png"]);
+    assert_eq!(m.extra_allowlist, ["mode", "auto_crop"]);
+}
+
+/// FLUX.2 on fal, carried as fal routes beside bfl/flux-2-* (the hub-route
+/// policy, 2026-11-04). Each row is a text-to-image endpoint plus an `/edit`
+/// twin that takes the images as `image_urls`.
+/// - dev, turbo, flash (`fal-ai/flux-2[/turbo|/flash]`): "$0.012", "$0.008"
+///   and "$0.005 per megapixel of input and output. Input images will be
+///   resized to 1MP", with "A maximum of 4 images".
+/// - [pro] (`fal-ai/flux-2-pro`): "$0.03 for the first output megapixel, plus
+///   $0.015 per additional input or output megapixel, with megapixels rounded
+///   up … 1 megapixel is 1024 × 1024 pixels".
+/// - [max]: "$0.07. Each additional megapixel will cost $0.03. Input images
+///   counted as processed megapixel".
+/// - [flex]: "$0.05 per megapixel on both input and output side, rounded up".
+///   An input counts at least one megapixel.
+/// - [klein] 4B and 9B (`fal-ai/flux-2/klein/{4b,9b}`): "$0.005" and "$0.006"
+///   per megapixel, their edits "$0.01" and "$0.011" per megapixel of input
+///   and output. The base models are "$0.009" and "$0.011". All take at most
+///   4 images.
+///
+/// Sides run 256 to 2048, BFL's FLUX.2 limit (fal states none for these, and
+/// its own 1920×1080 price example is no multiple of 32), and 512 to 2048 on
+/// dev, turbo and flash ("The width and height must be between 512 and 2048
+/// pixels"). The 4 MP price bands cover that range.
+/// @see <https://fal.ai/models/fal-ai/flux-2/edit/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-2-pro/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-2-max/edit/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-2-flex/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-2/klein/9b/edit/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/fal-ai/flux-2/klein/4b/base/edit/llms.txt> (2026-11-04)
+#[test]
+fn fal_flux_2_rows_are_carried_with_fals_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    /// One row's facts: the images it takes, its smallest side, its output
+    /// formats, guidance and steps as (min, max, default), and whether it
+    /// takes a negative prompt.
+    struct Row {
+        id: &'static str,
+        images: u32,
+        min_side: u32,
+        formats: &'static [&'static str],
+        guidance: Option<(f64, f64, f64)>,
+        steps: Option<(i64, i64, i64)>,
+        negative: bool,
+    }
+    const DEV: &[&str] = &["png", "webp", "jpeg"];
+    const PRO: &[&str] = &["jpeg", "png"];
+    let rows = [
+        Row { id: "fal/flux-2", images: 4, min_side: 512, formats: DEV, guidance: Some((0.0, 20.0, 2.5)), steps: Some((4, 50, 28)), negative: false },
+        Row { id: "fal/flux-2-turbo", images: 4, min_side: 512, formats: DEV, guidance: Some((0.0, 20.0, 2.5)), steps: None, negative: false },
+        Row { id: "fal/flux-2-flash", images: 4, min_side: 512, formats: DEV, guidance: Some((0.0, 20.0, 2.5)), steps: None, negative: false },
+        Row { id: "fal/flux-2-pro", images: 8, min_side: 256, formats: PRO, guidance: None, steps: None, negative: false },
+        Row { id: "fal/flux-2-max", images: 8, min_side: 256, formats: PRO, guidance: None, steps: None, negative: false },
+        Row { id: "fal/flux-2-flex", images: 8, min_side: 256, formats: PRO, guidance: Some((1.5, 10.0, 3.5)), steps: Some((2, 50, 28)), negative: false },
+        Row { id: "fal/flux-2-klein-4b", images: 4, min_side: 256, formats: DEV, guidance: None, steps: Some((4, 8, 4)), negative: false },
+        Row { id: "fal/flux-2-klein-9b", images: 4, min_side: 256, formats: DEV, guidance: None, steps: Some((4, 8, 4)), negative: false },
+        Row { id: "fal/flux-2-klein-4b-base", images: 4, min_side: 256, formats: DEV, guidance: Some((0.0, 20.0, 5.0)), steps: Some((4, 50, 28)), negative: true },
+        Row { id: "fal/flux-2-klein-9b-base", images: 4, min_side: 256, formats: DEV, guidance: Some((0.0, 20.0, 5.0)), steps: Some((4, 50, 28)), negative: true },
+    ];
+    for Row { id, images, min_side, formats, guidance, steps, negative } in rows {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(m.capabilities.text_to_image && m.capabilities.image_to_image, "{id}: text, and edits from images");
+        assert!(m.docs_url.as_deref().is_some_and(|u| u.starts_with("https://fal.ai/models/fal-ai/flux-2")), "{id}: {:?}", m.docs_url);
+        assert_eq!(m.ref_inputs.as_ref().map(|r| (r.max_total, r.roles.get("init").map(|i| i.max_count))), Some((images, Some(images))), "{id}");
+        match m.params.get("size") {
+            Some(ParamSpec::Size(SizeSpec::Freeform(s))) => {
+                assert_eq!((s.min_width, s.max_width, s.min_height, s.max_height, s.multiple_of), (min_side, 2048, min_side, 2048, None), "{id}");
+            }
+            other => panic!("{id} size: {other:?}"),
+        }
+        assert_eq!(enum_values(&reg, id, "output_format"), formats, "{id}");
+        match (m.params.get("guidance_scale"), guidance) {
+            (Some(ParamSpec::Float(g)), Some((lo, hi, d))) => assert_eq!((g.min, g.max, g.default), (Some(lo), Some(hi), Some(d)), "{id} guidance"),
+            (None, None) => {}
+            (got, want) => panic!("{id} guidance_scale: {got:?}, want {want:?}"),
+        }
+        match (m.params.get("steps"), steps) {
+            (Some(ParamSpec::Int(s)), Some((lo, hi, d))) => assert_eq!((s.min, s.max, s.default), (Some(lo), Some(hi), Some(d)), "{id} steps"),
+            (None, None) => {}
+            (got, want) => panic!("{id} steps: {got:?}, want {want:?}"),
+        }
+        assert_eq!(m.params.contains_key("negative_prompt"), negative, "{id}: only the klein base models take a negative prompt");
+        assert!(m.params.contains_key("seed"), "{id}");
+    }
+    let price = |id: &str, size: Option<&str>, refs: usize| {
+        let m = reg.get(id).unwrap();
+        let mut req = serde_json::json!({ "model": id, "prompt": "x" });
+        if let Some(s) = size {
+            req["size"] = s.into();
+        }
+        if refs > 0 {
+            req["reference_images"] = (0..refs).map(|i| serde_json::json!({ "type": "url", "value": format!("https://cdn.example/{i}.png"), "role": "init" })).collect();
+        }
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    for (id, size, refs, usd) in [
+        ("fal/flux-2", None, 0, 0.012),
+        ("fal/flux-2", None, 1, 0.024),
+        ("fal/flux-2-turbo", None, 1, 0.016),
+        ("fal/flux-2-flash", None, 0, 0.005),
+        ("fal/flux-2-flash", None, 2, 0.015),
+        ("fal/flux-2-pro", None, 0, 0.03),
+        ("fal/flux-2-pro", Some("1920x1080"), 0, 0.045),
+        ("fal/flux-2-pro", Some("2048x2048"), 0, 0.075),
+        ("fal/flux-2-pro", Some("1920x1080"), 2, 0.075),
+        ("fal/flux-2-max", None, 0, 0.07),
+        ("fal/flux-2-max", Some("1920x1080"), 1, 0.13),
+        ("fal/flux-2-flex", Some("1920x1080"), 0, 0.10),
+        ("fal/flux-2-flex", None, 1, 0.10),
+        ("fal/flux-2-klein-4b", None, 0, 0.005),
+        ("fal/flux-2-klein-4b", None, 1, 0.02),
+        ("fal/flux-2-klein-9b", None, 0, 0.006),
+        ("fal/flux-2-klein-9b", None, 1, 0.022),
+        ("fal/flux-2-klein-4b-base", None, 1, 0.018),
+        ("fal/flux-2-klein-9b-base", None, 0, 0.011),
+        ("fal/flux-2-klein-9b-base", None, 1, 0.022),
+    ] {
+        let got = price(id, size, refs);
+        assert!((got - usd).abs() < 1e-9, "{id} size {size:?} with {refs} images: {got} (want {usd})");
+    }
+}
+
+/// FLUX 3 video on fal: three rows, each reached four ways (text, a first
+/// frame, a first and a last frame, keyframes).
+/// - `fal/flux-3-video`: `blackforestlabs/flux-3/{text,image,first-last-frame,keyframes}-to-video`,
+///   5 to 20 s, 720p to 2160p. "$0.17 per second of generated video at 720p,
+///   $0.29 per second at 1080p, $0.32 per second at 2K (1440p), and $0.47 per
+///   second at 4K (2160p)". The first-last and keyframe endpoints price 720p and
+///   1080p only, and the adapter refuses the rest there.
+/// - `fal/flux-3-video-draft`: the four `/draft` twins, 720p with no resolution
+///   field. "$0.06 per second of generated draft video (720p)".
+/// - `fal/flux-3-max-video`: `blackforestlabs/flux-3-max/{text,image,keyframes}-to-video`,
+///   720p | 1080p, a seed, and the last frame as image-to-video's
+///   `end_image_url`. It bills the list price, "after which 720p is
+///   $0.17/second and 1080p is $0.29/second", because the 75 % off promotion
+///   ends 2026-11-07.
+///
+/// Keyframes are "a position at 24 fps", at most 10.
+/// @see <https://fal.ai/models/blackforestlabs/flux-3/text-to-video/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/blackforestlabs/flux-3/first-last-frame-to-video/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/blackforestlabs/flux-3/text-to-video/draft/llms.txt> (2026-11-04)
+/// @see <https://fal.ai/models/blackforestlabs/flux-3-max/text-to-video/llms.txt> (2026-11-04)
+/// @see <https://docs.bfl.ml/cookbook/video_start_from_images.md> (2026-11-04)
+#[test]
+fn fal_flux_3_video_rows_are_carried_with_fals_contract() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    let ratios = ["21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"];
+    for (id, resolutions, extra, docs) in [
+        ("fal/flux-3-video", vec!["720p", "1080p", "1440p", "2160p"], "safety_tolerance", "https://fal.ai/models/blackforestlabs/flux-3/text-to-video/api"),
+        ("fal/flux-3-video-draft", vec![], "safety_tolerance", "https://fal.ai/models/blackforestlabs/flux-3/text-to-video/draft/api"),
+        ("fal/flux-3-max-video", vec!["720p", "1080p"], "reasoning_level", "https://fal.ai/models/blackforestlabs/flux-3-max/text-to-video/api"),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(m.docs_url.as_deref(), Some(docs), "{id}");
+        assert!(m.capabilities.text_to_video && m.capabilities.image_to_video, "{id}");
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max, d.default), (Some(5), Some(20), Some(5)), "{id}"),
+            other => panic!("{id} duration_seconds: {other:?}"),
+        }
+        assert_eq!(enum_values(&reg, id, "resolution"), resolutions, "{id}");
+        assert_eq!(aspect_ratios(&reg, id), ratios, "{id}");
+        assert!(matches!(m.params.get("audio"), Some(ParamSpec::Bool(b)) if b.default == Some(true)), "{id}: audio on by default");
+        let refs = m.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} has no ref_inputs"));
+        assert_eq!(refs.roles.get("keyframe").map(|r| r.max_count), Some(10), "{id}");
+        for role in ["first_frame", "last_frame"] {
+            assert_eq!(refs.roles.get(role).map(|r| (r.required, r.max_count)), Some((false, 1)), "{id} {role}");
+        }
+        assert_eq!(m.extra_allowlist, [extra], "{id}");
+        assert_eq!(m.params.contains_key("seed"), id == "fal/flux-3-max-video", "{id}: only Max takes a seed");
+    }
+    let price = |id: &str, mut req: serde_json::Value| {
+        let m = reg.get(id).unwrap();
+        req["model"] = id.into();
+        req["prompt"] = "x".into();
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        unit_price_usd(m, &PriceFacts::new(m, &base, &req))
+    };
+    for (id, req, usd) in [
+        ("fal/flux-3-video", serde_json::json!({}), 0.85),
+        ("fal/flux-3-video", serde_json::json!({ "duration_seconds": 10, "resolution": "1080p" }), 2.9),
+        ("fal/flux-3-video", serde_json::json!({ "resolution": "1440p" }), 1.6),
+        ("fal/flux-3-video", serde_json::json!({ "duration_seconds": 20, "resolution": "2160p" }), 9.4),
+        ("fal/flux-3-video-draft", serde_json::json!({}), 0.3),
+        ("fal/flux-3-video-draft", serde_json::json!({ "duration_seconds": 20 }), 1.2),
+        ("fal/flux-3-max-video", serde_json::json!({}), 0.85),
+        ("fal/flux-3-max-video", serde_json::json!({ "duration_seconds": 8, "resolution": "1080p" }), 2.32),
+    ] {
+        let got = price(id, req.clone());
+        assert!((got - usd).abs() < 1e-9, "{id} {req}: {got} (want {usd})");
+    }
+}
+
+// ─── 2026-11-09 provider audit (docs/superpowers/2026-11-09-provider-audit.md) ───
+
+/// Ideogram 4.5's v2 schema caps the prompt: `prompt` "minLength: 1",
+/// "maxLength: 10000". A longer prompt is refused here, not by Ideogram.
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-09)
+#[test]
+fn ideogram_4_5_prompt_is_capped_at_the_v2_schema_limit() {
+    let reg = registry();
+    let schema = reg.get("ideogram/ideogram-4-5").expect("ideogram/ideogram-4-5 missing");
+    assert_eq!(schema.prompt.max_length, Some(10000), "/v2/image/generate/ideogram-4-5 prompt maxLength");
+}
+
+/// AnimateDiff's pinned version documents its seed as "Seed (0 = random,
+/// maximum: 2147483647)".
+/// @see <https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f> (2026-11-09)
+#[test]
+fn replicate_animatediff_seed_stops_at_the_versions_maximum() {
+    let reg = registry();
+    let schema = reg.get("replicate/video").expect("replicate/video missing");
+    match schema.params.get("seed") {
+        Some(ParamSpec::Seed(s)) => assert_eq!(s.max, 2_147_483_647, "AnimateDiff seed maximum"),
+        other => panic!("replicate/video seed is {other:?}"),
+    }
+}
+
+/// fal's `AuraFlowInput.guidance_scale`: "minimum": 0, "maximum": 20,
+/// "default": 3.5.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow> (2026-11-09)
+#[test]
+fn fal_auraflow_guidance_reaches_the_schema_maximum() {
+    let reg = registry();
+    let schema = reg.get("fal/auraflow").expect("fal/auraflow missing");
+    match schema.params.get("guidance_scale") {
+        Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max, f.default), (Some(0.0), Some(20.0), Some(3.5)), "AuraFlow guidance_scale"),
+        other => panic!("fal/auraflow guidance_scale is {other:?}"),
+    }
+}
+
+/// `stability/sd3-large` and `stability/sd3-turbo` run `sd3.5-large` and
+/// `sd3.5-large-turbo` (`image/stability.rs`), which Stability's price table
+/// names "Stable Diffusion 3.5 Large" and "Stable Diffusion 3.5 Large Turbo".
+/// @see <https://docs.stability.ai/pricing.md> (2026-11-09)
+#[test]
+fn stability_sd3_rows_are_named_for_the_sd3_5_models_they_run() {
+    let reg = registry();
+    for (id, name) in [
+        ("stability/sd3-large", "Stable Diffusion 3.5 Large"),
+        ("stability/sd3-turbo", "Stable Diffusion 3.5 Large Turbo"),
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(schema.display_name, name, "{id} display_name");
+    }
+}
+
+/// The rows whose frame image sets the clip's shape (E5): with a
+/// `first_frame`, `last_frame` or `init` image their adapter sends no ratio,
+/// because the vendor takes none, so the validator refuses (`strict`) or drops
+/// and names `aspect_ratio` instead of the adapter leaving it out unreported.
+/// `always` where a `reference` image beside the frame changes nothing;
+/// `without_references` everywhere else (a reference goes to a mode that takes
+/// a ratio, or the vendor refuses the mix before anything is made).
+#[test]
+fn every_row_whose_frames_set_the_shape_declares_it() {
+    use litegen::capabilities::FramesSetShape::{self, Always, WithoutReferences};
+    use std::collections::BTreeMap;
+    let expected: BTreeMap<String, FramesSetShape> = [
+        // Kling: `kling_settings` puts `aspect_ratio` in text-to-video only.
+        ("kling/video-kling-v2-5-turbo", WithoutReferences),
+        ("kling/video-kling-v2-6", WithoutReferences),
+        ("kling/video-kling-v3", WithoutReferences),
+        ("kling/video-kling-v3-turbo", WithoutReferences),
+        ("kling/video-kling-v4", WithoutReferences),
+        // TokenHub's Kling routes, through the same `kling_settings`.
+        ("tokenhub/kling-video-o1", WithoutReferences),
+        ("tokenhub/kling-video-v2.5-turbo", WithoutReferences),
+        ("tokenhub/kling-video-v2.6", WithoutReferences),
+        ("tokenhub/kling-video-v3", WithoutReferences),
+        ("tokenhub/kling-video-v3-omni", WithoutReferences),
+        ("tokenhub/kling-video-v3-turbo", WithoutReferences),
+        ("tokenhub/kling-video-v4", WithoutReferences),
+        // Vidu: only text2video and reference2video take an aspect ratio.
+        ("vidu/viduq1", WithoutReferences),
+        ("vidu/vidu2.0", WithoutReferences),
+        ("vidu/viduq2-pro", WithoutReferences),
+        ("vidu/viduq3-turbo", WithoutReferences),
+        ("vidu/viduq3-pro", WithoutReferences),
+        ("vidu/viduq4-preview", WithoutReferences),
+        // PixVerse: only text/ takes an aspect ratio.
+        ("pixverse/v3.5", WithoutReferences),
+        ("pixverse/v4.5", WithoutReferences),
+        ("pixverse/v5", WithoutReferences),
+        ("pixverse/v6", WithoutReferences),
+        ("pixverse/c1", WithoutReferences),
+        ("pixverse/v6-max", WithoutReferences),
+        // TokenHub: Hy, PixVerse, Vidu and MiniMax H3 take a ratio on text (and references) only.
+        ("tokenhub/hy-video-v1.5", WithoutReferences),
+        ("tokenhub/pixverse-video-v6.0", WithoutReferences),
+        ("tokenhub/pixverse-video-c1", WithoutReferences),
+        ("tokenhub/pixverse-video-v5.6", WithoutReferences),
+        ("tokenhub/vidu-video-q4-preview", WithoutReferences),
+        ("tokenhub/vidu-video-q3-pro", WithoutReferences),
+        ("tokenhub/vidu-video-q3-turbo", WithoutReferences),
+        ("tokenhub/vidu-video-q2-pro", WithoutReferences),
+        ("tokenhub/minimax-video-h3", WithoutReferences),
+        ("tokenhub/minimax-video-h3-max", WithoutReferences),
+        // Ideogram: the three models without `i2v_aspect`.
+        ("ideogram/kling-3-standard", WithoutReferences),
+        ("ideogram/minimax-h3", WithoutReferences),
+        ("ideogram/seedance-2-5", WithoutReferences),
+        // Runway resold: image-to-video's ratio is `Shape::None` or `Shape::AutoTier`.
+        // Kling 4 and 4 Flash stay on image-to-video with their references.
+        ("runway/kling2.5_turbo_pro", WithoutReferences),
+        ("runway/kling_4", Always),
+        ("runway/kling_4_flash", Always),
+        ("runway/grok_imagine_1_5", WithoutReferences),
+        ("runway/grok_imagine_1_5_lite", WithoutReferences),
+        ("runway/happyhorse_1_0", WithoutReferences),
+        // MiniMax H3 direct: a first/last-frame request's ratio is "ignored and
+        // treated as `adaptive`", and frames and references "cannot be mixed".
+        ("minimax/MiniMax-H3", WithoutReferences),
+        ("minimax/MiniMax-H3-Highspeed", WithoutReferences),
+        ("minimax/MiniMax-H3-Lite", WithoutReferences),
+        ("minimax/MiniMax-H3-Max", WithoutReferences),
+    ]
+    .into_iter()
+    .map(|(id, shape)| (id.to_string(), shape))
+    .collect();
+    let declared: BTreeMap<String, FramesSetShape> = registry()
+        .all()
+        .filter_map(|m| match m.params.get("aspect_ratio") {
+            Some(ParamSpec::AspectRatio(a)) => a.frames_set_shape.map(|shape| (m.id.clone(), shape)),
+            _ => None,
+        })
+        .collect();
+    let missing: Vec<_> = expected.iter().filter(|(id, shape)| declared.get(*id) != Some(*shape)).collect();
+    let unexpected: Vec<_> = declared.iter().filter(|(id, _)| !expected.contains_key(*id)).collect();
+    assert!(
+        missing.is_empty() && unexpected.is_empty(),
+        "{} of {} rows lack (or differ from) their frames_set_shape: {missing:?}; declared but not expected: {unexpected:?}",
+        missing.len(),
+        expected.len()
+    );
 }

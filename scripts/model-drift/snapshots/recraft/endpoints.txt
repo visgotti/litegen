@@ -1,10 +1,10 @@
-prompt (required) | string | Maximum prompt length depends on model, refer to [Appendix](/docs/api-reference/appendix#prompt-length)
+prompt (required) | string | Maximum prompt length depends on model, refer to [Appendix](https://www.recraft.ai/docs/api-reference/appendix.md#prompt-length)
 n | integer or null, default is 1 | All models
-model | string or null, default is `recraftv4_1` | See [All models](/docs/api-reference/models/overview) for every `model` value.
-size | string or null | Depends on model, supported values are published in [Appendix](/docs/api-reference/appendix#image-sizes)
+model | string or null, default is `recraftv4_1` | See [All models](https://www.recraft.ai/docs/api-reference/models/overview.md) for every `model` value.
+size | string or null | Depends on model, supported values are published in [Appendix](https://www.recraft.ai/docs/api-reference/appendix.md#image-sizes)
 style | string or null | All models except V4.1 Flash
 style\_id | UUID or null | All models except V4.1 Flash
-style\_match | string or null | `regular` — V2 / V3 models;<br />`flexible`, `precise` — V4 / V4.1 models (except V4.1 Flash)
+style\_match | string or null | `regular` — V2 / V3 models; `flexible`, `precise` — V4 / V4.1 models (except V4.1 Flash)
 style\_references | files | All models except V4.1 Flash
 style\_reference\_urls | array of strings or null | All models except V4.1 Flash
 negative\_prompt | string or null | V2 / V3 models

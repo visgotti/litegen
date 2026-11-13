@@ -25,7 +25,7 @@ What each scope opens:
 | Scope | Tools it opens |
 |---|---|
 | `generate` | Generating images, video and 3D, cost quotes, job status, `wait_for_generation`, mesh conversion, the model catalog, and the org's generations and their files |
-| `read` | The model catalog and generations, and `wait_for_generation` (it follows the job's stored record, which LiteGen refreshes every few seconds), plus request logs, usage stats, provider health, spend reports and logs, limits and end users |
+| `read` | The model catalog and generations, and `wait_for_generation` (it follows the job's stored record, which LiteGen refreshes every few seconds), plus request logs, usage stats, spend reports and logs, limits and end users; in single-tenant mode, in the deployment's org, also provider health |
 | `admin` | Creating, editing, rotating, blocking and revoking keys; setting and resetting limits; managing end users; the audit log; clearing the cache; in single-tenant mode, the gateway's models, providers, routes and settings |
 
 A key is bound to one organization and app, and never sees another
@@ -117,6 +117,7 @@ kinds:
 | org write access | the platform admin; a key with `admin` in that org; a member whose role may change it |
 | a member permission | the platform admin, or a signed-in member whose role has it (never an API key) |
 | platform admin | the master key (in single-tenant mode, owners and admins) |
+| the platform admin (single-tenant: a scope in the deployment's org) | the master key; in single-tenant mode, a credential holding that scope and acting in the deployment's org (provider health, which checks the gateway's own vendor keys) |
 | a signed-in user | OAuth sign-in only |
 
 ## Worked examples

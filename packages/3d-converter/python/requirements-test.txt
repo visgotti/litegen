@@ -1,0 +1,7 @@
+# The Python tests' tools, pinned: pytest, mypy (stubtest and --strict) and
+# pyright (strict), at the versions the suite passes with. CI installs them
+# with the built wheel; a local test venv takes the same file:
+#   uv pip install --python .venv314/bin/python -r requirements-test.txt dist/*.whl
+pytest==9.2.0
+mypy==2.4.1
+pyright==1.1.414

@@ -21,6 +21,7 @@ const MODULE_FILES: &[&str] = &[
     "math.rs",
     "scene.rs",
     "pose.rs",
+    "polygon.rs",
     "package.rs",
     "fixtures.rs",
     "zip.rs",
@@ -41,6 +42,8 @@ const MODULE_FILES: &[&str] = &[
     "usd_write.rs",
     "usda.rs",
     "usdc.rs",
+    "meshopt.rs",
+    "draco.rs",
     "tests.rs",
     "matrix_tests.rs",
     "scene_matrix_tests.rs",
@@ -48,6 +51,7 @@ const MODULE_FILES: &[&str] = &[
     "inspect.rs",
     "normalize.rs",
     "humanoid.rs",
+    "ktx2.rs",
 ];
 
 /// Excluded from both scans below, for the obvious reason.
@@ -129,6 +133,15 @@ fn third_party_crates_stay_in_the_one_file_that_needs_each() {
     //   delivered glTF requires EXT_texture_webp (normalize.rs). Already
     //   linked for the mock providers' PNG rendering.
     //
+    // - draco_core: decoding glTF's KHR_draco_mesh_compression (draco.rs). The
+    //   one crate added for mesh alone, the user's call (mesh-gaps item 2,
+    //   decision D2): pure Rust, `unsafe_code = "forbid"`, pinned exactly.
+    //
+    // - ruzstd: decoding Zstandard-supercompressed KTX2 levels (ktx2.rs). The
+    //   second crate added for mesh alone, the user's call (mesh-gaps item 3,
+    //   decision D3): pure Rust, pinned exactly, `default-features = false` with
+    //   `["std"]`, which has no runtime dependencies.
+    //
     // `matrix_tests.rs` may use serde_json to construct glTF documents field by
     // field — fixture construction, not a dependency the module carries.
     const ALLOWED: &[(&str, &[&str])] = &[
@@ -136,6 +149,8 @@ fn third_party_crates_stay_in_the_one_file_that_needs_each() {
         ("miniz_oxide", &["zip.rs", "fbx.rs"]),
         ("quick_xml", &["xml.rs"]),
         ("image::", &["normalize.rs"]),
+        ("draco_core", &["draco.rs"]),
+        ("ruzstd", &["ktx2.rs"]),
     ];
     for name in MODULE_FILES {
         if *name == SELF {
@@ -152,4 +167,43 @@ fn third_party_crates_stay_in_the_one_file_that_needs_each() {
             }
         }
     }
+}
+
+#[test]
+fn draco_core_is_named_by_draco_rs_alone() {
+    // The Draco decoder is one crate behind one function (decision D2): every
+    // other file sees `draco::decode_primitive` and its plain types, so
+    // swapping the decoder touches draco.rs alone. No other file's code names
+    // the crate, and draco.rs does, so the `ALLOWED` entry above is the one
+    // place it enters.
+    let names = |name: &str| {
+        let src = std::fs::read_to_string(module_dir().join(name)).unwrap();
+        src.lines()
+            .enumerate()
+            .filter(|(_, line)| line.split("//").next().unwrap_or("").contains("draco_core"))
+            .map(|(n, line)| format!("{name}:{}: {}", n + 1, line.trim()))
+            .collect::<Vec<_>>()
+    };
+    let elsewhere: Vec<String> = MODULE_FILES.iter().filter(|n| !["draco.rs", SELF].contains(n)).flat_map(|n| names(n)).collect();
+    assert!(elsewhere.is_empty(), "only draco.rs may name draco_core:\n{}", elsewhere.join("\n"));
+    assert!(!names("draco.rs").is_empty(), "draco.rs decodes through draco_core");
+}
+
+#[test]
+fn ruzstd_is_named_by_ktx2_rs_alone() {
+    // The Zstandard decoder is one crate behind one function (decision D3):
+    // `ktx2::decode_rgba8` is all the other files see, so swapping the decoder
+    // touches ktx2.rs alone. No other file's code names the crate, and ktx2.rs
+    // does, so the `ALLOWED` entry above is the one place it enters.
+    let names = |name: &str| {
+        let src = std::fs::read_to_string(module_dir().join(name)).unwrap();
+        src.lines()
+            .enumerate()
+            .filter(|(_, line)| line.split("//").next().unwrap_or("").contains("ruzstd"))
+            .map(|(n, line)| format!("{name}:{}: {}", n + 1, line.trim()))
+            .collect::<Vec<_>>()
+    };
+    let elsewhere: Vec<String> = MODULE_FILES.iter().filter(|n| !["ktx2.rs", SELF].contains(n)).flat_map(|n| names(n)).collect();
+    assert!(elsewhere.is_empty(), "only ktx2.rs may name ruzstd:\n{}", elsewhere.join("\n"));
+    assert!(!names("ktx2.rs").is_empty(), "ktx2.rs inflates Zstandard levels through ruzstd");
 }

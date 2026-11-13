@@ -1,0 +1,10 @@
+# The image's build context is only what the Dockerfile copies. Without this
+# file, `docker build .` and `docker compose build` send the whole checkout,
+# litegen-core/target (tens of GB) and every node_modules included.
+# A new COPY in the Dockerfile needs its path allowed here too.
+*
+!litegen-core/Cargo.toml
+!litegen-core/Cargo.lock
+!litegen-core/src/
+!litegen-core/migrations/
+!models/

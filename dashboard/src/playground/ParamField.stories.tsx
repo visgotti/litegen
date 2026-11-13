@@ -106,11 +106,11 @@ function formats(extra: Record<string, unknown>): ParamSpec {
   return { kind: 'string_array', default: ['glb'], label: 'Output formats', ...extra } as unknown as ParamSpec;
 }
 /** Every container litegen converts — the shape every 3D model serves today:
- *  one vendor job yields all ten, so the cap cannot bind. */
-const ALL_TEN = ['glb', 'gltf', 'obj', 'stl', 'ply', '3mf', 'dae', 'fbx', 'usdz', 'usda'];
+ *  one vendor job yields all eleven, so the cap cannot bind. */
+const ALL_FORMATS = ['glb', 'gltf', 'obj', 'stl', 'ply', '3mf', 'dae', 'fbx', 'usdz', 'usda', 'usdc'];
 const EVERY_FORMAT_ONE_JOB = formats({
-  enum_values: ALL_TEN,
-  derivable_values: ALL_TEN,
+  enum_values: ALL_FORMATS,
+  derivable_values: ALL_FORMATS,
   max_items: 1,
   description: 'TRELLIS emits glb; litegen converts it to every other container.',
 });

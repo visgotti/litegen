@@ -40,6 +40,61 @@ const DISCOVERY = 'https://generativelanguage.googleapis.com/$discovery/rest?ver
 const MEDIA_ID = /^(?:gemini-[\w.-]*(?:image|nano-banana)[\w.-]*|gemini-omni[\w.-]*|imagen-[\w.-]+|veo-[\w.-]+)$/;
 
 /**
+ * Google's docs moved to Markdoc (seen 2026-11-03): headings carry
+ * `{% id="…" %}`, tables are `{% table %}` blocks of `* cell` items with `---`
+ * between rows, cells hold `{% section %}` / `{% icon /%}` tags, and tabs are
+ * `{% tab title=… %}`. This turns that back into plain markdown — pipe tables,
+ * bare headings, a tab as a `####` heading — so the extractors read either.
+ */
+export function markdown(md) {
+  const out = [];
+  const lines = String(md).split('\n');
+  const tags = /\{%[^%]*%\}/g;
+  const cell = (c) => c.replace(tags, ' ').replace(/\s+/g, ' ').trim();
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\s*\{%\s*table\b[^%]*%\}\s*$/.test(l)) {
+      const rows = [];
+      let row = [];
+      let indent = null;
+      for (i++; i < lines.length && !/^\s*\{%\s*\/table\s*%\}\s*$/.test(lines[i]); i++) {
+        const t = lines[i];
+        if (/^\s*---\s*$/.test(t)) {
+          if (row.length) rows.push(row);
+          row = [];
+          continue;
+        }
+        const item = t.match(/^(\s*)\*\s+(.*)$/);
+        // A cell starts at the table's own indent; a deeper bullet is the cell's content.
+        if (item && (indent === null || item[1].length <= indent)) {
+          indent ??= item[1].length;
+          row.push(item[2]);
+        } else if (t.trim() && row.length) {
+          row[row.length - 1] += ` ${t.trim()}`;
+        }
+      }
+      if (row.length) rows.push(row);
+      if (rows.length) {
+        const [head, ...body] = rows.map((r) => r.map(cell));
+        out.push(`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`, ...body.map((r) => `| ${r.join(' | ')} |`));
+      }
+      continue;
+    }
+    // `{% tab title=Veo 3.1 Preview %}` or `{% tab filename="sample.sh" label="REST" %}`.
+    const tab = l.match(/^\s*\{%\s*tab\b(.*?)%\}\s*$/);
+    if (tab) {
+      const attrs = tab[1];
+      const name = attrs.match(/\blabel="([^"]*)"/)?.[1] ?? attrs.match(/\btitle="([^"]*)"/)?.[1] ?? attrs.match(/\btitle=(.*?)\s*$/)?.[1];
+      if (name) out.push(`#### ${name.trim()}`);
+      continue;
+    }
+    if (/^\s*\{%.*%\}\s*$/.test(l)) continue; // a tag alone on its line
+    out.push(/^#+ /.test(l) ? l.replace(/\s*\{%[^%]*%\}\s*$/, '') : l);
+  }
+  return out.join('\n');
+}
+
+/**
  * Lines after the `from` heading line up to (not including) the `to` line
  * (default: the next heading at the same or higher level). `from` / `to` match
  * a trimmed line exactly (string) or by pattern (RegExp).
@@ -70,9 +125,12 @@ const modelCodes = (lines) => lines.filter((l) => /^\|\s*Model code\s*\|/.test(l
  */
 function modelSelection(md) {
   const text = section(md, '## Model selection').join(' ');
-  const rows = [...text.matchAll(/\*\*([^*(]+?)\s*\(\[([^\]]+)\]\([^)]*\)\)\s*\(`([^`]+)`\):\*\*/g)].map(
-    ([, nickname, name, id]) => `${id} — ${nickname.trim()} / ${name.trim()}`,
-  );
+  // `**Nickname ([Model name](…)) (`id`):**`, or since 2026-11
+  // `**Nickname**: The [Model name](…) model (`id`).`
+  const rows = [
+    ...[...text.matchAll(/\*\*([^*(]+?)\s*\(\[([^\]]+)\]\([^)]*\)\)\s*\(`([^`]+)`\):\*\*/g)],
+    ...[...text.matchAll(/\*\*([^*]+?)\*\*:\s*The\s+\[([^\]]+)\]\([^)]*\)\s+model\s+\(`([^`]+)`\)/g)],
+  ].map(([, nickname, name, id]) => `${id} — ${nickname.trim()} / ${name.trim()}`);
   if (rows.length === 0) throw new Error('"## Model selection" lists no `model-id` bullets — the page was restructured');
   return rows.join('\n');
 }
@@ -175,10 +233,12 @@ export default {
       expect: 'text',
       // Endpoint cells are ``` id ``` (a cell may hold several ids).
       // A row marked "(Shut down)" lists a model that is gone (audit D2).
-      extract: (md) =>
-        section(md, '## Generative media models')
-          .filter((l) => l.startsWith('|') && !/\(Shut down\)/i.test(l))
-          .flatMap((l) => [...l.matchAll(/```([^`]+)```/g)].flatMap((m) => m[1].trim().split(/\s+/))),
+      // The Endpoint cell (the last) holds the id(s), in single or triple backticks.
+      extract: (raw) =>
+        section(markdown(raw), '## Generative media models')
+          .filter((l) => l.startsWith('|') && !/^\|\s*-/.test(l) && !/\(Shut down\)/i.test(l))
+          .flatMap((l) => [...(cells(l).at(-1) ?? '').matchAll(/`+([^`]+)`+/g)].flatMap((m) => m[1].trim().split(/\s+/)))
+          .filter((id) => MEDIA_ID.test(id)),
     },
     {
       key: 'veo',
@@ -186,11 +246,12 @@ export default {
       expect: 'text',
       // The page still lists the previews its own banner says "was shut
       // down"; those are gone (audit D1).
-      extract: (md) => {
+      extract: (raw) => {
+        const md = markdown(raw);
         const dead = new Set(shutDownIds(md));
         return modelCodes(section(md, '## Model versions')).filter((id) => !dead.has(id));
       },
-      snapshot: (md) =>
+      snapshot: (raw, _body, _ctx, md = markdown(raw)) =>
         // The parameter table, first column cut to the parameter name (its prose varies).
         `${section(md, '## Veo API parameters and specifications')
           .filter((l) => l.startsWith('|'))
@@ -207,12 +268,13 @@ export default {
     },
     {
       key: 'image-generation',
-      url: `${DOCS}/generate-content/image-generation.md.txt`,
+      // Moved from /generate-content/image-generation.md.txt (2026-11-03).
+      url: `${DOCS}/image-generation.md.txt`,
       expect: 'text',
       // A version number after `gemini-` skips image file names like gemini-native-image.png;
       // `gemini-nano-banana-<n>` is the naming Google adopted with Nano Banana 2.1.
       extract: /\bgemini-(?:[\d.]+-[a-z0-9-]*image[a-z0-9-]*|nano-banana(?:-[a-z0-9]+(?:\.\d+)*)*)(?!\.(?:png|jpe?g|gif|webp|svg))/g,
-      snapshot: (md) =>
+      snapshot: (raw, _body, _ctx, md = markdown(raw)) =>
         `# models the page documents (the tables below are headed by their names)\n${modelSelection(md)}\n` +
         `# aspect ratio x size tables\n${tablesWithHeadings(section(md, '### Aspect ratios and image size', /^## /))}\n` +
         `# reference image limits\n${tablesWithHeadings(section(md, /^### Use up to \d+ reference images$/))}\n` +
@@ -235,17 +297,17 @@ export default {
       key: 'imagen',
       url: `${DOCS}/models/imagen.md.txt`,
       expect: 'text',
-      extract: (md) => modelCodes(md.split('\n')),
+      extract: (raw) => modelCodes(markdown(raw).split('\n')),
     },
     {
       key: 'lifecycle',
       index: true,
       url: `${DOCS}/deprecations.md.txt`,
       expect: 'text',
-      extract: (md) =>
-        md.split('\n').filter((l) => l.startsWith('|')).map((l) => backticked(cells(l)[0] ?? '')[0]).filter((id) => id && MEDIA_ID.test(id)),
+      extract: (raw) =>
+        markdown(raw).split('\n').filter((l) => l.startsWith('|')).map((l) => backticked(cells(l)[0] ?? '')[0]).filter((id) => id && MEDIA_ID.test(id)),
       // Only our models' rows: a new model surfaces as a new id elsewhere, not as churn here.
-      snapshot: (md, _body, { ours }) => {
+      snapshot: (raw, _body, { ours }, md = markdown(raw)) => {
         const want = new Set(ours.map((s) => s.toLowerCase()));
         const rows = md
           .split('\n')
@@ -261,8 +323,10 @@ export default {
       index: true,
       url: `${DOCS}/llms.txt`,
       expect: 'text',
+      // The index links aistudio.google.com/docs/<page>.md since 2026-11 (it linked
+      // ai.google.dev/gemini-api/docs/<page>.md.txt before).
       extract: (md) =>
-        [...md.matchAll(/\/gemini-api\/docs\/([\w./-]*(?:image|imagen|video|veo|omni|banana)[\w.-]*)\.md\.txt/g)]
+        [...md.matchAll(/(?:\/gemini-api\/docs|aistudio\.google\.com\/docs)\/([\w./-]*(?:image|imagen|video|veo|omni|banana)[\w.-]*)\.md(?:\.txt)?\b/g)]
           .map((m) => m[1])
           .filter((p) => !/understanding|robotics/.test(p)),
     },
@@ -272,13 +336,19 @@ export default {
       id: 'imagen-4.0-generate',
       reason: 'the models overview abbreviates the Imagen 4 family; the imagen source carries the real ids (imagen-4.0-*generate-001)',
     },
-    // Deprecated upstream; Google's migration targets are carried (gemini-3.1-flash-image, veo-3.1-*).
+    // Deprecated upstream. Google's migration targets: gemini-3.1-flash-image is
+    // carried; veo-3.1-* has the video adapter but no google row (leonardo/veo3.1
+    // carries Veo 3.1).
     // @see https://ai.google.dev/gemini-api/docs/deprecations
-    // gemini-omni-1.1-flash stays unacknowledged on purpose: add later (it needs the Interactions API).
+    // gemini-omni-1.1-flash stays unacknowledged on purpose, as a weekly reminder (re-read 2026-11-03):
+    // the Interactions API returns its video inline from a call that blocks until the video is done,
+    // and background execution lists "standard Gemini models … and Managed Agents", not Omni. A
+    // blocking submit outlasts the router's 120 s attempt, and each retry is a new billed video.
+    // Add it when Omni runs with background=true (aistudio.google.com/docs/background-execution.md).
     { id: 'imagen-4.0-generate-001', reason: 'skipped 2026-09-11: Imagen 4 is deprecated and its announced shutdown (2026-08-17) has passed' },
     { id: 'imagen-4.0-ultra-generate-001', reason: 'skipped 2026-09-11: Imagen 4 is deprecated and its announced shutdown (2026-08-17) has passed' },
     { id: 'imagen-4.0-fast-generate-001', reason: 'skipped 2026-09-11: Imagen 4 is deprecated and its announced shutdown (2026-08-17) has passed' },
-    { id: 'veo-3.0-generate-001', reason: 'skipped 2026-09-11: Veo 3.0 is deprecated (earliest shutdown 2026-06-30); the veo-3.1 line is carried' },
-    { id: 'veo-3.0-fast-generate-001', reason: 'skipped 2026-09-11: Veo 3.0 is deprecated (earliest shutdown 2026-06-30); the veo-3.1 line is carried' },
+    { id: 'veo-3.0-generate-001', reason: 'skipped 2026-09-11: Veo 3.0 is deprecated (earliest shutdown 2026-06-30); its successor veo-3.1 has the video adapter but no google row (leonardo/veo3.1 carries Veo 3.1)' },
+    { id: 'veo-3.0-fast-generate-001', reason: 'skipped 2026-09-11: Veo 3.0 is deprecated (earliest shutdown 2026-06-30); its successor veo-3.1 has the video adapter but no google row (leonardo/veo3.1 carries Veo 3.1)' },
   ],
 };

@@ -27,6 +27,7 @@ import {
   requestProblems,
   roleLabel,
   vendorJobsNeeded,
+  wireValue,
 } from './params';
 
 // `clampToSpec` takes the loose internal spec shape, not the generated union.
@@ -516,6 +517,45 @@ describe('requestProblems', () => {
     // A view-front image does nothing for TRELLIS, which only takes `init`.
     expect(requestProblems(trellisSchema, { prompt: '', refs: [ref('view-front')] })).toEqual(['needs an input image']);
   });
+
+  // The server's check_multiview_refs: views mean multiview, which cannot ride
+  // with an input image, always needs the front, and cannot skip a view on a
+  // model that reads its views by position.
+  it('refuses an input image beside views, as the server does', () => {
+    expect(requestProblems(multiviewSchema, { prompt: 'a fox', refs: [ref('init'), ref('view-front')] }))
+      .toEqual(['takes an input image or views, not both']);
+  });
+
+  it('needs the front view once any view is sent', () => {
+    expect(requestProblems(multiviewSchema, { prompt: 'a fox', refs: [ref('view-back')] }))
+      .toEqual(['needs the front view with any other view']);
+    expect(requestProblems(multiviewSchema, { prompt: 'a fox', refs: [ref('view-front'), ref('view-back')] })).toEqual([]);
+  });
+
+  it('cannot skip a view on a model that reads its views by position', () => {
+    // fal/tripo-h3.1-multiview as served.
+    const tripo = schemaOf({
+      prompt: { required: false, max_length: 0 },
+      ref_inputs: {
+        max_total: 4,
+        view_order: ['front', 'left', 'back', 'right'],
+        roles: {
+          'view-front': { required: true, min_count: 1, max_count: 1 },
+          'view-left': { required: true, min_count: 1, max_count: 1 },
+          'view-back': { required: false, min_count: 0, max_count: 1 },
+          'view-right': { required: false, min_count: 0, max_count: 1 },
+        },
+      },
+    });
+    const views = (...sides: string[]) => sides.map(s => ref(`view-${s}`));
+    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'left', 'right') }))
+      .toEqual(['reads its views in order (front, left, back, right): add the back view or leave out the views after it']);
+    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'left', 'back', 'right') })).toEqual([]);
+    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'left') })).toEqual([]);
+    // A missing required view already has its own problem; the order check
+    // does not repeat it.
+    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'back') })).toEqual(['needs 1 image for the left view']);
+  });
 });
 
 describe('promptUsage', () => {
@@ -661,5 +701,29 @@ describe('docsUrlOf', () => {
     expect(docsUrlOf(schemaOf({ docs_url: 'javascript:alert(1)' }))).toBeNull();
     expect(docsUrlOf(schemaOf({ docs_url: 'not a url' }))).toBeNull();
     expect(docsUrlOf(undefined)).toBeNull();
+  });
+});
+
+
+describe('restoring a stored request keeps its structured values', () => {
+  it('turns stored layout boxes back into the drafts the layout control edits', () => {
+    const layout = [
+      { kind: 'text', text: 'SALE', box: { x: 0.1, y: 0.2, w: 0.5, h: 0.1 } },
+      { kind: 'object', prompt: 'a cat', box: { x: 0.5, y: 0.5, w: 0.25, h: 0.25 } },
+    ];
+    const restored = paramsFromBody({ prompt: 'p', layout });
+    expect(restored.layout).toEqual([
+      { kind: 'text', text: 'SALE', x: 0.1, y: 0.2, w: 0.5, h: 0.1 },
+      { kind: 'object', prompt: 'a cat', x: 0.5, y: 0.5, w: 0.25, h: 0.25 },
+    ]);
+    // ...which send exactly what was stored.
+    expect(wireValue({ kind: 'layout' } as unknown as ParamSpec, restored.layout)).toEqual(layout);
+  });
+
+  it("keeps a keyframe's time", () => {
+    const stored = { reference_images: [{ type: 'url', role: 'keyframe', value: 'https://img.test/k.png', time_s: 1.5 }] };
+    expect(refsFromBody(stored)).toEqual([
+      { id: 'restored-0', role: 'keyframe', type: 'url', value: 'https://img.test/k.png', time_s: '1.5' },
+    ]);
   });
 });

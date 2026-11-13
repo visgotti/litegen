@@ -25,7 +25,7 @@ export class ModelsController {
   @Get(':provider/:name')
   @ApiOperation({ summary: 'Get a single model by its fully-qualified id (provider/name).' })
   @ApiParam({ name: 'provider', example: 'openai' })
-  @ApiParam({ name: 'name', example: 'dall-e-3' })
+  @ApiParam({ name: 'name', example: 'gpt-image-2' })
   @ApiOkResponse({ type: ModelDto })
   get(@Param('provider') provider: string, @Param('name') name: string): Promise<ModelDto> {
     return this.modelsService.get(`${provider}/${name}`);
@@ -35,7 +35,7 @@ export class ModelsController {
   @Get(':provider/:name/history')
   @ApiOperation({ summary: 'Price-change history for a model (most recent first).' })
   @ApiParam({ name: 'provider', example: 'openai' })
-  @ApiParam({ name: 'name', example: 'dall-e-3' })
+  @ApiParam({ name: 'name', example: 'gpt-image-2' })
   @ApiQuery({ name: 'limit', required: false, example: 50 })
   @ApiOkResponse({ type: [PriceHistoryDto] })
   history(

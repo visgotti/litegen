@@ -39,10 +39,12 @@ kling-2.5-turbo-standard
 kling-2.6
 kling-3.0
 kling-3.0-turbo
+kling-4.0
 kling-video-o-1
 kling-video-o-3
 krea-2-turbo
 krea/krea-2
+krea/krea-3
 lifelike-vision
 lightning-xl
 ltxv-2.3-fast

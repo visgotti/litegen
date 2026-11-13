@@ -4,6 +4,7 @@ import {
   LiteGenAPIError,
   GenerationStatus,
   RefImageKind,
+  isAccepted,
 } from "../src";
 
 interface CapturedRequest {
@@ -27,6 +28,47 @@ function mockFetch(
     return handler({ url, method: init?.method ?? "GET", headers, body });
   }) as unknown as typeof fetch;
 }
+
+describe("LiteGenClient.images.submit (late and async images)", () => {
+  it("asks not to wait and says the answer is the generation to come", async () => {
+    const captured: Partial<CapturedRequest> = {};
+    const fetchImpl = mockFetch(async (req) => {
+      Object.assign(captured, req);
+      return new Response(
+        JSON.stringify({ id: "litegen-img-1", object: "image.generation", status: "processing", model: "bfl/flux-pro-1.1", created: 1 }),
+        { status: 202, headers: { "Content-Type": "application/json", Location: "/v1/generations/litegen-img-1" } },
+      );
+    });
+    const client = new LiteGenClient({ apiKey: "lg-test", fetch: fetchImpl });
+    const req = { prompt: "a cat", model: "bfl/flux-pro-1.1", n: 1, strict: true, reference_images: [], response_format: "url" };
+    const r = await client.images.submit(req, { waitSeconds: 5 });
+    expect(captured.headers?.["prefer"]).toBe("respond-async, wait=5");
+    expect(isAccepted(r)).toBe(true);
+    if (isAccepted(r)) expect(r.id).toBe("litegen-img-1");
+    await client.images.submit(req);
+    expect(captured.headers?.["prefer"]).toBe("respond-async");
+  });
+
+  it("an image that came back at once is not an accepted job", () => {
+    expect(isAccepted({ created: 1, data: [], model: "m", provider: "p", id: "img-1" } as never)).toBe(false);
+  });
+
+  it("waits for a late image through generations.waitForCompletion", async () => {
+    let calls = 0;
+    const fetchImpl = mockFetch(async (req) => {
+      calls += 1;
+      expect(req.url).toContain("/v1/generations/litegen-img-1");
+      return new Response(JSON.stringify({ id: "litegen-img-1", status: calls < 2 ? "processing" : "completed" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const client = new LiteGenClient({ apiKey: "lg-test", fetch: fetchImpl });
+    const g = await client.generations.waitForCompletion("litegen-img-1", { intervalMs: 1 });
+    expect(g.status).toBe("completed");
+    expect(calls).toBe(2);
+  });
+});
 
 describe("LiteGenClient.images.generate", () => {
   it("posts to /v1/images/generations with auth header and body", async () => {
@@ -222,6 +264,24 @@ describe("LiteGenClient.models.list", () => {
     expect(models).toHaveLength(1);
     expect((models[0] as { id: string }).id).toBe("m1");
   });
+
+  it("asks for every served model with { all: true }, alongside a media_type", async () => {
+    const urls: string[] = [];
+    const fetchImpl = mockFetch(async (req) => {
+      urls.push(req.url);
+      return new Response(JSON.stringify({ object: "list", data: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const client = new LiteGenClient({ fetch: fetchImpl });
+    await client.models.list({ all: true });
+    await client.models.list({ all: true, media_type: "video" });
+    await client.models.list({ media_type: "video" });
+    expect(urls[0]).toMatch(/\/v1\/models\?all=true$/);
+    expect(urls[1]).toMatch(/\/v1\/models\?media_type=video&all=true$/);
+    expect(urls[2]).toMatch(/\/v1\/models\?media_type=video$/);
+  });
 });
 
 describe("LiteGenClient.generations.get", () => {
@@ -344,6 +404,37 @@ describe("Idempotency-Key", () => {
     const { seen, client } = capture({ created: 1, data: [], model: "m", provider: "p", id: "litegen-img-1" });
     await client.images.generate({ model: "mock/image-gen", prompt: "x" }, { idempotencyKey: "ledger-1" });
     expect(seen[0]!.headers["idempotency-key"]).toBe("ledger-1");
+  });
+
+  it("keepOutputs: false sends X-Litegen-Keep-Outputs on every generation submit", async () => {
+    const { seen, client } = capture({ created: 1, data: [], model: "m", provider: "p", id: "litegen-img-1" });
+    await client.images.generate({ model: "mock/image-gen", prompt: "x" }, { keepOutputs: false });
+    expect(seen[0]!.headers["x-litegen-keep-outputs"]).toBe("false");
+    await client.images.generate({ model: "mock/image-gen", prompt: "x" });
+    expect(seen[1]!.headers["x-litegen-keep-outputs"]).toBeUndefined();
+
+    const job = { id: "litegen-3d-1", status: "completed", model: "m", provider: "p", progress: 100, created: 1, assets: [{ kind: "mesh", url: "https://x/model.glb", format: "glb" }] };
+    const three = capture(job);
+    await three.client.models3d.generate({ model: "mock/mesh-3d", prompt: "x" }, { keepOutputs: false, intervalMs: 1 });
+    expect(three.seen[0]!.headers["x-litegen-keep-outputs"]).toBe("false");
+
+    const vid = capture({ id: "litegen-vid-1", status: "completed", model: "m", provider: "p", progress: 100, created: 1, video_url: "https://x.mp4" });
+    await vid.client.videos.generate({ model: "mock/video-gen", prompt: "x" }, { keepOutputs: false, intervalMs: 1 });
+    expect(vid.seen[0]!.headers["x-litegen-keep-outputs"]).toBe("false");
+  });
+
+  it("deletes a generation and revokes links by their routes", async () => {
+    const { seen, client } = capture({ revoked_at: "2026-11-03T12:00:00.000Z" });
+    await client.generations.revokeLinks("litegen-img-1");
+    await client.apps.access.revokeLinks("app-1");
+    await client.admin.revokeLinks();
+    await client.generations.delete("litegen-img-1");
+    expect(seen.map((r) => `${r.method} ${new URL(r.url).pathname}`)).toEqual([
+      "POST /v1/generations/litegen-img-1/revoke-links",
+      "POST /v1/apps/app-1/access/revoke-links",
+      "POST /v1/admin/revoke-links",
+      "DELETE /v1/generations/litegen-img-1",
+    ]);
   });
 
   it("is sent on models3d.generate and videos.generate submits only", async () => {

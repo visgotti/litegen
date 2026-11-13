@@ -14,6 +14,14 @@ fn uid(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4().simple())
 }
 
+/// Now, at the precision every backend stores. Postgres keeps microseconds,
+/// so on Linux, whose clock has nanoseconds, a row built from `Utc::now()`
+/// wouldn't read back equal.
+fn stored_now() -> DateTime<Utc> {
+    use chrono::SubsecRound;
+    Utc::now().trunc_subsecs(6)
+}
+
 fn store(db: &dyn DatabaseStore) -> &dyn McpOAuthStore {
     db.mcp_oauth().expect("backend has an OAuth store")
 }
@@ -100,7 +108,7 @@ fn client(registration: Registration, at: DateTime<Utc>) -> OAuthClient {
 /// An org with one app, as real rows: purging keeps only the grants whose
 /// org and app still exist.
 async fn org_and_app(db: &dyn DatabaseStore) -> (String, String) {
-    let now = Utc::now();
+    let now = stored_now();
     let (org, app) = (uid("org"), uid("app"));
     db.create_organization(&crate::types::Organization {
         id: org.clone(),
@@ -134,7 +142,7 @@ fn grant_in(org: &str, app: &str, client_id: &str, user_id: &str, now: DateTime<
 
 async fn clients_round_trip(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let mut client = OAuthClient {
         client_id: uid("lgc"),
         registration: Registration::Dcr,
@@ -166,7 +174,7 @@ async fn clients_round_trip(db: &dyn DatabaseStore) {
 
 async fn request_approve_then_consume_once(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let req = request(&uid("lgc"), now);
     s.insert_request(&req).await.unwrap();
     assert_eq!(s.get_request(&req.id).await.unwrap().as_ref(), Some(&req));
@@ -194,7 +202,7 @@ async fn request_approve_then_consume_once(db: &dyn DatabaseStore) {
 
 async fn decide_is_single_shot(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let req = request(&uid("lgc"), now);
     s.insert_request(&req).await.unwrap();
     assert!(s.decide_request(&req.id, Decision::Deny { at: now }).await.unwrap());
@@ -208,7 +216,7 @@ async fn decide_is_single_shot(db: &dyn DatabaseStore) {
 
 async fn rotate_refresh_detects_reuse(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let g = grant(&uid("lgc"), &uid("user"), now);
     s.insert_grant(&g).await.unwrap();
     let a = token(&g.id, TokenKind::Refresh, now);
@@ -238,7 +246,7 @@ async fn rotate_refresh_detects_reuse(db: &dyn DatabaseStore) {
 
 async fn revoke_grant_revokes_tokens(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let g = grant(&uid("lgc"), &uid("user"), now);
     s.insert_grant(&g).await.unwrap();
     let (access, refresh) = (token(&g.id, TokenKind::Access, now), token(&g.id, TokenKind::Refresh, now));
@@ -266,7 +274,7 @@ async fn revoke_grant_revokes_tokens(db: &dyn DatabaseStore) {
 
 async fn find_active_grant_ignores_revoked(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let (client, user) = (uid("lgc"), uid("user"));
     let g = grant(&client, &user, now);
     s.insert_grant(&g).await.unwrap();
@@ -292,7 +300,7 @@ async fn find_active_grant_ignores_revoked(db: &dyn DatabaseStore) {
 
 async fn claim_grant_keeps_one_live_grant(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let (client, user) = (uid("lgc"), uid("user"));
     let first = grant(&client, &user, now);
     assert_eq!(s.claim_grant(&first).await.unwrap(), first, "the first claim inserts");
@@ -319,7 +327,7 @@ async fn claim_grant_keeps_one_live_grant(db: &dyn DatabaseStore) {
 
 async fn concurrent_claims_share_one_grant(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     for _ in 0..10 {
         let (client, user) = (uid("lgc"), uid("user"));
         let (a, b) = (grant(&client, &user, now), grant(&client, &user, now));
@@ -330,7 +338,7 @@ async fn concurrent_claims_share_one_grant(db: &dyn DatabaseStore) {
 
 async fn assertion_ids_are_single_use(db: &dyn DatabaseStore) {
     let s = store(db);
-    let now = Utc::now();
+    let now = stored_now();
     let (client, jti) = (uid("https://c.example/client.json"), uid("jti"));
     assert!(s.record_assertion(&client, &jti, now + Duration::minutes(5)).await.unwrap(), "first use");
     assert!(!s.record_assertion(&client, &jti, now + Duration::minutes(5)).await.unwrap(), "a replay");
@@ -341,7 +349,7 @@ async fn purge_drops_only_what_expired(db: &dyn DatabaseStore) {
     let s = store(db);
     // Ten years back, so purging never touches rows other tests write
     // concurrently into a shared Postgres database.
-    let base = Utc::now() - Duration::days(3650);
+    let base = stored_now() - Duration::days(3650);
     let (org, app) = org_and_app(db).await;
     let old = request(&uid("lgc"), base - Duration::days(3));
     let fresh = request(&uid("lgc"), base);
@@ -385,7 +393,7 @@ async fn purge_drops_only_what_expired(db: &dyn DatabaseStore) {
 
 async fn purge_drops_unused_clients(db: &dyn DatabaseStore) {
     let s = store(db);
-    let base = Utc::now() - Duration::days(3650);
+    let base = stored_now() - Duration::days(3650);
     let (org, app) = org_and_app(db).await;
 
     // Registered but never signed in: gone after 30 days, unless a sign-in
@@ -429,7 +437,7 @@ async fn purge_drops_unused_clients(db: &dyn DatabaseStore) {
 
 async fn purge_drops_grants_of_deleted_orgs_and_apps(db: &dyn DatabaseStore) {
     let s = store(db);
-    let base = Utc::now() - Duration::days(3650);
+    let base = stored_now() - Duration::days(3650);
     let (org, app) = org_and_app(db).await;
     let (gone_org, its_app) = org_and_app(db).await;
     let (kept_org, gone_app) = org_and_app(db).await;
@@ -452,6 +460,20 @@ async fn purge_drops_grants_of_deleted_orgs_and_apps(db: &dyn DatabaseStore) {
     assert!(s.get_grant(&org_deleted.id).await.unwrap().is_none(), "its org was deleted");
     assert!(s.get_token(&orphaned_token.token_hash).await.unwrap().is_none(), "with its tokens");
     assert!(s.get_grant(&app_deleted.id).await.unwrap().is_none(), "its app was deleted");
+}
+
+async fn purge_drops_tokens_whose_grant_is_gone(db: &dyn DatabaseStore) {
+    let s = store(db);
+    let base = stored_now() - Duration::days(3650);
+    // What another purge leaves when it removes an orphaned grant between
+    // this purge's token step and its grant step: a token with no grant.
+    // Nothing finds it through the grant again, so it outlived every purge
+    // (2026-11-07, purge_drops_grants_of_deleted_orgs_and_apps on a shared
+    // Postgres). A token row needs no grant row to exist.
+    let stranded = token(&uid("gone-grant"), TokenKind::Refresh, base);
+    s.insert_token(&stranded).await.unwrap();
+    s.purge_expired(base).await.unwrap();
+    assert!(s.get_token(&stranded.token_hash).await.unwrap().is_none(), "a token whose grant is gone");
 }
 
 /// Each contract as one test per backend, so a failure names both.
@@ -495,4 +517,5 @@ on_every_backend!(
     purge_drops_only_what_expired,
     purge_drops_unused_clients,
     purge_drops_grants_of_deleted_orgs_and_apps,
+    purge_drops_tokens_whose_grant_is_gone,
 );

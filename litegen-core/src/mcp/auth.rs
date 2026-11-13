@@ -17,6 +17,7 @@ use super::oauth::discovery;
 use super::oauth::principal::{resolve_access_token, AccessError};
 use super::oauth::token::ACCESS_PREFIX;
 use super::{McpShared, Surface};
+use crate::api::middleware::body::BodyError;
 use crate::api::middleware::{dev_bypass_context, missing_credentials_response, resolve_api_key, AppState, KeyContext};
 
 /// How the caller authenticated.
@@ -181,19 +182,33 @@ pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, ne
     req.extensions_mut().insert(Caller { ctx, kind, authorization, surface, toolsets });
 
     // Read the body once to name the JSON-RPC method for metrics and tracing,
-    // then hand it on unchanged.
-    let (parts, body) = req.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, super::MAX_BODY_BYTES).await else {
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(serde_json::json!({ "error": { "message": "The request is over MCP's 16 MiB limit", "type": "payload_too_large", "code": "payload_too_large" } })),
-        )
-            .into_response();
+    // then hand it on unchanged. It is read as the API's bodies are, charged
+    // as it arrives and within the request body deadline
+    // (`api::middleware::body`), but to MCP's own budget: the call holds this
+    // charge to its end, and the request its tool replays through the API is
+    // charged to the API's.
+    let (parts, body) = match shared.body.read_request(req, super::MAX_BODY_BYTES).await {
+        Ok(read) => read,
+        Err(e) => {
+            // MCP's own error shape; the over-limit answer keeps its code and text.
+            let (kind, code, message) = match &e {
+                BodyError::TooLarge { .. } => ("payload_too_large", "payload_too_large", "The request is over MCP's 16 MiB limit".to_string()),
+                BodyError::TimedOut(_) => ("request_timeout", e.code(), e.message()),
+                BodyError::Busy => ("service_unavailable", e.code(), e.message()),
+                BodyError::Unreadable(_) => ("invalid_request_error", e.code(), e.message()),
+            };
+            let error = serde_json::json!({ "error": { "message": message, "type": kind, "code": code } });
+            let mut resp = (e.status(), Json(error)).into_response();
+            if matches!(e, BodyError::Busy) {
+                resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            }
+            return resp;
+        }
     };
-    let method = rpc_method(&bytes);
+    let method = rpc_method(&body.bytes);
     metrics::counter!("litegen_mcp_requests_total", "surface" => surface.as_str(), "method" => method).increment(1);
     let span = tracing::info_span!("mcp.request", method, surface = surface.as_str(), caller = ?kind);
-    next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).instrument(span).await
+    next.run(body.into_request(parts)).instrument(span).await
 }
 
 /// The JSON-RPC method a request names, from a fixed list (a client must not

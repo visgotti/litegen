@@ -37,7 +37,7 @@ export class AdminController {
   @Post('models/:provider/:name/price')
   @ApiOperation({ summary: 'Manually set a model price component (source=manual).' })
   @ApiParam({ name: 'provider', example: 'openai' })
-  @ApiParam({ name: 'name', example: 'dall-e-3' })
+  @ApiParam({ name: 'name', example: 'gpt-image-2' })
   @ApiOkResponse({ type: PriceComponentDto })
   upsertPrice(
     @Param('provider') provider: string,

@@ -21,8 +21,9 @@ export default function Models() {
 
   // Derived values for filters
   const providers = Array.from(new Set(models.map(m => m.provider))).filter(Boolean);
+  // The capabilities worth filtering by: the flags at least one model has.
   const allCapabilities = Array.from(
-    new Set(models.flatMap(m => Object.keys(m.capabilities ?? {})))
+    new Set(models.flatMap(m => Object.entries(m.capabilities ?? {}).filter(([, v]) => v === true).map(([k]) => k)))
   ).sort();
 
   const toggleCapability = (cap: string) => {
@@ -37,8 +38,10 @@ export default function Models() {
   const filteredModels = models.filter(m => {
     if (filterProvider && m.provider !== filterProvider) return false;
     if (filterMediaType && m.media_type !== filterMediaType) return false;
+    // A flag the model serves as false is one it lacks: every model serves
+    // every flag, so the key alone says nothing.
     for (const cap of filterCapabilities) {
-      if (!(cap in (m.capabilities ?? {}))) return false;
+      if ((m.capabilities as Record<string, unknown> | undefined)?.[cap] !== true) return false;
     }
     return true;
   });

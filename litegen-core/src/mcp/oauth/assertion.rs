@@ -59,9 +59,12 @@ pub fn claimed_client(assertion: &str) -> Option<String> {
     Jwt::parse(assertion).ok()?.claims.get("sub")?.as_str().map(str::to_string)
 }
 
+/// When a client's key set was fetched, and its keys.
+type FetchedKeys = (DateTime<Utc>, Vec<Value>);
+
 /// Key sets fetched from clients' `jwks_uri`s.
 #[derive(Default)]
-pub struct KeyCache(Mutex<HashMap<String, (DateTime<Utc>, Vec<Value>)>>);
+pub struct KeyCache(Mutex<HashMap<String, FetchedKeys>>);
 
 /// Check `assertion` as `client`'s authentication. `audiences` are the
 /// values `aud` may hold: LiteGen's issuer and its token endpoint.

@@ -31,23 +31,32 @@ pub struct LeonardoVideoProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Start-image uploads to Leonardo's presigned storage URL, without the
+    /// operator's extra_headers.
+    upload_client: Client,
 }
 
 /// What litegen itself sends to `POST /generations-image-to-video`; `extra`
 /// cannot replace it (`imageId` and `imageType` in `extra` name the start
 /// frame instead of an uploaded reference).
-const OWNED_FIELDS: &[&str] = &["prompt", "imageId", "imageType", "model", "resolution", "duration"];
+const OWNED_FIELDS: &[&str] = &["prompt", "imageId", "imageType", "model", "resolution", "duration", "seed", "negativePrompt"];
 
 impl LeonardoVideoProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(180), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
+            // The process's shared client with the same settings (180 s, no
+            // extra headers), not one per instance (P8).
+            upload_client: crate::providers::api_client(std::time::Duration::from_secs(180), &Default::default()),
         }
     }
 
@@ -125,6 +134,7 @@ impl VideoProvider for LeonardoVideoProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -149,7 +159,7 @@ impl VideoProvider for LeonardoVideoProvider {
         let mut image_type = "UPLOADED";
         for r in &materialized.refs {
             if let MaterializedRefForm::MultipartField { bytes, .. } = &r.form {
-                image_id = Some(upload_init_image(&self.client, self.api_base(), &self.auth, &creds, bytes).await?);
+                image_id = Some(upload_init_image(&self.client, &self.upload_client, self.api_base(), &self.auth, &creds, bytes).await?);
                 break;
             }
         }
@@ -172,7 +182,7 @@ impl VideoProvider for LeonardoVideoProvider {
             "prompt": base.prompt,
             "imageId": image_id,
             "imageType": image_type,
-            "model": leo_model,
+            "model": crate::providers::wire_model(self.config.as_ref(), &model.id, leo_model),
             "resolution": Self::resolve_resolution(leo_model, extras.resolution.as_deref()),
         });
         // `duration` is documented for Veo and Kling only; Motion 2.0 (and
@@ -181,11 +191,21 @@ impl VideoProvider for LeonardoVideoProvider {
         if extras.duration_seconds > 0.0 && !leo_model.starts_with("MOTION2") {
             body["duration"] = Value::Number((extras.duration_seconds as i64).into());
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // Motion 2.0's `seed` and `negativePrompt` (the model list: "seed
+        // {…maximum":2147483637}", "negative_prompt {…maxLength":1000}"); only
+        // its row declares them, and no other model is sent either.
+        // @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (2026-11-03)
+        if leo_model.starts_with("MOTION2") {
+            if let Some(seed) = base.seed {
+                body["seed"] = Value::Number(seed.into());
+            }
+            if let Some(np) = base.negative_prompt.as_deref() {
+                body["negativePrompt"] = Value::String(np.to_string());
+            }
+        }
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -249,7 +269,9 @@ impl VideoProvider for LeonardoVideoProvider {
         let mut status = match pk["status"].as_str() {
             Some("COMPLETE") => GenerationStatus::Completed,
             Some("FAILED") => GenerationStatus::Failed,
-            _ => GenerationStatus::Processing,
+            // job_status: PENDING | COMPLETE | FAILED.
+            Some("PENDING") => GenerationStatus::Processing,
+            other => return Ok(super::unknown_state("leonardo", other)),
         };
         // The video is the generated image's `motionMP4URL` ("The URL of the
         // motion MP4"); its `url` is not a video, so a finished generation
@@ -514,6 +536,35 @@ mod tests {
         assert!(body.get("duration").is_none(), "Motion 2.0 got a duration: {body}");
     }
 
+    /// Motion 2.0 takes a seed and a negative prompt: the v1 body's `seed` and
+    /// `negativePrompt`, which Leonardo's model list gives `motion_2.0` as
+    /// "seed {…"maximum":2147483637}" and "negative_prompt {…"maxLength":1000}".
+    /// `extra` cannot replace either.
+    /// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (2026-11-03)
+    #[tokio::test]
+    async fn motion2_sends_its_seed_and_negative_prompt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "motionVideoGenerationJob": { "generationId": "leo-vid-4" }
+            })))
+            .mount(&server)
+            .await;
+        let mut base = make_base("leaves drifting in the wind", "leonardo/motion2");
+        base.seed = Some(77);
+        base.negative_prompt = Some("blur".into());
+        let mut extras = extras_with_image_id();
+        if let Some(Value::Object(map)) = extras.extra.as_mut() {
+            map.insert("seed".into(), json!(1));
+            map.insert("negativePrompt".into(), json!("other"));
+        }
+        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
+        make_provider(&server.uri()).generate(&ref_schema("leonardo/motion2"), &base, &extras, &materialized).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["seed"].as_i64(), body["negativePrompt"].as_str()), (Some(77), Some("blur")), "{body}");
+    }
+
     /// Kling 2.5 Turbo: `KLING2_5`, "resolution ... Set to RESOLUTION_1080",
     /// "duration ... Set to 5 or 10".
     /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo>
@@ -552,7 +603,9 @@ mod tests {
     }
 
     /// #16: `extra` passes a start frame by `imageId` and Leonardo's own
-    /// knobs, but never replaces the model litegen bills or anything else it sends.
+    /// knobs, but never replaces the model litegen bills or anything else it
+    /// sends. E4a: nor does it publish the clip (`isPublic`); the account's
+    /// own default applies.
     #[tokio::test]
     async fn extra_cannot_replace_what_litegen_sends() {
         let server = MockServer::start().await;
@@ -564,7 +617,7 @@ mod tests {
         extras.duration_seconds = 8.0;
         extras.extra = Some(json!({
             "imageId": "img-1", "model": "MOTION2", "prompt": "other", "resolution": "RESOLUTION_480",
-            "duration": 4, "isPublic": true
+            "duration": 4, "isPublic": true, "promptEnhance": true
         }));
         let _ = make_provider(&server.uri())
             .generate(&ref_schema("leonardo/veo3.1"), &make_base("a fox runs", "leonardo/veo3.1"), &extras, &no_refs())
@@ -575,7 +628,8 @@ mod tests {
         assert_eq!(body["resolution"], "RESOLUTION_720");
         assert_eq!(body["duration"], 8);
         assert_eq!(body["imageId"], "img-1");
-        assert_eq!(body["isPublic"], true);
+        assert_eq!(body["promptEnhance"], true);
+        assert!(body.get("isPublic").is_none(), "{body}");
     }
 
     /// #17, #19: a create Leonardo turned away says so, with its status, and

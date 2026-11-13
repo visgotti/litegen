@@ -13,30 +13,41 @@ const USER_AGENT = 'litegen-model-drift/1 (+https://github.com/visgotti/litegen;
 // ─── Registry ────────────────────────────────────────────────────────────────
 
 const unquote = (s) => s.replace(/^["']|["']$/g, '');
+const LIFECYCLE_KEYS = ['deprecated_at', 'retires_at'];
 
 /**
- * Read models/*.yaml and group model ids by their `provider:` field, skipping
- * the mock provider. A line parser (no YAML dependency) is enough for the
- * registry's block style, and it refuses a file whose `- id:` count disagrees
- * with its `media_type:` count rather than silently dropping a model.
- * @returns {Map<string, string[]>} provider → model ids, in file order
+ * Every model block in models/*.yaml, in file order: its id, its `provider:`
+ * and the lifecycle dates at the model's own level (a nested key of the same
+ * name, inside a param, say, is not the model's). A line parser (no YAML
+ * dependency) is enough for the registry's block style, and it refuses a file
+ * whose `- id:` count disagrees with its `media_type:` count rather than
+ * silently dropping a model.
+ * @returns {{ id: string, provider: string | null, deprecated_at: string | null, retires_at: string | null }[]}
  */
-export function loadRegistry(modelsDir) {
-  const byProvider = new Map();
+function parseModels(modelsDir) {
+  const all = [];
   const files = readdirSync(modelsDir).filter((f) => f.endsWith('.yaml')).sort();
   for (const file of files) {
     const models = [];
     let current = null;
+    let keyIndent = -1;
     let mediaTypes = 0;
     for (const line of readFileSync(join(modelsDir, file), 'utf8').split('\n')) {
-      const id = line.match(/^\s*-\s+id:\s*(\S+)\s*$/);
+      const id = line.match(/^(\s*-\s+)id:\s*(\S+)\s*$/);
       if (id) {
-        current = { id: unquote(id[1]), provider: null };
+        current = { id: unquote(id[2]), provider: null, deprecated_at: null, retires_at: null };
+        // The model's own keys line up with `id` after the `- `.
+        keyIndent = id[1].length;
         models.push(current);
         continue;
       }
       const provider = line.match(/^\s+provider:\s*(\S+)\s*$/);
       if (provider && current && !current.provider) current.provider = unquote(provider[1]);
+      const date = line.match(/^(\s+)(\w+):\s*([^\s#]+)\s*(?:#.*)?$/);
+      if (date && current && date[1].length === keyIndent && LIFECYCLE_KEYS.includes(date[2])) {
+        const value = unquote(date[3]);
+        current[date[2]] = value === 'null' || value === '~' ? null : value;
+      }
       if (/^\s+media_type:\s*\S/.test(line)) mediaTypes++;
     }
     if (models.length !== mediaTypes) {
@@ -45,14 +56,35 @@ export function loadRegistry(modelsDir) {
           'the line parser cannot read this file — keep one `- id:` line per model',
       );
     }
-    for (const m of models) {
-      const provider = m.provider ?? m.id.split('/')[0];
-      if (SKIP_PROVIDERS.has(provider)) continue;
-      if (!byProvider.has(provider)) byProvider.set(provider, []);
-      byProvider.get(provider).push(m.id);
-    }
+    all.push(...models);
+  }
+  return all;
+}
+
+/**
+ * Read models/*.yaml and group model ids by their `provider:` field, skipping
+ * the mock provider.
+ * @returns {Map<string, string[]>} provider → model ids, in file order
+ */
+export function loadRegistry(modelsDir) {
+  const byProvider = new Map();
+  for (const m of parseModels(modelsDir)) {
+    const provider = m.provider ?? m.id.split('/')[0];
+    if (SKIP_PROVIDERS.has(provider)) continue;
+    if (!byProvider.has(provider)) byProvider.set(provider, []);
+    byProvider.get(provider).push(m.id);
   }
   return new Map([...byProvider].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
+ * The lifecycle dates models/*.yaml records per model (`YYYY-MM-DD`, or null).
+ * The catalog counts a model deprecated once either is set
+ * (litegen-core `ModelSchema::status_on`).
+ * @returns {Map<string, { deprecated_at: string | null, retires_at: string | null }>} model id → dates
+ */
+export function loadLifecycle(modelsDir) {
+  return new Map(parseModels(modelsDir).map((m) => [m.id, { deprecated_at: m.deprecated_at, retires_at: m.retires_at }]));
 }
 
 // ─── One source ──────────────────────────────────────────────────────────────
@@ -76,7 +108,11 @@ const looksLikeHtml = (body) => /^\s*(<!doctype html|<html)/i.test(body);
  * was expected (moved page / JS app shell), a parse or extractor error, or an
  * empty result — comes back `ok: false` with the reason, never as zero ids.
  *
- * @param source {{key, expect: 'json'|'text'|'html', extract: RegExp | (parsed, body) => string[], snapshot?: (parsed, body, ctx) => string}}
+ * A source may also say which models it lists as deprecated but still served
+ * (`deprecated`, such as fal's registry status): those come back normalized as
+ * `deprecated`, apart from `ids`, and count as listed.
+ *
+ * @param source {{key, expect: 'json'|'text'|'html', extract: RegExp | (parsed, body) => string[], deprecated?: (parsed, body) => string[], snapshot?: (parsed, body, ctx) => string}}
  * @param response {{status?, contentType?, body?, error?}}
  * @param ctx {{ours?: string[]}} our carried vendor ids, for snapshots scoped to them
  */
@@ -107,15 +143,23 @@ export function evaluateSource(source, response, ctx = { ours: [] }) {
   } catch (e) {
     return fail(`extract threw: ${e.message}`);
   }
+  let deprecatedRaw = [];
+  try {
+    if (source.deprecated) deprecatedRaw = source.deprecated(parsed, body);
+  } catch (e) {
+    return fail(`deprecated threw: ${e.message}`);
+  }
   const ids = normalizeIds(raw ?? []);
-  if (ids.length === 0) return fail('no model ids extracted — the page structure or the vendor id naming changed');
+  const deprecated = normalizeIds(deprecatedRaw ?? []);
+  // A source whose models are all deprecated still lists them: they are served.
+  if (ids.length === 0 && deprecated.length === 0) return fail('no model ids extracted — the page structure or the vendor id naming changed');
   let snapshot;
   try {
     snapshot = source.snapshot ? String(source.snapshot(parsed, body, ctx)) : ids.join('\n');
   } catch (e) {
     return fail(`snapshot threw: ${e.message}`);
   }
-  return { key: source.key, ok: true, index: Boolean(source.index), ids, snapshot: snapshot.replace(/\s+$/, '') + '\n' };
+  return { key: source.key, ok: true, index: Boolean(source.index), ids, deprecated, snapshot: snapshot.replace(/\s+$/, '') + '\n' };
 }
 
 // ─── One provider ────────────────────────────────────────────────────────────
@@ -129,6 +173,10 @@ export function evaluateSource(source, response, ctx = { ours: [] }) {
  *            endpoint it routes to — so one endpoint going away is a desync
  *            even while the others remain. Only when every source succeeded,
  *            since a failed source may hold them.
+ * - deprecated: carried models with a vendor id a source lists as deprecated
+ *            but still served, and none lists as active ({ model, vendorIds:
+ *            those ids }). Such an id is not `absent`; run() keeps the entries
+ *            models/*.yaml does not already record.
  * - failed:  failed sources, plus a canary failure when sources returned ids
  *            but none of ours (the source is wrong, so new/missing would be noise)
  * Index sources (lists of docs pages or endpoints) only feed snapshots: a new
@@ -139,15 +187,18 @@ export function classify(def, results) {
   const failed = results.filter((r) => !r.ok).map((r) => ({ source: r.key, error: r.error }));
   const succeeded = results.filter((r) => r.ok && !r.index);
   const upstream = new Set(succeeded.flatMap((r) => r.ids));
+  // Deprecated and nowhere active: still served, so neither new nor gone.
+  const upstreamDeprecated = new Set(succeeded.flatMap((r) => r.deprecated ?? []).filter((id) => !upstream.has(id)));
+  const listed = (id) => upstream.has(id) || upstreamDeprecated.has(id);
   const carried = Object.entries(def.models).map(([model, v]) => ({ model, vendorIds: [v].flat() }));
   const ours = new Set(carried.flatMap((c) => c.vendorIds.map(lc)));
 
-  if (succeeded.length > 0 && carried.length > 0 && ![...ours].some((id) => upstream.has(id))) {
+  if (succeeded.length > 0 && carried.length > 0 && ![...ours].some(listed)) {
     failed.push({
       source: '(canary)',
       error: `none of our ${carried.length} models appear in any source — the source moved, restructured, or the extract pattern no longer matches`,
     });
-    return { provider: def.provider, failed, new: [], missing: [] };
+    return { provider: def.provider, failed, new: [], missing: [], deprecated: [] };
   }
 
   const acks = (def.acknowledged ?? []).map((a) =>
@@ -158,10 +209,14 @@ export function classify(def, results) {
     failed.length > 0
       ? []
       : carried.flatMap((c) => {
-          const absent = c.vendorIds.filter((v) => !upstream.has(lc(v)));
+          const absent = c.vendorIds.filter((v) => !listed(lc(v)));
           return absent.length ? [{ ...c, absent }] : [];
         });
-  return { provider: def.provider, failed, new: fresh, missing };
+  const deprecated = carried.flatMap((c) => {
+    const vendorIds = c.vendorIds.filter((v) => upstreamDeprecated.has(lc(v)));
+    return vendorIds.length ? [{ model: c.model, vendorIds }] : [];
+  });
+  return { provider: def.provider, failed, new: fresh, missing, deprecated };
 }
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -169,24 +224,42 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const mentions = (text, id) => new RegExp(`(?<![\\w.-])${escapeRe(id)}(?![\\w-]|\\.\\w)`, 'i').test(text);
 
 /**
+ * A source whose snapshot counts as typings evidence: one with its own
+ * `snapshot` that is not an index, unless it says `typings: false` (a lineup
+ * table or an id list: it says a model exists, not what it accepts), or an
+ * index that says `typings: true` (its ids are field names, say, but its
+ * snapshot is a request schema).
+ */
+const isTypings = (s) => Boolean(s.snapshot) && s.typings !== false && (!s.index || s.typings === true);
+
+/**
  * Typings coverage: every vendor id we carry must appear in at least one
- * typings snapshot — a source with its own `snapshot` that is not an index,
- * or an index that says `typings: true` (its ids are field names, say, but
- * its snapshot is a request schema) — or the
- * check never compares that model's request schema with models/*.yaml, and a
- * new enum value or bound on it goes unseen. A model whose vendor publishes
- * no request schema is listed in the definition's `untyped`, with the reason.
+ * typings snapshot (see `isTypings`), or the check never compares that
+ * model's request schema with models/*.yaml, and a new enum value or bound on
+ * it goes unseen. A model pinned in the definition's `typingsFrom` (litegen id
+ * → source keys) takes its typings from those sources only, which need not
+ * name its vendor id: for a free-form model field (Leonardo's `modelId`), or
+ * a vendor id that another model sends to a different endpoint. A model whose
+ * vendor publishes no request schema is listed in the definition's
+ * `untyped`, with the reason.
  * Withheld when a typings source failed, since the id may live in that one,
  * and for a model already reported missing (`missing`: litegen ids).
  */
 export function typingsGaps(def, results, missing = []) {
-  const typedKeys = new Set(def.sources.filter((s) => s.snapshot && (!s.index || s.typings)).map((s) => s.key));
+  const typedKeys = new Set(def.sources.filter(isTypings).map((s) => s.key));
   const typed = results.filter((r) => typedKeys.has(r.key));
   if (typed.some((r) => !r.ok)) return [];
   const exempt = def.untyped ?? {};
+  const pinned = def.typingsFrom ?? {};
   return Object.entries(def.models)
     .filter(([model]) => !Object.hasOwn(exempt, model) && !missing.includes(model))
     .flatMap(([model, v]) => {
+      if (Object.hasOwn(pinned, model)) {
+        // A pin names where this model's request schema is: those sources, and only those.
+        const keys = [pinned[model]].flat();
+        const ok = keys.length > 0 && keys.every((k) => typed.some((r) => r.key === k && r.ok));
+        return ok ? [] : [{ source: '(typings)', error: `${model}: its typingsFrom sources (${keys.join(', ')}) gave no typings snapshot` }];
+      }
       const absent = [v].flat().filter((id) => !typed.some((r) => mentions(r.snapshot, id)));
       if (absent.length === 0) return [];
       return [{
@@ -198,7 +271,7 @@ export function typingsGaps(def, results, missing = []) {
     });
 }
 
-/** Registry ↔ definition consistency: every carried model mapped, no stale mappings or exemptions. */
+/** Registry ↔ definition consistency: every carried model mapped, no stale mappings, exemptions or typings pins. */
 function validateDefinition(def, registryIds) {
   const file = `scripts/model-drift/providers/${def.provider}.mjs`;
   const mapped = new Set(Object.keys(def.models));
@@ -216,16 +289,31 @@ function validateDefinition(def, registryIds) {
         source: '(config)',
         error: mapped.has(id) ? `untyped ${id} in ${file} needs a reason` : `untyped ${id} in ${file} is not a mapped model`,
       })),
+    ...Object.entries(def.typingsFrom ?? {}).flatMap(([id, keys]) => {
+      if (!mapped.has(id)) return [{ source: '(config)', error: `typingsFrom ${id} in ${file} is not a mapped model` }];
+      return [keys]
+        .flat()
+        .filter((k) => !def.sources.some((s) => s.key === k && isTypings(s)))
+        .map((k) => ({ source: '(config)', error: `typingsFrom ${id} in ${file} names "${k}", which is not a typings source of this definition` }));
+    }),
   ];
 }
 
 // ─── Network ─────────────────────────────────────────────────────────────────
 
-/** Default fetch: one retry on network errors, 429 and 5xx. Returns {status, contentType, body}. */
-export async function httpFetch(url, { headers = {}, timeoutMs = 30_000 } = {}) {
+/**
+ * Default fetch: up to three retries on network errors, 429 and 5xx, each
+ * after the server's Retry-After (in seconds, at most 60) or else 2, 4 and
+ * 8 s. fal's Platform API answers a burst of `expand=openapi-3.0` requests
+ * with 429 (seen 2026-11-04), and one retry 2 s later wasn't enough. Returns
+ * {status, contentType, body}; the last answer when every retry failed too.
+ */
+export async function httpFetch(url, { headers = {}, timeoutMs = 30_000, retries = 3 } = {}) {
   let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 2_000));
+  let wait = 0;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, wait));
+    wait = 2_000 * 2 ** attempt;
     try {
       const res = await fetch(url, {
         headers: { 'user-agent': USER_AGENT, ...headers },
@@ -234,7 +322,11 @@ export async function httpFetch(url, { headers = {}, timeoutMs = 30_000 } = {}) 
       });
       const out = { status: res.status, contentType: res.headers.get('content-type') ?? '', body: await res.text() };
       const transient = res.status === 429 || res.status >= 500;
-      if (transient && attempt === 0) continue;
+      if (transient && attempt < retries) {
+        const after = Number.parseFloat(res.headers.get('retry-after') ?? '');
+        if (Number.isFinite(after) && after >= 0) wait = Math.min(after, 60) * 1_000;
+        continue;
+      }
       return out;
     } catch (e) {
       lastErr = e;
@@ -245,7 +337,9 @@ export async function httpFetch(url, { headers = {}, timeoutMs = 30_000 } = {}) 
 
 async function fetchSource(source, fetchImpl) {
   try {
-    return await fetchImpl(source.url, { headers: source.headers });
+    // A source may give its own `timeoutMs` (a multi-megabyte spec on a slow
+    // link outlasts the 30 s default).
+    return await fetchImpl(source.url, { headers: source.headers, timeoutMs: source.timeoutMs });
   } catch (e) {
     const cause = e.cause ? ` (${e.cause.code ?? e.cause.message})` : '';
     return { error: `fetch failed: ${e.message}${cause}` };
@@ -285,16 +379,23 @@ async function mapLimit(items, limit, fn) {
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 /**
- * Check every provider. Exit code: 0 clean · 1 drift (new / missing / changed
- * snapshot) · 2 something needs investigating (a source failed, or the drift
- * definitions are out of sync with models/*.yaml) — 2 wins over 1.
+ * Check every provider. Exit code: 0 clean · 1 drift (new / missing / deprecated
+ * upstream and not recorded in models/*.yaml / changed snapshot / a snapshot
+ * with no baseline) · 2 something needs investigating (a
+ * source failed, or the drift definitions are out of sync with models/*.yaml)
+ * — 2 wins over 1.
  *
  * Snapshots (the typings-relevant excerpt of each source, or its id list) are
  * written to `snapshotsDir/<provider>/<key>.txt` unless `write` is false, so
  * after a run `git diff` on that directory shows exactly what changed upstream.
+ * A source with no snapshot there yet is reported as `noBaseline`: nothing was
+ * compared, so its first snapshot needs a whole-file review.
  */
 export async function run({ modelsDir, definitions, snapshotsDir, fetchImpl = httpFetch, write = true, only, concurrency = 4 }) {
+  // An empty filter matches nothing and would report a clean run over zero providers.
+  if (only && only.length === 0) throw new Error('empty provider filter: name one or more providers, or pass no filter to check every provider');
   const registry = loadRegistry(modelsDir);
+  const lifecycle = loadLifecycle(modelsDir);
   const defs = new Map(definitions.map((d) => [d.provider, d]));
   const known = [...new Set([...registry.keys(), ...defs.keys()])].sort();
   const unknown = (only ?? []).filter((p) => !known.includes(p));
@@ -306,7 +407,7 @@ export async function run({ modelsDir, definitions, snapshotsDir, fetchImpl = ht
   const providers = await mapLimit(names, concurrency, async (provider) => {
     const config = problems.filter((p) => p.provider === provider).map(({ source, error }) => ({ source, error }));
     const def = defs.get(provider);
-    if (!def) return { provider, failed: config, new: [], missing: [], changed: [], sources: [] };
+    if (!def) return { provider, failed: config, new: [], missing: [], deprecated: [], changed: [], noBaseline: [], sources: [] };
     const ours = Object.values(def.models).flat();
     const results = [];
     const urls = new Map();
@@ -325,15 +426,23 @@ export async function run({ modelsDir, definitions, snapshotsDir, fetchImpl = ht
       results.push(result);
     }
     const verdict = classify(def, results);
+    // A deprecation models/*.yaml already records (either date) is not news.
+    verdict.deprecated = verdict.deprecated.filter(({ model }) => {
+      const dates = lifecycle.get(model);
+      return !(dates?.deprecated_at || dates?.retires_at);
+    });
     // A broken source would make every model it covers look untyped.
     if (verdict.failed.length === 0) verdict.failed.push(...typingsGaps(def, results, verdict.missing.map((m) => m.model)));
 
     const dir = join(snapshotsDir, provider);
     const changed = [];
+    // No earlier snapshot to compare with: the first one must be read whole, so it is reported too.
+    const noBaseline = [];
     for (const r of results.filter((x) => x.ok)) {
       const file = join(dir, `${r.key}.txt`);
       const previous = existsSync(file) ? readFileSync(file, 'utf8') : null;
-      if (previous !== null && previous !== r.snapshot) changed.push(r.key);
+      if (previous === null) noBaseline.push(r.key);
+      else if (previous !== r.snapshot) changed.push(r.key);
       if (write) {
         mkdirSync(dir, { recursive: true });
         writeFileSync(file, r.snapshot);
@@ -348,12 +457,13 @@ export async function run({ modelsDir, definitions, snapshotsDir, fetchImpl = ht
       ...verdict,
       failed: [...config, ...verdict.failed],
       changed,
+      noBaseline,
       sources: results.map((r) => ({ key: r.key, url: urls.get(r.key), ok: r.ok, ids: r.ids?.length ?? 0, error: r.error })),
     };
   });
 
   const needsInvestigation = providers.some((p) => p.failed.length > 0);
-  const drift = providers.some((p) => p.new.length || p.missing.length || p.changed.length);
+  const drift = providers.some((p) => p.new.length || p.missing.length || p.deprecated.length || p.changed.length || p.noBaseline.length);
   return { exitCode: needsInvestigation ? 2 : drift ? 1 : 0, providers };
 }
 
@@ -374,6 +484,11 @@ export async function loadDefinitions(dir) {
     if (!def || def.provider !== expected) throw bad(`default export's provider is "${def?.provider}", expected "${expected}"`);
     if (!def.models || typeof def.models !== 'object') throw bad('needs a models map (litegen id → vendor id)');
     if (!Array.isArray(def.sources) || def.sources.length === 0) throw bad('needs at least one entry in sources');
+    const pins = def.typingsFrom;
+    const pinList = (keys) => Array.isArray(keys) && keys.length > 0 && keys.every((k) => typeof k === 'string');
+    if (pins !== undefined && (!pins || typeof pins !== 'object' || Array.isArray(pins) || !Object.values(pins).every(pinList))) {
+      throw bad('typingsFrom must map litegen model ids to non-empty lists of source keys');
+    }
     const keys = new Set();
     for (const s of def.sources) {
       if (keys.has(s.key)) throw bad(`duplicate source key "${s.key}"`);
@@ -385,6 +500,8 @@ export async function loadDefinitions(dir) {
       }
       if (!EXPECT_KINDS.includes(s.expect)) throw bad(`source "${s.key}" has expect "${s.expect}" — use one of ${EXPECT_KINDS.join(', ')}`);
       if (!(s.extract instanceof RegExp) && typeof s.extract !== 'function') throw bad(`source "${s.key}" needs extract (RegExp or function)`);
+      if (s.typings !== undefined && typeof s.typings !== 'boolean') throw bad(`source "${s.key}" has typings ${JSON.stringify(s.typings)} — use true or false`);
+      if (s.deprecated !== undefined && typeof s.deprecated !== 'function') throw bad(`source "${s.key}" has a deprecated that is not a function (parsed, body) => ids`);
     }
     defs.push(def);
   }
@@ -420,7 +537,12 @@ export function formatReport({ exitCode, providers }) {
     for (const f of p.failed) problems.push(`  FAILED ${f.source}: ${f.error}`);
     if (p.new.length) problems.push(`  new upstream (not carried, not acknowledged): ${p.new.join(', ')}`);
     for (const m of p.missing) problems.push(`  missing upstream: ${m.model} (not found: ${(m.absent ?? m.vendorIds).join(', ')})`);
+    for (const d of p.deprecated ?? []) {
+      problems.push(`  deprecated upstream: ${d.model} (${d.vendorIds.join(', ')}) → still served, but models/*.yaml has no deprecated_at or retires_at for it`);
+    }
     for (const key of p.changed) problems.push(`  changed: ${key} → git diff scripts/model-drift/snapshots/${p.provider}/${key}.txt`);
+    // The path is relative to the snapshots folder the run used (--snapshots, or snapshots/).
+    for (const key of p.noBaseline ?? []) problems.push(`  no baseline: ${key} → no earlier snapshot to compare; read all of ${p.provider}/${key}.txt`);
     if (problems.length) lines.push(p.provider, ...problems);
     else clean.push(p.provider);
   }

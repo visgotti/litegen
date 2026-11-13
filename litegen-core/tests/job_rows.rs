@@ -85,6 +85,39 @@ async fn a_3d_submit_whose_row_cannot_be_written_fails() {
     assert_eq!(body["error"]["code"], "generation_record_failed", "{body}");
 }
 
+/// SEC-DBERR: the caller of an unrecorded job is told which job and that it
+/// failed, never the database's own error text (tables, constraints, a
+/// trigger's message). The server log has it.
+#[tokio::test]
+async fn an_unrecorded_job_does_not_show_the_database_error() {
+    let (app, _db, raw, _dir) = app_on_file().await;
+    refuse_generation_inserts(&raw).await;
+    for (path, model) in [("/v1/videos/generations", "mock/video-gen"), ("/v1/models3d/generations", "mock/mesh-3d")] {
+        let (status, body) = post(&app, path, &json!({ "model": model, "prompt": "a chair" })).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body["error"]["code"], "generation_record_failed", "{body}");
+        assert!(body["error"].get("vendor_job_id").is_some(), "{body}");
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(!message.contains("disk full") && !message.contains("database"), "{model}: {message}");
+    }
+}
+
+/// SEC-DBERR: a read the database fails answers a fixed 500, not the
+/// database's text ("no such table: generations").
+#[tokio::test]
+async fn a_generations_read_error_is_not_shown() {
+    let (app, _db, raw, _dir) = app_on_file().await;
+    sqlx::query("ALTER TABLE generations RENAME TO generations_away").execute(&raw).await.unwrap();
+    for uri in ["/v1/generations/x", "/v1/generations"] {
+        let resp = app.clone().oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
+        let status = resp.status();
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{uri}: {body}");
+        assert_eq!(body["error"]["code"], "internal_error", "{uri}: {body}");
+        assert_eq!(body["error"]["message"], "internal server error", "{uri}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn a_video_id_answers_on_the_very_next_request() {
     let (app, _db) = harness::app_with_mock_3d().await;

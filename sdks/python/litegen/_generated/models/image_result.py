@@ -1,15 +1,9 @@
-from typing import (
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+import datetime
+from typing import Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from dateutil.parser import isoparse
 
 from ..models.image_view import ImageView
 from ..types import UNSET, Unset
@@ -27,6 +21,9 @@ class ImageResult:
         content_type (Union[Unset, str]): Content type of the image (e.g. "image/png").
         direction (Union[None, Unset, str]): The facing this image shows, from a `directions` request: `south`
             (towards the viewer), `south-east`, `east`, … (PixelGenie L16).
+        expires_at (Union[None, Unset, datetime.datetime]): When a signed link stops working (`docs/storage-access.md`);
+            read the
+            generation again for a fresh one. Absent on every other URL.
         height (Union[None, Unset, int]):
         revised_prompt (Union[None, Unset, str]): Revised prompt (if provider modified the prompt, e.g. DALL-E 3).
         url (Union[None, Unset, str]): URL of the generated image (if response_format=url).
@@ -39,6 +36,7 @@ class ImageResult:
     b64_json: Union[None, Unset, str] = UNSET
     content_type: Union[Unset, str] = UNSET
     direction: Union[None, Unset, str] = UNSET
+    expires_at: Union[None, Unset, datetime.datetime] = UNSET
     height: Union[None, Unset, int] = UNSET
     revised_prompt: Union[None, Unset, str] = UNSET
     url: Union[None, Unset, str] = UNSET
@@ -63,6 +61,14 @@ class ImageResult:
             direction = UNSET
         else:
             direction = self.direction
+
+        expires_at: Union[None, Unset, str]
+        if isinstance(self.expires_at, Unset):
+            expires_at = UNSET
+        elif isinstance(self.expires_at, datetime.datetime):
+            expires_at = self.expires_at.isoformat()
+        else:
+            expires_at = self.expires_at
 
         height: Union[None, Unset, int]
         if isinstance(self.height, Unset):
@@ -115,6 +121,8 @@ class ImageResult:
             field_dict["content_type"] = content_type
         if direction is not UNSET:
             field_dict["direction"] = direction
+        if expires_at is not UNSET:
+            field_dict["expires_at"] = expires_at
         if height is not UNSET:
             field_dict["height"] = height
         if revised_prompt is not UNSET:
@@ -154,6 +162,23 @@ class ImageResult:
             return cast(Union[None, Unset, str], data)
 
         direction = _parse_direction(d.pop("direction", UNSET))
+
+        def _parse_expires_at(data: object) -> Union[None, Unset, datetime.datetime]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                expires_at_type_0 = isoparse(data)
+
+                return expires_at_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, datetime.datetime], data)
+
+        expires_at = _parse_expires_at(d.pop("expires_at", UNSET))
 
         def _parse_height(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -222,6 +247,7 @@ class ImageResult:
             b64_json=b64_json,
             content_type=content_type,
             direction=direction,
+            expires_at=expires_at,
             height=height,
             revised_prompt=revised_prompt,
             url=url,

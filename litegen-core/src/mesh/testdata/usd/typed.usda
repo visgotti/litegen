@@ -1,0 +1,68 @@
+#usda 1.0
+(
+    "a bare string in a layer's metadata is its comment"
+    defaultPrim = "Root"
+    doc = "what a layer says about itself"
+    metersPerUnit = 1
+    upAxis = "Y"
+    customLayerData = {
+        string author = "litegen"
+        token flavour = "plain"
+    }
+)
+
+def Xform "Root" (
+    kind = "component"
+    customData = {
+        string note = "a string"
+        token tag = "a token"
+        int count = 3
+        double scale = 1.5
+        dictionary nested = {
+            token inner = "deep"
+            string[] labels = ["x", "y"]
+            token[] kinds = ["a", "b"]
+            dictionary again = {
+                int level = 2
+            }
+        }
+    }
+)
+{
+    token animated.timeSamples = {
+        0: "start",
+        1: "end",
+    }
+    uniform matrix4d[] bindTransforms = [((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))]
+    float commented = 1 (
+        "a bare string in an attribute's metadata is its comment"
+    )
+    float constantWeight = 1 (
+        interpolation = "constant"
+        elementSize = 1
+        doc = "kept beside the two that have fields of their own"
+    )
+    uniform token documented = "x" (
+        doc = "what it is"
+        displayName = "Documented"
+        hidden = true
+        customData = {
+            string note = "attribute data"
+            token tag = "attr token"
+            int count = 7
+            double ratio = 0.25
+            dictionary nested = {
+                token inner = "deep"
+            }
+        }
+    )
+    uniform bool doubleSided = 1
+    token mode = "fast"
+    token[] modes = ["fast", "slow"]
+    uniform vector3f[] offsets = [(0, 0, 1)]
+    uniform token purpose = "render"
+    string title = "a title"
+    string[] titles = ["one", "two"]
+    double3 xformOp:translate = (1, 2, 3)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}

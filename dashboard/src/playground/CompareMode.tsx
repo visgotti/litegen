@@ -9,7 +9,7 @@ import ExtraParamsField from './ExtraParamsField';
 import ResultGrid from './ResultGrid';
 import { useUnifiedParams } from './useUnifiedParams';
 import { useFanOut } from './useFanOut';
-import { promptUsage } from './params';
+import { promptUsage, seedMaxOf } from './params';
 import {
   getMultiHistory,
   pushMultiHistory,
@@ -101,7 +101,7 @@ export default function CompareMode() {
     const picked = only ? requests.filter(r => r.modelId === only) : requests;
     if (picked.length === 0 || picked.some(r => blocked.some(b => b.modelId === r.modelId))) return;
     setView('results');
-    const reqs = picked.map(r => ({ ...r, mediaType: mediaTypeOf(r.modelId) }));
+    const reqs = picked.map(r => ({ ...r, mediaType: mediaTypeOf(r.modelId), seedMax: seedMaxOf(schemasById[r.modelId]) }));
     await run(reqs, form.n);
     const entry: MultiRunHistoryEntry = {
       id: crypto.randomUUID(),

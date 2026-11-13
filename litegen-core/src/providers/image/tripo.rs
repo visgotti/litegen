@@ -231,7 +231,7 @@ mod tests {
 
     fn extras(views: &[&str]) -> ImageExtras {
         ImageExtras {
-            size: None, aspect_ratio: None, quality: None, style: None, steps: None, guidance_scale: None, strength: None,
+            size: None, resolution: None, aspect_ratio: None, quality: None, style: None, steps: None, guidance_scale: None, strength: None,
             response_format: "b64_json".into(), extra: None, edit: None,
             views: views.iter().map(|v| v.to_string()).collect(),
             vendor_job: Default::default(),

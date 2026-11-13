@@ -17,9 +17,10 @@ use crate::capabilities::schema::ModelSchema;
 use crate::management::runtime;
 use crate::management::store::ManagementStore;
 use crate::management::types::*;
+use crate::shared::events::SharedEvent;
 use crate::types::ErrorResponse;
 
-fn admin<'a>(state: &'a AppState, ctx: Option<Extension<KeyContext>>) -> Result<(KeyContext, &'a dyn ManagementStore), Response> {
+fn admin(state: &AppState, ctx: Option<Extension<KeyContext>>) -> Result<(KeyContext, &dyn ManagementStore), Response> {
     let ctx = ctx_of(ctx)?;
     require_gateway_admin(state, &ctx)?;
     let store = store(state)?;
@@ -99,6 +100,7 @@ async fn save_model(state: &AppState, ctx: &KeyContext, store: &dyn ManagementSt
     }
     let id = m.id.clone();
     state.registry.upsert_runtime(m);
+    runtime::announce(state, SharedEvent::Reload).await;
     audit(state, ctx, None, if created { "model.create" } else { "model.update" }, "model", &id, None);
     let status = if created { StatusCode::CREATED } else { StatusCode::OK };
     match model_view(state, &id) {
@@ -201,6 +203,7 @@ pub async fn patch_model(
         return internal(&e.to_string());
     }
     state.registry.set_disabled(&id, body.disabled);
+    runtime::announce(&state, SharedEvent::Reload).await;
     audit(&state, &ctx, None, if body.disabled { "model.disable" } else { "model.enable" }, "model", &id, None);
     match model_view(&state, &id) {
         Some(v) => (StatusCode::OK, Json(v)).into_response(),
@@ -229,6 +232,7 @@ pub async fn delete_model(State(state): State<Arc<AppState>>, ctx: Option<Extens
     match store.delete_runtime_model(&id).await {
         Ok(true) => {
             state.registry.remove_runtime(&id);
+            runtime::announce(&state, SharedEvent::Reload).await;
             audit(&state, &ctx, None, "model.delete", "model", &id, None);
             (StatusCode::OK, Json(DeletedResponse { deleted: true })).into_response()
         }
@@ -322,6 +326,11 @@ pub async fn put_provider(
             return bad_request("invalid_provider_config", "api_base must be an http(s) URL");
         }
     }
+    if let Some(headers) = &body.settings.extra_headers {
+        if let Err(e) = crate::providers::check_extra_headers(headers) {
+            return bad_request("invalid_provider_config", &e);
+        }
+    }
     let blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
     let incoming = ProviderSecrets {
         api_key: blank(body.api_key),
@@ -364,6 +373,7 @@ pub async fn put_provider(
     if let Err(e) = store.upsert_provider_config(&row).await {
         return internal(&e.to_string());
     }
+    runtime::announce(&state, SharedEvent::Reload).await;
     if let Err(e) = runtime::apply_provider(&state, store, &name).await {
         return internal(&e);
     }
@@ -395,6 +405,7 @@ pub async fn delete_provider(State(state): State<Arc<AppState>>, ctx: Option<Ext
         Ok(false) => return not_found("provider_config_not_found", &format!("no runtime config for '{name}'")),
         Err(e) => return internal(&e.to_string()),
     }
+    runtime::announce(&state, SharedEvent::Reload).await;
     if let Err(e) = runtime::apply_provider(&state, store, &name).await {
         return internal(&e);
     }
@@ -458,6 +469,7 @@ pub async fn put_routes(
     let mut o = state.router.overrides();
     o.model_routes = Some(body.routes.iter().map(runtime::route_spec_to_config).collect());
     state.router.set_overrides(o);
+    runtime::announce(&state, SharedEvent::Reload).await;
     audit(&state, &ctx, None, "routes.update", "routes", "model_routes", serde_json::to_value(&body.routes).ok());
     (StatusCode::OK, Json(routes_doc(&state))).into_response()
 }
@@ -478,16 +490,26 @@ pub async fn delete_routes(State(state): State<Arc<AppState>>, ctx: Option<Exten
     let mut o = state.router.overrides();
     o.model_routes = None;
     state.router.set_overrides(o);
+    runtime::announce(&state, SharedEvent::Reload).await;
     audit(&state, &ctx, None, "routes.reset", "routes", "model_routes", None);
     (StatusCode::OK, Json(routes_doc(&state))).into_response()
 }
 
 // ─── Gateway settings ────────────────────────────────────────────────────────
 
-fn settings_view(state: &AppState) -> GatewaySettingsView {
+async fn settings_view(state: &AppState) -> GatewaySettingsView {
+    let gateway = state.router.overrides().gateway;
+    let access = crate::access::effective(&state.router.config.storage_access, &gateway, None);
+    let s = state.router.settings();
     GatewaySettingsView {
-        settings: state.router.overrides().gateway,
+        settings: gateway,
         effective_cost_markup_percent: state.router.cost_markup_percent(),
+        effective_storage_access: access.into(),
+        effective_cache: s.cache.into(),
+        cache_entries: state.router.cache.entry_count().await,
+        effective_retries: s.retries.into(),
+        effective_vendor_timeout_seconds: s.vendor_timeout.as_secs(),
+        effective_circuit_breaker: s.breaker.into(),
     }
 }
 
@@ -501,7 +523,31 @@ fn settings_view(state: &AppState) -> GatewaySettingsView {
 )]
 pub async fn get_settings(State(state): State<Arc<AppState>>, ctx: Option<Extension<KeyContext>>) -> Response {
     let _ = admin_or_return!(state, ctx);
-    (StatusCode::OK, Json(settings_view(&state))).into_response()
+    (StatusCode::OK, Json(settings_view(&state).await)).into_response()
+}
+
+/// POST /v1/admin/revoke-links — end every link litegen signed, gateway-wide.
+#[utoipa::path(
+    operation_id = "admin_revoke_links",
+    post,
+    path = "/v1/admin/revoke-links",
+    responses(
+        (status = 200, description = "Every litegen link issued before `revoked_at` no longer works. A bucket's own presigned links work until they expire.", body = crate::access::LinksRevoked),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+    ),
+    tag = "Gateway"
+)]
+pub async fn revoke_links(
+    State(state): State<Arc<AppState>>,
+    ctx: Option<Extension<KeyContext>>,
+) -> Response {
+    let (ctx, _store) = admin_or_return!(state, ctx);
+    let at = crate::access::revocation_time();
+    if let Err(e) = state.db.revoke_links("gateway", "", at).await {
+        return internal(&e.to_string());
+    }
+    audit(&state, &ctx, None, "links.revoke", "settings", "gateway", Some(serde_json::json!({ "revoked_at": at })));
+    (StatusCode::OK, Json(crate::access::LinksRevoked { revoked_at: at })).into_response()
 }
 
 /// PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
@@ -527,12 +573,47 @@ pub async fn put_settings(
         return bad_request("invalid_settings", &msg);
     }
     let json = match serde_json::to_string(&body) { Ok(j) => j, Err(e) => return internal(&e.to_string()) };
+    // Read before the row is written: once it is, a refresh on this replica
+    // can apply it at any moment, and the cache would then look as if it had
+    // been off all along.
+    let cache_was_on = state.router.settings().cache.enabled;
     if let Err(e) = store.set_setting(runtime::SETTINGS_KEY, &json).await {
         return internal(&e.to_string());
     }
+    let cache_now_on = crate::management::settings::effective(&state.router.config, &body).cache.enabled;
     let mut o = state.router.overrides();
     o.gateway = body.clone();
-    state.router.set_overrides(o);
+    if cache_was_on != cache_now_on {
+        // Turning the gateway cache off or on empties it everywhere: this
+        // replica's tiers, and the shared tier with the epoch raised, before
+        // the other replicas are told to reload, so none of them serves what
+        // was cached before the switch. Off: nothing is served from it.
+        // On: nothing an earlier switch-off failed to remove from Redis, nor
+        // what routes with their own cache settings stored meanwhile. Off
+        // switches first, so no new answer is stored during the clear; on
+        // clears first, so this replica serves nothing from before it.
+        //
+        // The save answers 200 whatever the clear did: the switch must work
+        // while Redis is down, and the database carries it to every replica.
+        // A clear that failed is logged (once a minute). A task of its own,
+        // so a client that goes away cannot leave the clear half done and the
+        // others untold.
+        let switching = state.clone();
+        runtime::finish_even_if_dropped(async move {
+            if cache_now_on {
+                let _ = switching.router.cache.clear().await;
+                switching.router.set_overrides(o);
+            } else {
+                switching.router.set_overrides(o);
+                let _ = switching.router.cache.clear().await;
+            }
+            runtime::announce(&switching, SharedEvent::Reload).await;
+        })
+        .await;
+    } else {
+        state.router.set_overrides(o);
+        runtime::announce(&state, SharedEvent::Reload).await;
+    }
     audit(&state, &ctx, None, "settings.update", "settings", "gateway", serde_json::to_value(&body).ok());
-    (StatusCode::OK, Json(settings_view(&state))).into_response()
+    (StatusCode::OK, Json(settings_view(&state).await)).into_response()
 }

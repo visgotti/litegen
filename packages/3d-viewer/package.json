@@ -1,0 +1,36 @@
+{
+  "name": "@litegen/3d-viewer",
+  "private": true,
+  "version": "0.0.0",
+  "description": "litegen's 3D preview: one three.js viewer and inspector for every format the converter writes, shared by the dashboard and the 3D converter tool.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./helpers": "./src/helpers.ts"
+  },
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "lucide-react": ">=1.8.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "0.183.2"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/three": "0.183.1",
+    "lucide-react": "1.69.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "three": "0.183.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  }
+}

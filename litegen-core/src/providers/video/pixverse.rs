@@ -36,15 +36,18 @@ pub struct PixverseProvider {
 }
 
 impl PixverseProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(120), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::raw_header("API-KEY"),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -142,6 +145,14 @@ impl PixverseProvider {
         if matches!(native, "v3.5" | "v4.5" | "v5") && ![5.0, 8.0].contains(&extras.duration_seconds) {
             return refuse(format!("{} s is not a length it makes (5 or 8 s)", extras.duration_seconds));
         }
+        // img/'s schema forbids 8 s at 1080p in a branch naming no model
+        // ("not: properties: duration: enum: - 8 quality: enum: - 1080p",
+        // 2026-11-09); the text/ and transition/ descriptions that pinned it to
+        // v3.5 ("v3.5 1080p cannot use 8", read 2026-10-31) are bare enums now.
+        // The catalog cannot pair two params, so it is refused here.
+        if native == "v3.5" && extras.duration_seconds == 8.0 && extras.resolution.as_deref() == Some("1080p") {
+            return refuse("8 s is not a length it makes at 1080p (5 s is)".into());
+        }
 
         // Upload any reference images first (-> img_id), tracking first/last.
         let mut first_img: Option<i64> = None;
@@ -186,12 +197,13 @@ impl PixverseProvider {
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
         // sets (rule 11). transition/ has no multi-clip switch.
         let transition = path == "/openapi/v2/video/transition/generate";
-        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in map {
-                let owned = matches!(k.as_str(), "model" | "prompt" | "quality" | "duration" | "aspect_ratio" | "seed" | "img_id" | "first_frame_img" | "last_frame_img");
-                if !owned && !(transition && k == "generate_multi_clip_switch") {
-                    obj.insert(k.clone(), v.clone());
-                }
+        if let Some(obj) = body.as_object_mut() {
+            let owned = |k: &str| {
+                matches!(k, "model" | "prompt" | "quality" | "duration" | "aspect_ratio" | "seed" | "img_id" | "first_frame_img" | "last_frame_img")
+                    || (transition && k == "generate_multi_clip_switch")
+            };
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), owned) {
+                obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L10: audio on or off.
@@ -223,7 +235,24 @@ impl PixverseProvider {
             })?;
 
         let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+        let retry_after = crate::providers::retry_after_ms(resp.headers());
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            // The status first: a gateway's 5xx page or a 429 never reached
+            // PixVerse's own `ErrCode` answer, so it may be sent again.
+            let body: Option<Value> = serde_json::from_str(&text).ok();
+            let message = format!("Pixverse answered HTTP {}: {}", status.as_u16(), text.chars().take(200).collect::<String>());
+            if let Some(e) = crate::providers::rate_limited("pixverse", status, retry_after, &message, body.as_ref()) {
+                return Err(e);
+            }
+            return Err(ProviderError::RequestFailed {
+                message,
+                status_code: Some(status.as_u16()),
+                provider_error: body,
+                retryable: status.is_server_error() || matches!(status.as_u16(), 408 | 429),
+            });
+        }
+        let data: Value = serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
             message: format!("Failed to parse Pixverse response: {e}"),
             status_code: Some(status.as_u16()),
             provider_error: None,
@@ -310,12 +339,12 @@ impl Default for PixverseProvider {
 }
 
 /// `quality` sent when the request leaves `resolution` unset. All three
-/// generate endpoints require it and PixVerse has no server-side default;
-/// 540p is the spec's example value and, with 360p, the cheapest v3.5–v5 tier
-/// (45 credits per 5s clip) — the price `base_cost_usd` assumes for v4.5/v5.
-/// @see <https://docs.platform.pixverse.ai/text-to-video-13016634e0.md> (2026-10-30)
-///   (`required: - model - prompt - duration - quality - aspect_ratio`)
-/// @see <https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md> (2026-10-30)
+/// generate endpoints require it and PixVerse has no server-side default (the
+/// schemas' example is 720p); 540p is, with 360p, the cheapest priced v5 tier
+/// ("45 Credits" per 5 s clip) — the price `base_cost_usd` assumes for v4.5/v5.
+/// @see <https://docs.platform.pixverse.ai/text-to-video-13016634e0.md> (2026-11-09)
+///   (`required: - model - prompt - duration - quality - aspect_ratio`; `quality … examples: - 720p`)
+/// @see <https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md> (2026-11-09)
 const DEFAULT_QUALITY: &str = "540p";
 
 /// `aspect_ratio` sent to text/generate, which requires it, when the request
@@ -335,6 +364,7 @@ impl VideoProvider for PixverseProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -354,11 +384,14 @@ impl VideoProvider for PixverseProvider {
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);
 
-        let (path, body) = if materialized.refs.iter().any(|r| r.role == "keyframe") {
+        let (path, mut body) = if materialized.refs.iter().any(|r| r.role == "keyframe") {
             ("/openapi/v2/video/multi_transition/generate", self.multi_transition(&creds, native, base, extras, materialized).await?)
         } else {
             self.single_shot(&creds, native, base, extras, materialized).await?
         };
+        // The operator's mapping names the model on the wire; `native` above
+        // still decides what the row may send.
+        body["model"] = Value::String(crate::providers::wire_model(self.config.as_ref(), &model.id, native).to_string());
         self.submit(model, &creds, path, &body).await
     }
 
@@ -402,7 +435,8 @@ impl VideoProvider for PixverseProvider {
             Some(1) => (GenerationStatus::Failed, None, Some("PixVerse reported success without a video URL".to_string())),
             Some(7) => (GenerationStatus::Failed, None, Some("content moderation failed (status 7)".to_string())),
             Some(8) => (GenerationStatus::Failed, None, Some("generation failed (status 8)".to_string())),
-            _ => (GenerationStatus::Processing, None, None),
+            Some(5) => (GenerationStatus::Processing, None, None),
+            other => return Ok(super::unknown_state("pixverse", other.map(|n| n.to_string()).as_deref())),
         };
 
         Ok(VideoGenerationPollResult {
@@ -603,7 +637,7 @@ mod tests {
     /// text/generate requires `aspect_ratio` and `quality`, with no server-side
     /// default, so a request that leaves resolution/aspect_ratio unset must still
     /// carry both.
-    /// @see <https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md>
+    /// @see <https://docs.platform.pixverse.ai/text-to-video-13016634e0.md> (2026-11-09)
     #[tokio::test]
     async fn text_to_video_fills_required_quality_and_aspect_ratio() {
         let server = MockServer::start().await;
@@ -626,7 +660,7 @@ mod tests {
 
     /// img/generate requires `quality` too, but has no `aspect_ratio` field (the
     /// image sets the shape), so none is invented for it.
-    /// @see <https://docs.platform.pixverse.ai/image-to-video-generation-13016633e0.md>
+    /// @see <https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md> (2026-11-09)
     #[tokio::test]
     async fn image_to_video_fills_quality_but_invents_no_aspect_ratio() {
         let server = MockServer::start().await;
@@ -699,6 +733,53 @@ mod tests {
             assert!(matches!(err, ProviderError::InvalidRequest(_)), "{id}: {err:?}");
         }
         assert!(server.received_requests().await.unwrap().is_empty(), "nothing uploaded or sent");
+    }
+
+    /// img/'s schema forbids 8 s at 1080p in a branch naming no model ("not:
+    /// properties: duration: enum: - 8 quality: enum: - 1080p", 2026-11-09);
+    /// the text/ and transition/ `duration` descriptions that pinned it to v3.5
+    /// ("v3.5 1080p cannot use 8", read 2026-10-31) are bare enums now.
+    /// Refused before anything is sent; 8 s at 720p and 5 s at 1080p still go.
+    #[tokio::test]
+    async fn v3_5_makes_no_8_s_clip_at_1080p() {
+        let server = MockServer::start().await;
+        mount_ok(&server, TEXT_TO_VIDEO_PATH, json!({ "video_id": 9 })).await;
+        let p = make_provider(&server.uri());
+        let id = "pixverse/v3.5";
+        let mut extras = make_extras();
+        extras.duration_seconds = 8.0;
+        extras.resolution = Some("1080p".to_string());
+        let err = p.generate(&ref_schema(id), &make_base("x", id), &extras, &uploaded(&[])).await.unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+        for (secs, quality) in [(8.0, "720p"), (5.0, "1080p")] {
+            let mut ok = make_extras();
+            ok.duration_seconds = secs;
+            ok.resolution = Some(quality.to_string());
+            p.generate(&ref_schema(id), &make_base("x", id), &ok, &uploaded(&[])).await.unwrap_or_else(|e| panic!("{secs} s at {quality}: {e:?}"));
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// V6 Max goes to text/ and img/ by its own id ("V6 MAX (v6-max) Only
+    /// support text-to-video/image-to-video now"), with its audio switch, and
+    /// a last frame (transition/, whose model enum lacks v6-max) is refused
+    /// before anything is uploaded.
+    /// @see <https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md> (2026-11-03)
+    #[tokio::test]
+    async fn v6_max_goes_to_text_and_img_by_its_own_id() {
+        let server = MockServer::start().await;
+        mount_ok(&server, TEXT_TO_VIDEO_PATH, json!({ "video_id": 9 })).await;
+        let p = make_provider(&server.uri());
+        let id = "pixverse/v6-max";
+        let mut extras = make_extras();
+        extras.audio = Some(true);
+        p.generate(&ref_schema(id), &make_base("a heron lands", id), &extras, &uploaded(&[])).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["model"].as_str(), body["generate_audio_switch"].as_bool()), (Some("v6-max"), Some(true)), "{body}");
+        let err = p.generate(&ref_schema(id), &make_base("x", id), &make_extras(), &uploaded(&["first_frame", "last_frame"])).await.unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1, "nothing more uploaded or sent");
     }
 
     /// P5, P11: img/ and transition/ take the image's shape, and transition/

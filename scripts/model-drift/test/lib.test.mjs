@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadRegistry, evaluateSource, classify, typingsGaps, run } from '../lib.mjs';
+import { loadRegistry, loadLifecycle, evaluateSource, classify, typingsGaps, validateDefinitions, run } from '../lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_MODELS = join(here, 'fixtures', 'models');
@@ -30,6 +30,20 @@ test('loadRegistry fails loudly when a model block has no id line it can parse',
     '  - id: acme/c', '    provider: acme', '    media_type: video',
   ].join('\n'));
   assert.throws(() => loadRegistry(dir), /acme\.yaml.*2 ids.*3 models/);
+});
+
+test("loadLifecycle reads each model's own deprecated_at and retires_at, quoted or not, and no nested key of that name", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'drift-models-'));
+  writeFileSync(join(dir, 'acme.yaml'), [
+    'models:',
+    '  - id: acme/a', '    provider: acme', '    media_type: image', '    deprecated_at: "2026-10-27"  # no successor named',
+    '  - id: acme/b', '    provider: acme', '    media_type: image', '    params:', '      deprecated_at: 2026-01-01', '    retires_at: 2027-03-15',
+    '  - id: acme/c', '    provider: acme', '    media_type: video',
+  ].join('\n') + '\n');
+  const lifecycle = loadLifecycle(dir);
+  assert.deepEqual(lifecycle.get('acme/a'), { deprecated_at: '2026-10-27', retires_at: null });
+  assert.deepEqual(lifecycle.get('acme/b'), { deprecated_at: null, retires_at: '2027-03-15' });
+  assert.deepEqual(lifecycle.get('acme/c'), { deprecated_at: null, retires_at: null });
 });
 
 // ─── evaluateSource ──────────────────────────────────────────────────────────
@@ -102,6 +116,28 @@ test('evaluateSource hands the snapshot our vendor ids so an excerpt can be scop
   assert.equal(r.snapshot, 'a+b\n');
 });
 
+// A registry-like source: active models are its ids; deprecated ones are still served.
+const statusSource = {
+  key: 's',
+  expect: 'json',
+  extract: (d) => d.filter((m) => m.status === 'active').map((m) => m.id),
+  deprecated: (d) => d.filter((m) => m.status === 'deprecated').map((m) => m.id),
+};
+
+test('evaluateSource keeps a source whose listed models are all deprecated, since they are still served', () => {
+  const r = evaluateSource(statusSource, { status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'Old-1', status: 'deprecated' }]) });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(r.ids, []);
+  assert.deepEqual(r.deprecated, ['old-1']);
+});
+
+test('evaluateSource fails a source whose deprecated reader throws, as it does for extract', () => {
+  const src = { ...statusSource, deprecated: (d) => d.missing.map((m) => m.id) };
+  const r = evaluateSource(src, { status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'a', status: 'active' }]) });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /deprecated/);
+});
+
 // ─── classify ────────────────────────────────────────────────────────────────
 
 const def = {
@@ -147,6 +183,13 @@ test('classify withholds missing when any source failed, since the model may liv
   const r = classify(def, [ok('a', ['alpha-1']), { key: 'b', ok: false, error: 'HTTP 404' }]);
   assert.deepEqual(r.missing, []);
   assert.deepEqual(r.failed, [{ source: 'b', error: 'HTTP 404' }]);
+});
+
+test('classify counts a carried id the source lists as deprecated as present, not missing, and for the canary too', () => {
+  const r = classify({ provider: 'acme', models: { 'acme/alpha-1': 'alpha-1' } }, [{ key: 'a', ok: true, ids: ['zeta-9'], deprecated: ['alpha-1'] }]);
+  assert.deepEqual(r.failed, []);
+  assert.deepEqual(r.missing, []);
+  assert.deepEqual(r.deprecated, [{ model: 'acme/alpha-1', vendorIds: ['alpha-1'] }]);
 });
 
 test('classify fails the provider when sources return ids but none of ours, suppressing new/missing noise', () => {
@@ -217,6 +260,42 @@ test('typingsGaps is withheld when a typings source failed, since the id may liv
   assert.deepEqual(typingsGaps(typedDef(), [{ key: 'schema', ok: false, error: 'HTTP 404' }]), []);
 });
 
+const pinDef = (extra = {}) => ({
+  provider: 'acme',
+  models: { 'acme/alpha-1': 'alpha-1', 'acme/beta_2': 'beta-2' },
+  sources: [
+    { key: 'lineup', extract: /x/, snapshot: () => '', typings: false },
+    { key: 'schema', extract: /x/, snapshot: () => '' },
+    { key: 'multi', extract: /x/, snapshot: () => '' },
+  ],
+  ...extra,
+});
+
+test('typingsGaps does not count a source that says typings: false, such as a lineup or id list', () => {
+  const gaps = typingsGaps(pinDef(), [snap('lineup', 'alpha-1  Alpha\nbeta-2  Beta'), snap('schema', 'model: [beta-2]'), snap('multi', '')]);
+  assert.deepEqual(gaps.map((g) => g.error.split(':')[0]), ['acme/alpha-1']);
+});
+
+test("typingsGaps takes a pinned model's typings from its typingsFrom sources, which need not name its vendor id", () => {
+  // Leonardo's shape: POST /generations takes a free-form modelId, so the
+  // request schema never names the model's UUID; the pin says where its typings are.
+  const def = pinDef({ typingsFrom: { 'acme/alpha-1': ['schema'] } });
+  assert.deepEqual(typingsGaps(def, [snap('lineup', ''), snap('schema', 'modelId: string\nbeta-2'), snap('multi', '')]), []);
+});
+
+test('validateDefinitions flags a typingsFrom pin whose source is gone, is not typings evidence, or whose model is not mapped', () => {
+  // acme/beta-multi sends the same vendor id as acme/beta_2, to another endpoint.
+  const def = pinDef({
+    models: { 'acme/alpha-1': 'alpha-1', 'acme/beta_2': 'beta-2', 'acme/beta-multi': 'beta-2' },
+    typingsFrom: { 'acme/beta-multi': ['multi-transition'], 'acme/alpha-1': ['lineup'], 'acme/gone': ['schema'] },
+  });
+  const problems = validateDefinitions(new Map([['acme', Object.keys(def.models)]]), [def]).map((p) => p.error);
+  const seen = problems.join('\n') || 'no problem reported';
+  assert.ok(problems.some((e) => /typingsFrom acme\/beta-multi.*multi-transition/.test(e)), seen);
+  assert.ok(problems.some((e) => /typingsFrom acme\/alpha-1.*lineup/.test(e)), seen);
+  assert.ok(problems.some((e) => /typingsFrom acme\/gone/.test(e)), seen);
+});
+
 test('classify leaves index sources (page or endpoint lists) out of the model-id comparison', () => {
   const r = classify(def, [ok('a', ['alpha-1', 'beta-2', 'beta-2-i2v']), { key: 'pages', ok: true, index: true, ids: ['/docs/new-video-api'] }]);
   assert.deepEqual(r.new, []);
@@ -251,8 +330,16 @@ function acmeDef(url) {
   };
 }
 
-test('run exits 0 and writes the snapshot when upstream matches what we carry', async () => {
-  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+/** A snapshots dir holding acme/docs.txt as the given baseline (the id list alpha-1, beta-2 by default). */
+function baselineDir(snapshot = 'alpha-1\nbeta-2\n') {
+  const dir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  mkdirSync(join(dir, 'acme'), { recursive: true });
+  writeFileSync(join(dir, 'acme', 'docs.txt'), snapshot);
+  return dir;
+}
+
+test('run exits 0 when upstream matches what we carry and the snapshot matches its baseline', async () => {
+  const snapDir = baselineDir();
   const url = 'https://acme.test/llms.txt';
   const res = await run({
     modelsDir: FIXTURE_MODELS,
@@ -261,7 +348,24 @@ test('run exits 0 and writes the snapshot when upstream matches what we carry', 
     fetchImpl: fakeFetch({ [url]: { status: 200, contentType: 'text/plain', body: 'alpha-1 and beta-2' } }),
   });
   assert.equal(res.exitCode, 0);
+});
+
+test('run reports a source with no baseline snapshot for a whole-file review, and exits 1, even when its ids match', async () => {
+  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  const url = 'https://acme.test/llms.txt';
+  const res = await run({ modelsDir: FIXTURE_MODELS, definitions: [acmeDef(url)], snapshotsDir: snapDir, fetchImpl: fakeFetch({ [url]: { status: 200, contentType: 'text/plain', body: 'alpha-1 and beta-2' } }) });
+  assert.deepEqual(res.providers[0].noBaseline, ['docs']);
+  assert.deepEqual(res.providers[0].changed, []);
+  assert.equal(res.exitCode, 1);
   assert.equal(readFileSync(join(snapDir, 'acme', 'docs.txt'), 'utf8'), 'alpha-1\nbeta-2\n');
+});
+
+test('run with write:false still reports a source with no baseline', async () => {
+  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  const url = 'https://acme.test/llms.txt';
+  const res = await run({ modelsDir: FIXTURE_MODELS, definitions: [acmeDef(url)], snapshotsDir: snapDir, write: false, fetchImpl: fakeFetch({ [url]: { status: 200, contentType: 'text/plain', body: 'alpha-1 beta-2' } }) });
+  assert.deepEqual(res.providers[0].noBaseline, ['docs']);
+  assert.equal(res.exitCode, 1);
 });
 
 test('run exits 1 and reports the new model when upstream adds one', async () => {
@@ -374,6 +478,14 @@ test('run rejects an unknown provider filter instead of reporting a clean run ov
   );
 });
 
+test('run rejects an empty provider filter instead of reporting a clean run over nothing', async () => {
+  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  await assert.rejects(
+    run({ modelsDir: FIXTURE_MODELS, definitions: [acmeDef('https://acme.test/llms.txt')], snapshotsDir: snapDir, only: [], fetchImpl: fakeFetch({}) }),
+    /provider filter|no provider/i,
+  );
+});
+
 test('run passes each provider its carried vendor ids for snapshot scoping', async () => {
   const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
   const url = 'https://acme.test/llms.txt';
@@ -403,7 +515,7 @@ test('run deletes the snapshot of a source that no longer exists in the definiti
 });
 
 test('run re-fetches once when a 200 response fails extraction, so a CDN serving a stray shell is not a false alarm', async () => {
-  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  const snapDir = baselineDir();
   const url = 'https://acme.test/llms.txt';
   const answers = [
     { status: 200, contentType: 'text/html', body: html },
@@ -434,7 +546,7 @@ test('run does not re-fetch an HTTP error (the fetcher already retried transient
 });
 
 test('run resolves a source url through its discover page, for content-hashed assets', async () => {
-  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  const snapDir = baselineDir();
   const def = acmeDef('unused');
   def.sources[0] = { ...def.sources[0], url: undefined, discover: { url: 'https://acme.test/docs', pattern: /\/assets\/index-[\w-]+\.js/ } };
   const seen = [];
@@ -512,4 +624,53 @@ test('run flags an untyped entry that names no mapped model, or gives no reason'
   const errors = res.providers[0].failed.map((f) => f.error).join('\n');
   assert.match(errors, /untyped acme\/alpha-1 .* needs a reason/);
   assert.match(errors, /untyped acme\/gone .* is not a mapped model/);
+});
+
+// ─── lifecycle: deprecated upstream, still served ─────────────────────────────
+
+/** The fixture catalog, with `betaLines` (such as a deprecated_at line) in acme/beta_2's block. */
+function lifecycleModels(betaLines = []) {
+  const dir = mkdtempSync(join(tmpdir(), 'drift-models-'));
+  writeFileSync(join(dir, 'acme.yaml'), [
+    'models:',
+    '  - id: acme/alpha-1', '    provider: acme', '    media_type: image',
+    '  - id: acme/beta_2', '    provider: acme', '    media_type: video',
+    ...betaLines,
+  ].join('\n') + '\n');
+  return dir;
+}
+// A registry that lists active ids, and says which carried ids are deprecated but still served.
+const registryDef = (url) => ({ ...acmeDef(url), sources: [{ ...statusSource, key: 'docs', url }] });
+const registryBody = (rows) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) });
+const betaDeprecated = [{ id: 'alpha-1', status: 'active' }, { id: 'beta-2', status: 'deprecated' }];
+
+test('run does not report a carried model as missing while its vendor still serves it as deprecated', async () => {
+  const url = 'https://acme.test/models';
+  const res = await run({ modelsDir: lifecycleModels(['    deprecated_at: 2026-10-27']), definitions: [registryDef(url)], snapshotsDir: baselineDir('alpha-1\n'), fetchImpl: fakeFetch({ [url]: registryBody(betaDeprecated) }) });
+  assert.deepEqual(res.providers[0].missing, []);
+  assert.deepEqual(res.providers[0].deprecated ?? [], []);
+  assert.equal(res.exitCode, 0);
+});
+
+test('run reports a carried model the vendor deprecated when models/*.yaml has no deprecated_at for it', async () => {
+  const url = 'https://acme.test/models';
+  const res = await run({ modelsDir: lifecycleModels(), definitions: [registryDef(url)], snapshotsDir: baselineDir('alpha-1\n'), fetchImpl: fakeFetch({ [url]: registryBody(betaDeprecated) }) });
+  assert.deepEqual(res.providers[0].missing, []);
+  assert.deepEqual(res.providers[0].deprecated, [{ model: 'acme/beta_2', vendorIds: ['beta-2'] }]);
+  assert.equal(res.exitCode, 1);
+});
+
+test('run takes a retires_at date alone as the catalog recording the deprecation', async () => {
+  // The catalog derives "deprecated" from either date (ModelSchema::status_on).
+  const url = 'https://acme.test/models';
+  const res = await run({ modelsDir: lifecycleModels(['    retires_at: 2027-01-31']), definitions: [registryDef(url)], snapshotsDir: baselineDir('alpha-1\n'), fetchImpl: fakeFetch({ [url]: registryBody(betaDeprecated) }) });
+  assert.deepEqual(res.providers[0].missing, []);
+  assert.deepEqual(res.providers[0].deprecated, []);
+  assert.equal(res.exitCode, 0);
+});
+
+test('run still reports a model missing when its vendor id is neither active nor deprecated', async () => {
+  const url = 'https://acme.test/models';
+  const res = await run({ modelsDir: lifecycleModels(['    deprecated_at: 2026-10-27']), definitions: [registryDef(url)], snapshotsDir: baselineDir('alpha-1\n'), fetchImpl: fakeFetch({ [url]: registryBody([{ id: 'alpha-1', status: 'active' }]) }) });
+  assert.deepEqual(res.providers[0].missing.map((m) => m.model), ['acme/beta_2']);
 });

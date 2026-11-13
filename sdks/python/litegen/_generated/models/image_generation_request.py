@@ -66,6 +66,11 @@ class ImageGenerationRequest:
             region, a lossless container and an output the init's size.
         quality (Union[None, Unset, str]):
         region (Union['Region', None, Unset]):
+        resolution (Union[None, Unset, str]): The output tier, on a model that has tiers: one of its
+            `params.resolution` values, on one scale for every vendor (`0.5K`,
+            `0.75K`, `1K`, `1.5K`, `2K`, `4K`, about that many thousand pixels a
+            side; FLUX 3 Image adds `match_input`, an edit at its reference's
+            size). An exact `size` wins where a model takes both.
         response_format (Union[Unset, str]):
         size (Union[None, Unset, str]):
         steps (Union[None, Unset, int]):
@@ -98,6 +103,7 @@ class ImageGenerationRequest:
     preserve_unmasked: Union[None, Unset, bool] = UNSET
     quality: Union[None, Unset, str] = UNSET
     region: Union["Region", None, Unset] = UNSET
+    resolution: Union[None, Unset, str] = UNSET
     response_format: Union[Unset, str] = UNSET
     size: Union[None, Unset, str] = UNSET
     steps: Union[None, Unset, int] = UNSET
@@ -251,6 +257,12 @@ class ImageGenerationRequest:
         else:
             region = self.region
 
+        resolution: Union[None, Unset, str]
+        if isinstance(self.resolution, Unset):
+            resolution = UNSET
+        else:
+            resolution = self.resolution
+
         response_format = self.response_format
 
         size: Union[None, Unset, str]
@@ -340,6 +352,8 @@ class ImageGenerationRequest:
             field_dict["quality"] = quality
         if region is not UNSET:
             field_dict["region"] = region
+        if resolution is not UNSET:
+            field_dict["resolution"] = resolution
         if response_format is not UNSET:
             field_dict["response_format"] = response_format
         if size is not UNSET:
@@ -599,6 +613,15 @@ class ImageGenerationRequest:
 
         region = _parse_region(d.pop("region", UNSET))
 
+        def _parse_resolution(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        resolution = _parse_resolution(d.pop("resolution", UNSET))
+
         response_format = d.pop("response_format", UNSET)
 
         def _parse_size(data: object) -> Union[None, Unset, str]:
@@ -683,6 +706,7 @@ class ImageGenerationRequest:
             preserve_unmasked=preserve_unmasked,
             quality=quality,
             region=region,
+            resolution=resolution,
             response_format=response_format,
             size=size,
             steps=steps,

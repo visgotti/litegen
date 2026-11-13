@@ -22,6 +22,7 @@ from .polling import (
     MODEL3D_DEFAULT_TIMEOUT,
     poll_model3d,
     poll_video,
+    wait_for_job,
     wait_for_model3d_completion,
     wait_for_video_completion,
 )
@@ -42,11 +43,12 @@ from .types import (
     ResponseMeta,
 )
 
-# How long a request may take by default, in seconds: 6.5 minutes. A synchronous
-# call can keep the server busy for three vendor attempts of up to 120 s each
-# (``server.vendor_timeout_secs``), and a client that gives up first loses an
-# answer the server is still producing, and billing.
-DEFAULT_TIMEOUT = 3 * 120 + 30.0
+# How long a request may take by default, in seconds: 11.5 minutes. A
+# synchronous call can keep the server busy for three vendor attempts of up to
+# 120 s each (``server.vendor_timeout_secs``), after fetching a 3D operation's
+# URL source for up to 300 s, and a client that gives up first loses an answer
+# the server is still producing, and billing.
+DEFAULT_TIMEOUT = 300 + 3 * 120 + 30.0
 
 
 class LiteGenClient:
@@ -92,6 +94,7 @@ class LiteGenClient:
         self.keys = _KeysNamespace(self)
         self.cache = _CacheNamespace(self)
         self.limits = _LimitsNamespace(self)
+        self.file_access = _FileAccessNamespace(self)
         self.end_users = _EndUsersNamespace(self)
         self.spend = _SpendNamespace(self)
         self.admin = _AdminNamespace(self)
@@ -118,6 +121,7 @@ class LiteGenClient:
         params: Any = None,
         content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
+        follow_redirects: bool = False,
     ) -> tuple[Any, httpx.Headers]:
         """:meth:`_request`, plus the response headers.
 
@@ -127,7 +131,13 @@ class LiteGenClient:
         """
         try:
             resp = self._http.request(
-                method, path, json=json, params=params, content=content, headers=headers
+                method,
+                path,
+                json=json,
+                params=params,
+                content=content,
+                headers=headers,
+                follow_redirects=follow_redirects,
             )
         except httpx.TimeoutException as e:
             raise LiteGenTimeoutError(str(e)) from e
@@ -189,19 +199,49 @@ def _clean(req: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in req.items() if v is not None}
 
 
-def _idempotency(key: str | None) -> dict[str, str] | None:
-    """The ``Idempotency-Key`` header for a paid request, when a key is given.
+def _prefer_async(wait_seconds: float | None) -> str:
+    """The ``Prefer`` header (RFC 7240) of an image request that won't wait
+    for a slow vendor job: ``respond-async``, with ``wait=N`` when the server
+    may wait that long first."""
+    if wait_seconds is None:
+        return "respond-async"
+    return f"respond-async, wait={max(0, int(wait_seconds))}"
+
+
+def is_accepted(resp: Mapping[str, Any]) -> bool:
+    """Whether ``images.submit`` answered with the generation to come
+    (``object: "image.generation"``, status ``processing``) rather than the
+    image; ``generations.wait_for_completion(resp["id"])`` waits for it."""
+    return resp.get("object") == "image.generation"
+
+
+def _idempotency(key: str | None, keep_outputs: bool | None = None) -> dict[str, str] | None:
+    """The headers of a paid request: ``Idempotency-Key``, when a key is given,
+    and ``X-Litegen-Keep-Outputs: false`` for ``keep_outputs=False``.
 
     The same key with the same request within 24 hours gets the first
     response back (``Idempotent-Replayed: true``) and is billed nothing; the
     same key with a different request is a 409 ``idempotency_key_reused``.
+    ``keep_outputs=False`` keeps nothing for this request: no copy of the
+    output is stored, and the answer carries the image itself or the vendor's
+    own link. A request can keep less than its app does, never more, so
+    ``True`` is refused.
     """
-    return {"Idempotency-Key": key} if key else None
+    if keep_outputs is True:
+        raise ValueError("keep_outputs takes only False: a request can keep less than its app does, never more")
+    headers: dict[str, str] = {}
+    if key:
+        headers["Idempotency-Key"] = key
+    if keep_outputs is False:
+        headers["X-Litegen-Keep-Outputs"] = "false"
+    return headers or None
 
 
 # Mesh conversion names what the file lost (uvs, materials, …) in this header,
 # comma-joined, on its 200 — and omits it when nothing was lost.
 _CONVERSION_LOSSES_HEADER = "x-litegen-conversion-losses"
+# What reading the input said, "; "-joined; absent when the reader had nothing to say.
+_CONVERSION_WARNINGS_HEADER = "x-litegen-conversion-warnings"
 _OCTET_STREAM = {"Content-Type": "application/octet-stream"}
 
 
@@ -211,16 +251,53 @@ def _disposition_filename(value: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def _conversion(body: Any, headers: Mapping[str, str], to_format: Model3dFormat) -> Model3dConversion:
+def _conversion(
+    body: Any, headers: Mapping[str, str], to_format: Model3dFormat, package: str | None = None
+) -> Model3dConversion:
     """The converted file and what its response headers say about it."""
     return {
         "content": body,
         "content_type": headers.get("content-type", "application/octet-stream"),
-        "filename": _disposition_filename(headers.get("content-disposition")) or f"model.{to_format}",
+        "filename": _disposition_filename(headers.get("content-disposition"))
+        or (f"model.{to_format}.zip" if package == "zip" else f"model.{to_format}"),
         "format": to_format,
         # Same comma-joined shape as the dropped-params header, same parser.
         "losses": _parse_dropped_params(headers.get(_CONVERSION_LOSSES_HEADER)),
+        "warnings": [w for w in headers.get(_CONVERSION_WARNINGS_HEADER, "").split("; ") if w],
     }
+
+
+def _convert_params(
+    from_format: str,
+    to_format: str,
+    units: str | None,
+    up: str | None,
+    from_units: str | None,
+    from_up: str | None,
+    fbx_color_space: str | None = None,
+    package: str | None = None,
+    ktx2_textures: str | None = None,
+    fbx_light_units: str | None = None,
+    usd_light_units: str | None = None,
+    dae_morphs: str | None = None,
+    usdz_root: str | None = None,
+    usd_clips: str | None = None,
+) -> dict[str, str]:
+    """The converter's query: the two containers, a frame for whichever is
+    unitless (STL, OBJ, PLY), an FBX end's colour space, the packaging, what
+    to do with KTX2 textures, the light units of an FBX or USD end, how a
+    written Collada holds morph targets, and a written USD's root layer and
+    clips, each only when asked for."""
+    params = {"from": from_format, "to": to_format}
+    for name, value in (
+        ("units", units), ("up", up), ("from_units", from_units), ("from_up", from_up), ("fbx_color_space", fbx_color_space),
+        ("package", package), ("ktx2_textures", ktx2_textures), ("fbx_light_units", fbx_light_units),
+        ("usd_light_units", usd_light_units), ("dae_morphs", dae_morphs), ("usdz_root", usdz_root),
+        ("usd_clips", usd_clips),
+    ):
+        if value is not None:
+            params[name] = value
+    return params
 
 
 # With `strict=False` (lax mode) the server drops params the model does not
@@ -267,12 +344,30 @@ class _ImagesNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def generate(self, *, idempotency_key: str | None = None, **req: Any) -> Any:
+    def generate(self, *, idempotency_key: str | None = None, keep_outputs: bool | None = None, **req: Any) -> Any:
         """Generate images (``POST /v1/images/generations``). ``idempotency_key``
-        is sent as the ``Idempotency-Key`` header, never in the body."""
+        is sent as the ``Idempotency-Key`` header, never in the body;
+        ``keep_outputs=False`` keeps nothing for this request."""
         return self._c._request_with_headers(
-            "POST", "/v1/images/generations", json=_clean(req), headers=_idempotency(idempotency_key)
+            "POST", "/v1/images/generations", json=_clean(req), headers=_idempotency(idempotency_key, keep_outputs)
         )[0]
+
+    def submit(
+        self,
+        *,
+        wait_seconds: float | None = None,
+        idempotency_key: str | None = None,
+        keep_outputs: bool | None = None,
+        **req: Any,
+    ) -> Any:
+        """Generate an image without waiting for a slow vendor job
+        (``Prefer: respond-async``; docs/async-images.md). The answer is the
+        image when the job beat ``wait_seconds`` (or the model's vendor
+        answers at once), else the generation it will be delivered to — see
+        :func:`is_accepted` and ``generations.wait_for_completion``."""
+        headers = _idempotency(idempotency_key, keep_outputs) or {}
+        headers["Prefer"] = _prefer_async(wait_seconds)
+        return self._c._request_with_headers("POST", "/v1/images/generations", json=_clean(req), headers=headers)[0]
 
     def estimate_cost(self, **req: Any) -> Any:
         return self._c._request("POST", "/v1/images/cost", json=_clean(req))
@@ -387,7 +482,7 @@ class _VideosNamespace:
         """
         interval = req.pop("interval", 2.0)
         timeout = req.pop("timeout", JOB_DEFAULT_TIMEOUT)
-        headers = _idempotency(req.pop("idempotency_key", None))
+        headers = _idempotency(req.pop("idempotency_key", None), req.pop("keep_outputs", None))
         body = _clean(req)
         return VideoJob(
             lambda: self._c._request_with_headers("POST", "/v1/videos/generations", json=body, headers=headers),
@@ -538,6 +633,7 @@ class _Models3dNamespace:
         interval: float = 2.0,
         timeout: float = MODEL3D_DEFAULT_TIMEOUT,
         idempotency_key: str | None = None,
+        keep_outputs: bool | None = None,
         **req: Unpack[Model3dGenerateParams],
     ) -> Model3dJob:
         """Submit a 3D job (``POST /v1/models3d/generations``), returning a :class:`Model3dJob`.
@@ -550,7 +646,7 @@ class _Models3dNamespace:
         submit's ``Idempotency-Key`` header.
         """
         body = _clean(req)
-        headers = _idempotency(idempotency_key)
+        headers = _idempotency(idempotency_key, keep_outputs)
         return Model3dJob(
             lambda: self._c._request_with_headers("POST", "/v1/models3d/generations", json=body, headers=headers),
             self.get_status,
@@ -597,7 +693,23 @@ class _Models3dNamespace:
         )
 
     def convert(
-        self, data: bytes, *, from_format: Model3dFormat, to_format: Model3dFormat
+        self,
+        data: bytes,
+        *,
+        from_format: Model3dFormat,
+        to_format: Model3dFormat,
+        units: str | None = None,
+        up: str | None = None,
+        from_units: str | None = None,
+        from_up: str | None = None,
+        fbx_color_space: str | None = None,
+        package: str | None = None,
+        ktx2_textures: str | None = None,
+        fbx_light_units: str | None = None,
+        usd_light_units: str | None = None,
+        dae_morphs: str | None = None,
+        usdz_root: str | None = None,
+        usd_clips: str | None = None,
     ) -> Model3dConversion:
         """Convert a mesh file you already have to another container
         (``POST /v1/utils/models3d/convert``). A standalone utility: no
@@ -606,19 +718,75 @@ class _Models3dNamespace:
             out = client.models3d.convert(glb_bytes, from_format="glb", to_format="stl")
             Path(out["filename"]).write_bytes(out["content"])
 
+        STL, OBJ and PLY carry no units or up axis and are written in glTF's
+        frame (metres, +Y up). ``units`` (``"m"``, ``"cm"``, ``"mm"``, ``"in"``,
+        ``"ft"``) and ``up`` (``"y"`` or ``"z"``) say otherwise for such a
+        ``to_format`` — ``units="mm", up="z"`` is what a slicer expects — and
+        ``from_units``/``from_up`` how to read such a ``from_format``. When either
+        end is FBX, ``fbx_color_space`` (``"srgb"``, the default, or
+        ``"linear"``) says how its material and light colours are stored.
+        ``package="zip"`` answers with a zip (``application/zip``,
+        ``model.<to>.zip``) holding the main file first and anything that goes
+        beside it, such as an OBJ's ``.mtl`` and textures; the SDK returns it
+        unopened. The default, ``"file"``, is the converted file alone.
+        ``ktx2_textures`` says what happens to a KTX2 (Basis Universal)
+        texture: ``"png"`` (the default) re-encodes it as PNG, so no container
+        drops it and no glTF requires ``KHR_texture_basisu``, and one that
+        cannot be decoded, or that would pass the 64 MiB texture budget, is
+        left out and named as an ``image_formats`` loss; ``"keep"`` leaves it
+        byte for byte when ``to_format`` is ``"glb"`` or ``"gltf"``, which then
+        require that extension, so a reader with no KTX2 support may refuse the
+        file (it suits viewers that upload KTX2 to the GPU: three.js with
+        KTX2Loader, Babylon.js, Godot), and every other ``to_format`` gets PNG
+        either way. ``fbx_light_units`` (when either end is FBX) and
+        ``usd_light_units`` (when either end is USDZ, USDA or USDC) say what units
+        light strengths are stored in at that end:
+        ``"photometric"`` (the default; glTF's candela and lux, as three.js
+        and ufbx read FBX and the UsdLux schema defines USD) or ``"blender"``
+        (Blender's own, so the lights open in Blender as bright as the glTF
+        does). ``dae_morphs`` (when ``to_format`` is ``"dae"``) says how
+        Collada's morph targets (blend shapes) are written: ``"bake"`` (the
+        default) applies the targets at each node's weights and drops their
+        weight animation, which every Collada reader opens; ``"keep"`` writes
+        them as ``<morph>`` controllers with their weight animation, which
+        SceneKit (and so Xcode) and Godot read, while three.js's ColladaLoader
+        and assimp refuse the whole file, so choose it only for a reader that
+        opens controllers. ``usdz_root`` (when ``to_format`` is ``"usdz"``)
+        says what the package's root layer, its first entry, is: ``"usda"``
+        (the default) is USDA text, which ``usdchecker --arkit`` accepts and
+        which ``<model-viewer>`` hands to AR Quick Look as it is; ``"usdc"`` is
+        the binary crate, as Apple's own packagers write it, the package being
+        ``model.usdc`` and its textures. The two read back as one scene.
+        ``usd_clips`` (when ``to_format`` is ``"usda"``, ``"usdc"`` or
+        ``"usdz"``) says which animation clips the USD file holds: ``"all"``
+        keeps every clip as an alternative, a variant set ``Animation`` on the
+        default prim with one variant per clip, the first selected, so a reader
+        that composes variants can switch between them and one that does not
+        plays the first (every clip's skeletal and blend-shape animation is
+        kept; rigid, node motion is the first clip's only, the other clips' is
+        named in the losses, and a scene whose clips are all rigid writes as
+        ``"first"``); ``"first"`` keeps the first clip alone. The default is
+        all for ``"usda"`` and ``"usdc"``, the first for ``"usdz"`` until AR
+        Quick Look's behaviour with variants is checked on a device.
+
         Raises :class:`~litegen.errors.LiteGenValidationError` for a pair the
         converter does not support (``format_unsupported``; ``err.param`` says
-        which side) or a file that is not a ``from_format`` file
-        (``format_mismatch``), and :class:`~litegen.errors.LiteGenAPIError` for
-        one over the size cap (413) or a mesh it cannot read or convert (422).
+        which side), a unit or axis option for a container with its own
+        (``param_unsupported``) or a value it does not take (``param_invalid``),
+        or a file that is not a ``from_format`` file (``format_mismatch``), and
+        :class:`~litegen.errors.LiteGenAPIError` for one over the size cap (413)
+        or a mesh it cannot read or convert (422).
         """
         body, headers = self._c._request_with_headers(
             "POST", "/v1/utils/models3d/convert",
-            params={"from": from_format, "to": to_format},
+            params=_convert_params(
+                from_format, to_format, units, up, from_units, from_up, fbx_color_space, package, ktx2_textures,
+                fbx_light_units, usd_light_units, dae_morphs, usdz_root, usd_clips,
+            ),
             content=bytes(data),
             headers=_OCTET_STREAM,
         )
-        return _conversion(body, headers, to_format)
+        return _conversion(body, headers, to_format, package)
 
     def convert_formats(self) -> Model3dConvertFormats:
         """What the converter accepts (``GET /v1/utils/models3d/formats``): the
@@ -643,6 +811,13 @@ class _GenerationsNamespace:
         """One generation row (``GET /v1/generations/{id}``)."""
         return self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}")
 
+    def wait_for_completion(
+        self, generation_id: str, *, interval: float = 2.0, timeout: float = JOB_DEFAULT_TIMEOUT
+    ) -> Generation:
+        """Poll one generation until it is completed, failed or cancelled — a
+        late image from ``images.submit``, or any other kind."""
+        return wait_for_job(generation_id, self.get, interval=interval, timeout=timeout, kind="generation")
+
     def assets(self, generation_id: str) -> GenerationAssetList:
         """Every file litegen kept for a generation (``GET /v1/generations/{id}/assets``):
         its images, video, meshes, textures and previews, each with its URL, size
@@ -651,8 +826,14 @@ class _GenerationsNamespace:
 
     def download_asset(self, generation_id: str, index: int) -> bytes:
         """The bytes of one kept file (``GET /v1/generations/{id}/assets/{index}``),
-        with only a litegen key. ``index`` is the asset's ``index`` in :meth:`assets`."""
-        return self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}")
+        with only a litegen key. ``index`` is the asset's ``index`` in :meth:`assets`.
+        A signed-mode app answers with a redirect to its bucket, which is followed;
+        httpx drops the litegen key on the way to another host."""
+        return (
+            self._c._request_with_headers(
+                "GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}", follow_redirects=True
+            )
+        )[0]
 
     def cancel(self, generation_id: str) -> CancelledGeneration:
         """Cancel a pending or processing job (``PATCH /v1/generations/{id}``).
@@ -671,15 +852,43 @@ class _GenerationsNamespace:
             json={"status": "cancelled"},
         )
 
+    def delete(self, generation_id: str) -> Generation:
+        """Delete a finished generation's kept files and its request (prompt and
+        params), keeping its billing record (``DELETE /v1/generations/{id}``).
+        Returns the row with ``files_deleted_at`` set; a job still running is a
+        409 (cancel it first)."""
+        return self._c._request("DELETE", f"/v1/generations/{quote(generation_id, safe='')}")
+
+    def revoke_links(self, generation_id: str) -> Any:
+        """End every link litegen signed to this generation's files
+        (``POST /v1/generations/{id}/revoke-links``). A bucket's own presigned
+        links work until they expire."""
+        return self._c._request("POST", f"/v1/generations/{quote(generation_id, safe='')}/revoke-links")
+
+    def download_signed(self, generation_id: str, index: int, query: str) -> bytes:
+        """The bytes behind a link litegen signed
+        (``GET /v1/generations/{id}/assets/{index}/signed?…``), which needs no
+        credentials. ``query`` is the link's own query string, as it came."""
+        return self._c._request(
+            "GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}/signed?{query.lstrip('?')}"
+        )
+
 
 class _ModelsNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def list(self, *, media_type: MediaType | None = None) -> list[Any]:
-        """Models in the catalog (``GET /v1/models``), optionally of one ``media_type``."""
-        params = {"media_type": media_type} if media_type is not None else None
-        resp = self._c._request("GET", "/v1/models", params=params)
+    def list(self, *, media_type: MediaType | None = None, all: bool = False) -> list[Any]:
+        """The models the caller may use (``GET /v1/models``), optionally of one
+        ``media_type``. ``all=True`` lists every model the gateway serves, not
+        only the ones the org pool and app access allow (generations still
+        enforce both)."""
+        params: dict[str, str] = {}
+        if media_type is not None:
+            params["media_type"] = media_type
+        if all:
+            params["all"] = "true"
+        resp = self._c._request("GET", "/v1/models", params=params or None)
         return resp["data"] if isinstance(resp, dict) and "data" in resp else resp
 
     def get(self, model_id: str) -> Any:
@@ -833,6 +1042,52 @@ class _LimitsNamespace:
 
     def reset_member(self, org_id: str, user_id: str) -> Any:
         return self._c._request("POST", f"/v1/orgs/{_q(org_id)}/members/{_q(user_id)}/limits/reset")
+
+
+class _FileAccessNamespace:
+    """Who may open an app's stored files (``/v1/apps/{id}/access``; see
+    ``docs/storage-access.md``).
+
+    ``set_app`` replaces the app's own settings: ``mode`` (``"public"``,
+    ``"signed"`` or ``"private"``), ``owner_scope`` (``"key"``, ``"app"`` or
+    ``"org"``) and ``signed_url_ttl_seconds`` (60 to 604800). One left out uses
+    the gateway's value; ``set_app(app_id)`` clears them all. Both answer the
+    app's own settings and the ones its files follow (``effective``).
+    """
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def get_app(self, app_id: str) -> Any:
+        return self._c._request("GET", f"/v1/apps/{_q(app_id)}/access")
+
+    def set_app(
+        self,
+        app_id: str,
+        *,
+        mode: str | None = None,
+        owner_scope: str | None = None,
+        signed_url_ttl_seconds: int | None = None,
+        keep_outputs: bool | None = None,
+        retention_days: int | None = None,
+        signed_links: str | None = None,
+    ) -> Any:
+        body = {
+            "mode": mode,
+            "owner_scope": owner_scope,
+            "signed_url_ttl_seconds": signed_url_ttl_seconds,
+            "keep_outputs": keep_outputs,
+            "retention_days": retention_days,
+            "signed_links": signed_links,
+        }
+        return self._c._request(
+            "PUT", f"/v1/apps/{_q(app_id)}/access", json={k: v for k, v in body.items() if v is not None}
+        )
+
+    def revoke_app_links(self, app_id: str) -> Any:
+        """End every link litegen signed to the app's files. A bucket's own
+        presigned links work until they expire."""
+        return self._c._request("POST", f"/v1/apps/{_q(app_id)}/access/revoke-links")
 
 
 class _EndUsersNamespace:
@@ -1023,10 +1278,15 @@ class _AdminNamespace:
     """Gateway admin: runtime models, provider configs, routes and settings."""
 
     def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
         self.models = _AdminModelsNamespace(client)
         self.providers = _AdminProvidersNamespace(client)
         self.routes = _AdminRoutesNamespace(client)
         self.settings = _AdminSettingsNamespace(client)
+
+    def revoke_links(self) -> Any:
+        """End every link litegen signed, gateway-wide (``POST /v1/admin/revoke-links``)."""
+        return self._c._request("POST", "/v1/admin/revoke-links")
 
 
 class _OAuthNamespace:

@@ -6,7 +6,7 @@ image `string / string[]`
   [Image generation scenario] Optional
   Seedream 5.0 pro and Seedream 5.0 flash support up to 10 reference images. Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images.
   [Layer decomposition scenario] Required
-layer_decomposition `boolean` `Default: false`
+layer_decompositionnew `boolean` `Default: false`
   values: `true`, `false`
   supported models: (none of ours)
 size `string`
@@ -17,6 +17,8 @@ size `string`
   Default value: `2048x2048`
   * Total pixels range: [`2560x1440`(3,686,400), `4096x4096`(16,777,216)]
   * Aspect ratio range: [1/16, 16]
+  * > **Valid example**: `3750x1250`
+  * > **Invalid example**: `1500x1500`
   |Resolution |Aspect ratio |Width and Height Pixel Values |
   |---|---|---|
   |2K |1:1 |2048x2048 |
@@ -50,6 +52,8 @@ size `string`
   Default value: `2048x2048`
   * Total pixels range: [`2560x1440=3,686,400`, `4096x4096=16,777,216`]
   * Aspect ratio range: [1/16, 16]
+  * > **Valid example**: `3750x1250`
+  * > **Invalid example**: `1500x1500`
   |Resolution |Aspect ratio |Width and Height Pixel Values |
   |---|---|---|
   |2K |1:1 |2048x2048 |
@@ -75,6 +79,8 @@ size `string`
   Default value: `2048x2048`
   * Total pixels range: [`1280x720=921,600`, `4096x4096=16,777,216`]
   * Aspect ratio range: [1/16, 16]
+  * > **Valid example**: `1600x600`
+  * > **Invalid example**: `800x800`
   |Resolution |Aspect ratio |Width and Height Pixel Values |
   |---|---|---|
   |1K |1:1 |1024x1024 |
@@ -107,7 +113,7 @@ mode `string` `Default: standard`
 output_format `string` `Default: jpeg`
   values: `png`, `jpeg`
   supported models: Seedream 5.0 lite
-background `string` `Default: opaque`
+backgroundnew `string` `Default: opaque`
   values: `transparent`, `opaque`
   supported models: (none of ours)
 response_format `string` `Default: url`

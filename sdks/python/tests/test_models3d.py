@@ -663,6 +663,7 @@ def test_convert_posts_raw_bytes_with_from_and_to_in_the_query() -> None:
         "filename": "model.obj",
         "format": "obj",
         "losses": ["materials", "uvs"],
+        "warnings": [],
     }
 
 
@@ -673,6 +674,162 @@ def test_convert_without_loss_or_disposition_headers() -> None:
     respx.post(CONVERT_URL).mock(return_value=_obj_response())
     out = LiteGenClient().models3d.convert(bytearray(GLB_BYTES), from_format="glb", to_format="stl")
     assert out["losses"] == [] and out["filename"] == "model.stl" and out["format"] == "stl"
+
+
+@respx.mock
+def test_convert_asks_for_a_zip_package_and_returns_it_unopened() -> None:
+    zip_bytes = b"PK\x03\x04"
+    route = respx.post(CONVERT_URL).mock(
+        return_value=Response(
+            200,
+            content=zip_bytes,
+            headers={"content-type": "application/zip", "content-disposition": 'attachment; filename="model.obj.zip"'},
+        )
+    )
+    out = LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="obj", package="zip")
+    assert dict(route.calls[0].request.url.params) == {"from": "glb", "to": "obj", "package": "zip"}
+    assert out["content"] == zip_bytes
+    assert out["content_type"] == "application/zip"
+    assert out["filename"] == "model.obj.zip"
+    assert out["format"] == "obj"
+
+
+@respx.mock
+def test_convert_names_a_zip_itself_without_a_disposition_header() -> None:
+    respx.post(CONVERT_URL).mock(
+        return_value=Response(200, content=b"PK", headers={"content-type": "application/zip"})
+    )
+    out = LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="obj", package="zip")
+    assert out["filename"] == "model.obj.zip"
+
+
+@respx.mock
+async def test_async_convert_passes_package_through() -> None:
+    route = respx.post(CONVERT_URL).mock(
+        return_value=Response(200, content=b"PK", headers={"content-type": "application/zip"})
+    )
+    async with AsyncLiteGenClient() as client:
+        out = await client.models3d.convert(GLB_BYTES, from_format="glb", to_format="obj", package="zip")
+    assert route.calls[0].request.url.params["package"] == "zip"
+    assert out["filename"] == "model.obj.zip"
+
+
+@respx.mock
+def test_convert_sends_a_frame_for_unitless_containers_only_when_asked() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="stl", units="mm", up="z")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="stl", to_format="glb", from_units="in", from_up="z")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="obj")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="fbx", fbx_color_space="linear")
+    sent = [dict(c.request.url.params) for c in route.calls]
+    assert sent == [
+        {"from": "glb", "to": "stl", "units": "mm", "up": "z"},
+        {"from": "stl", "to": "glb", "from_units": "in", "from_up": "z"},
+        {"from": "glb", "to": "obj"},
+        {"from": "glb", "to": "fbx", "fbx_color_space": "linear"},
+    ]
+
+
+@respx.mock
+def test_convert_sends_what_to_do_with_ktx2_textures_only_when_asked() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="glb", ktx2_textures="keep")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="obj", package="zip", ktx2_textures="png")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="gltf")
+    sent = [dict(c.request.url.params) for c in route.calls]
+    assert sent == [
+        {"from": "glb", "to": "glb", "ktx2_textures": "keep"},
+        {"from": "glb", "to": "obj", "package": "zip", "ktx2_textures": "png"},
+        {"from": "glb", "to": "gltf"},
+    ]
+
+
+@respx.mock
+def test_convert_sends_light_units_only_when_asked() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="fbx", fbx_light_units="blender")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="usdz", to_format="glb", usd_light_units="blender")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="fbx")
+    sent = [dict(c.request.url.params) for c in route.calls]
+    assert sent == [
+        {"from": "glb", "to": "fbx", "fbx_light_units": "blender"},
+        {"from": "usdz", "to": "glb", "usd_light_units": "blender"},
+        {"from": "glb", "to": "fbx"},
+    ]
+
+
+@respx.mock
+def test_convert_sends_the_collada_morph_choice_only_when_asked() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="dae", dae_morphs="keep")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="dae", package="zip", dae_morphs="bake")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="dae")
+    sent = [dict(c.request.url.params) for c in route.calls]
+    assert sent == [
+        {"from": "glb", "to": "dae", "dae_morphs": "keep"},
+        {"from": "glb", "to": "dae", "package": "zip", "dae_morphs": "bake"},
+        {"from": "glb", "to": "dae"},
+    ]
+
+
+@respx.mock
+async def test_async_convert_sends_the_collada_morph_choice() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    async with AsyncLiteGenClient() as client:
+        await client.models3d.convert(GLB_BYTES, from_format="glb", to_format="dae", dae_morphs="keep")
+    assert route.calls[0].request.url.params["dae_morphs"] == "keep"
+
+
+@respx.mock
+def test_convert_sends_the_usd_choices_only_when_asked() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="usdz", usdz_root="usdc")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="usda", usd_clips="all")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="usdz", usdz_root="usda", usd_clips="first")
+    LiteGenClient().models3d.convert(GLB_BYTES, from_format="glb", to_format="usdc")
+    sent = [dict(c.request.url.params) for c in route.calls]
+    assert sent == [
+        {"from": "glb", "to": "usdz", "usdz_root": "usdc"},
+        {"from": "glb", "to": "usda", "usd_clips": "all"},
+        {"from": "glb", "to": "usdz", "usdz_root": "usda", "usd_clips": "first"},
+        {"from": "glb", "to": "usdc"},
+    ]
+
+
+@respx.mock
+async def test_async_convert_sends_the_usd_choices() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    async with AsyncLiteGenClient() as client:
+        await client.models3d.convert(GLB_BYTES, from_format="glb", to_format="usdz", usdz_root="usdc", usd_clips="all")
+    params = route.calls[0].request.url.params
+    assert (params["usdz_root"], params["usd_clips"]) == ("usdc", "all")
+
+
+@respx.mock
+async def test_async_convert_sends_light_units() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    async with AsyncLiteGenClient() as client:
+        await client.models3d.convert(GLB_BYTES, from_format="glb", to_format="usdz", usd_light_units="blender")
+    assert route.calls[0].request.url.params["usd_light_units"] == "blender"
+
+
+@respx.mock
+async def test_async_convert_sends_what_to_do_with_ktx2_textures() -> None:
+    route = respx.post(CONVERT_URL).mock(return_value=_obj_response())
+    async with AsyncLiteGenClient() as client:
+        await client.models3d.convert(GLB_BYTES, from_format="glb", to_format="glb", ktx2_textures="keep")
+    assert route.calls[0].request.url.params["ktx2_textures"] == "keep"
+
+
+@respx.mock
+def test_convert_hands_back_what_reading_the_input_said() -> None:
+    respx.post(CONVERT_URL).mock(
+        return_value=_obj_response(**{
+            "x-litegen-conversion-warnings": 'material library "m.mtl" was not supplied; 2 line and 0 point element(s) were skipped',
+        })
+    )
+    out = LiteGenClient().models3d.convert(GLB_BYTES, from_format="obj", to_format="glb")
+    assert out["warnings"] == ['material library "m.mtl" was not supplied', "2 line and 0 point element(s) were skipped"]
 
 
 @respx.mock

@@ -16,6 +16,13 @@ export function fixtureUrl(name: string): string {
   return new URL(`fixtures/${name}`, document.baseURI).href;
 }
 
+/** Absolute URL of one of the shared viewer package's fixtures
+ *  (packages/3d-viewer/fixtures, served at /viewer-fixtures): models in the
+ *  formats <model-viewer> could not show. */
+export function viewerFixtureUrl(name: string): string {
+  return new URL(`viewer-fixtures/${name}`, document.baseURI).href;
+}
+
 // Sizes and polycounts as printed by make_fixtures.py (its output is
 // deterministic, so these stay true until the script changes).
 export const CUBE_MESH: Model3dAsset = {
@@ -134,8 +141,8 @@ let stallInstalled = false;
 
 /**
  * Pins the viewer's loading state, which in the live app lasts only as long
- * as a download does. Wraps `fetch` (three.js's FileLoader, inside
- * model-viewer, loads meshes with it) for URLs under STALLED_MARKER only:
+ * as a download does. Wraps `fetch` (the shared viewer downloads meshes
+ * with it) for URLs under STALLED_MARKER only:
  * the real icosphere is fetched, 40% of it is streamed with its true
  * Content-Length so the progress bar has a real fraction, and the stream is
  * then left open. Every other request passes through untouched, so it is safe

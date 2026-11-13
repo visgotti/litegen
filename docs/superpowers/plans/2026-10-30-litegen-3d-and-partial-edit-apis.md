@@ -137,6 +137,7 @@ These rules keep each addition usable by any client, not just PixelGenie.
   - **`joint_naming`:** `vendor` (the default) | `vrm` | `mixamo` | `unity` | `unreal`.
     - Where the vendor can do it, the value maps onto the vendor's setting; Tripo's `spec` is one.
     - Otherwise litegen renames the joints itself, for the vendors whose names it can map (P2). Renaming nodes never changes geometry.
+    - A chained animation keeps its rig's joint names. An animation that sets no `joint_naming` takes the naming its rig was delivered with, whichever provider rigged it. On an animate model that takes `joint_naming` (no carried one does yet), `vendor` asks for the animating vendor's own names instead.
   - **`height_m`:** Meshy's `height_meters`.
 - **Rigging in the generation call.** The existing `rig: true` stays, and so does `supports_rig`, which means "takes `rig`". A generation model that rigs in the same call may also take `skeleton`.
 - **Preflight.** Run the vendor's free preflight before the billed call, for example Tripo's `rig-check`. If the vendor says no, refuse with 422 `not_riggable` and bill nothing.
@@ -314,7 +315,7 @@ From a scan of vendor docs on 2026-10-30. Check each row before building on it.
 | Mock | Behaviour PixelGenie's tests check |
 |---|---|
 | `mock/rig-3d` (`task: rig`) | Returns a skinned box humanoid with joints `hips`, `torso`, `head`, `arm_l`, `arm_r`, `leg_l` and `leg_r`. Its `humanoid` map is `hips`→`hips`, `spine`→`torso`, `head`→`head`, `leftUpperArm`→`arm_l`, `rightUpperArm`→`arm_r`, `leftUpperLeg`→`leg_l` and `rightUpperLeg`→`leg_r`. `joint_naming: "vrm"` renames the joints to those VRM names. |
-| `mock/animate-3d` (`task: animate`) | Returns the source plus one 1-second LINEAR clip for each requested `name`, in order. With `in_place: true` the root has no horizontal travel; with `false` it travels 1 m along +Z. It honours `fps`, and refuses an unrigged source with `source_not_rigged`. |
+| `mock/animate-3d` (`task: animate`) | Returns the source plus one LINEAR clip for each requested `name`, in order: 1 s for a preset, `duration_s` for a prompt. Chained by a `mock/rig-3d` task id, it animates the mesh that rig job stored, in the joint names that job gave it (the mock's own, or VRM's when the rig asked `vrm`), as Tripo and Meshy do, and delivery then applies the rig's naming. With `in_place: true` the root has no horizontal travel; with `false` it travels 1 m along +Z. It honours `fps`, and refuses an unrigged source with `source_not_rigged`. |
 | `mock/turned-3d` (`task: generate`) | Emits a mesh facing +X and declares `native_orientation.front: "+x"`. The delivered file faces +Z, with `oriented_by: "litegen"`. |
 | `mock/multiview-image` (`task: multiview`) | Returns one image for each requested view, tinted by its yaw and labelled with `view` and `yaw_deg`. |
 | `mock/texture-3d`, `mock/remesh-3d`, `mock/segment-3d` | P2, alongside §3F. |

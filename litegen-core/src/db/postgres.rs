@@ -17,6 +17,10 @@ use super::sqlite::{
     PasswordResetRow, ProviderCredentialRow, ProviderUsageRow, RequestLogRow, SessionRow, UserRow,
     WebhookDeliveryRow,
 };
+use super::sqlite::{
+    api_key_owner_from_row, generation_access_from_row, key_cols_of_k, session_user_from_row, ApiKeyOwnerRow,
+    GenerationAccessRow, SessionUserRow, GENERATION_ACCESS_COLS, SESSION_USER_COLS,
+};
 use super::trait_def::DatabaseStore;
 
 /// Full column list for api_keys selects (Postgres).
@@ -26,11 +30,15 @@ const API_KEY_COLS: &str = "id, name, key_hash, key_prefix, created_at, expires_
 /// Full column list for generations selects (Postgres).
 const GENERATION_COLS: &str = "id, key_id, model, provider, media_type, status, progress, \
     provider_job_id, result_url, error_message, cost_usd, created_at, completed_at, metadata, \
-    org_id, app_id";
+    org_id, app_id, files_deleted_at, files_deleted_reason";
 
 /// PostgreSQL-backed database implementation.
 pub struct PostgresDatabase {
     pool: PgPool,
+    /// Tests only: how far "the database's clock" is set from the server's,
+    /// standing in for a replica whose own clock is off.
+    #[cfg(test)]
+    clock_offset: chrono::Duration,
 }
 
 impl PostgresDatabase {
@@ -44,18 +52,59 @@ impl PostgresDatabase {
         sqlx::migrate!("./migrations/postgres").run(&pool).await?;
         info!("PostgreSQL database connected and migrations applied");
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            #[cfg(test)]
+            clock_offset: chrono::Duration::zero(),
+        })
+    }
+
+    /// Tests only: this database's clock, `offset` from the server's.
+    #[cfg(test)]
+    pub(crate) fn with_clock_offset(mut self, offset: chrono::Duration) -> Self {
+        self.clock_offset = offset;
+        self
+    }
+
+    /// Seconds added to `now()` wherever the database's clock is read: the
+    /// tests' offset, 0 outside tests. The SQL is the same in both.
+    #[cfg(test)]
+    fn clock_offset_secs(&self) -> f64 {
+        self.clock_offset.num_milliseconds() as f64 / 1000.0
+    }
+
+    #[cfg(not(test))]
+    fn clock_offset_secs(&self) -> f64 {
+        0.0
     }
 
     pub(crate) fn pool(&self) -> &PgPool {
         &self.pool
     }
 
+    /// Write `after` as generation `id`'s metadata only if it is still `before`
+    /// and the row is in flight: one compare-and-swap step. `true` when it took.
+    async fn swap_metadata(&self, id: &str, before: Option<&str>, after: &serde_json::Value) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            "UPDATE generations SET metadata = $1 \
+                 WHERE id = $2 AND status IN ('pending', 'processing') AND metadata IS NOT DISTINCT FROM $3",
+        )
+        .bind(serde_json::to_string(after).unwrap_or_else(|_| "{}".into()))
+        .bind(id)
+        .bind(before)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// A row's status and its `metadata` exactly as stored: the "before" a
-    /// compare-and-swap on the column compares against.
-    async fn status_and_metadata(&self, id: &str) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
-        sqlx::query_as("SELECT status, metadata FROM generations WHERE id = $1")
+    /// compare-and-swap on the column compares against. Also the database's
+    /// clock as it read them, which leases and stage claims are stamped and
+    /// judged with, at no extra round trip.
+    async fn status_and_metadata(&self, id: &str) -> Result<Option<(String, Option<String>, chrono::DateTime<chrono::Utc>)>, sqlx::Error> {
+        sqlx::query_as("SELECT status, metadata, now() + make_interval(secs => $2) FROM generations WHERE id = $1")
             .bind(id)
+            .bind(self.clock_offset_secs())
             .fetch_optional(&self.pool)
             .await
     }
@@ -171,35 +220,43 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn idempotency_begin(&self, scope: &str, key: &str, request_hash: &str) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
         use crate::db::IdempotencyBegin;
-        let now = chrono::Utc::now();
+        // Every time here is the database's clock (`now()`), never this
+        // replica's: a replica whose clock runs fast would otherwise judge
+        // another's in-flight run stale and run the request again. No extra
+        // round trip: the purge and the insert use `now()` themselves, and the
+        // record is read with it.
+        let offset = self.clock_offset_secs();
         // Opportunistic purge: the index on created_at keeps this cheap.
-        sqlx::query("DELETE FROM idempotency_keys WHERE created_at < $1")
-            .bind(now - crate::db::IDEMPOTENCY_TTL)
+        sqlx::query("DELETE FROM idempotency_keys WHERE created_at < now() + make_interval(secs => $1)")
+            .bind(offset - crate::db::IDEMPOTENCY_TTL.num_milliseconds() as f64 / 1000.0)
             .execute(&self.pool)
             .await?;
         for _ in 0..4 {
             let inserted = sqlx::query(
                 "INSERT INTO idempotency_keys (scope, idem_key, request_hash, state, created_at) \
-                 VALUES ($1, $2, $3, 'in_progress', $4) ON CONFLICT (scope, idem_key) DO NOTHING",
+                 VALUES ($1, $2, $3, 'in_progress', now() + make_interval(secs => $4)) ON CONFLICT (scope, idem_key) DO NOTHING",
             )
             .bind(scope)
             .bind(key)
             .bind(request_hash)
-            .bind(now)
+            .bind(offset)
             .execute(&self.pool)
             .await?;
             if inserted.rows_affected() > 0 {
                 return Ok(IdempotencyBegin::Started);
             }
-            let row: Option<(String, String, Option<i64>, Option<String>, Option<Vec<u8>>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                "SELECT request_hash, state, CAST(response_status AS BIGINT), response_headers, response_body, created_at \
+            #[allow(clippy::type_complexity)]
+            let row: Option<(String, String, Option<i64>, Option<String>, Option<Vec<u8>>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                "SELECT request_hash, state, CAST(response_status AS BIGINT), response_headers, response_body, created_at, \
+                        now() + make_interval(secs => $3) \
                  FROM idempotency_keys WHERE scope = $1 AND idem_key = $2",
             )
             .bind(scope)
             .bind(key)
+            .bind(offset)
             .fetch_optional(&self.pool)
             .await?;
-            let Some((hash, state, status, headers, body, created_at)) = row else { continue };
+            let Some((hash, state, status, headers, body, created_at, now)) = row else { continue };
             let expired = now - created_at > crate::db::IDEMPOTENCY_TTL
                 || (state == "in_progress" && now - created_at > crate::db::IDEMPOTENCY_IN_PROGRESS_STALE);
             if expired {
@@ -260,7 +317,7 @@ impl DatabaseStore for PostgresDatabase {
         patch: &serde_json::Value,
     ) -> Result<crate::db::GenerationWrite, sqlx::Error> {
         for _ in 0..METADATA_CAS_ATTEMPTS {
-            let Some((status, before)) = self.status_and_metadata(id).await? else {
+            let Some((status, before, _)) = self.status_and_metadata(id).await? else {
                 return Ok(crate::db::GenerationWrite::Missing);
             };
             if !is_in_flight(&status) {
@@ -285,7 +342,7 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn claim_generation_stage(&self, id: &str, stage: &str, claimant: &str) -> Result<bool, sqlx::Error> {
         for _ in 0..METADATA_CAS_ATTEMPTS {
-            let Some((status, before)) = self.status_and_metadata(id).await? else { return Ok(false) };
+            let Some((status, before, now)) = self.status_and_metadata(id).await? else { return Ok(false) };
             if !is_in_flight(&status) {
                 return Ok(false);
             }
@@ -295,7 +352,7 @@ impl DatabaseStore for PostgresDatabase {
                 return Ok(false);
             }
             let mut claims = claims.filter(|c| c.is_object()).cloned().unwrap_or_else(|| serde_json::json!({}));
-            claims[stage] = crate::db::stage_claim_record(claimant);
+            claims[stage] = crate::db::stage_claim_record(claimant, now);
             let merged = crate::db::merge_metadata(meta.as_ref(), &serde_json::json!({ "stage_claims": claims }));
             let res = sqlx::query(
                 "UPDATE generations SET metadata = $1 \
@@ -308,6 +365,40 @@ impl DatabaseStore for PostgresDatabase {
             .await?;
             if res.rows_affected() > 0 {
                 return Ok(true);
+            }
+        }
+        Err(metadata_cas_exhausted(id))
+    }
+
+    async fn lease_generation_work(&self, id: &str, work: &str, claimant: &str, ttl: chrono::Duration) -> Result<bool, sqlx::Error> {
+        for _ in 0..METADATA_CAS_ATTEMPTS {
+            let Some((status, before, now)) = self.status_and_metadata(id).await? else { return Ok(true) };
+            if !is_in_flight(&status) {
+                return Ok(false);
+            }
+            let meta = parse_metadata(before.as_deref());
+            if !crate::db::lease_is_free(meta.as_ref(), work, claimant, ttl, now) {
+                return Ok(false);
+            }
+            let merged = crate::db::merge_metadata(meta.as_ref(), &crate::db::leases_patch(meta.as_ref(), work, Some(claimant), now));
+            if self.swap_metadata(id, before.as_deref(), &merged).await? {
+                return Ok(true);
+            }
+        }
+        Err(metadata_cas_exhausted(id))
+    }
+
+    async fn release_generation_work(&self, id: &str, work: &str, claimant: &str) -> Result<(), sqlx::Error> {
+        for _ in 0..METADATA_CAS_ATTEMPTS {
+            let Some((status, before, now)) = self.status_and_metadata(id).await? else { return Ok(()) };
+            let meta = parse_metadata(before.as_deref());
+            let held = meta.as_ref().and_then(|m| m.get("leases")).and_then(|l| l.get(work)).and_then(|l| l.get("by")).and_then(|b| b.as_str());
+            if !is_in_flight(&status) || held != Some(claimant) {
+                return Ok(());
+            }
+            let merged = crate::db::merge_metadata(meta.as_ref(), &crate::db::leases_patch(meta.as_ref(), work, None, now));
+            if self.swap_metadata(id, before.as_deref(), &merged).await? {
+                return Ok(());
             }
         }
         Err(metadata_cas_exhausted(id))
@@ -328,7 +419,7 @@ impl DatabaseStore for PostgresDatabase {
         // status, result and the merged metadata still land in ONE statement.
         if let Some(patch) = metadata {
             for _ in 0..METADATA_CAS_ATTEMPTS {
-                let Some((current, before)) = self.status_and_metadata(id).await? else {
+                let Some((current, before, _)) = self.status_and_metadata(id).await? else {
                     return Ok(crate::db::GenerationWrite::Missing);
                 };
                 if !is_in_flight(&current) {
@@ -481,6 +572,90 @@ impl DatabaseStore for PostgresDatabase {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn claim_active_generations(
+        &self,
+        limit: u32,
+        claimant: &str,
+        hold: chrono::Duration,
+    ) -> Result<Vec<Generation>, sqlx::Error> {
+        // One statement on the database's clock (`now()`, never a time bound
+        // from the app). `SKIP LOCKED` hands rows another claimer is taking
+        // right now to nobody, so concurrent replicas never wait on or share
+        // a row. The picking query is a MATERIALIZED CTE so it runs exactly
+        // once: inside `id IN (SELECT ... LIMIT n)` the planner may rerun it
+        // per row (a nested loop) and claim more than `limit` rows. Its column
+        // is not called `id`, so the unqualified RETURNING columns stay
+        // unambiguous. The rows polled longest ago go first (a row never
+        // polled counts as claimed at its creation), so a replica with more
+        // active rows than `limit` takes them in turn instead of re-taking
+        // the oldest every tick.
+        let sql = format!(
+            "WITH picked AS MATERIALIZED ( \
+                 SELECT id AS picked_id FROM generations \
+                 WHERE status IN ('pending', 'processing') \
+                   AND (poll_claimed_until IS NULL \
+                        OR poll_claimed_until < now() \
+                        OR poll_claimed_by = $1) \
+                 ORDER BY COALESCE(poll_claimed_until, created_at + make_interval(secs => $2)) ASC, \
+                          created_at ASC \
+                 LIMIT $3 \
+                 FOR UPDATE SKIP LOCKED) \
+             UPDATE generations g \
+             SET poll_claimed_by = $1, \
+                 poll_claimed_until = now() + make_interval(secs => $2) \
+             FROM picked \
+             WHERE g.id = picked.picked_id \
+             RETURNING {}",
+            GENERATION_COLS
+        );
+        let rows = sqlx::query_as::<_, GenerationRow>(&sql)
+            .bind(claimant)
+            .bind(hold.num_milliseconds() as f64 / 1000.0)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn release_poll_claims(&self, claimant: &str) -> Result<u64, sqlx::Error> {
+        // Only active rows: a claim is never cleared when its row turns
+        // terminal, so without the status clause every finished row this
+        // process ever polled would be rewritten and counted, after a
+        // sequential scan. With it Postgres can use `idx_generations_status`.
+        let freed = sqlx::query(
+            "UPDATE generations SET poll_claimed_by = NULL, poll_claimed_until = NULL \
+             WHERE poll_claimed_by = $1 AND status IN ('pending', 'processing')",
+        )
+            .bind(claimant)
+            .execute(&self.pool)
+            .await?;
+        Ok(freed.rows_affected())
+    }
+
+    async fn renew_poll_claims(&self, claimant: &str, ids: &[String], hold: chrono::Duration) -> Result<u64, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        // On the database's clock, as the claim is.
+        let renewed = sqlx::query(
+            "UPDATE generations SET poll_claimed_until = now() + make_interval(secs => $3) \
+             WHERE poll_claimed_by = $1 AND id = ANY($2) AND status IN ('pending', 'processing')",
+        )
+            .bind(claimant)
+            .bind(ids.to_vec())
+            .bind(hold.num_milliseconds() as f64 / 1000.0)
+            .execute(&self.pool)
+            .await?;
+        Ok(renewed.rows_affected())
+    }
+
+    async fn clock_now(&self) -> Result<chrono::DateTime<chrono::Utc>, sqlx::Error> {
+        sqlx::query_scalar("SELECT now() + make_interval(secs => $1)")
+            .bind(self.clock_offset_secs())
+            .fetch_one(&self.pool)
+            .await
     }
 
     async fn log_request(
@@ -776,6 +951,24 @@ impl DatabaseStore for PostgresDatabase {
         Ok(row.map(api_key_from_row))
     }
 
+    /// One statement: the key, its maker's `is_active`, and the maker's role
+    /// in the key's org (`null_org` for a key with none).
+    async fn lookup_api_key_with_owner(&self, key_hash: &str, null_org: Option<&str>) -> Result<Option<(ApiKey, crate::db::KeyOwner)>, sqlx::Error> {
+        let sql = format!(
+            "SELECT {}, u.is_active AS owner_active, m.role AS owner_role FROM api_keys k \
+             LEFT JOIN users u ON u.id = k.owner_user_id \
+             LEFT JOIN organization_members m ON m.user_id = k.owner_user_id AND m.org_id = COALESCE(k.org_id, $2) \
+             WHERE k.key_hash = $1 AND k.is_active = TRUE",
+            key_cols_of_k()
+        );
+        let row = sqlx::query_as::<_, ApiKeyOwnerRow>(&sql)
+            .bind(key_hash)
+            .bind(null_org)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(api_key_owner_from_row))
+    }
+
     async fn atomic_charge_tokens(
         &self,
         id: &Uuid,
@@ -856,13 +1049,16 @@ impl DatabaseStore for PostgresDatabase {
         public_id: &str,
         key_hash: &str,
         key_prefix: &str,
+        owner: Option<&str>,
     ) -> Result<Option<ApiKey>, sqlx::Error> {
         let result = sqlx::query(
-            "UPDATE api_keys SET public_id = $1, key_hash = $2, key_prefix = $3 WHERE id = $4",
+            "UPDATE api_keys SET public_id = $1, key_hash = $2, key_prefix = $3, \
+             owner_user_id = COALESCE($4, owner_user_id) WHERE id = $5",
         )
         .bind(public_id)
         .bind(key_hash)
         .bind(key_prefix)
+        .bind(owner)
         .bind(id.to_string())
         .execute(&self.pool)
         .await?;
@@ -1411,6 +1607,12 @@ impl DatabaseStore for PostgresDatabase {
         Ok(row.map(session_from_row))
     }
 
+    async fn get_session_with_user(&self, id: &str) -> Result<Option<(Session, Option<User>)>, sqlx::Error> {
+        let sql = format!("SELECT {SESSION_USER_COLS} FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE s.id = $1");
+        let row = sqlx::query_as::<_, SessionUserRow>(&sql).bind(id).fetch_optional(&self.pool).await?;
+        Ok(row.map(session_user_from_row))
+    }
+
     async fn delete_session(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(id)
@@ -1689,6 +1891,7 @@ impl DatabaseStore for PostgresDatabase {
             "DELETE FROM app_model_access_ids WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
             "DELETE FROM app_model_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
             "DELETE FROM app_storage_credentials WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+            "DELETE FROM app_file_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
         ] {
             sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
         }
@@ -1779,6 +1982,11 @@ impl DatabaseStore for PostgresDatabase {
         new_owner_user_id: &str,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        // Concurrent transfers queue on the org (see `transfer_deployment_owner`).
+        sqlx::query("SELECT id FROM organizations WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = $1 AND role = 'owner'")
             .bind(org_id)
             .execute(&mut *tx)
@@ -1793,6 +2001,44 @@ impl DatabaseStore for PostgresDatabase {
             // new owner is not a member; dropping the tx rolls back the demote
             return Err(sqlx::Error::RowNotFound);
         }
+        tx.commit().await
+    }
+
+    async fn transfer_deployment_owner(
+        &self,
+        org_id: &str,
+        new_owner_user_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // Two transfers at once must queue on the org: under READ COMMITTED
+        // the second's demotion wouldn't see the Owner the first promoted,
+        // and would leave two.
+        sqlx::query("SELECT id FROM organizations WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = $1 AND role = 'owner'")
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await?;
+        let promoted =
+            sqlx::query("UPDATE organization_members SET role = 'owner' WHERE org_id = $1 AND user_id = $2")
+                .bind(org_id)
+                .bind(new_owner_user_id)
+                .execute(&mut *tx)
+                .await?;
+        if promoted.rows_affected() == 0 {
+            // Not a member: dropping the tx rolls the demotion back.
+            return Err(sqlx::Error::RowNotFound);
+        }
+        sqlx::query("UPDATE users SET role = 'admin', updated_at = NOW() WHERE role = 'owner' AND id <> $1")
+            .bind(new_owner_user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE users SET role = 'owner', updated_at = NOW() WHERE id = $1")
+            .bind(new_owner_user_id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await
     }
 
@@ -1874,6 +2120,7 @@ impl DatabaseStore for PostgresDatabase {
             "DELETE FROM app_model_access_ids WHERE app_id = $1",
             "DELETE FROM app_model_access WHERE app_id = $1",
             "DELETE FROM app_storage_credentials WHERE app_id = $1",
+            "DELETE FROM app_file_access WHERE app_id = $1",
         ] {
             sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
         }
@@ -1967,8 +2214,9 @@ impl DatabaseStore for PostgresDatabase {
             "INSERT INTO app_storage_credentials \
                 (app_id, backend, bucket_name, region, endpoint_url, custom_public_url, \
                  path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, \
+                 credential_mode, role_arn, fallback_to_litegen_store, \
                  created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW()) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW()) \
              ON CONFLICT (app_id) DO UPDATE SET \
                 backend = EXCLUDED.backend, \
                 bucket_name = EXCLUDED.bucket_name, \
@@ -1979,6 +2227,9 @@ impl DatabaseStore for PostgresDatabase {
                 access_key_id_hint = EXCLUDED.access_key_id_hint, \
                 secret_ciphertext = EXCLUDED.secret_ciphertext, \
                 secret_nonce = EXCLUDED.secret_nonce, \
+                credential_mode = EXCLUDED.credential_mode, \
+                role_arn = EXCLUDED.role_arn, \
+                fallback_to_litegen_store = EXCLUDED.fallback_to_litegen_store, \
                 updated_at = NOW()",
         )
         .bind(&input.app_id)
@@ -1991,6 +2242,9 @@ impl DatabaseStore for PostgresDatabase {
         .bind(&input.access_key_id_hint)
         .bind(&input.secret_ciphertext)
         .bind(&input.secret_nonce)
+        .bind(&input.credential_mode)
+        .bind(&input.role_arn)
+        .bind(input.fallback_to_litegen_store)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1999,7 +2253,8 @@ impl DatabaseStore for PostgresDatabase {
     async fn get_app_storage(&self, app_id: &str) -> Result<Option<AppStorageRow>, sqlx::Error> {
         let row = sqlx::query_as::<_, AppStorageRow>(
             "SELECT backend, bucket_name, region, endpoint_url, custom_public_url, \
-                    path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, updated_at \
+                    path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, updated_at, \
+                    credential_mode, role_arn, fallback_to_litegen_store \
              FROM app_storage_credentials WHERE app_id = $1",
         )
         .bind(app_id)
@@ -2014,6 +2269,165 @@ impl DatabaseStore for PostgresDatabase {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn get_app_file_access(&self, app_id: &str) -> Result<Option<crate::types::AppFileAccessRow>, sqlx::Error> {
+        sqlx::query_as::<_, crate::types::AppFileAccessRow>(
+            "SELECT app_id, mode, owner_scope, signed_url_ttl_seconds, keep_outputs, retention_days, signed_links, updated_at FROM app_file_access WHERE app_id = $1",
+        )
+        .bind(app_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    async fn generation_file_access(&self, id: &str) -> Result<Option<(Option<String>, Option<crate::types::AppFileAccessRow>)>, sqlx::Error> {
+        let sql = format!("SELECT {GENERATION_ACCESS_COLS} FROM generations g LEFT JOIN app_file_access a ON a.app_id = g.app_id WHERE g.id = $1");
+        let row = sqlx::query_as::<_, GenerationAccessRow>(&sql).bind(id).fetch_optional(&self.pool).await?;
+        Ok(row.map(generation_access_from_row))
+    }
+
+    async fn put_app_file_access(&self, input: &crate::types::AppFileAccessUpsert) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO app_file_access (app_id, mode, owner_scope, signed_url_ttl_seconds, keep_outputs, retention_days, signed_links, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, now()) \
+             ON CONFLICT (app_id) DO UPDATE SET \
+                mode = excluded.mode, \
+                owner_scope = excluded.owner_scope, \
+                signed_url_ttl_seconds = excluded.signed_url_ttl_seconds, \
+                keep_outputs = excluded.keep_outputs, \
+                retention_days = excluded.retention_days, \
+                signed_links = excluded.signed_links, \
+                updated_at = now()",
+        )
+        .bind(&input.app_id)
+        .bind(&input.mode)
+        .bind(&input.owner_scope)
+        .bind(input.signed_url_ttl_seconds)
+        .bind(input.keep_outputs)
+        .bind(input.retention_days)
+        .bind(&input.signed_links)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn apps_with_retention(&self) -> Result<Vec<(String, i64)>, sqlx::Error> {
+        sqlx::query_as("SELECT app_id, retention_days FROM app_file_access WHERE retention_days IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    async fn generations_due_for_retention(
+        &self,
+        app_id: Option<&str>,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<Generation>, sqlx::Error> {
+        let rows = match app_id {
+            Some(app) => {
+                let sql = format!("SELECT {cols} FROM generations WHERE app_id = $1 AND files_deleted_at IS NULL AND status IN ('completed', 'failed', 'cancelled') AND created_at < $2 ORDER BY files_delete_attempted_at ASC NULLS FIRST, created_at ASC LIMIT $3", cols = GENERATION_COLS);
+                sqlx::query_as::<_, GenerationRow>(&sql).bind(app).bind(cutoff).bind(limit).fetch_all(&self.pool).await?
+            }
+            None => {
+                let sql = format!("SELECT {cols} FROM generations WHERE (app_id IS NULL OR app_id NOT IN (SELECT app_id FROM app_file_access WHERE retention_days IS NOT NULL)) AND files_deleted_at IS NULL AND status IN ('completed', 'failed', 'cancelled') AND created_at < $1 ORDER BY files_delete_attempted_at ASC NULLS FIRST, created_at ASC LIMIT $2", cols = GENERATION_COLS);
+                sqlx::query_as::<_, GenerationRow>(&sql).bind(cutoff).bind(limit).fetch_all(&self.pool).await?
+            }
+        };
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn mark_files_deleted(&self, id: &str, at: chrono::DateTime<chrono::Utc>, reason: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE generations SET files_deleted_at = $1, files_deleted_reason = $2 WHERE id = $3 AND files_deleted_at IS NULL")
+            .bind(at)
+            .bind(reason)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn note_files_delete_failed(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE generations SET files_delete_attempted_at = now() WHERE id = $1 AND files_deleted_at IS NULL")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn redact_generation_request(&self, id: &str) -> Result<(), sqlx::Error> {
+        let before: Option<Option<String>> = sqlx::query_scalar("SELECT metadata FROM generations WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(Some(text)) = before {
+            if let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(obj) = meta.as_object_mut() {
+                    obj.remove("request");
+                }
+                // Only over what was read: a write in between keeps its own.
+                sqlx::query("UPDATE generations SET metadata = $1 WHERE id = $2 AND metadata = $3")
+                    .bind(meta.to_string())
+                    .bind(id)
+                    .bind(&text)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        sqlx::query("DELETE FROM request_artifacts WHERE request_id = $1").bind(id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn generations_with_kept_files(&self, scope: &str, id: &str) -> Result<Vec<Generation>, sqlx::Error> {
+        let column = if scope == "org" { "org_id" } else { "app_id" };
+        let sql = format!("SELECT {} FROM generations WHERE {column} = $1 AND files_deleted_at IS NULL", GENERATION_COLS);
+        let rows = sqlx::query_as::<_, GenerationRow>(&sql).bind(id).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn revoke_links(&self, scope: &str, scope_id: &str, at: chrono::DateTime<chrono::Utc>) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO link_revocations (scope, scope_id, revoked_at) VALUES ($1, $2, $3) ON CONFLICT (scope, scope_id) DO UPDATE SET revoked_at = GREATEST(link_revocations.revoked_at, excluded.revoked_at)")
+            .bind(scope)
+            .bind(scope_id)
+            .bind(at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn links_revoked_at(&self, app_id: Option<&str>, generation_id: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+        // At most three rows; the latest is taken here rather than by the
+        // database, so stored timestamp text is never compared as text.
+        let times: Vec<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT revoked_at FROM link_revocations WHERE (scope = 'gateway' AND scope_id = '') OR (scope = 'app' AND scope_id = $1) OR (scope = 'generation' AND scope_id = $2)")
+            .bind(app_id.unwrap_or(""))
+            .bind(generation_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(times.into_iter().max())
+    }
+
+    async fn delete_app_file_access(&self, app_id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM app_file_access WHERE app_id = $1")
+            .bind(app_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ─── Server secrets ─────────────────────────────────────────────────
+
+    async fn server_secret(&self, name: &str, generate: &(dyn Fn() -> String + Send + Sync)) -> Result<String, sqlx::Error> {
+        // The insert keeps the first value ever stored, whoever races for it;
+        // the select then reads that value, which is the caller's own only if
+        // its insert won.
+        sqlx::query("INSERT INTO server_secrets (name, value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING")
+            .bind(name)
+            .bind(generate())
+            .execute(&self.pool)
+            .await?;
+        sqlx::query_scalar("SELECT value FROM server_secrets WHERE name = $1")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await
     }
 
     // ─── Model Allowlists ───────────────────────────────────────────────────────

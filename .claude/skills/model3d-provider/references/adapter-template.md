@@ -76,12 +76,18 @@ pub struct AcmeModel3dProvider {
 }
 
 impl AcmeModel3dProvider {
+    /// The client for Acme's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(Client::builder().timeout(std::time::Duration::from_secs(300)), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
             auth: AuthSpec::bearer(),
-            client: Client::builder().timeout(std::time::Duration::from_secs(300)).build().expect("http client"),
+            client: Self::api_client(&Default::default()),
         }
     }
 
@@ -162,6 +168,7 @@ impl Model3dProvider for AcmeModel3dProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -243,10 +250,9 @@ impl Model3dProvider for AcmeModel3dProvider {
             }
             Some("failed") | Some("cancelled") | Some("banned") => return Ok(failed(format!("Acme 3D failed: {}", data["error"]))),
             Some("success") => {}
-            other => return Err(ProviderError::RequestFailed {
-                message: format!("Acme 3D reported an undocumented status {other:?}"),
-                status_code: None, provider_error: Some(data), retryable: true,
-            }),
+            // Undocumented (or none): fail now, naming it — never poll it to
+            // the reaper's maximum age.
+            other => return Ok(failed(crate::providers::video::unknown_state_message("acme", other))),
         }
 
         // Every mesh container the vendor produced, downloaded NOW (URLs expire).

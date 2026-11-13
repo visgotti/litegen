@@ -6,6 +6,9 @@ export const config: ProviderConfig = {
   displayName: 'Luma',
   mode: ProviderMode.MANUAL,
   cronSchedule: null,
-  pricingUrl: 'https://lumalabs.ai/dream-machine/api/pricing',
+  // The old /dream-machine/api/pricing now redirects to the Agents app, with no
+  // prices (2026-11-09). Ray 2's create costs are in its changelog:
+  // https://docs.lumalabs.ai/changelog/upscale.md
+  pricingUrl: 'https://lumalabs.ai/api',
   notes: 'Manually curated; per-video baseline (per-second tiers can be added).',
 };

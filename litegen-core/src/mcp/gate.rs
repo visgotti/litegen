@@ -8,7 +8,8 @@ use super::auth::Caller;
 use super::catalog::{Gate, Http, ToolDef};
 use super::Surface;
 use crate::api::handlers::management::require_gateway_admin;
-use crate::api::middleware::{is_platform_admin, AppState, KeyContext, Scope};
+use crate::api::handlers::users::may_manage_users;
+use crate::api::middleware::{is_deployment_reader, is_platform_admin, AppState, KeyContext, Scope};
 use crate::config::Mode;
 
 pub fn visible(def: &ToolDef, caller: &Caller, state: &AppState) -> bool {
@@ -50,9 +51,10 @@ fn passes(def: &ToolDef, ctx: &KeyContext, state: &AppState) -> bool {
         Gate::Perm(perm) => ctx.permissions.contains(&perm) && may(method_scope),
         Gate::Global(perm) => match state.mode {
             Mode::Hosted => is_platform_admin(ctx),
-            Mode::SingleTenant => ctx.permissions.contains(&perm) && may(method_scope),
+            Mode::SingleTenant => may_manage_users(state, ctx, perm) && may(method_scope),
         },
         Gate::GatewayAdmin => require_gateway_admin(state, ctx).is_ok(),
+        Gate::Deployment(scope) => has(scope) && is_deployment_reader(ctx, state.mode),
         // A person's own things: reading needs no particular scope (it is
         // their account), changing needs `admin`.
         Gate::User => ctx.user.is_some() && (def.method == Http::Get || may(Scope::Admin)),

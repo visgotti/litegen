@@ -1,3 +1,4 @@
+use crate::providers::auth::Authorize;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -10,7 +11,7 @@ use crate::providers::{
     ImageProvider, ProviderError, ProviderInstanceConfig, SegmentationInput, VendorMask, build_cost_estimate,
 };
 use crate::providers::model3d::download::{fetch_asset, AssetError};
-use crate::providers::model3d::fal::{needs_retry, platform_key_check, transient, QueueReply, DEFAULT_PLATFORM_BASE, DEFAULT_QUEUE_BASE};
+use crate::providers::model3d::fal::{needs_retry, platform_key_check, transient, QueueReply, DEFAULT_QUEUE_BASE};
 use crate::types::*;
 
 /// fal's synchronous host, where images run.
@@ -25,7 +26,9 @@ const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 /// result is not one the adapter fetches.
 const OWNED_FIELDS: &[&str] = &[
     "prompt", "num_images", "image_size", "seed", "negative_prompt", "guidance_scale",
-    "num_inference_steps", "strength", "style", "image_url", "sync_mode", "output_format",
+    "num_inference_steps", "strength", "style", "image_url", "sync_mode", "output_format", "format",
+    "image_urls", "aspect_ratio", "resolution", "expand_left", "expand_top", "expand_right", "expand_bottom",
+    "mask_url", "colors",
 ];
 
 /// Fal.ai image generation provider.
@@ -35,11 +38,14 @@ const OWNED_FIELDS: &[&str] = &[
 ///
 /// @see <https://fal.ai/docs/documentation/model-apis/inference/synchronous> — Verbatim: "`run`
 ///   sends a direct HTTP request to `fal.run`. There is no queue and no status polling."
-/// @see <https://fal.ai/models> — per-model API pages documenting each endpoint's input schema
+/// @see <https://fal.ai/explore> — the model index (fal.ai/models 308-redirects here;
+///   2026-11-09): per-model API pages documenting each endpoint's input schema
 pub struct FalProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// How every request to the vendor's API is authenticated.
+    auth: crate::providers::auth::AuthSpec,
     /// Result downloads: no redirects, so a URL that passed the public-address
     /// check cannot bounce into a private one.
     asset_client: Client,
@@ -49,15 +55,19 @@ pub struct FalProvider {
 }
 
 impl FalProvider {
+    /// The client for the vendor's API, carrying the operator's `extra_headers`
+    /// (result downloads use their own client and never carry them).
+    fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
+        crate::providers::api_client(std::time::Duration::from_secs(300), extra_headers)
+    }
+
     pub fn new() -> Self {
         Self {
             config: None,
             key_pool: None,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .build()
-                .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_download_client(
+            client: Self::api_client(&Default::default()),
+            auth: crate::providers::model3d::fal::fal_auth(),
+            asset_client: crate::util::ssrf::public_only_download_client(
                 std::time::Duration::from_secs(120),
                 std::time::Duration::from_secs(30),
             ),
@@ -94,14 +104,6 @@ impl FalProvider {
         }
     }
 
-    /// fal's Platform API, which the health check reads.
-    fn platform_base(&self) -> &str {
-        self.config
-            .as_ref()
-            .and_then(|c| c.options.as_ref())
-            .and_then(|o| o["platform_api_base"].as_str())
-            .unwrap_or(DEFAULT_PLATFORM_BASE)
-    }
 
     /// Resolve litegen model ID to the Fal endpoint path (e.g. "fal-ai/flux/dev").
     /// `None` for an id with no arm: refused, not billed as FLUX.1 [dev] (L13).
@@ -119,7 +121,45 @@ impl FalProvider {
             // FLUX.1 [dev] below and billed as a different model.
             // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2>
             "flux-2" => "fal-ai/flux-2",
+            // FLUX.2 [dev]'s turbo and flash distillations, [pro], [max],
+            // [flex], and [klein] 4B / 9B with their base models. Each has an
+            // /edit twin (`edit_twin`).
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/turbo> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/flash> (2026-11-04)
+            "flux-2-turbo" => "fal-ai/flux-2/turbo",
+            "flux-2-flash" => "fal-ai/flux-2/flash",
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-max> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-flex> (2026-11-04)
+            "flux-2-pro" => "fal-ai/flux-2-pro",
+            "flux-2-max" => "fal-ai/flux-2-max",
+            "flux-2-flex" => "fal-ai/flux-2-flex",
+            // FLUX.2 [pro] outpaint: `outpaint_body`, no prompt.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/outpaint> (2026-11-04)
+            "flux-2-pro-outpaint" => "fal-ai/flux-2-pro/outpaint",
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/4b> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/9b/base> (2026-11-04)
+            "flux-2-klein-4b" => "fal-ai/flux-2/klein/4b",
+            "flux-2-klein-9b" => "fal-ai/flux-2/klein/9b",
+            "flux-2-klein-4b-base" => "fal-ai/flux-2/klein/4b/base",
+            "flux-2-klein-9b-base" => "fal-ai/flux-2/klein/9b/base",
             "flux-pro" => "fal-ai/flux-pro/v1.1",
+            // FLUX.1 [pro] variants (2026-11-04). Kontext starts at its
+            // text-to-image path; `kontext_paths` moves images on.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/kontext/text-to-image> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/kontext/max/text-to-image> (2026-11-04)
+            "flux-kontext-pro" => "fal-ai/flux-pro/kontext/text-to-image",
+            "flux-kontext-max" => "fal-ai/flux-pro/kontext/max/text-to-image",
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1-ultra> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1-ultra/redux> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1/redux> (2026-11-04)
+            "flux-pro-1.1-ultra" => "fal-ai/flux-pro/v1.1-ultra",
+            "flux-pro-1.1-ultra-redux" => "fal-ai/flux-pro/v1.1-ultra/redux",
+            "flux-pro-1.1-redux" => "fal-ai/flux-pro/v1.1/redux",
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1/fill> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1/erase> (2026-11-04)
+            "flux-pro-fill" => "fal-ai/flux-pro/v1/fill",
+            "flux-pro-erase" => "fal-ai/flux-pro/v1/erase",
             "sdxl" | "sdxl-lightning" => "fal-ai/fast-sdxl",
             "sd35-medium" | "sd3.5-medium" => "fal-ai/stable-diffusion-v35-medium",
             // fal renamed `fal-ai/recraft-v3`: its model page 308-redirects to
@@ -127,14 +167,119 @@ impl FalProvider {
             // input schema is identical, so only the path moves.
             // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/text-to-image>
             "recraft-v3" => "fal-ai/recraft/v3/text-to-image",
+            // Recraft V4 and V4.1 (2026-11-04): prompt, image_size, colors.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v4/text-to-image> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v4.1/text-to-image> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=recraft/v4.1/flash/text-to-image> (2026-11-04)
+            // Recraft V2 at the registry's listed id (its page redirects to
+            // fal-ai/recraft/v2/text-to-image, the same input).
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft-20b> (2026-11-04)
+            "recraft-v2" => "fal-ai/recraft-20b",
+            "recraft-v4" => "fal-ai/recraft/v4/text-to-image",
+            "recraft-v4-pro" => "fal-ai/recraft/v4/pro/text-to-image",
+            "recraft-v4-vector" => "fal-ai/recraft/v4/text-to-vector",
+            "recraft-v4-pro-vector" => "fal-ai/recraft/v4/pro/text-to-vector",
+            "recraft-v4.1" => "fal-ai/recraft/v4.1/text-to-image",
+            "recraft-v4.1-pro" => "fal-ai/recraft/v4.1/pro/text-to-image",
+            "recraft-v4.1-vector" => "fal-ai/recraft/v4.1/text-to-vector",
+            "recraft-v4.1-pro-vector" => "fal-ai/recraft/v4.1/pro/text-to-vector",
+            "recraft-v4.1-utility" => "fal-ai/recraft/v4.1/utility/text-to-image",
+            "recraft-v4.1-utility-pro" => "fal-ai/recraft/v4.1/utility/pro/text-to-image",
+            "recraft-v4.1-flash" => "recraft/v4.1/flash/text-to-image",
+            // Recraft V4 style references, vectorize and upscale (2026-11-04).
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=recraft/v4/style/text-to-image> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/upscale/creative> (2026-11-04)
+            "recraft-v4-style" => "recraft/v4/style/text-to-image",
+            "recraft-v4-style-pro" => "recraft/v4/style/pro/text-to-image",
+            "recraft-v4-style-vector" => "recraft/v4/style/text-to-vector",
+            "recraft-v4-style-pro-vector" => "recraft/v4/style/pro/text-to-vector",
+            "recraft-vectorize" => "fal-ai/recraft/vectorize",
+            "recraft-upscale-crisp" => "fal-ai/recraft/upscale/crisp",
+            "recraft-upscale-creative" => "fal-ai/recraft/upscale/creative",
             "auraflow" | "aura-flow" => "fal-ai/aura-flow",
             // Background removal (PixelGenie L8).
             // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/bria/background/remove>
             "bria-rmbg-2" => "fal-ai/bria/background/remove",
             // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/birefnet/v2>
             "birefnet-v2" => "fal-ai/birefnet/v2",
+            // FLUX 3 (each with an /edit-image twin, `edit_twin`).
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/text-to-image> (2026-11-04)
+            "flux-3-image" => "blackforestlabs/flux-3/text-to-image",
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/text-to-image> (2026-11-04)
+            "flux-3-image-klein" => "blackforestlabs/flux-3/klein/text-to-image",
+            // Klein base (undistilled), which fal serves only at /lora
+            // endpoints. Their `loras` is optional ("Default: []"), and
+            // litegen sends none.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/text-to-image/lora> (2026-11-04)
+            "flux-3-image-klein-base" => "blackforestlabs/flux-3/klein/base/text-to-image/lora",
             _ => return None,
         })
+    }
+
+    /// The edit endpoint a text-to-image endpoint has, which a request with
+    /// images goes to ("image_urls … maxItems 10").
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/edit-image> (2026-11-04)
+    fn edit_twin(endpoint: &str) -> Option<&'static str> {
+        match endpoint {
+            "blackforestlabs/flux-3/text-to-image" => Some("blackforestlabs/flux-3/edit-image"),
+            "blackforestlabs/flux-3/klein/text-to-image" => Some("blackforestlabs/flux-3/klein/edit-image"),
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/edit-image/lora> (2026-11-04)
+            "blackforestlabs/flux-3/klein/base/text-to-image/lora" => Some("blackforestlabs/flux-3/klein/base/edit-image/lora"),
+            // FLUX.2: `{endpoint}/edit`, "image_urls … A maximum of 4 images"
+            // on dev, turbo, flash and klein; [pro], [max] and [flex] state no
+            // maximum (the rows keep BFL's 8).
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/edit> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/edit> (2026-11-04)
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/9b/base/edit> (2026-11-04)
+            "fal-ai/flux-2" => Some("fal-ai/flux-2/edit"),
+            "fal-ai/flux-2/turbo" => Some("fal-ai/flux-2/turbo/edit"),
+            "fal-ai/flux-2/flash" => Some("fal-ai/flux-2/flash/edit"),
+            "fal-ai/flux-2-pro" => Some("fal-ai/flux-2-pro/edit"),
+            "fal-ai/flux-2-max" => Some("fal-ai/flux-2-max/edit"),
+            "fal-ai/flux-2-flex" => Some("fal-ai/flux-2-flex/edit"),
+            "fal-ai/flux-2/klein/4b" => Some("fal-ai/flux-2/klein/4b/edit"),
+            "fal-ai/flux-2/klein/9b" => Some("fal-ai/flux-2/klein/9b/edit"),
+            "fal-ai/flux-2/klein/4b/base" => Some("fal-ai/flux-2/klein/4b/base/edit"),
+            "fal-ai/flux-2/klein/9b/base" => Some("fal-ai/flux-2/klein/9b/base/edit"),
+            _ => None,
+        }
+    }
+
+    /// Where one image goes (`image_url`), and where several go
+    /// (`image_urls`), for models whose images have endpoints of their own:
+    /// Kontext (two to four at /multi; BFL's input_image … input_image_4) and
+    /// Recraft V3 (one, at /image-to-image).
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/kontext/multi> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/image-to-image> (2026-11-04)
+    fn image_paths(endpoint: &str) -> Option<(&'static str, Option<&'static str>)> {
+        match endpoint {
+            "fal-ai/flux-pro/kontext/text-to-image" => Some(("fal-ai/flux-pro/kontext", Some("fal-ai/flux-pro/kontext/multi"))),
+            "fal-ai/flux-pro/kontext/max/text-to-image" => Some(("fal-ai/flux-pro/kontext/max", Some("fal-ai/flux-pro/kontext/max/multi"))),
+            "fal-ai/recraft/v3/text-to-image" => Some(("fal-ai/recraft/v3/image-to-image", None)),
+            _ => None,
+        }
+    }
+
+    /// Endpoints that take their references as one `image_urls` list without
+    /// an edit twin: Recraft V4's style endpoints ("image_urls … maxItems 10").
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=recraft/v4/style/text-to-image> (2026-11-04)
+    fn lists_images(endpoint: &str) -> bool {
+        matches!(
+            endpoint,
+            "recraft/v4/style/text-to-image" | "recraft/v4/style/pro/text-to-image" | "recraft/v4/style/text-to-vector" | "recraft/v4/style/pro/text-to-vector"
+        )
+    }
+
+    /// litegen's tier as FLUX 3 Image's on fal: "768sq", "1k", "1.5k", "2k", "4k".
+    fn flux_3_tier(tier: &str) -> Option<&'static str> {
+        match tier {
+            "0.75K" => Some("768sq"),
+            "1K" => Some("1k"),
+            "1.5K" => Some("1.5k"),
+            "2K" => Some("2k"),
+            "4K" => Some("4k"),
+            _ => None,
+        }
     }
 
     /// Parse a size string "WxH" into {width, height}.
@@ -200,7 +345,7 @@ impl FalProvider {
     async fn run(&self, endpoint: &str, body: &Value) -> Result<Value, ProviderError> {
         let api_key = self.api_key()?;
         let url = format!("{}/{}", self.sync_base(), endpoint);
-        let resp = crate::providers::inject_trace_headers(self.client.post(&url).header("Authorization", format!("Key {api_key}")).json(body))
+        let resp = crate::providers::inject_trace_headers(self.client.post(&url).authorized(&self.auth, &api_key)?.json(body))
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
@@ -217,8 +362,12 @@ impl FalProvider {
             retryable: false,
         })?;
         if !reply.status.is_success() {
+            let message = format!("Fal API error: {}", reply.describe());
+            if let Some(e) = reply.rate_limited(&message) {
+                return Err(e);
+            }
             return Err(ProviderError::RequestFailed {
-                message: format!("Fal API error: {}", reply.describe()),
+                message,
                 status_code: Some(reply.status.as_u16()),
                 retryable: retry.unwrap_or_else(|| transient(reply.status)),
                 provider_error: reply.json,
@@ -232,23 +381,25 @@ impl FalProvider {
         })
     }
 
-    /// Background removal (PixelGenie L8): only the image, the endpoint's own
-    /// knobs from `extra`, then the asked container, so `extra` cannot change
-    /// it. Bria's optional `prompt` is billed $0.03 instead of $0.018 and is
-    /// never sent. Both endpoints answer one `image`.
-    async fn remove_background(&self, endpoint: &str, extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<GenerationOutput, ProviderError> {
+    /// One image in, one `image` out: background removal (PixelGenie L8,
+    /// `sync_mode` on) and Recraft's vectorize and upscalers. Only the image,
+    /// the endpoint's own knobs from `extra`, then the asked container, so
+    /// `extra` cannot change it. Bria's optional `prompt` is billed $0.03
+    /// instead of $0.018 and is never sent.
+    async fn image_op(&self, endpoint: &str, extras: &ImageExtras, materialized: &MaterializedRequest, sync_mode: bool) -> Result<GenerationOutput, ProviderError> {
         let image_url = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
             MaterializedRefForm::Url(u) => Some(u.clone()),
             MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
             MaterializedRefForm::MultipartField { .. } => None,
         });
-        let image_url = image_url.ok_or_else(|| ProviderError::InvalidRequest("background removal needs an init image".into()))?;
-        let mut body = json!({ "image_url": image_url, "sync_mode": true });
-        if let (Some(Value::Object(extra)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in extra {
-                if !OWNED_FIELDS.contains(&k.as_str()) {
-                    obj.insert(k.clone(), v.clone());
-                }
+        let image_url = image_url.ok_or_else(|| ProviderError::InvalidRequest(format!("{endpoint} needs an init image")))?;
+        let mut body = json!({ "image_url": image_url });
+        if sync_mode {
+            body["sync_mode"] = Value::Bool(true);
+        }
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
             }
         }
         if let Some(f) = extras.output_format.as_deref() {
@@ -265,6 +416,79 @@ impl FalProvider {
             data: self.result_bytes(at).await?,
             content_type: answer["image"]["content_type"].as_str().unwrap_or("image/png").to_string(),
             metadata: HashMap::new(),
+            more: Vec::new(),
+        })
+    }
+
+    /// FLUX.2 [pro] outpaint's body: the init image, and the pixels to add to
+    /// each side as `expand_left`, `expand_top`, `expand_right` and
+    /// `expand_bottom` ("Pixels to expand on the left of the image", 0-2048).
+    /// The endpoint takes no prompt. `extra` adds `mode` and `auto_crop` but
+    /// can't change a side; then the asked container.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/outpaint> (2026-11-04)
+    fn outpaint_body(model: &str, extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<Value, ProviderError> {
+        let image_url = materialized
+            .refs
+            .iter()
+            .find(|r| r.role == "init")
+            .and_then(|r| match &r.form {
+                MaterializedRefForm::Url(u) => Some(u.clone()),
+                MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+                MaterializedRefForm::MultipartField { .. } => None,
+            })
+            .ok_or_else(|| ProviderError::InvalidRequest(format!("{model}: outpainting needs an init image")))?;
+        let e = extras
+            .expand
+            .filter(|e| e.left + e.top + e.right + e.bottom > 0)
+            .ok_or_else(|| ProviderError::InvalidRequest(format!("{model}: say how many pixels to add to at least one side (`expand`)")))?;
+        let mut body = json!({
+            "image_url": image_url,
+            "expand_left": e.left,
+            "expand_top": e.top,
+            "expand_right": e.right,
+            "expand_bottom": e.bottom,
+        });
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(f) = extras.output_format.as_deref() {
+            body["output_format"] = Value::String(f.to_string());
+        }
+        Ok(body)
+    }
+
+    /// The first image of fal's `{images: [{url, content_type}]}` answer,
+    /// downloaded.
+    async fn first_image(&self, model: &ModelSchema, resp_json: Value) -> Result<GenerationOutput, ProviderError> {
+        let images = resp_json["images"].as_array().ok_or_else(|| ProviderError::RequestFailed {
+            message: "Fal response missing images array".to_string(),
+            status_code: None,
+            provider_error: Some(resp_json.clone()),
+            retryable: false,
+        })?;
+        let first_image = images.first().ok_or_else(|| ProviderError::RequestFailed {
+            message: "Fal response has empty images array".to_string(),
+            status_code: None,
+            provider_error: None,
+            retryable: false,
+        })?;
+        let image_url = first_image["url"].as_str().ok_or_else(|| ProviderError::RequestFailed {
+            message: "Fal image missing url".to_string(),
+            status_code: None,
+            provider_error: None,
+            retryable: false,
+        })?;
+        let content_type = first_image["content_type"].as_str().unwrap_or("image/jpeg").to_string();
+        let image_bytes = self.result_bytes(image_url).await?;
+        let mut metadata = HashMap::new();
+        metadata.insert("url".to_string(), Value::String(image_url.to_string()));
+        metadata.insert("model".to_string(), Value::String(model.id.clone()));
+        Ok(GenerationOutput {
+            data: image_bytes,
+            content_type,
+            metadata,
             more: Vec::new(),
         })
     }
@@ -296,6 +520,7 @@ impl ImageProvider for FalProvider {
         if !config.api_keys.is_empty() {
             self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
+        self.client = Self::api_client(&config.extra_headers);
         self.config = Some(config);
     }
 
@@ -310,8 +535,9 @@ impl ImageProvider for FalProvider {
     /// @see <https://fal.ai/docs/documentation/model-apis/inference/synchronous> — synchronous run;
     ///   `Authorization: Key <token>`, JSON body, and the `{images: [{url, content_type}]}` response
     ///   shape this method parses.
-    /// @see <https://fal.ai/models> — per-model pages proving the `image_size`, `seed`,
-    ///   `guidance_scale`, `num_inference_steps`, `strength`, and `image_url` input fields.
+    /// @see <https://fal.ai/explore> — the model index (fal.ai/models 308-redirects here;
+    ///   2026-11-09): per-model pages proving the `image_size`, `seed`, `guidance_scale`,
+    ///   `num_inference_steps`, `strength`, and `image_url` input fields.
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -320,14 +546,42 @@ impl ImageProvider for FalProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let endpoint = self.resolve_endpoint(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
+        // fal names the model by its endpoint: a mapping replaces the path.
+        let endpoint = crate::providers::wire_model(self.config.as_ref(), &model.id, endpoint);
         if model.capabilities.background_removal {
-            return self.remove_background(endpoint, extras, materialized).await;
+            return self.image_op(endpoint, extras, materialized, true).await;
         }
+        // Recraft's vectorize and upscalers: one image in, one `image` out.
+        // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/vectorize> (2026-11-04)
+        if matches!(endpoint, "fal-ai/recraft/vectorize" | "fal-ai/recraft/upscale/crisp" | "fal-ai/recraft/upscale/creative") {
+            return self.image_op(endpoint, extras, materialized, false).await;
+        }
+        // Outpainting takes no prompt: its own body, then the same `images`
+        // answer.
+        if model.params.contains_key("expand") {
+            let body = Self::outpaint_body(&model.id, extras, materialized)?;
+            let answer = self.run(endpoint, &body).await?;
+            return self.first_image(model, answer).await;
+        }
+        // A request with images goes to the model's edit twin, its images as one
+        // `image_urls` list.
+        let image_list = Self::edit_twin(endpoint).is_some();
+        let endpoint = match Self::edit_twin(endpoint) {
+            Some(twin) if !materialized.refs.is_empty() => twin,
+            _ => endpoint,
+        };
+        // Kontext and Recraft V3: one image goes to its own path as
+        // `image_url`, two or more (Kontext) to `/multi` as `image_urls`.
+        let images = materialized.refs.iter().filter(|r| r.role != "mask").count();
+        let (endpoint, image_list) = match Self::image_paths(endpoint) {
+            Some((one, _)) if images == 1 => (one, false),
+            Some((_, Some(many))) if images > 1 => (many, true),
+            _ => (endpoint, image_list || Self::lists_images(endpoint)),
+        };
 
-        // Build request body
-        let mut body = json!({
-            "prompt": base.prompt,
-        });
+        // Build request body. A row that takes no prompt (erase) sends none:
+        // its endpoint has no such field.
+        let mut body = if model.prompt.max_length == Some(0) { json!({}) } else { json!({ "prompt": base.prompt }) };
 
         // Fal models use image_size: {width, height}
         if let Some(size_str) = extras.size.as_deref() {
@@ -366,81 +620,90 @@ impl ImageProvider for FalProvider {
         if let Some(style) = extras.style.as_deref() {
             body["style"] = Value::String(style.to_string());
         }
-
-        // Reference images (URL format for Fal)
-        for r in &materialized.refs {
-            match &r.form {
-                MaterializedRefForm::Url(img_url) => {
-                    body["image_url"] = Value::String(img_url.clone());
-                }
-                MaterializedRefForm::Base64(b64) => {
-                    body["image_url"] = Value::String(format!("data:image/png;base64,{b64}"));
-                }
-                _ => {}
+        // Recraft V3's text-to-image takes neither `strength` nor
+        // `negative_prompt`; only its /image-to-image twin does.
+        if endpoint == "fal-ai/recraft/v3/text-to-image" {
+            if let Some(o) = body.as_object_mut() {
+                o.remove("strength");
+                o.remove("negative_prompt");
             }
+        }
+
+        // PixelGenie L16: a palette as Recraft's preferred `colors`
+        // ([{r, g, b}], a hint) on the rows that declare one.
+        // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v4.1/text-to-image> (2026-11-04)
+        if let Some(palette) = extras.palette.as_ref() {
+            let colors: Vec<Value> = palette
+                .iter()
+                .filter_map(|c| u32::from_str_radix(c.trim_start_matches('#'), 16).ok())
+                .map(|v| json!({ "r": (v >> 16) & 0xff, "g": (v >> 8) & 0xff, "b": v & 0xff }))
+                .collect();
+            body["colors"] = Value::Array(colors);
+        }
+
+        // `aspect_ratio` reaches only rows that declare it (FLUX 3 Image,
+        // Kontext, ultra), and each of their endpoints takes it.
+        if let Some(ar) = extras.aspect_ratio.as_deref() {
+            body["aspect_ratio"] = Value::String(ar.to_string());
+        }
+        // FLUX 3 Image's own tier spelling (Klein's rows declare none: it
+        // takes `image_size`).
+        if image_list {
+            if let Some(tier) = extras.resolution.as_deref() {
+                let t = Self::flux_3_tier(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: fal has no FLUX 3 tier {tier}", model.id)))?;
+                body["resolution"] = Value::String(t.to_string());
+            }
+        }
+
+        // Reference images (URL format for Fal): one `image_url`, or the edit
+        // twin's `image_urls` list in order. A mask (already in the row's
+        // convention) goes alone as `mask_url`.
+        let mut urls = Vec::new();
+        let mut mask_url = None;
+        for r in &materialized.refs {
+            let url = match &r.form {
+                MaterializedRefForm::Url(img_url) => img_url.clone(),
+                MaterializedRefForm::Base64(b64) => format!("data:image/png;base64,{b64}"),
+                _ => continue,
+            };
+            if r.role == "mask" {
+                mask_url = Some(url);
+            } else {
+                urls.push(url);
+            }
+        }
+        if image_list {
+            if !urls.is_empty() {
+                body["image_urls"] = json!(urls);
+            }
+        } else if let Some(last) = urls.pop() {
+            body["image_url"] = Value::String(last);
+        }
+        if let Some(mask) = mask_url {
+            body["mask_url"] = Value::String(mask);
+        } else if model.capabilities.inpainting {
+            // Fill and erase require `mask_url`: a mask, or a region the core
+            // drew as one.
+            return Err(ProviderError::InvalidRequest(format!("{}: send a mask, or a region to edit", model.id)));
         }
 
         // `extra` adds the endpoint's own knobs; it cannot replace a field
         // litegen sets (rule 11), which lax mode would otherwise let it.
-        if let (Some(Value::Object(extra_map)), Some(body_obj)) = (&extras.extra, body.as_object_mut()) {
-            for (k, v) in extra_map {
-                if !OWNED_FIELDS.contains(&k.as_str()) {
-                    body_obj.insert(k.clone(), v.clone());
-                }
+        if let Some(body_obj) = body.as_object_mut() {
+            for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
-        // PixelGenie L9: the asked container.
+        // PixelGenie L9: the asked container — fast-sdxl names it `format`
+        // ("enum": ["jpeg", "png"]), every other endpoint `output_format`.
+        // @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/fast-sdxl (2026-11-03)
         if let Some(f) = extras.output_format.as_deref() {
-            body["output_format"] = Value::String(f.to_string());
+            let field = if endpoint == "fal-ai/fast-sdxl" { "format" } else { "output_format" };
+            body[field] = Value::String(f.to_string());
         }
 
         let resp_json = self.run(endpoint, &body).await?;
-
-        // Fal returns: {images: [{url: "...", content_type: "image/jpeg", ...}]}
-        let images = resp_json["images"].as_array().ok_or_else(|| {
-            ProviderError::RequestFailed {
-                message: "Fal response missing images array".to_string(),
-                status_code: None,
-                provider_error: Some(resp_json.clone()),
-                retryable: false,
-            }
-        })?;
-
-        let first_image = images.first().ok_or_else(|| {
-            ProviderError::RequestFailed {
-                message: "Fal response has empty images array".to_string(),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            }
-        })?;
-
-        let image_url = first_image["url"].as_str().ok_or_else(|| {
-            ProviderError::RequestFailed {
-                message: "Fal image missing url".to_string(),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            }
-        })?;
-
-        let content_type = first_image["content_type"]
-            .as_str()
-            .unwrap_or("image/jpeg")
-            .to_string();
-
-        let image_bytes = self.result_bytes(image_url).await?;
-
-        let mut metadata = HashMap::new();
-        metadata.insert("url".to_string(), Value::String(image_url.to_string()));
-        metadata.insert("model".to_string(), Value::String(model.id.clone()));
-
-        Ok(GenerationOutput {
-            data: image_bytes,
-            content_type,
-            metadata,
-            more: Vec::new(),
-        })
+        self.first_image(model, resp_json).await
     }
 
     async fn estimate_cost(
@@ -533,7 +796,7 @@ impl ImageProvider for FalProvider {
         let Ok(api_key) = self.api_key() else {
             return HealthCheckResult { healthy: false, message: "No API key".into(), latency_ms: None };
         };
-        platform_key_check(&self.client, self.platform_base(), &api_key).await
+        platform_key_check(&self.client, crate::providers::model3d::fal::platform_base_for(self.config.as_ref()).as_deref(), &self.sync_base(), &api_key).await
     }
 }
 
@@ -809,7 +1072,7 @@ mod tests {
         ImageExtras {
             vendor_job: Default::default(),
             size: Some("1024x1024".to_string()),
-            aspect_ratio: None,
+            resolution: None, aspect_ratio: None,
             quality: None,
             style: None,
             steps: Some(28),
@@ -824,6 +1087,400 @@ mod tests {
             preserve_unmasked: None, feather_px: None,
             palette: None, directions: None,
         }
+    }
+
+    /// FLUX 3 on fal: text-to-image at `blackforestlabs/flux-3/text-to-image`
+    /// (`resolution` "1k", `aspect_ratio`); with images, its edit twin
+    /// `…/edit-image` and an `image_urls` list ("maxItems 10"). Klein takes
+    /// `image_size` {width, height} on both, no tier or ratio field.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/edit-image> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/edit-image> (2026-11-04)
+    #[tokio::test]
+    async fn flux_3_on_fal_routes_by_images() {
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        for at in ["blackforestlabs/flux-3/text-to-image", "blackforestlabs/flux-3/edit-image", "blackforestlabs/flux-3/klein/text-to-image", "blackforestlabs/flux-3/klein/edit-image"] {
+            Mock::given(method("POST")).and(path(format!("/{at}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{uri}/out.png"), "content_type": "image/png" }] })))
+                .mount(&server).await;
+        }
+        Mock::given(method("GET")).and(path("/out.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\nX".to_vec())).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let two = || MaterializedRequest {
+            refs: vec![
+                crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn.example/a.png".into()), time_s: None },
+                crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn.example/b.png".into()), time_s: None },
+            ],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let none = || MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() };
+        let body_at = |received: &[wiremock::Request], at: &str| -> Value {
+            serde_json::from_slice(&received.iter().find(|r| r.url.path() == at).unwrap_or_else(|| panic!("no call to {at}")).body).unwrap()
+        };
+        // FLUX 3 Image, text then edit.
+        let id = "fal/flux-3-image";
+        let mut e = make_extras_no_size();
+        e.resolution = Some("1K".into());
+        e.aspect_ratio = Some("21:9".into());
+        p.generate(&ref_schema(id), &make_base("a canyon", id), &e, &none()).await.expect("generated");
+        p.generate(&ref_schema(id), &make_base("merge them", id), &make_extras_no_size(), &two()).await.expect("generated");
+        let received = server.received_requests().await.unwrap();
+        let t2i = body_at(&received, "/blackforestlabs/flux-3/text-to-image");
+        assert_eq!((t2i["resolution"].as_str(), t2i["aspect_ratio"].as_str()), (Some("1k"), Some("21:9")), "{t2i}");
+        assert!(t2i.get("image_urls").is_none() && t2i.get("image_size").is_none(), "{t2i}");
+        let edit = body_at(&received, "/blackforestlabs/flux-3/edit-image");
+        assert_eq!(edit["image_urls"], json!(["https://cdn.example/a.png", "https://cdn.example/b.png"]));
+        assert!(edit.get("image_url").is_none(), "{edit}");
+        // Klein: image_size, no tier or ratio.
+        let id = "fal/flux-3-image-klein";
+        let mut e = make_extras();
+        e.size = Some("1536x1024".into());
+        p.generate(&ref_schema(id), &make_base("a canyon", id), &e, &none()).await.expect("generated");
+        p.generate(&ref_schema(id), &make_base("merge them", id), &make_extras_no_size(), &two()).await.expect("generated");
+        let received = server.received_requests().await.unwrap();
+        let t2i = body_at(&received, "/blackforestlabs/flux-3/klein/text-to-image");
+        assert_eq!(t2i["image_size"], json!({ "width": 1536, "height": 1024 }));
+        assert!(t2i.get("resolution").is_none() && t2i.get("aspect_ratio").is_none(), "{t2i}");
+        assert_eq!(body_at(&received, "/blackforestlabs/flux-3/klein/edit-image")["image_urls"].as_array().map(Vec::len), Some(2));
+    }
+
+    /// FLUX 3 Klein base on fal: fal serves it only at its /lora endpoints
+    /// (`…/klein/base/text-to-image/lora`, `…/klein/base/edit-image/lora`).
+    /// `loras` is optional ("Default: []"), so litegen sends none. The rest is
+    /// Klein's body: `image_size` {width, height}, and `image_urls` on the edit
+    /// twin.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/text-to-image/lora> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/edit-image/lora> (2026-11-04)
+    #[tokio::test]
+    async fn flux_3_klein_base_on_fal_takes_its_lora_endpoints_with_no_lora() {
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        for at in ["blackforestlabs/flux-3/klein/base/text-to-image/lora", "blackforestlabs/flux-3/klein/base/edit-image/lora"] {
+            Mock::given(method("POST")).and(path(format!("/{at}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{uri}/out.png"), "content_type": "image/png" }] })))
+                .mount(&server).await;
+        }
+        Mock::given(method("GET")).and(path("/out.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\nX".to_vec())).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let id = "fal/flux-3-image-klein-base";
+        let mut e = make_extras();
+        e.size = Some("2048x2048".into());
+        e.extra = Some(json!({ "enable_prompt_expansion": false }));
+        let none = MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() };
+        p.generate(&ref_schema(id), &make_base("a canyon", id), &e, &none).await.expect("generated");
+        let one = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn.example/a.png".into()), time_s: None }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        p.generate(&ref_schema(id), &make_base("recolour it", id), &make_extras_no_size(), &one).await.expect("generated");
+        let received = server.received_requests().await.unwrap();
+        let body_at = |at: &str| -> Value {
+            serde_json::from_slice(&received.iter().find(|r| r.url.path() == at).unwrap_or_else(|| panic!("no call to {at}")).body).unwrap()
+        };
+        let t2i = body_at("/blackforestlabs/flux-3/klein/base/text-to-image/lora");
+        assert_eq!(t2i["image_size"], json!({ "width": 2048, "height": 2048 }), "{t2i}");
+        assert_eq!(t2i["enable_prompt_expansion"], json!(false), "{t2i}");
+        let edit = body_at("/blackforestlabs/flux-3/klein/base/edit-image/lora");
+        assert_eq!(edit["image_urls"], json!(["https://cdn.example/a.png"]), "{edit}");
+        for b in [&t2i, &edit] {
+            assert!(b.get("loras").is_none() && b.get("image_url").is_none() && b.get("resolution").is_none(), "{b}");
+        }
+    }
+
+    /// FLUX.2 on fal: every row is a text-to-image endpoint with an `/edit`
+    /// twin, which a request with images goes to, its images as one
+    /// `image_urls` list. [flex] and the klein base models take
+    /// `guidance_scale` and `num_inference_steps`, and the base models a
+    /// `negative_prompt`. No row sends `num_images`.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/edit> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/edit> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-flex/edit> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/9b/base/edit> (2026-11-04)
+    #[tokio::test]
+    async fn flux_2_on_fal_routes_by_images() {
+        let rows = [
+            ("fal/flux-2", "fal-ai/flux-2"),
+            ("fal/flux-2-turbo", "fal-ai/flux-2/turbo"),
+            ("fal/flux-2-flash", "fal-ai/flux-2/flash"),
+            ("fal/flux-2-pro", "fal-ai/flux-2-pro"),
+            ("fal/flux-2-max", "fal-ai/flux-2-max"),
+            ("fal/flux-2-flex", "fal-ai/flux-2-flex"),
+            ("fal/flux-2-klein-4b", "fal-ai/flux-2/klein/4b"),
+            ("fal/flux-2-klein-9b", "fal-ai/flux-2/klein/9b"),
+            ("fal/flux-2-klein-4b-base", "fal-ai/flux-2/klein/4b/base"),
+            ("fal/flux-2-klein-9b-base", "fal-ai/flux-2/klein/9b/base"),
+        ];
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{uri}/out.png"), "content_type": "image/png" }] })))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/out.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\nX".to_vec())).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let two = || MaterializedRequest {
+            refs: vec![
+                crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn.example/a.png".into()), time_s: None },
+                crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn.example/b.png".into()), time_s: None },
+            ],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let none = || MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() };
+        for (id, _) in rows {
+            let mut e = make_extras();
+            e.size = Some("1536x1024".into());
+            p.generate(&ref_schema(id), &make_base("a canyon", id), &e, &none()).await.unwrap_or_else(|err| panic!("{id} text: {err:?}"));
+            p.generate(&ref_schema(id), &make_base("merge them", id), &make_extras_no_size(), &two()).await.unwrap_or_else(|err| panic!("{id} edit: {err:?}"));
+        }
+        let received = server.received_requests().await.unwrap();
+        let body_at = |at: &str| -> Value {
+            serde_json::from_slice(&received.iter().find(|r| r.url.path() == at).unwrap_or_else(|| panic!("no call to {at}")).body).unwrap()
+        };
+        for (id, endpoint) in rows {
+            let t2i = body_at(&format!("/{endpoint}"));
+            assert_eq!(t2i["image_size"], json!({ "width": 1536, "height": 1024 }), "{id}: {t2i}");
+            assert!(t2i.get("image_urls").is_none() && t2i.get("num_images").is_none(), "{id}: {t2i}");
+            let edit = body_at(&format!("/{endpoint}/edit"));
+            assert_eq!(edit["image_urls"], json!(["https://cdn.example/a.png", "https://cdn.example/b.png"]), "{id}: {edit}");
+            assert!(edit.get("image_url").is_none() && edit.get("num_images").is_none(), "{id}: {edit}");
+        }
+        // [flex]'s knobs and a base model's negative prompt reach the body.
+        let id = "fal/flux-2-flex";
+        let mut e = make_extras();
+        e.guidance_scale = Some(4.5);
+        e.steps = Some(40);
+        p.generate(&ref_schema(id), &make_base("a lighthouse", id), &e, &none()).await.expect("flex");
+        let id = "fal/flux-2-klein-9b-base";
+        let mut base = make_base("a lighthouse", id);
+        base.negative_prompt = Some("fog".into());
+        p.generate(&ref_schema(id), &base, &make_extras(), &none()).await.expect("klein base");
+        let received = server.received_requests().await.unwrap();
+        let last = |at: &str| -> Value {
+            serde_json::from_slice(&received.iter().rev().find(|r| r.url.path() == at).unwrap_or_else(|| panic!("no call to {at}")).body).unwrap()
+        };
+        let flex = last("/fal-ai/flux-2-flex");
+        assert_eq!((&flex["guidance_scale"], &flex["num_inference_steps"]), (&json!(4.5), &json!(40)), "{flex}");
+        assert_eq!(last("/fal-ai/flux-2/klein/9b/base")["negative_prompt"], "fog");
+    }
+
+    /// FLUX.2 [pro] outpaint on fal sends the init image, each side's pixels
+    /// as `expand_left` … `expand_bottom` ("Pixels to expand on the left of
+    /// the image"), `extra`'s `mode`, and no prompt; `extra` cannot change a
+    /// side. A request with no side to grow is refused before any call.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/outpaint> (2026-11-04)
+    #[tokio::test]
+    async fn flux_2_pro_outpaint_on_fal_sends_the_sides_and_no_prompt() {
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        Mock::given(method("POST")).and(path("/fal-ai/flux-2-pro/outpaint"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{uri}/out.png"), "content_type": "image/png" }] })))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/out.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\nX".to_vec())).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let id = "fal/flux-2-pro-outpaint";
+        let init = || MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn.example/a.png".into()), time_s: None }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let mut e = make_extras_no_size();
+        e.expand = Some(crate::types::Expand { left: 256, top: 0, right: 256, bottom: 128 });
+        e.output_format = Some("png".into());
+        e.extra = Some(json!({ "mode": "fast", "expand_left": 9 }));
+        let out = p.generate(&ref_schema(id), &make_base("", id), &e, &init()).await.expect("outpainted");
+        assert_eq!(out.content_type, "image/png");
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 2, "the submit, then the download");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(
+            body,
+            json!({ "image_url": "https://cdn.example/a.png", "expand_left": 256, "expand_top": 0, "expand_right": 256, "expand_bottom": 128, "mode": "fast", "output_format": "png" })
+        );
+        let mut nothing = make_extras_no_size();
+        nothing.expand = None;
+        let err = p.generate(&ref_schema(id), &make_base("", id), &nothing, &init()).await.expect_err("no side to grow");
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 2, "nothing more was sent");
+    }
+
+    /// FLUX.1 [pro] on fal:
+    /// - Kontext picks its endpoint by image count: none goes to
+    ///   `…/text-to-image`, one to the base path as `image_url`, and two or
+    ///   more to `…/multi` as `image_urls`, each with `aspect_ratio`.
+    /// - Ultra sends its image prompt as `image_url`.
+    /// - Fill and erase send the mask as `mask_url`, and erase sends no
+    ///   `prompt`.
+    /// - Redux sends its one image as `image_url`.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/kontext/multi> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1/fill> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1/erase> (2026-11-04)
+    #[tokio::test]
+    async fn flux_1_pro_on_fal_routes_by_images_and_masks() {
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{uri}/out.png"), "content_type": "image/png" }] })))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/out.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\nX".to_vec())).mount(&server).await;
+        let p = make_provider(&server.uri());
+        let image = |role: &str, url: &str| crate::proxy::materializer::MaterializedRef { role: role.into(), form: MaterializedRefForm::Url(url.into()), time_s: None };
+        let with = |refs: Vec<crate::proxy::materializer::MaterializedRef>| MaterializedRequest { refs, cleanup: crate::proxy::materializer::Cleanup::empty() };
+        let mut ratio = make_extras_no_size();
+        ratio.aspect_ratio = Some("21:9".into());
+        for (id, base) in [("fal/flux-kontext-pro", "fal-ai/flux-pro/kontext"), ("fal/flux-kontext-max", "fal-ai/flux-pro/kontext/max")] {
+            p.generate(&ref_schema(id), &make_base("a canyon", id), &ratio, &with(vec![])).await.unwrap_or_else(|e| panic!("{id} text: {e:?}"));
+            p.generate(&ref_schema(id), &make_base("make it night", id), &ratio, &with(vec![image("init", "https://cdn.example/a.png")])).await.unwrap_or_else(|e| panic!("{id} one: {e:?}"));
+            let two = vec![image("init", "https://cdn.example/a.png"), image("init", "https://cdn.example/b.png")];
+            p.generate(&ref_schema(id), &make_base("merge them", id), &ratio, &with(two)).await.unwrap_or_else(|e| panic!("{id} two: {e:?}"));
+            let received = server.received_requests().await.unwrap();
+            let body_at = |at: String| -> Value { serde_json::from_slice(&received.iter().rev().find(|r| r.url.path() == at).unwrap_or_else(|| panic!("no call to {at}")).body).unwrap() };
+            let t2i = body_at(format!("/{base}/text-to-image"));
+            assert_eq!(t2i["aspect_ratio"], "21:9", "{id}: {t2i}");
+            assert!(t2i.get("image_url").is_none() && t2i.get("image_urls").is_none(), "{id}: {t2i}");
+            let one = body_at(format!("/{base}"));
+            assert_eq!(one["image_url"], "https://cdn.example/a.png", "{id}: {one}");
+            assert!(one.get("image_urls").is_none(), "{id}: {one}");
+            let multi = body_at(format!("/{base}/multi"));
+            assert_eq!(multi["image_urls"], json!(["https://cdn.example/a.png", "https://cdn.example/b.png"]), "{id}: {multi}");
+            assert!(multi.get("image_url").is_none(), "{id}: {multi}");
+        }
+        let id = "fal/flux-pro-1.1-ultra";
+        p.generate(&ref_schema(id), &make_base("a canyon", id), &ratio, &with(vec![image("redux", "https://cdn.example/style.png")])).await.expect("ultra");
+        let id = "fal/flux-pro-fill";
+        p.generate(&ref_schema(id), &make_base("a red door", id), &make_extras_no_size(), &with(vec![image("init", "https://cdn.example/a.png"), image("mask", "https://cdn.example/m.png")])).await.expect("fill");
+        let id = "fal/flux-pro-erase";
+        p.generate(&ref_schema(id), &make_base("", id), &make_extras_no_size(), &with(vec![image("mask", "https://cdn.example/m.png"), image("init", "https://cdn.example/a.png")])).await.expect("erase");
+        let id = "fal/flux-pro-1.1-redux";
+        p.generate(&ref_schema(id), &make_base("", id), &make_extras_no_size(), &with(vec![image("init", "https://cdn.example/a.png")])).await.expect("redux");
+        let received = server.received_requests().await.unwrap();
+        let body_at = |at: &str| -> Value { serde_json::from_slice(&received.iter().rev().find(|r| r.url.path() == at).unwrap_or_else(|| panic!("no call to {at}")).body).unwrap() };
+        let ultra = body_at("/fal-ai/flux-pro/v1.1-ultra");
+        assert_eq!((ultra["image_url"].as_str(), ultra["aspect_ratio"].as_str()), (Some("https://cdn.example/style.png"), Some("21:9")), "{ultra}");
+        for at in ["/fal-ai/flux-pro/v1/fill", "/fal-ai/flux-pro/v1/erase"] {
+            let b = body_at(at);
+            assert_eq!((b["image_url"].as_str(), b["mask_url"].as_str()), (Some("https://cdn.example/a.png"), Some("https://cdn.example/m.png")), "{at}: {b}");
+            assert!(b.get("image_urls").is_none(), "{at}: {b}");
+        }
+        assert_eq!(body_at("/fal-ai/flux-pro/v1/fill")["prompt"], "a red door");
+        assert!(body_at("/fal-ai/flux-pro/v1/erase").get("prompt").is_none(), "erase takes no prompt");
+        assert_eq!(body_at("/fal-ai/flux-pro/v1.1/redux")["image_url"], "https://cdn.example/a.png");
+        // Fill and erase need their mask (or a region drawn as one): without
+        // it nothing is sent ("mask_url" is required on both).
+        let sent = received.len();
+        for id in ["fal/flux-pro-fill", "fal/flux-pro-erase"] {
+            let err = p.generate(&ref_schema(id), &make_base("", id), &make_extras_no_size(), &with(vec![image("init", "https://cdn.example/a.png")])).await.expect_err(id);
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{id}: {err:?}");
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), sent, "nothing more was sent");
+    }
+
+    /// Recraft V4 and V4.1 on fal: each row's own endpoint, the size as
+    /// `image_size` {width, height}, and a palette as `colors` [{r, g, b}].
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v4.1/text-to-image> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=recraft/v4.1/flash/text-to-image> (2026-11-04)
+    #[tokio::test]
+    async fn recraft_v4_on_fal_sends_its_size_and_palette() {
+        let rows = [
+            ("fal/recraft-v4", "fal-ai/recraft/v4/text-to-image"),
+            ("fal/recraft-v4-pro", "fal-ai/recraft/v4/pro/text-to-image"),
+            ("fal/recraft-v4-vector", "fal-ai/recraft/v4/text-to-vector"),
+            ("fal/recraft-v4-pro-vector", "fal-ai/recraft/v4/pro/text-to-vector"),
+            ("fal/recraft-v4.1", "fal-ai/recraft/v4.1/text-to-image"),
+            ("fal/recraft-v4.1-pro", "fal-ai/recraft/v4.1/pro/text-to-image"),
+            ("fal/recraft-v4.1-vector", "fal-ai/recraft/v4.1/text-to-vector"),
+            ("fal/recraft-v4.1-pro-vector", "fal-ai/recraft/v4.1/pro/text-to-vector"),
+            ("fal/recraft-v4.1-utility", "fal-ai/recraft/v4.1/utility/text-to-image"),
+            ("fal/recraft-v4.1-utility-pro", "fal-ai/recraft/v4.1/utility/pro/text-to-image"),
+            ("fal/recraft-v4.1-flash", "recraft/v4.1/flash/text-to-image"),
+            // V2 at the registry's listed id; its page redirects to fal-ai/recraft/v2/text-to-image.
+            ("fal/recraft-v2", "fal-ai/recraft-20b"),
+        ];
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{uri}/out.svg"), "content_type": "image/svg+xml" }] })))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/out.svg")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec())).mount(&server).await;
+        let p = make_provider(&server.uri());
+        for (id, _) in rows {
+            let mut e = make_extras_no_size();
+            e.size = Some(if id.contains("pro") { "2048x2048" } else { "1536x768" }.into());
+            e.palette = Some(vec!["#ff6432".into(), "#081820".into()]);
+            let out = p.generate(&ref_schema(id), &make_base("a fox logo", id), &e, &MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() })
+                .await
+                .unwrap_or_else(|err| panic!("{id}: {err:?}"));
+            assert_eq!(out.content_type, "image/svg+xml", "{id}: fal's own content_type");
+        }
+        let received = server.received_requests().await.unwrap();
+        for (id, endpoint) in rows {
+            let body: Value = serde_json::from_slice(&received.iter().find(|r| r.url.path() == format!("/{endpoint}")).unwrap_or_else(|| panic!("no call to {endpoint}")).body).unwrap();
+            let (w, h) = if id.contains("pro") { (2048, 2048) } else { (1536, 768) };
+            assert_eq!(body["image_size"], json!({ "width": w, "height": h }), "{id}: {body}");
+            assert_eq!(body["colors"], json!([{ "r": 255, "g": 100, "b": 50 }, { "r": 8, "g": 24, "b": 32 }]), "{id}: {body}");
+            assert_eq!(body["prompt"], "a fox logo", "{id}");
+        }
+    }
+
+    /// The rest of Recraft on fal:
+    /// - V3 with an image goes to `/image-to-image` (`image_url`, `strength`,
+    ///   `negative_prompt`), and without one to text-to-image with neither of
+    ///   those fields.
+    /// - A style row sends its `style` references as `image_urls`.
+    /// - Vectorize and the upscalers send only `image_url` and read fal's one
+    ///   `image`.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/image-to-image> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=recraft/v4/style/text-to-image> (2026-11-04)
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/vectorize> (2026-11-04)
+    #[tokio::test]
+    async fn recraft_operations_on_fal_send_their_own_fields() {
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        for at in ["/fal-ai/recraft/vectorize", "/fal-ai/recraft/upscale/crisp", "/fal-ai/recraft/upscale/creative"] {
+            Mock::given(method("POST")).and(path(at))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "image": { "url": format!("{uri}/one.svg"), "content_type": "image/svg+xml" } })))
+                .mount(&server).await;
+        }
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{uri}/out.png"), "content_type": "image/png" }] })))
+            .mount(&server).await;
+        for at in ["/out.png", "/one.svg"] {
+            Mock::given(method("GET")).and(path(at)).respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\nX".to_vec())).mount(&server).await;
+        }
+        let p = make_provider(&server.uri());
+        let image = |role: &str, url: &str| crate::proxy::materializer::MaterializedRef { role: role.into(), form: MaterializedRefForm::Url(url.into()), time_s: None };
+        let with = |refs: Vec<crate::proxy::materializer::MaterializedRef>| MaterializedRequest { refs, cleanup: crate::proxy::materializer::Cleanup::empty() };
+        let mut e = make_extras_no_size();
+        e.strength = Some(0.3);
+        e.palette = Some(vec!["#ff6432".into()]);
+        let mut base = make_base("a fox", "fal/recraft-v3");
+        base.negative_prompt = Some("blur".into());
+        p.generate(&ref_schema("fal/recraft-v3"), &base, &e, &with(vec![image("init", "https://cdn.example/a.png")])).await.expect("v3 image");
+        p.generate(&ref_schema("fal/recraft-v3"), &base, &e, &with(vec![])).await.expect("v3 text");
+        let mut styled = make_extras_no_size();
+        styled.extra = Some(json!({ "style_match": "precise" }));
+        let refs = vec![image("style", "https://cdn.example/s1.png"), image("style", "https://cdn.example/s2.png")];
+        p.generate(&ref_schema("fal/recraft-v4-style"), &make_base("a fox", "fal/recraft-v4-style"), &styled, &with(refs)).await.expect("style");
+        for id in ["fal/recraft-vectorize", "fal/recraft-upscale-crisp", "fal/recraft-upscale-creative"] {
+            let out = p.generate(&ref_schema(id), &make_base("", id), &make_extras_no_size(), &with(vec![image("init", "https://cdn.example/a.png")])).await.unwrap_or_else(|err| panic!("{id}: {err:?}"));
+            assert_eq!(out.content_type, "image/svg+xml", "{id}: fal's own content_type");
+        }
+        let received = server.received_requests().await.unwrap();
+        let bodies = |at: &str| -> Vec<Value> { received.iter().filter(|r| r.url.path() == at).map(|r| serde_json::from_slice(&r.body).unwrap()).collect() };
+        let i2i = &bodies("/fal-ai/recraft/v3/image-to-image")[0];
+        assert_eq!((i2i["image_url"].as_str(), &i2i["strength"], i2i["negative_prompt"].as_str()), (Some("https://cdn.example/a.png"), &json!(0.3), Some("blur")), "{i2i}");
+        assert_eq!(i2i["colors"], json!([{ "r": 255, "g": 100, "b": 50 }]), "{i2i}");
+        let t2i = &bodies("/fal-ai/recraft/v3/text-to-image")[0];
+        assert!(t2i.get("strength").is_none() && t2i.get("negative_prompt").is_none() && t2i.get("image_url").is_none(), "text-to-image takes neither: {t2i}");
+        let style = &bodies("/recraft/v4/style/text-to-image")[0];
+        assert_eq!(style["image_urls"], json!(["https://cdn.example/s1.png", "https://cdn.example/s2.png"]), "{style}");
+        assert_eq!(style["style_match"], "precise", "{style}");
+        for at in ["/fal-ai/recraft/vectorize", "/fal-ai/recraft/upscale/crisp", "/fal-ai/recraft/upscale/creative"] {
+            assert_eq!(bodies(at), vec![json!({ "image_url": "https://cdn.example/a.png" })], "{at}");
+        }
+    }
+
+    fn make_extras_no_size() -> ImageExtras {
+        let mut e = make_extras();
+        e.size = None;
+        e
     }
 
     #[tokio::test]
@@ -1024,6 +1681,23 @@ mod tests {
         assert_eq!(body["image_size"], json!({ "width": 1024, "height": 1024 }), "{body}");
         assert!(body.get("num_images").is_none() && body.get("sync_mode").is_none(), "{body}");
         assert_eq!(body["enable_safety_checker"], false, "a knob litegen does not own still passes: {body}");
+    }
+
+    /// fast-sdxl's container field is `format` ("enum": ["jpeg", "png"],
+    /// default "jpeg"), not `output_format`: the asked container goes as it,
+    /// and `extra` cannot replace it.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/fast-sdxl> (2026-11-03)
+    #[tokio::test]
+    async fn fast_sdxl_takes_its_container_as_format() {
+        let (server, images) = (MockServer::start().await, MockServer::start().await);
+        image_answer(&server, "fal-ai/fast-sdxl", &images).await;
+        let mut extras = make_extras();
+        extras.output_format = Some("png".into());
+        extras.extra = Some(json!({ "format": "jpeg" }));
+        make_provider(&server.uri()).generate(&ref_schema("fal/sdxl"), &make_base("a lighthouse", "fal/sdxl"), &extras, &empty_materialized()).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["format"], "png", "{body}");
+        assert!(body.get("output_format").is_none(), "fast-sdxl has no output_format: {body}");
     }
 
     /// F04: once fal answered 2xx it has run, and billed, the job — a result

@@ -1,25 +1,11 @@
-//! The CORS policy: which origins may call litegen from a browser, which
-//! request headers they may send, and which response headers their scripts
-//! may read (L19: an SDK that shows headers).
+//! The CORS policy: which origins may call litegen from a browser (any
+//! request header, as LiteLLM allows), and which response headers their
+//! scripts may read (L19: an SDK that shows headers).
 
 use axum::http::{header, HeaderName, HeaderValue, Method};
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{AllowHeaders, AllowOrigin, Any, CorsLayer};
 
 use crate::config::CorsConfig;
-
-/// Request headers a cross-origin caller may send: every header the SDKs set.
-pub fn allowed_request_headers() -> Vec<HeaderName> {
-    let litegen = [
-        "x-litegen-strict",
-        "x-csrf-token",
-        "idempotency-key",
-        "x-litegen-org-id",
-        "x-litegen-app-id",
-        "x-litegen-end-user",
-        "x-litegen-tags",
-    ];
-    [header::AUTHORIZATION, header::CONTENT_TYPE].into_iter().chain(litegen.map(HeaderName::from_static)).collect()
-}
 
 /// Response headers a cross-origin script may READ. CORS hides every
 /// response header outside the safelist, so without this a browser SDK sees
@@ -47,16 +33,21 @@ pub fn configured_origins(config: &CorsConfig, origins_override: Option<&str>) -
 
 /// The CORS layer for `config`. `origins_override` (`LITEGEN_CORS_ORIGINS`,
 /// a CSV) replaces the configured origins when set: `*` allows any origin,
-/// none denies every cross-origin call. OAuth's public endpoints answer any
+/// none denies every cross-origin call. Credentials are allowed only with an
+/// explicit origin list, never with `*`. OAuth's public endpoints answer any
 /// origin regardless ([`crate::mcp::oauth::is_public_path`]).
 pub fn layer(config: &CorsConfig, origins_override: Option<&str>) -> CorsLayer {
     let methods = [Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS];
     let origins = configured_origins(config, origins_override);
     let layer = CorsLayer::new()
         .allow_methods(methods.to_vec())
-        .allow_headers(allowed_request_headers())
+        // Any request header, as LiteLLM allows, so a customer's own auth
+        // header reaches a generation hook (docs/hooks.md). Mirrored rather
+        // than `*`, which browsers refuse alongside credentials.
+        .allow_headers(AllowHeaders::mirror_request())
         .expose_headers(exposed_response_headers());
-    let layer = if origins.iter().any(|o| o == "*") {
+    let wildcard = origins.iter().any(|o| o == "*");
+    let layer = if wildcard {
         layer.allow_origin(Any)
     } else {
         let allowed: Vec<HeaderValue> = origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
@@ -64,10 +55,13 @@ pub fn layer(config: &CorsConfig, origins_override: Option<&str>) -> CorsLayer {
             allowed.contains(origin) || crate::mcp::oauth::is_public_path(request.uri.path())
         }))
     };
-    if config.allow_credentials {
-        layer.allow_credentials(true)
-    } else {
-        layer
+    match (config.allow_credentials, wildcard) {
+        (true, false) => layer.allow_credentials(true),
+        (true, true) => {
+            tracing::warn!("cors: credentials are never allowed with a * origin; list the origins to allow them");
+            layer
+        }
+        (false, _) => layer,
     }
 }
 
@@ -143,6 +137,37 @@ mod tests {
         assert!(denied.headers().get("access-control-allow-origin").is_none());
         let allowed = get(app.layer(layer(&config, Some(&format!("https://other.example, {ORIGIN}"))))).await;
         assert_eq!(allowed.headers()["access-control-allow-origin"], ORIGIN);
+    }
+
+    /// A customer's own auth header, for a generation hook to read
+    /// (`docs/hooks.md`), passes the preflight: litegen allows any request
+    /// header, as LiteLLM does.
+    #[tokio::test]
+    async fn a_browser_may_send_any_request_header() {
+        let resp = answer(
+            Request::options("/v1/x")
+                .header("origin", ORIGIN)
+                .header("access-control-request-method", "PUT")
+                .header("access-control-request-headers", "x-acme-token, authorization")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let allowed = listed(&resp, "access-control-allow-headers");
+        for h in ["x-acme-token", "authorization"] {
+            assert!(allowed.iter().any(|a| a == h), "{h} not in {allowed:?}");
+        }
+    }
+
+    /// As LiteLLM switches credentials off under a `*` origin: a browser must
+    /// never send its cookies to an origin-blind server.
+    #[tokio::test]
+    async fn credentials_are_never_allowed_with_a_wildcard_origin() {
+        let config = CorsConfig { allowed_origins: vec!["*".into()], allow_credentials: true };
+        let app = axum::Router::new().route("/v1/x", axum::routing::get(|| async { "ok" })).layer(layer(&config, None));
+        let resp = app.oneshot(Request::get("/v1/x").header("origin", ORIGIN).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.headers()["access-control-allow-origin"], "*");
+        assert!(resp.headers().get("access-control-allow-credentials").is_none(), "{:?}", resp.headers());
     }
 
     #[tokio::test]

@@ -20,7 +20,7 @@ use litegen::capabilities::CapabilityRegistry;
 use litegen::providers::model3d::fal::FalModel3dProvider;
 use litegen::providers::{Model3dExtras, Model3dProvider, ProviderInstanceConfig};
 use litegen::proxy::materializer::{Cleanup, MaterializedRef, MaterializedRefForm, MaterializedRequest};
-use litegen::proxy::model3d_convert::synthesize_missing_formats;
+use litegen::proxy::model3d_deliver::{deliver, DeliveryPlan};
 use litegen::types::{BaseGenerationRequest, GenerationStatus, Model3dAssetKind};
 
 /// fal's own example input for TRELLIS, from `TrellisInput.image_url.examples`
@@ -71,7 +71,7 @@ async fn live_fal_trellis_delivers_four_containers_from_one_glb() {
         symmetry: None, topology: None, rig: None, extra: None,
         source: None,
         animations: Vec::new(), fps: None,
-        skeleton: None, joint_naming: None, height_m: None, preflight: None,
+        skeleton: None, joint_naming: None, height_m: None, preflight: None, fbx_color_space: None, fbx_light_units: None, usd_light_units: None, dae_morphs: None, usdz_root: None, usd_clips: None, format_source: None,output_packages: None, ktx2_textures: None,
         texture_resolution: None, keep_uvs: None,
         ground: None, center: None,
     };
@@ -104,13 +104,16 @@ async fn live_fal_trellis_delivers_four_containers_from_one_glb() {
     assert_eq!(mesh.format, "glb");
     assert_eq!(&mesh.bytes[0..4], b"glTF", "a real binary glTF");
 
-    // TRELLIS emits glb only; the rest must come out of litegen's converter.
-    let (files, report) = synthesize_missing_formats(done.files.clone(), &requested);
-    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    // TRELLIS emits glb only; the rest must come out of litegen's delivery
+    // step, as production derives them, each read back into its manifest.
+    let delivered = deliver(done.files.clone(), &DeliveryPlan { requested_formats: requested.clone(), ..Default::default() });
+    assert!(delivered.fatal.is_none() && delivered.failures.is_empty(), "{:?} {:?}", delivered.fatal, delivered.failures);
     for f in &requested {
-        assert!(
-            files.iter().any(|x| x.kind == Model3dAssetKind::Mesh && &x.format == f),
-            "{f} was not delivered"
-        );
+        let m = delivered
+            .files
+            .iter()
+            .find(|x| x.kind == Model3dAssetKind::Mesh && &x.format == f)
+            .unwrap_or_else(|| panic!("{f} was not delivered"));
+        assert!(m.manifest.is_some(), "{f} did not read back");
     }
 }

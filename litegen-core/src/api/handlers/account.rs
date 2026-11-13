@@ -30,6 +30,15 @@ fn err(code: StatusCode, error_code: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// A 500 that keeps its class (`error_code`: `db_error`, `hash_error`, ...)
+/// but not its text (SEC-DBERR): the detail goes to the server log, the
+/// caller gets "internal server error". A database error names tables and
+/// constraints.
+fn internal(error_code: &str, detail: &dyn std::fmt::Display) -> Response {
+    tracing::error!(error = %detail, code = error_code, "internal error");
+    err(StatusCode::INTERNAL_SERVER_ERROR, error_code, "internal server error")
+}
+
 fn forbidden_perm(perm: &str) -> Response {
     err(
         StatusCode::FORBIDDEN,
@@ -151,7 +160,7 @@ pub async fn get_account(
     match state.db.get_user_by_id(&user_id).await {
         Ok(Some(user)) => (StatusCode::OK, Json(AccountUser::from(user))).into_response(),
         Ok(None) => err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -209,7 +218,7 @@ pub async fn patch_account(
     let user = match state.db.get_user_by_id(&user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => return err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
     };
 
     // Verify current password
@@ -229,7 +238,7 @@ pub async fn patch_account(
         Ok(false) => {
             return err(StatusCode::UNAUTHORIZED, "wrong_password", "Current password is incorrect");
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "verify_error", &e.to_string()),
+        Err(e) => return internal("verify_error", &e),
     }
 
     let new_hash = match hash_password(body.new_password.as_deref().unwrap()) {
@@ -241,7 +250,7 @@ pub async fn patch_account(
                 "Password must be at least 12 characters",
             );
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "hash_error", &e.to_string()),
+        Err(e) => return internal("hash_error", &e),
     };
 
     match state.db.update_user(&user_id, None, None, Some(&new_hash)).await {
@@ -255,7 +264,7 @@ pub async fn patch_account(
             (StatusCode::OK, Json(AccountUser::from(updated))).into_response()
         }
         Ok(None) => err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -289,7 +298,7 @@ pub async fn list_sessions(
             let infos: Vec<SessionInfo> = sessions.into_iter().map(SessionInfo::from).collect();
             (StatusCode::OK, Json(infos)).into_response()
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => internal("db_error", &e),
     }
 }
 
@@ -327,7 +336,7 @@ pub async fn revoke_session(
     // fingerprint back to the real token and scopes revocation to the user.
     let sessions = match state.db.list_user_sessions(&user_id).await {
         Ok(s) => s,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return internal("db_error", &e),
     };
     let session = match sessions
         .into_iter()
@@ -338,7 +347,7 @@ pub async fn revoke_session(
     };
 
     if let Err(e) = state.db.delete_session(&session.id).await {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+        return internal("db_error", &e);
     }
 
     // If revoking the current session, clear cookies (compare by fingerprint).
@@ -453,6 +462,9 @@ mod tests {
             is_active: true,
         };
         db.create_user(&user).await.expect("create user");
+        // Every account joins the default org at signup or invitation; the role
+        // it holds there is the one its permissions come from.
+        db.add_org_member(crate::api::middleware::DEFAULT_ORG_ID, &user.id, role).await.expect("join the default org");
 
         let session_token = generate_session_token();
         let csrf_token = generate_csrf_token();
@@ -636,6 +648,45 @@ mod tests {
         // Session deleted
         let s = db.get_session(&sess2).await.unwrap();
         assert!(s.is_none());
+    }
+
+    /// SEC-DBERR: a database error revoking a session answers a fixed 500
+    /// (`db_error`), not the database's text.
+    #[tokio::test]
+    async fn a_database_error_revoking_a_session_is_not_shown() {
+        let db = build_db().await;
+        let (user, sess1, csrf1) = seed_user_with_session(&db, Role::Member, "dberr@test.com", None).await;
+        let sess2 = generate_session_token();
+        db.create_session(&Session {
+            id: sess2.clone(),
+            user_id: user.id.clone(),
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+            ip: None,
+            user_agent: None,
+            csrf_token: generate_csrf_token(),
+        })
+        .await
+        .unwrap();
+        sqlx::query("CREATE TRIGGER refuse_session_deletes BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'disk full'); END;")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let app = build_account_router(build_state(db).await);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/v1/account/sessions/{}", crate::auth::secrets::sha256_hex(&sess2)))
+            .header("cookie", format!("litegen_session={}", sess1))
+            .header("x-csrf-token", csrf1)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body).to_string();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "db_error", "{text}");
+        assert!(!text.contains("disk full") && !text.contains("database"), "{text}");
     }
 
     #[tokio::test]

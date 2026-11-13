@@ -68,6 +68,38 @@
           }
         ]
       },
+      "markup": {
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "image_url"
+            ]
+          },
+          {
+            "required": [
+              "file_id"
+            ]
+          }
+        ],
+        "not": {
+          "required": [
+            "image_url",
+            "file_id"
+          ]
+        },
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "image_url": {
+            "format": "uri",
+            "maxLength": 20971520,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "mask": {
         "additionalProperties": false,
         "anyOf": [
@@ -219,6 +251,13 @@
         ],
         "default": "auto"
       },
+      "safety_identifier": {
+        "maxLength": 128,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "size": {
         "anyOf": [
           {
@@ -251,6 +290,7 @@
         "default": false
       },
       "user": {
+        "deprecated": true,
         "type": "string"
       }
     },
@@ -307,6 +347,10 @@
             "type": "null"
           }
         ]
+      },
+      "markup": {
+        "format": "binary",
+        "type": "string"
       },
       "mask": {
         "format": "binary",
@@ -415,6 +459,13 @@
           "null"
         ]
       },
+      "safety_identifier": {
+        "maxLength": 128,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "size": {
         "anyOf": [
           {
@@ -445,6 +496,7 @@
         ]
       },
       "user": {
+        "deprecated": true,
         "type": "string"
       }
     },
@@ -593,6 +645,13 @@
           "null"
         ]
       },
+      "safety_identifier": {
+        "maxLength": 128,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "size": {
         "anyOf": [
           {
@@ -637,6 +696,7 @@
         ]
       },
       "user": {
+        "deprecated": true,
         "type": "string"
       }
     },

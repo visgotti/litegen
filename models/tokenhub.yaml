@@ -1,0 +1,1499 @@
+models:
+  # Tencent TokenHub (大模型服务平台 TokenHub): Tencent's model hub, where
+  # Tencent moves every Hunyuan model ("腾讯混元大模型相关功能将逐步迁移至 TokenHub。
+  # 迁移后，原平台将不再新增模型能力，并停止支持新购模型服务。用户已购买的模型服务可继续
+  # 使用" — the old platform keeps serving existing buyers, so the `hunyuan`
+  # provider stays for them; new Hunyuan models and new customers are here).
+  # One TokenHub API key for every model: "鉴权方式为请求头 Authorization: Bearer
+  # YOUR_API_KEY". Host https://tokenhub.tencentmaas.com (`api_base`).
+  # Carried: Tencent's own generation models. Third-party models TokenHub
+  # resells (Kling, Vidu, Seedream, MiniMax, PixVerse, Tripo, Rodin, Hi3D) are
+  # skipped: litegen calls those vendors direct (scripts/model-drift/providers/tokenhub.mjs).
+  # Prices are in CNY ("按 Token 计费", 10 ¥ per million tokens, at the price
+  # table's per-output token counts), converted at the ECB reference rate for
+  # 2026-11-03 (1 CNY = 0.14987 USD, via
+  # https://api.frankfurter.dev/v1/latest?base=CNY&symbols=USD).
+  # @see https://cloud.tencent.com/document/product/1729/105925 (the migration notice; 2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130051 (model list; 2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130055 (prices; 2026-11-09)
+
+  # Hy-Image-3.5-preview: POST /v1/wand/hunyuan-image/v35-generation, a
+  # synchronous call ("两个模型均为同步调用：一次请求直接返回生成结果，无需提交任务与轮询")
+  # in an OpenAI Chat-style `messages` shape; the answer's
+  # choices[0].delta.image.url is the image ("业务侧判断是否成功建议依据
+  # choices[0].delta.image.url 是否存在"), a signed COS link valid 12 h, which the
+  # adapter downloads. Its sibling hy-image-v3 is not carried: TokenHub retires
+  # it on 2026-11-12 ("Hy-Image-3.0（2026-11-12 下线）", the model list and the
+  # price table cited above).
+  # @see https://cloud.tencent.com/document/product/1823/135745 (2026-11-09)
+  - id: tokenhub/hy-image-v3.5-preview
+    provider: tokenhub
+    media_type: image
+    display_name: Hy-Image 3.5 Preview
+    description: Tencent Hunyuan Image 3.5 preview on TokenHub — text-to-image and edits from up to 20 images, up to 4K.
+    docs_url: https://cloud.tencent.com/document/product/1823/135745
+    # "Hy-Image-3.5-preview | 文生图、参考生图、多轮编辑 | 1K | 10 元/百万 tokens |
+    # 15,000 tokens/张 | 0.15 元/张", 2K the same, 4K "20,000 tokens/张 | 0.2 元/张".
+    # The default request (no size: the model picks one at its 1.5K tier) is
+    # ¥0.15 = $0.0225 (0.15 × 0.14987). A size above the 2K tier (4,194,304 px,
+    # generate_max_pixels' top) is the 4K row: ¥0.20 = $0.0300. TokenHub bills
+    # the tokens an answer reports (tokenhub_usage.total_tokens); litegen bills
+    # the table's figure per image (known-gaps.md).
+    # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+    pricing:
+      base_cost_usd: 0.0225
+      variable_pricing:
+        - { when: { size: '*', megapixels: { gt: 4.194304 } }, usd: 0.03 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # The model list gives the input limit as "100k tokens" (text and images
+    # together), not characters; 8192 characters (Hy-Image-3.0's and
+    # WAND-Vega's stated limit) keeps the text well inside it whatever the
+    # tokenizer does.
+    prompt: { required: true, max_length: 8192 }
+    params:
+      # size: "生成尺寸，格式 ${宽}x${高}。约束：1. 宽、高均为正整数，取值范围 [256, 8192]。
+      # 2. 宽 × 高（面积）不超过 16777216，即最高支持 4096×4096（4K）。… 传入具体值时强制按
+      # 指定尺寸出图" — an exact size; 4K is reached only this way.
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 8192
+        min_height: 256
+        max_height: 8192
+        max_pixels: 16777216
+      # resolution → generate_max_pixels: "支持 3 个枚举档位：1048576（1K，1024×1024）、
+      # 2359296（1.5K，默认）、4194304（2K）… 仅在未传 size 时生效". Alone it gives a
+      # square image ("只传 generate_max_pixels：默认 1:1 比例"); with neither, the
+      # model picks the shape from the prompt at the 1.5K tier ("都不传：由模型基于
+      # prompt 语义自主决定（默认走 1.5K 档）").
+      resolution: { kind: string, enum_values: ["1K", "1.5K", "2K"], default: "1.5K" }
+      # aspect_ratio → a size of that ratio sent beside generate_max_pixels (the
+      # tier asked for, else 1.5K): "size + generate_max_pixels：最终宽高由内部逻辑综合
+      # 计算，尽量贴近 size 的宽高比例与 generate_max_pixels 的面积档位" — the vendor
+      # keeps close to the ratio and picks the exact sides. Not with `size`.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9", "9:21"]
+      # seed: "int64 类型，范围 [0, 2^63-1]；为 0 或不传时服务端随机分配。负值将被拒绝。"
+      # 0 is the vendor's random seed, so a fixed seed starts at 1.
+      seed: { kind: seed, min: 1, max: 9223372036854775807 }
+    # Images go in the user message as image_url parts: "支持 http(s) 公网 URL 或
+    # data:image/...;base64,... 形态；单图大小 ≤ 20MB，图片总数量 ≤ 20 张"; png / jpeg /
+    # jpg. The prompt says what each image is for (reference, edit), so they
+    # share one role. Sent as data URIs: a URL must be public and unauthenticated
+    # ("若为内网/带鉴权域名，需联系 TokenHub 侧加入白名单").
+    ref_inputs:
+      max_total: 20
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 20 }
+    # footnote: "业务自定义水印内容，最长 16 字符 … 生成在图片右下角"; use_search_tool:
+    # "外部搜索增强开关，结构固定为 {"value": true} 或 {"value": false}". Not
+    # resize_max_pixels (it raises the input-image tokens TokenHub bills) nor
+    # session (a multi-turn affinity key).
+    extra_allowlist: [footnote, use_search_tool]
+    extra_params:
+      # From the comment above; use_search_tool (an object) stays untyped.
+      footnote: { kind: string, max_length: 16 }
+    tags: [text-to-image, image-to-image]
+
+  # Kling Omni, resold: POST /v1/wand/kling/omni-video for text and frames alike
+  # (`contents`: the prompt, then first_frame / last_frame; `settings` as the
+  # other Kling rows, aspect_ratio "无首帧且无参考视频时必填"). refer_image, videos,
+  # elements and voices are not offered: the guide gives no refer_image count for
+  # V3 Omni or O1, and the reference-video prices need inputs litegen does not send.
+  - id: tokenhub/kling-video-v3-omni
+    provider: tokenhub
+    media_type: video
+    display_name: Kling Video 3.0 Omni (TokenHub)
+    description: Kling 3.0 Omni through Tencent TokenHub — text or first/last frames, native audio, multi-shot, up to 4K.
+    docs_url: https://cloud.tencent.com/document/product/1823/135742
+    # "Kling-Video-V3-omni | 无参考视频 - 无声 | 720P | 60,000 tokens/秒 | 0.6 元/秒", 1080P 0.8, 4K 3;
+    # "无参考视频 - 有声" 720P 0.8, 1080P 1, 4K 3: $0.0899 / $0.1199 / $0.4496 silent,
+    # $0.1199 / $0.1499 / $0.4496 with sound; 5 s at 720p silent = $0.4495.
+    pricing:
+      base_cost_usd: 0.4495
+      variable_pricing:
+        - { per_second_usd: 0.0899 }
+        - { when: { audio: true }, per_second_usd: 0.1199 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.1199 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1499 }
+        - { when: { resolution: 4k }, per_second_usd: 0.4496 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "≤ 2500 字符（V3 Omni 建议 ≤ 2500，上限 3072）"
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "V3 Omni：native / original / off（默认 off）" — native or off (original needs a reference video).
+      audio: { kind: bool, default: false }
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p, 4k], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1"]
+        # "注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。" — a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-11)
+        frames_set_shape: without_references
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    # "multi_shot | 否 | 仅 V3 Omni。是否生成多镜头视频，默认 true。"
+    extra_allowlist: [multi_shot]
+    extra_params:
+      # From the comment above ("默认 true").
+      multi_shot: { kind: bool, default: true }
+    tags: [text-to-video, image-to-video]
+
+  - id: tokenhub/kling-video-o1
+    provider: tokenhub
+    media_type: video
+    display_name: Kling Video O1 (TokenHub)
+    description: Kling O1 through Tencent TokenHub — text or first/last frames, 3–10 s, 720p or 1080p.
+    docs_url: https://cloud.tencent.com/document/product/1823/135742
+    # "Kling-Video-O1 | 无参考视频 | 720P | 60,000 tokens/秒 | 0.6 元/秒", 1080P 0.8: $0.0899 /
+    # $0.1199 per s; 5 s at 720p = $0.4495.
+    pricing:
+      base_cost_usd: 0.4495
+      variable_pricing:
+        - { per_second_usd: 0.0899 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.1199 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "O1：3~10（O1 仅用首帧且无其他参考时仅支持 5 / 10）" — a first frame alone is refused
+      # at any other length. No audio ("O1：original / off": original needs a
+      # reference video).
+      duration_seconds: { kind: int, min: 3, max: 10, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1"]
+        # "注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。" — a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-11)
+        frames_set_shape: without_references
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  # ── Seedream, resold on TokenHub ─────────────────────────────────────────────
+  # The models bytedance/dola-seedream-5-0-* serve on BytePlus, through
+  # TokenHub's key and bill: POST /v1/wand/si-image/generation, synchronous, in
+  # Ark's image shape (data[].url | b64_json; litegen asks for b64_json).
+  # `size` is a tier "可选值：1K、1.5K、2K" ("默认值：2K"; the shape then follows the
+  # prompt) or "宽 x 高 … 总像素取值范围：[1280x720（921600）, 2048x2048x1.1025
+  # （4624220）] 宽高比取值范围：[1/16, 16]" — "不可混用", so litegen's `resolution`
+  # and `size` are not sent together. seedream-image-v5.0-lite is not carried:
+  # TokenHub retires it on 2026-11-24.
+  # @see https://cloud.tencent.com/document/product/1823/136609 (2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+  - id: tokenhub/seedream-image-v5.0-pro
+    provider: tokenhub
+    media_type: image
+    display_name: Seedream 5.0 Pro (TokenHub)
+    description: ByteDance Seedream 5.0 Pro through Tencent TokenHub — text-to-image and edits from up to 10 images.
+    docs_url: https://cloud.tencent.com/document/product/1823/136609
+    # "Seedream-Image-v5.0-pro | 文生图、参考生图 | 输出图≤261万像素 | … 30,000 tokens/张 … 0.3 元/
+    # 张", ">261万像素 … 0.6 元/张", "输入图片首张免费，第二张起0.02 元/张": $0.045 / $0.0899,
+    # + $0.003 per input image from the second. The default 2K (2048² = 4.19 MP)
+    # is the > 2.61 MP price, $0.0899; 1K and 1.5K are $0.045.
+    pricing:
+      base_cost_usd: 0.0899
+      variable_pricing:
+        - { when: { resolution: 1K }, usd: 0.045 }
+        - { when: { resolution: 1.5K }, usd: 0.045 }
+        - { when: { size: '*', megapixels: { gt: 2.61 } }, usd: 0.0899 }
+        - { when: { size: '*', megapixels: { lte: 2.61 } }, usd: 0.045 }
+        - { when: { references: 2 }, add_usd: 0.003 }
+        - { when: { references: 3 }, add_usd: 0.006 }
+        - { when: { references: 4 }, add_usd: 0.009 }
+        - { when: { references: 5 }, add_usd: 0.012 }
+        - { when: { references: 6 }, add_usd: 0.015 }
+        - { when: { references: 7 }, add_usd: 0.018 }
+        - { when: { references: 8 }, add_usd: 0.021 }
+        - { when: { references: 9 }, add_usd: 0.024 }
+        - { when: { references: 10 }, add_usd: 0.027 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # "文本提示词，长度 ≤ 600 字符。"
+    prompt: { required: true, max_length: 600 }
+    params:
+      resolution: { kind: string, enum_values: ["1K", "1.5K", "2K"], default: "2K" }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 240
+        max_width: 8601
+        min_height: 240
+        max_height: 8601
+        min_pixels: 921600
+        max_pixels: 4624220
+        max_aspect: 16.0
+      # "图像格式 … 可选值：png jpeg"
+      output_format: { kind: string, enum_values: [png, jpeg] }
+      # "图片透明通道 … transparent … opaque … 模型支持：seedream-image-v5.0-pro seedream-image-v5.0-flash"
+      background: { kind: string, enum_values: [transparent, opaque] }
+    # "图片 images：seedream-image-v5.0-pro、seedream-image-v5.0-flash 支持最多10 张，
+    # seedream-image-v5.0-lite 支持最多14 张， 支持 URL 和 Base64格式。" — sent as data
+    # URIs (Lite, with its 14, is not carried).
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    # watermark ("true：在图片右下角添加"AI 生成"字样的水印标识") and
+    # optimize_prompt_options (standard | fast; Pro only). Not
+    # layer_decomposition (it returns several layer images; litegen delivers
+    # one) nor response_format (owned).
+    extra_allowlist: [watermark, optimize_prompt_options]
+    extra_params:
+      # From the comment above; optimize_prompt_options (an object) stays untyped.
+      watermark: { kind: bool }
+    tags: [text-to-image, image-to-image]
+
+  - id: tokenhub/seedream-image-v5.0-flash
+    provider: tokenhub
+    media_type: image
+    display_name: Seedream 5.0 Flash (TokenHub)
+    description: ByteDance Seedream 5.0 Flash through Tencent TokenHub — fast text-to-image and edits from up to 10 images.
+    docs_url: https://cloud.tencent.com/document/product/1823/136609
+    # "Seedream-Image-v5.0-flash | 文生图、参考生图 | 不区分 | 10 元/百万 tokens | 12,000 tokens/张
+    # | 0.12 元/张": $0.018 at every size, input images included.
+    pricing: { base_cost_usd: 0.018 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 600 }
+    params:
+      resolution: { kind: string, enum_values: ["1K", "1.5K", "2K"], default: "2K" }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 240
+        max_width: 8601
+        min_height: 240
+        max_height: 8601
+        min_pixels: 921600
+        max_pixels: 4624220
+        max_aspect: 16.0
+      output_format: { kind: string, enum_values: [png, jpeg] }
+      background: { kind: string, enum_values: [transparent, opaque] }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    # "optimize_prompt_options.mode … seedream-image-v5.0-lite、seedream-image-v5.0-flash 当前不支持"
+    extra_allowlist: [watermark]
+    extra_params:
+      # From the comment above.
+      watermark: { kind: bool }
+    tags: [text-to-image, image-to-image, fast]
+
+  # ── Kling and Vidu images, resold on TokenHub (asynchronous) ─────────────────
+  # The models kling/kling-v3 and Vidu's image API serve direct, through
+  # TokenHub's key and bill. Each is submit-then-poll: the image adapter
+  # records the accepted task (so a timeout is never sent again), polls within
+  # litegen's deadline, and downloads the result (late delivery picks it up).
+  # Kling: POST /v1/wand/kling-image/generation ({code, data: {task_id}}), GET
+  # …/kling-image/tasks/{task_id} ("task_status … submitted（已提交）、processing（处理中）、
+  # succeed（成功）、failed（失败）", data.task_result.images[].url); images are raw
+  # base64 ("无须添加 data:image/png;base64, 前缀"). One image is asked for (`n: 1`).
+  # @see https://cloud.tencent.com/document/product/1823/138803 (2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+  - id: tokenhub/kling-image-v3
+    provider: tokenhub
+    media_type: image
+    display_name: Kling Image 3.0 (TokenHub)
+    description: Kling Image 3.0 through Tencent TokenHub — text-to-image or one reference image, 1K/2K.
+    docs_url: https://cloud.tencent.com/document/product/1823/138803
+    # "Kling-Image-v3 | 文生图、图生图 | 1K / 2K | 10 元/百万 tokens | 20,000 tokens/张 | 0.2 元/张": $0.03.
+    pricing: { base_cost_usd: 0.03 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # "正向文本提示词，长度 ≤ 2500 字符"
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "负向文本提示词 … 仅文生图支持；图生图（image 不为空）场景下不支持" — refused with an image.
+      negative_prompt: { kind: string, max_length: 2500 }
+      # "可选值：16:9、9:16、1:1、4:3、3:4、3:2、2:3、21:9。默认值 16:9。"
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"]
+        default: "16:9"
+      # "可选值：1k（1K 标清）、2k（2K 高清）。默认值 1k。"
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+    # "image … 参考图片（单图）。传入后即为图生图。"
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    # Not element_list (TokenHub's subject library ids) nor watermark_info's
+    # second, watermarked result.
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: tokenhub/kling-image-o1
+    provider: tokenhub
+    media_type: image
+    display_name: Kling Image O1 (TokenHub)
+    description: Kling Image O1 through Tencent TokenHub — text-to-image or up to 10 reference images, 1K/2K.
+    docs_url: https://cloud.tencent.com/document/product/1823/138803
+    # "Kling-Image-o1 | 文生图、图生图 | 1K / 2K | … 0.2 元/张": $0.03.
+    pricing: { base_cost_usd: 0.03 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # "可包含正向描述与负向描述，长度 ≤ 2500 字符" (no negative_prompt field); "<<<image_1>>>"
+    # names a reference.
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # The listed ratios. "默认值 auto。注：文生图场景（未传 image_list）不支持 auto"
+      # (auto is the default, and text-to-image does not take it): with images
+      # litegen sends no ratio unless asked, so auto follows them; a text-only
+      # request that names none goes as 16:9 (image/tokenhub.rs
+      # KLING_OMNI_TEXT_TO_IMAGE_RATIO). No `default` here: the dashboard would
+      # send it with images too.
+      # @see https://cloud.tencent.com/document/product/1823/138803 (2026-11-09)
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"]
+      # "4K 仅 kling-image-v3-omni 支持；kling-image-o1 支持 1K / 2K。"
+      resolution: { kind: string, enum_values: ["1K", "2K"], default: "1K" }
+    # "image_list … 参考图片列表（多图），最多 10 张"
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: tokenhub/kling-image-v3-omni
+    provider: tokenhub
+    media_type: image
+    display_name: Kling Image 3.0 Omni (TokenHub)
+    description: Kling Image 3.0 Omni through Tencent TokenHub — text-to-image or up to 10 reference images, up to 4K.
+    docs_url: https://cloud.tencent.com/document/product/1823/138803
+    # "Kling-Image-v3-omni | 文生图、图生图 | 1K / 2K | … 0.2 元/张", "4K | … 40,000 tokens/张 | 0.4 元/张":
+    # $0.03, $0.0599 at 4K.
+    pricing:
+      base_cost_usd: 0.03
+      variable_pricing:
+        - { when: { resolution: 4K }, usd: 0.0599 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # As kling-image-o1: a text-only request that names no ratio goes as 16:9,
+      # since TokenHub's own default (auto) is refused for text-to-image.
+      # @see https://cloud.tencent.com/document/product/1823/138803 (2026-11-09)
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"]
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+    ref_inputs:
+      max_total: 10
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 10 }
+    # Series mode (result_type: series) returns several images; litegen
+    # delivers one, so it is not offered.
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  # Vidu: POST /v1/wand/vidu-image/generation ({task_id, state}), GET
+  # …/vidu-image/tasks/{task_id} ("state … created / queueing / processing /
+  # success / failed", creations[].url); images as data URIs ("格式要求：
+  # data:image/<图片格式>;base64,<Base64 编码>").
+  # @see https://cloud.tencent.com/document/product/1823/135746 (2026-11-09)
+  - id: tokenhub/vidu-image-q2
+    provider: tokenhub
+    media_type: image
+    display_name: Vidu Image Q2 (TokenHub)
+    description: Vidu Image Q2 through Tencent TokenHub — text-to-image or up to 7 reference images, 1080p to 4K.
+    docs_url: https://cloud.tencent.com/document/product/1823/135746
+    # "Vidu-Image-q2 | 文生图 | 1080P | … 0.1875 元/张", 2K 0.25, 4K 0.3125; "参考生图（1~3张）" 0.25 /
+    # 0.375 / 0.625; "参考生图（4~7张）" 0.3125 / 0.5 / 0.9375 (× 0.14987).
+    pricing:
+      base_cost_usd: 0.0281
+      variable_pricing:
+        - { when: { resolution: 2K }, usd: 0.0375 }
+        - { when: { resolution: 4K }, usd: 0.0468 }
+        - { when: { references: { gte: 1, lte: 3 } }, usd: 0.0375 }
+        - { when: { references: { gte: 1, lte: 3 }, resolution: 2K }, usd: 0.0562 }
+        - { when: { references: { gte: 1, lte: 3 }, resolution: 4K }, usd: 0.0937 }
+        - { when: { references: { gte: 4 } }, usd: 0.0468 }
+        - { when: { references: { gte: 4 }, resolution: 2K }, usd: 0.0749 }
+        - { when: { references: { gte: 4 }, resolution: 4K }, usd: 0.1405 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # "文本提示词，长度 ≤ 2000 字符。"
+    prompt: { required: true, max_length: 2000 }
+    params:
+      # "可选：16:9 / 9:16 / 1:1 / 3:4 / 4:3 / 21:9 / 2:3 / 3:2 / auto … 默认值：16:9。"
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "3:4", "4:3", "21:9", "2:3", "3:2"]
+        default: "16:9"
+      # "可选：1080p / 2K / 4K。默认值：1080p。" — litegen's 1K is Vidu's 1080p, its
+      # lowest tier.
+      resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
+      # "随机种子。不传或传 0 时使用随机数。" (no range given: int32 kept).
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    # "images：支持 0张-7张图片输入"
+    ref_inputs:
+      max_total: 7
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  # Hy-Video 1.5 (hy-video-v1.5): POST /v1/wand/hunyuan-video/generation, then
+  # GET /v1/wand/hunyuan-video/tasks/{task_id} ("任务状态统一为：queued（等待调度）/
+  # running（生成中）/ succeeded（成功）/ failed（失败）"); the video is videos[].url, a
+  # signed COS link. Text-to-video without an image, image-to-video with one
+  # ("携带 image 或 image_url 即图生视频，否则为文生视频"). The model list spells the
+  # retired per-second version "hy-video-1.5" (offline 2026-09-21); the guide's
+  # "取值：hy-video-v1.5" is the token-billed one litegen calls.
+  # @see https://cloud.tencent.com/document/product/1823/137202 (2026-11-09)
+  - id: tokenhub/hy-video-v1.5
+    provider: tokenhub
+    media_type: video
+    display_name: Hy-Video 1.5
+    description: Tencent Hunyuan Video 1.5 on TokenHub — 5 s 720p clips from text or a first frame.
+    docs_url: https://cloud.tencent.com/document/product/1823/137202
+    # "Hy-Video-1.5 | 文 / 图生视频 | 720P | 10元/百万 tokens | 30,000 tokens/秒 |
+    # 0.3 元/秒": a 5 s clip is ¥1.5 = $0.2248 (1.5 × 0.14987), text or image.
+    # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+    pricing: { base_cost_usd: 0.2248 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "文本提示词。文生视频必选；图生视频可选" — the adapter refuses a request with
+    # neither a prompt nor an image. TokenHub documents no prompt limit here.
+    prompt: { required: false }
+    params:
+      negative_prompt: { kind: string }
+      # "视频时长（秒），小数将截断为整数。当前版本固定生成 5 秒。" — sent as 5.
+      duration_seconds: { kind: float, min: 5.0, max: 5.0, default: 5.0 }
+      # "清晰度。当前版本固定输出 720p。"
+      resolution: { kind: string, enum_values: ["720p"], default: "720p" }
+      # "画面宽高比，仅文生视频有效。枚举：16:9 / 9:16 / 1:1 / 4:3 / 3:4" — image-to-video
+      # follows its image ("图生视频的画面比例由输入图片决定，不支持 aspect_ratio 参数"),
+      # so the adapter sends it only without one.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "4:3", "3:4"]
+        # The quote above: a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/137202 (2026-11-11)
+        frames_set_shape: without_references
+    # image: "图片（单张）… 图片格式：jpg/jpeg/png，图片大小≤10MB … Base64：格式要求：
+    # data:image/<图片格式>;base64,<Base64 编码>" — sent as a data URI.
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    # revise ("是否开启提示词智能改写") and footnote (a watermark, "限制 16 个字符长度").
+    # Not seed ("是否生效以模型侧为准": its effect is not promised), n (one video
+    # is billed), nor moderation (the vendor's moderation stays on).
+    extra_allowlist: [revise, footnote]
+    extra_params:
+      # From TokenHub's docs (drift snapshot hunyuan/tokenhub-hy-video.txt).
+      revise: { kind: bool }
+      footnote: { kind: string, max_length: 16 }
+    tags: [text-to-video, image-to-video]
+
+  # WAND-Vega-Video-1.0-Lite (Tencent Cloud WAND, "腾讯云面向音视频场景打造的 AI 能力品牌"):
+  # POST /v1/wand/vega-videos/tasks ("提交成功以 HTTP 状态码 201 + 返回 id 为准"), then GET
+  # /v1/wand/vega-videos/tasks/{id} ("queued（排队中）、running（生成中）、succeeded（生成
+  # 成功）、failed（生成失败）"); the video is content.video_url, a temporary link
+  # (12 h). "三种生成形态（文生、首尾帧生、参考生）共用本接口，通过 content 数组中元素的 type
+  # 与 role 组合区分": the adapter keeps them apart (frames or references, not
+  # both; a last frame only after a first). Reference videos and audio
+  # (reference_video / reference_audio) are not offered.
+  # @see https://cloud.tencent.com/document/product/1823/138195 (2026-11-09)
+  - id: tokenhub/wand-vega-video-1.0-lite
+    provider: tokenhub
+    media_type: video
+    display_name: WAND-Vega Video 1.0 Lite
+    description: Tencent Cloud WAND-Vega video on TokenHub — text, first/last frames or up to 9 reference images; 4–15 s, 768P to 4K.
+    docs_url: https://cloud.tencent.com/document/product/1823/138195
+    # "WAND-Vega-Video-1.0-Lite | 文 / 图生视频、参考生视频 | 768P | … 输出视频 37500
+    # tokens/秒 … 输出视频0.375元/秒 输入图片前5张免费 第6张起0.15元/张"; 1080P 0.5,
+    # 2K 0.625, 4K 0.75 元/秒. Per second: $0.0562 (768P), $0.0749, $0.0937,
+    # $0.1124 (× 0.14987). The default request (5 s; resolution has no
+    # documented default, so the adapter sends 768P): ¥1.875 = $0.2810. From the
+    # 6th input image, + ¥0.15 = $0.0225 each.
+    # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+    pricing:
+      base_cost_usd: 0.281
+      variable_pricing:
+        - { per_second_usd: 0.0562 }
+        - { when: { resolution: 1080P }, per_second_usd: 0.0749 }
+        - { when: { resolution: 2K }, per_second_usd: 0.0937 }
+        - { when: { resolution: 4K }, per_second_usd: 0.1124 }
+        - { when: { references: 6 }, add_usd: 0.0225 }
+        - { when: { references: 7 }, add_usd: 0.045 }
+        - { when: { references: 8 }, add_usd: 0.0675 }
+        - { when: { references: 9 }, add_usd: 0.09 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "content … 必须包含至少 1 个 type=text 元素（生成需要文本提示词）… type=text 时必填且不可为空串"
+    prompt: { required: true }
+    params:
+      # "视频时长（秒）。取值：4 ~ 15 的整数，默认 5。"
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      # "视频分辨率。Lite 取值：768P、1080P、2K、4K" (no default given; "超出当前模型档位的
+      # resolution 会在提交阶段直接返回 400").
+      resolution: { kind: string, enum_values: ["768P", "1080P", "2K", "4K"], default: "768P" }
+      # "画面宽高比。取值：21:9、16:9、4:3、1:1、3:4、9:16、adaptive（默认）" — unset is
+      # adaptive ("由模型或输入素材自动决定").
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+    # image_url parts with a role: "首帧（role=first_frame）最多 1 张，尾帧（role=last_frame）
+    # 最多 1 张"; references "建议参考图不超过 9 张 … 素材合计不超过 12 个". The url is sent
+    # as a data URI (the guide shows only https URLs: not verified live).
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    # options.return_last_frame is not offered: litegen delivers one video.
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  # ── Kling video, resold on TokenHub ──────────────────────────────────────────
+  # The same models as kling/video-kling-* (Kling direct), through TokenHub's
+  # key and bill: POST /v1/wand/kling/text-to-video or /image-to-video with
+  # `model` in the body, Kling's own `settings` / `contents` shapes and answer
+  # ({code, message, data: {id, status: submitted}}), polled at GET
+  # /v1/wand/kling/tasks/{task_id} ("data[].status … processing / succeeded /
+  # failed", "data[].outputs[].url"). The rules are TokenHub's tables, which
+  # differ from Kling's own in places: "V2.6 使用首尾帧生成时仅支持 720p、audio=native
+  # 时仅支持 1080p；V2.5 Turbo 使用首尾帧生成时仅支持 1080p". The prompt "可包含正向与负向
+  # 描述" (no negative_prompt). Frames are data URIs ("Base64：… 格式要求：
+  # data:image/<图片格式>;base64"), jpg/jpeg/png, ≥ 300 px, 1:2.5 to 2.5:1.
+  # Prices: 10 ¥ per million tokens at the price table's tokens per second,
+  # × 0.14987 USD/CNY; a clip bills per second of output.
+  # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+  - id: tokenhub/kling-video-v2.5-turbo
+    provider: tokenhub
+    media_type: video
+    display_name: Kling Video 2.5 Turbo (TokenHub)
+    description: Kling 2.5 Turbo through Tencent TokenHub — text or first/last frames to 5 or 10 s video.
+    docs_url: https://cloud.tencent.com/document/product/1823/135742
+    # "Kling-Video-V2.5-turbo | 无声 | 720P | … 30,000 tokens/秒 | 0.3 元/秒", 1080P 0.5:
+    # $0.045/s, $0.0749/s; 5 s at 720p = $0.225.
+    pricing:
+      base_cost_usd: 0.225
+      variable_pricing:
+        - { per_second_usd: 0.045 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0749 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "V2.6 / V2.5 Turbo：5 / 10。默认值：5。"
+      duration_seconds: { kind: int, min: 5, max: 10, default: 5, values: [5, 10] }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+      # Text-to-video only ("图生视频无 aspect_ratio 参数，画幅由输入图片决定").
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1"]
+        # "注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。" — a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: tokenhub/kling-video-v2.6
+    provider: tokenhub
+    media_type: video
+    display_name: Kling Video 2.6 (TokenHub)
+    description: Kling 2.6 through Tencent TokenHub — text or first/last frames, optional native audio at 1080p.
+    docs_url: https://cloud.tencent.com/document/product/1823/135742
+    # "Kling-Video-V2.6 | 无声 | 720P | 30,000 tokens/秒 | 0.3 元/秒", 无声 1080P 0.5, "有声 -
+    # 未指定音色 | 1080P | 100,000 tokens/秒 | 1 元/秒": $0.045 / $0.0749 / $0.1499 per s
+    # (audio is 1080p only); 5 s at 720p silent = $0.225.
+    pricing:
+      base_cost_usd: 0.225
+      variable_pricing:
+        - { per_second_usd: 0.045 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0749 }
+        - { when: { audio: true }, per_second_usd: 0.1499 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "audio | 仅 V3 / V2.6 | 音频。枚举：native … / off（默认）" — needs 1080p, and no last frame.
+      audio: { kind: bool, default: false }
+      duration_seconds: { kind: int, min: 5, max: 10, default: 5, values: [5, 10] }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1"]
+        # "注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。" — a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    # The voice / element material types need TokenHub's voice and element
+    # management, which litegen does not wrap.
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: tokenhub/kling-video-v3
+    provider: tokenhub
+    media_type: video
+    display_name: Kling Video 3.0 (TokenHub)
+    description: Kling 3.0 through Tencent TokenHub — text or first/last frames, native audio, multi-shot, up to 4K.
+    docs_url: https://cloud.tencent.com/document/product/1823/135742
+    # "Kling-Video-V3 | 无声 | 720P | 60,000 tokens/秒 | 0.6 元/秒", 1080P 0.8, 4K 3; "有声 -
+    # 未指定音色" 720P 0.9, 1080P 1.2, 4K 3: $0.0899 / $0.1199 / $0.4496 silent,
+    # $0.1349 / $0.1798 / $0.4496 with audio; 5 s at 720p silent = $0.4495.
+    pricing:
+      base_cost_usd: 0.4495
+      variable_pricing:
+        - { per_second_usd: 0.0899 }
+        - { when: { audio: true }, per_second_usd: 0.1349 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.1199 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1798 }
+        - { when: { resolution: 4k }, per_second_usd: 0.4496 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "V3：≤ 3072 字符（建议 ≤ 2500）"; image-to-video's text "≤ 2500 字符": one limit for both.
+    prompt: { required: true, max_length: 2500 }
+    params:
+      audio: { kind: bool, default: false }
+      # "V3 / V3 Turbo：3~15 整数"
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p, 4k], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1"]
+        # "注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。" — a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    # "multi_shot | 仅 V3 | 是否生成多镜头视频，默认 true" — sent inside `settings`.
+    extra_allowlist: [multi_shot]
+    extra_params:
+      # From the comment above ("默认 true").
+      multi_shot: { kind: bool, default: true }
+    tags: [text-to-video, image-to-video]
+
+  - id: tokenhub/kling-video-v3-turbo
+    provider: tokenhub
+    media_type: video
+    display_name: Kling Video 3.0 Turbo (TokenHub)
+    description: Kling 3.0 Turbo through Tencent TokenHub — text or a first frame, always with sound.
+    docs_url: https://cloud.tencent.com/document/product/1823/135742
+    # "Kling-Video-V3-turbo | 有声 | 720P | 80,000 tokens/秒 | 0.8 元/秒", 1080P 1: priced
+    # only with sound ("参数精简（无音频、多镜头）": no audio switch). $0.1199 / $0.1499
+    # per s; 5 s at 720p = $0.5995.
+    pricing:
+      base_cost_usd: 0.5995
+      variable_pricing:
+        - { per_second_usd: 0.1199 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.1499 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1"]
+        # "注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。" — a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-11)
+        frames_set_shape: without_references
+    # "V3 Turbo：prompt / first_frame" — no last frame.
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: tokenhub/kling-video-v4
+    provider: tokenhub
+    media_type: video
+    display_name: Kling Video 4.0 (TokenHub)
+    description: Kling 4.0 through Tencent TokenHub — text or first/last frames, 3–30 s, 21:9.
+    docs_url: https://cloud.tencent.com/document/product/1823/135742
+    # "Kling-Video-v4 | 无参考视频 | 720P | 100000 tokens/秒 | 1 元/秒", 1080P 1.5: $0.1499 /
+    # $0.2248 per s; the default is 1080p ("默认值：v4 为 1080p"), so 5 s = $1.124.
+    pricing:
+      base_cost_usd: 1.124
+      variable_pricing:
+        - { per_second_usd: 0.2248 }
+        - { when: { resolution: 720p }, per_second_usd: 0.1499 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "v4：纯英文 ≤ 26000 字符，纯非英文 ≤ 11000 字符" — litegen counts characters, so
+    # the non-English bound holds for any prompt.
+    prompt: { required: true, max_length: 11000 }
+    params:
+      # "v4：3~30 整数"
+      duration_seconds: { kind: int, min: 3, max: 30, default: 5 }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 1080p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "9:16", "1:1"]
+        # "注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。" — a frame sets the shape (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135742 (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  # ── MiniMax video, resold on TokenHub ────────────────────────────────────────
+  # The models minimax/* serve direct, through TokenHub's key and bill. v2.3 and
+  # v2.3-fast take flat fields at POST /v1/wand/minimax-video/generation
+  # (first_frame_image, last_frame_image; answer {task_id, base_resp}; polled at
+  # GET …/minimax-video/tasks/{task_id}: "Processing / Success / Fail",
+  # content.url); H3 and H3-Max take a `content` list at POST
+  # /v1/wand/minimax-video-v2/generation (a text part, then image_url parts with
+  # role first_frame | last_frame | reference_image; polled at
+  # …/minimax-video-v2/tasks/{task_id}: task.status "queued / running /
+  # succeeded / failed / cancelled"). Frames and references are not mixed (the
+  # guide's text-to-video, image-to-video and reference sections are separate).
+  # @see https://cloud.tencent.com/document/product/1823/135737 (2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+  - id: tokenhub/minimax-video-v2.3
+    provider: tokenhub
+    media_type: video
+    display_name: MiniMax Hailuo 2.3 (TokenHub)
+    description: MiniMax Hailuo 2.3 through Tencent TokenHub — text or first/last frames, 6 or 10 s.
+    docs_url: https://cloud.tencent.com/document/product/1823/135737
+    # "MiniMax-Video-v2.3 | 文 / 图生视频 6s | 768P | … 0.333333 元/秒", 6s 1080P 0.583333,
+    # 10s 768P 0.4: ¥2 = $0.2997 (the default, 6 s 768P), ¥3.5 = $0.5245, ¥4 = $0.5995.
+    pricing:
+      base_cost_usd: 0.2997
+      variable_pricing:
+        - { when: { duration_seconds: 10 }, usd: 0.5995 }
+        - { when: { resolution: 1080P }, usd: 0.5245 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "文本提示词，≤ 2000 字符" — required without an image (the adapter refuses neither).
+    prompt: { required: false, max_length: 2000 }
+    params:
+      # "768P：6 或 10；1080P：仅 6。默认值：6。" — 10 s at 1080P is refused.
+      duration_seconds: { kind: int, min: 6, max: 10, default: 6, values: [6, 10] }
+      resolution: { kind: string, enum_values: [768P, 1080P], default: 768P }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    # prompt_optimizer ("默认值：true"), fast_pretreatment, aigc_watermark.
+    extra_allowlist: [prompt_optimizer, fast_pretreatment, aigc_watermark]
+    extra_params:
+      # From the comment above (prompt_optimizer "默认值：true").
+      prompt_optimizer: { kind: bool, default: true }
+      fast_pretreatment: { kind: bool }
+      aigc_watermark: { kind: bool }
+    tags: [text-to-video, image-to-video]
+
+  - id: tokenhub/minimax-video-v2.3-fast
+    provider: tokenhub
+    media_type: video
+    display_name: MiniMax Hailuo 2.3 Fast (TokenHub)
+    description: MiniMax Hailuo 2.3 Fast through Tencent TokenHub — image-to-video, 6 or 10 s.
+    docs_url: https://cloud.tencent.com/document/product/1823/135737
+    # "MiniMax-Video-v2.3-fast | 图生视频 6s | 768P | … 0.225 元/秒", 6s 1080P 0.385, 10s 768P
+    # 0.225: ¥1.35 = $0.2023 (default), ¥2.31 = $0.3462, ¥2.25 = $0.3372.
+    pricing:
+      base_cost_usd: 0.2023
+      variable_pricing:
+        - { when: { duration_seconds: 10 }, usd: 0.3372 }
+        - { when: { resolution: 1080P }, usd: 0.3462 }
+    # "v2.3 快速版 … 仅支持图生" — a first frame is required; no last frame
+    # (the guide names one only for 首尾帧 on the shared table, not for Fast).
+    capabilities: { text_to_video: false, image_to_video: true }
+    prompt: { required: false, max_length: 2000 }
+    params:
+      duration_seconds: { kind: int, min: 6, max: 10, default: 6, values: [6, 10] }
+      resolution: { kind: string, enum_values: [768P, 1080P], default: 768P }
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [prompt_optimizer, fast_pretreatment, aigc_watermark]
+    extra_params:
+      # From the comment above (prompt_optimizer "默认值：true").
+      prompt_optimizer: { kind: bool, default: true }
+      fast_pretreatment: { kind: bool }
+      aigc_watermark: { kind: bool }
+    tags: [image-to-video]
+
+  - id: tokenhub/minimax-video-h3
+    provider: tokenhub
+    media_type: video
+    display_name: MiniMax H3 (TokenHub)
+    description: MiniMax H3 through Tencent TokenHub — text, first/last frames or up to 9 reference images; 4–15 s at 768P or 2K.
+    docs_url: https://cloud.tencent.com/document/product/1823/135737
+    # "MiniMax-Video-H3 | … | 768P | … 输出视频0.5元/秒 输入图片前5张免费第六张起0.2元/张", 2K 0.8:
+    # $0.0749 / $0.1199 per s, + $0.03 per image from the 6th; 5 s at 768P = $0.3745.
+    pricing:
+      base_cost_usd: 0.3745
+      variable_pricing:
+        - { per_second_usd: 0.0749 }
+        - { when: { resolution: 2K }, per_second_usd: 0.1199 }
+        - { when: { references: 6 }, add_usd: 0.03 }
+        - { when: { references: 7 }, add_usd: 0.06 }
+        - { when: { references: 8 }, add_usd: 0.09 }
+        - { when: { references: 9 }, add_usd: 0.12 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "text 必须非空，最多 7000 个字符"
+    prompt: { required: true, max_length: 7000 }
+    params:
+      # "h3：4 ~ 15 的整数" (required: litegen always sends one)
+      duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
+      # "h3：768P / 2K" (required; 768P when none is asked)
+      resolution: { kind: string, enum_values: [768P, 2K], default: 768P }
+      # "ratio … 文生视频必填且不能为 adaptive … 可选：21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16" —
+      # sent on text-to-video (16:9 when none is asked); frames follow the image.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+        default: "16:9"
+        # "图生视频恒为 adaptive（宽高比由输入图片决定）；显式传入 … 不会报错，但会被忽略并按
+        # adaptive 处理。" Frames and references "互斥" (E5).
+        # @see https://cloud.tencent.com/document/product/1823/135737 (2026-11-11)
+        frames_set_shape: without_references
+    # "首帧 ≤ 1 张、尾帧 ≤ 1 张"; references "参考图 ≤ 9 张" (role reference_image). Data URIs.
+    ref_inputs:
+      max_total: 9
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 9 }
+    extra_allowlist: [aigc_watermark]
+    extra_params:
+      # From a switch (video/tokenhub.rs tests send it as a boolean).
+      aigc_watermark: { kind: bool }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: tokenhub/minimax-video-h3-max
+    provider: tokenhub
+    media_type: video
+    display_name: MiniMax H3 Max (TokenHub)
+    description: MiniMax H3 Max through Tencent TokenHub — text or first/last frames, 5–15 s at 480P or 768P.
+    docs_url: https://cloud.tencent.com/document/product/1823/135737
+    # "MiniMax-Video-H3-Max | 文 / 图生视频 | 480P | … 0.33 元/秒", 768P 0.5: $0.0495 /
+    # $0.0749 per s; 5 s at 768P = $0.3745. Priced for text and frames only, so no
+    # reference role.
+    pricing:
+      base_cost_usd: 0.3745
+      variable_pricing:
+        - { per_second_usd: 0.0749 }
+        - { when: { resolution: 480P }, per_second_usd: 0.0495 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 7000 }
+    params:
+      # "h3-max：5 ~ 15 的整数（不支持 4 秒）"
+      duration_seconds: { kind: int, min: 5, max: 15, default: 5 }
+      # "h3-max：仅 480P / 768P"
+      resolution: { kind: string, enum_values: [480P, 768P], default: 768P }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+        default: "16:9"
+        # "图生视频恒为 adaptive（宽高比由输入图片决定）；显式传入 … 不会报错，但会被忽略并按
+        # adaptive 处理。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135737 (2026-11-11)
+        frames_set_shape: without_references
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    # aigc_watermark, and prompt_expansion_mode ("仅 minimax-video-h3-max 生效 … disabled /
+    # balanced / quality"), sent as extra.prompt_expansion_mode.
+    extra_allowlist: [aigc_watermark, prompt_expansion_mode]
+    extra_params:
+      # From the comment above, and MiniMax's video-v2 schema (drift snapshot minimax/video-v2.txt).
+      aigc_watermark: { kind: bool }
+      prompt_expansion_mode: { kind: string, enum_values: ["disabled", "balanced", "quality"], default: "balanced" }
+    tags: [text-to-video, image-to-video]
+
+  # ── PixVerse video, resold on TokenHub ───────────────────────────────────────
+  # The models pixverse/* serve direct, through TokenHub's key and bill:
+  # POST /v1/wand/pixverse/text-to-video | image-to-video (img_id) |
+  # start-end-to-video (first_frame_img, last_frame_img) | reference-to-video
+  # (image_references[]), with PixVerse's own fields (quality, seed,
+  # generate_audio_switch) and answer ({ErrCode, ErrMsg, Resp: {video_id}});
+  # polled at GET /v1/wand/pixverse/tasks/{video_id} ("Resp.status … 1 成功 / 5 生成中 /
+  # 6 已删除 / 7 审核失败 / 8 生成失败", Resp.url).
+  # @see https://cloud.tencent.com/document/product/1823/135325 (2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+  - id: tokenhub/pixverse-video-v6.0
+    provider: tokenhub
+    media_type: video
+    display_name: PixVerse V6 (TokenHub)
+    description: PixVerse V6 through Tencent TokenHub — text, an image, first/last frames or up to 7 references; 1–15 s, 360p–1080p, optional sound and multi-shot.
+    docs_url: https://cloud.tencent.com/document/product/1823/135325
+    # "PixVerse-Video-v6 | 无声 | 540p | … 0.20531 元/秒" (360p 0.14665, 720p 0.26397, 1080p 0.52794); "有声" 540p 0.26397 (360p 0.20531, 720p 0.35196, 1080p 0.67459), × 0.14987 per second; 5 s at 540p silent (the direct rows' default) = $0.154.
+    pricing:
+      base_cost_usd: 0.154
+      variable_pricing:
+        - { per_second_usd: 0.0308 }
+        - { when: { resolution: 360p }, per_second_usd: 0.022 }
+        - { when: { resolution: 720p }, per_second_usd: 0.0396 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0791 }
+        - { when: { audio: true }, per_second_usd: 0.0396 }
+        - { when: { resolution: 360p, audio: true }, per_second_usd: 0.0308 }
+        - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0527 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1011 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "文本提示词 … 取值范围：≤ 5000 字符" (required on every endpoint).
+    prompt: { required: true, max_length: 5000 }
+    params:
+      # generate_audio_switch: "true=有声 … false=静音。默认值：false。"
+      audio: { kind: bool, default: false }
+      # "v6.0/c1：1~15。默认值：5。"
+      duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
+      # quality: "360p / 540p / 720p / 1080p" (required: 540p when none is asked).
+      resolution: { kind: string, enum_values: [360p, 540p, 720p, 1080p], default: 540p }
+      # Text-to-video and references only; an image sets the shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "4:3", "1:1", "3:4", "9:16", "2:3", "3:2", "21:9"]
+        default: "16:9"
+        # "图生视频、首尾帧生视频不支持该参数，输出画幅跟随输入图片比例。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135325 (2026-11-11)
+        frames_set_shape: without_references
+      # "随机种子。取值范围：0 ~ 2147483647；不传或传 0 时使用随机数。"
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    # img_id / first_frame_img / last_frame_img / image_references[].img_id: "公网可访问的图片 URL，
+    # 或者 base64图片数据" (sent as data URIs, as TokenHub's other guides specify;
+    # not verified live). Frames or references (≤ 7), not both.
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [camera_movement, generate_multi_clip_switch]
+    extra_params:
+      # From PixVerse's OpenAPI (drift snapshot pixverse/image-to-video.txt); camera_movement stays untyped.
+      generate_multi_clip_switch: { kind: bool }
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: tokenhub/pixverse-video-c1
+    provider: tokenhub
+    media_type: video
+    display_name: PixVerse C1 (TokenHub)
+    description: PixVerse C1 through Tencent TokenHub — action and effects scenes; text, an image, first/last frames or up to 7 references; 1–15 s.
+    docs_url: https://cloud.tencent.com/document/product/1823/135325
+    # "PixVerse-Video-c1 | 无声 | 540p | … 0.23464 元/秒" (360p 0.17598, 720p 0.2933, 1080p 0.55727); "有声" 540p 0.2933 (360p 0.23464, 720p 0.38129, 1080p 0.70392), × 0.14987 per second; 5 s at 540p silent (the direct rows' default) = $0.176.
+    pricing:
+      base_cost_usd: 0.176
+      variable_pricing:
+        - { per_second_usd: 0.0352 }
+        - { when: { resolution: 360p }, per_second_usd: 0.0264 }
+        - { when: { resolution: 720p }, per_second_usd: 0.044 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0835 }
+        - { when: { audio: true }, per_second_usd: 0.044 }
+        - { when: { resolution: 360p, audio: true }, per_second_usd: 0.0352 }
+        - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0571 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1055 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "文本提示词 … 取值范围：≤ 5000 字符" (required on every endpoint).
+    prompt: { required: true, max_length: 5000 }
+    params:
+      # generate_audio_switch: "true=有声 … false=静音。默认值：false。"
+      audio: { kind: bool, default: false }
+      # "v6.0/c1：1~15。默认值：5。"
+      duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
+      # quality: "360p / 540p / 720p / 1080p" (required: 540p when none is asked).
+      resolution: { kind: string, enum_values: [360p, 540p, 720p, 1080p], default: 540p }
+      # Text-to-video and references only; an image sets the shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "4:3", "1:1", "3:4", "9:16", "2:3", "3:2", "21:9"]
+        default: "16:9"
+        # "图生视频、首尾帧生视频不支持该参数，输出画幅跟随输入图片比例。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135325 (2026-11-11)
+        frames_set_shape: without_references
+      # "随机种子。取值范围：0 ~ 2147483647；不传或传 0 时使用随机数。"
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    # img_id / first_frame_img / last_frame_img / image_references[].img_id: "公网可访问的图片 URL，
+    # 或者 base64图片数据" (sent as data URIs, as TokenHub's other guides specify;
+    # not verified live). Frames or references (≤ 7), not both.
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [camera_movement]
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: tokenhub/pixverse-video-v5.6
+    provider: tokenhub
+    media_type: video
+    display_name: PixVerse V5.6 (TokenHub)
+    description: PixVerse V5.6 through Tencent TokenHub — text, an image, first/last frames or up to 7 references; 5, 8 or 10 s.
+    docs_url: https://cloud.tencent.com/document/product/1823/135325
+    # "PixVerse-Video-v5.6 | 无声 | 540p | … 0.20531 元/秒" (360p 0.20531, 720p 0.26397, 1080p 0.43995); "有声" 540p 0.46928 (360p 0.46928, 720p 0.52794, 1080p 0.8799), × 0.14987 per second; 5 s at 540p silent (the direct rows' default) = $0.154.
+    pricing:
+      base_cost_usd: 0.154
+      variable_pricing:
+        - { per_second_usd: 0.0308 }
+        - { when: { resolution: 360p }, per_second_usd: 0.0308 }
+        - { when: { resolution: 720p }, per_second_usd: 0.0396 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0659 }
+        - { when: { audio: true }, per_second_usd: 0.0703 }
+        - { when: { resolution: 360p, audio: true }, per_second_usd: 0.0703 }
+        - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0791 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1319 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # "文本提示词 … 取值范围：≤ 5000 字符" (required on every endpoint).
+    prompt: { required: true, max_length: 5000 }
+    params:
+      # generate_audio_switch: "true=有声 … false=静音。默认值：false。"
+      audio: { kind: bool, default: false }
+      # "v5.6：5/8/10（1080p 不支持 10）" — 10 s at 1080p is refused.
+      duration_seconds: { kind: int, min: 5, max: 10, default: 5, values: [5, 8, 10] }
+      # quality: "360p / 540p / 720p / 1080p" (required: 540p when none is asked).
+      resolution: { kind: string, enum_values: [360p, 540p, 720p, 1080p], default: 540p }
+      # Text-to-video and references only; an image sets the shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "4:3", "1:1", "3:4", "9:16"]
+        default: "16:9"
+        # "图生视频、首尾帧生视频不支持该参数，输出画幅跟随输入图片比例。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135325 (2026-11-11)
+        frames_set_shape: without_references
+      # "随机种子。取值范围：0 ~ 2147483647；不传或传 0 时使用随机数。"
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    # img_id / first_frame_img / last_frame_img / image_references[].img_id: "公网可访问的图片 URL，
+    # 或者 base64图片数据" (sent as data URIs, as TokenHub's other guides specify;
+    # not verified live). Frames or references (≤ 7), not both.
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [camera_movement]
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  # ── Vidu video, resold on TokenHub ───────────────────────────────────────────
+  # The models vidu/* serve direct, through TokenHub's key and bill: POST
+  # /v1/wand/vidu/text-to-video | image-to-video | start-end-to-video |
+  # reference-to-video with Vidu's own fields (`images`, `duration`,
+  # `resolution`, `aspect_ratio`, `audio`, `seed`), answered {task_id, state},
+  # polled at GET /v1/wand/vidu/tasks/{task_id} ("state … created / queueing /
+  # processing / success / failed", creations[].url). The endpoint follows the
+  # images (as video/vidu.rs picks it); each row's duration range is valid on
+  # every endpoint it reaches. Images are data URIs ("格式要求：
+  # data:image/<图片格式>;base64,"). References go in the images form (litegen sends
+  # no `subjects`), "支持1张-3张图片输入" (q4-preview: "参考图最多 15 张"), with a prompt
+  # "直接参考方式 ≤ 2000 字符"; audio on references "非主体调用时仅 q3 支持".
+  # Prices: per second of output (10 ¥ per million tokens), × 0.14987.
+  # @see https://cloud.tencent.com/document/product/1823/135756 (2026-11-09)
+  # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
+  - id: tokenhub/vidu-video-q4-preview
+    provider: tokenhub
+    media_type: video
+    display_name: Vidu Q4 Preview (TokenHub)
+    description: Vidu Q4 Preview through Tencent TokenHub — a first frame or up to 15 references, 3–16 s, 540p to 4K, with sound.
+    docs_url: https://cloud.tencent.com/document/product/1823/135756
+    # "Vidu-Video-q4-preview | 图生 / 参考生 / 音画同出 | 540P | … 0.28125 元/秒", 720P 0.59375,
+    # 1080P 0.75, 2K 1.1875, 4K 2.4375: $0.0422 / $0.0890 / $0.1124 / $0.1780 /
+    # $0.3653 per s; 5 s at 720p = $0.445.
+    pricing:
+      base_cost_usd: 0.445
+      variable_pricing:
+        - { per_second_usd: 0.089 }
+        - { when: { resolution: 540p }, per_second_usd: 0.0422 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.1124 }
+        - { when: { resolution: 2K }, per_second_usd: 0.178 }
+        - { when: { resolution: 4K }, per_second_usd: 0.3653 }
+    # No text-to-video ("文生视频 | 不支持"): a first frame or references are required.
+    capabilities: { text_to_video: false, image_to_video: true }
+    prompt: { required: false, max_length: 5000 }
+    params:
+      # "q3-pro / q3-turbo、q4-preview 默认 true" (image-to-video); with references
+      # only q3 has sound ("非主体调用时仅 q3 支持"), so audio there is refused.
+      audio: { kind: bool, default: true }
+      duration_seconds: { kind: int, min: 3, max: 16, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p, 2K, 4K], default: 720p }
+      # References only; an image sets the shape.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "3:4", "4:3"]
+        default: "16:9"
+        # "图生视频、首尾帧生视频无此参数，输出画幅跟随输入图片比例。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135756 (2026-11-11)
+        frames_set_shape: without_references
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    ref_inputs:
+      max_total: 15
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 15 }
+    extra_allowlist: []
+    tags: [image-to-video, reference-to-video]
+
+  - id: tokenhub/vidu-video-q3-pro
+    provider: tokenhub
+    media_type: video
+    display_name: Vidu Q3 Pro (TokenHub)
+    description: Vidu Q3 Pro through Tencent TokenHub — text, a first frame or first/last frames, 1–16 s, with sound.
+    docs_url: https://cloud.tencent.com/document/product/1823/135756
+    # "Vidu-Video-q3.0-pro | 图 / 文生视频 | 540P | … 0.28125 元/秒", 720P 0.625, 1080P 0.75:
+    # $0.0422 / $0.0937 / $0.1124 per s; 5 s at 720p = $0.4685.
+    pricing:
+      base_cost_usd: 0.4685
+      variable_pricing:
+        - { per_second_usd: 0.0937 }
+        - { when: { resolution: 540p }, per_second_usd: 0.0422 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.1124 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      audio: { kind: bool, default: true }
+      # Text, image and start-end: "1 ~ 16，默认 5" (no reference endpoint).
+      duration_seconds: { kind: int, min: 1, max: 16, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "3:4", "4:3"]
+        default: "16:9"
+        # "图生视频、首尾帧生视频无此参数，输出画幅跟随输入图片比例。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135756 (2026-11-11)
+        frames_set_shape: without_references
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: tokenhub/vidu-video-q3-turbo
+    provider: tokenhub
+    media_type: video
+    display_name: Vidu Q3 Turbo (TokenHub)
+    description: Vidu Q3 Turbo through Tencent TokenHub — text, frames or up to 3 references, 3–16 s, with sound.
+    docs_url: https://cloud.tencent.com/document/product/1823/135756
+    # "Vidu-Video-q3.0-turbo | 图 / 文生视频 - 首尾帧 | 540P | … 0.21875 元/秒", 720P 0.375, 1080P
+    # 0.40625; "有参考视频" (the reference endpoint) 540P 0.125, 720P 0.3125, 1080P
+    # 0.40625: $0.0328 / $0.0562 / $0.0609, references $0.0187 / $0.0468 / $0.0609
+    # per s; 5 s at 720p = $0.281.
+    pricing:
+      base_cost_usd: 0.281
+      variable_pricing:
+        - { per_second_usd: 0.0562 }
+        - { when: { resolution: 540p }, per_second_usd: 0.0328 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0609 }
+        - { when: { references.reference: { gte: 1 } }, per_second_usd: 0.0468 }
+        - { when: { references.reference: { gte: 1 }, resolution: 540p }, per_second_usd: 0.0187 }
+        - { when: { references.reference: { gte: 1 }, resolution: 1080p }, per_second_usd: 0.0609 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      audio: { kind: bool, default: true }
+      # Text, image, start-end "1 ~ 16"; references "3 ~ 16": one range for all.
+      duration_seconds: { kind: int, min: 3, max: 16, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "3:4", "4:3"]
+        default: "16:9"
+        # "图生视频、首尾帧生视频无此参数，输出画幅跟随输入图片比例。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135756 (2026-11-11)
+        frames_set_shape: without_references
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    ref_inputs:
+      max_total: 3
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 3 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: tokenhub/vidu-video-q3
+    provider: tokenhub
+    media_type: video
+    display_name: Vidu Q3 (TokenHub)
+    description: Vidu Q3 through Tencent TokenHub — reference-to-video from up to 3 images, 3–16 s, with sound.
+    docs_url: https://cloud.tencent.com/document/product/1823/135756
+    # "Vidu-Video-q3.0 | 有参考视频 | 540P | … 0.21875 元/秒", 720P 0.375, 1080P 0.46875: $0.0328 /
+    # $0.0562 / $0.0703 per s; 5 s at 720p = $0.281.
+    pricing:
+      base_cost_usd: 0.281
+      variable_pricing:
+        - { per_second_usd: 0.0562 }
+        - { when: { resolution: 540p }, per_second_usd: 0.0328 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0703 }
+    # "参考生 / 智能切镜 / 音画同出" only: references are required.
+    capabilities: { text_to_video: false, image_to_video: true }
+    # "直接参考方式 ≤ 2000 字符"
+    prompt: { required: true, max_length: 2000 }
+    params:
+      audio: { kind: bool, default: true }
+      duration_seconds: { kind: int, min: 3, max: 16, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "3:4", "4:3"]
+        default: "16:9"
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    ref_inputs:
+      max_total: 3
+      default_role: reference
+      provider_format: { form: base64 }
+      roles:
+        reference: { required: true, min_count: 1, max_count: 3 }
+    extra_allowlist: []
+    tags: [reference-to-video]
+
+  # Vidu Q2: priced "第1秒 … 后续每秒+…" (a first second, then a rate), as
+  # per_second_usd + add_usd (the first second's excess over the rate), the way
+  # vidu/viduq2 does; the reference endpoint ("有参考视频") has its own figures.
+  - id: tokenhub/vidu-video-q2
+    provider: tokenhub
+    media_type: video
+    display_name: Vidu Q2 (TokenHub)
+    description: Vidu Q2 through Tencent TokenHub — text or up to 3 reference images, 1–10 s, 540p to 1080p.
+    docs_url: https://cloud.tencent.com/document/product/1823/135756
+    # "Vidu-Video-q2.0 | 文生视频 | 540P | … 第1秒0.3125元，后续每秒+0.0625元", 720P 0.4688 + 0.1563,
+    # 1080P 0.625 + 0.3125; "有参考视频" 540P 0.4688 + 0.1563, 720P 0.7813 + 0.1563, 1080P
+    # 2.3438 + 0.3125 (× 0.14987). 5 s text-to-video at 720p = $0.1638.
+    pricing:
+      base_cost_usd: 0.1638
+      variable_pricing:
+        - { per_second_usd: 0.0234 }
+        - { add_usd: 0.0468 }
+        - { when: { resolution: 540p }, per_second_usd: 0.0094 }
+        - { when: { resolution: 540p }, add_usd: 0.0375 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0468 }
+        - { when: { resolution: 1080p }, add_usd: 0.0468 }
+        - { when: { references.reference: { gte: 1 } }, per_second_usd: 0.0234 }
+        - { when: { references.reference: { gte: 1 } }, add_usd: 0.0937 }
+        - { when: { references.reference: { gte: 1 }, resolution: 540p }, per_second_usd: 0.0234 }
+        - { when: { references.reference: { gte: 1 }, resolution: 540p }, add_usd: 0.0468 }
+        - { when: { references.reference: { gte: 1 }, resolution: 1080p }, per_second_usd: 0.0468 }
+        - { when: { references.reference: { gte: 1 }, resolution: 1080p }, add_usd: 0.3044 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      # Text "1 ~ 10，默认 5", references "q2：1 ~ 10，默认 5". No audio: text-to-video
+      # "仅 q3 系列支持", references "非主体调用时仅 q3 支持".
+      duration_seconds: { kind: int, min: 1, max: 10, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "3:4", "4:3"]
+        default: "16:9"
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    ref_inputs:
+      max_total: 3
+      default_role: reference
+      provider_format: { form: base64 }
+      roles:
+        reference: { required: false, min_count: 0, max_count: 3 }
+    extra_allowlist: []
+    tags: [text-to-video, reference-to-video]
+
+  - id: tokenhub/vidu-video-q2-pro
+    provider: tokenhub
+    media_type: video
+    display_name: Vidu Q2 Pro (TokenHub)
+    description: Vidu Q2 Pro through Tencent TokenHub — a first frame, first/last frames or up to 3 references, 1–10 s.
+    docs_url: https://cloud.tencent.com/document/product/1823/135756
+    # "Vidu-Video-q2.0-pro | 图生视频 - 首尾帧 | 540P | … 第1秒 0.25 元，第2秒 0.3125 元，第3秒起每秒
+    # +0.15625 元" (0.25 + 0.15625 × s from 2 s; 1 s is 0.25), 720P 0.46875 + 0.3125,
+    # 1080P 1.71875 + 0.46875; "有参考视频" 540P 0.625 + 0.15625, 720P 0.9375 + 0.15625,
+    # 1080P 2.65625 + 0.3125; "音画同出功能+0.46875元" (image-to-video). 5 s from a frame at
+    # 720p = $0.2574.
+    pricing:
+      base_cost_usd: 0.2574
+      variable_pricing:
+        - { per_second_usd: 0.0468 }
+        - { add_usd: 0.0234 }
+        - { when: { resolution: 540p }, per_second_usd: 0.0234 }
+        - { when: { resolution: 540p }, add_usd: 0.0375 }
+        - { when: { resolution: 540p, duration_seconds: 1 }, usd: 0.0375 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0703 }
+        - { when: { resolution: 1080p }, add_usd: 0.1873 }
+        - { when: { references.reference: { gte: 1 } }, per_second_usd: 0.0234 }
+        - { when: { references.reference: { gte: 1 } }, add_usd: 0.1171 }
+        - { when: { references.reference: { gte: 1 }, resolution: 540p }, per_second_usd: 0.0234 }
+        - { when: { references.reference: { gte: 1 }, resolution: 540p }, add_usd: 0.0703 }
+        - { when: { references.reference: { gte: 1 }, resolution: 1080p }, per_second_usd: 0.0468 }
+        - { when: { references.reference: { gte: 1 }, resolution: 1080p }, add_usd: 0.3513 }
+        - { when: { audio: true }, add_usd: 0.0703 }
+    capabilities: { text_to_video: false, image_to_video: true }
+    prompt: { required: false, max_length: 5000 }
+    params:
+      # Image-to-video "默认 false"; start-end ("仅 q3 系列支持") and references take none.
+      audio: { kind: bool, default: false }
+      # Image "1 ~ 10", references "0 ~ 10", start-end "1 ~ 8" — declared 1 ~ 10, and a
+      # start-end clip over 8 s is refused.
+      duration_seconds: { kind: int, min: 1, max: 10, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      # References only.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16", "1:1", "3:4", "4:3"]
+        default: "16:9"
+        # "图生视频、首尾帧生视频无此参数，输出画幅跟随输入图片比例。" (E5)
+        # @see https://cloud.tencent.com/document/product/1823/135756 (2026-11-11)
+        frames_set_shape: without_references
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    ref_inputs:
+      max_total: 3
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 3 }
+    extra_allowlist: []
+    tags: [image-to-video, reference-to-video]
+
+  - id: tokenhub/vidu-video-q2-turbo
+    provider: tokenhub
+    media_type: video
+    display_name: Vidu Q2 Turbo (TokenHub)
+    description: Vidu Q2 Turbo through Tencent TokenHub — a first frame or first/last frames, 1–10 s.
+    docs_url: https://cloud.tencent.com/document/product/1823/135756
+    # "Vidu-Video-q2.0-turbo | 图生视频 - 首尾帧 | 540P | … 第1秒0.1875元，后续每秒+0.0625元", 720P "第1秒
+    # 0.25元，第2秒0.3125元，后续每秒+0.3125元" (0.3125 × s − 0.0625), 1080P 1.0938 + 0.3125;
+    # "音画同出功能+0.46875元". 5 s at 720p = $0.2246.
+    pricing:
+      base_cost_usd: 0.2246
+      variable_pricing:
+        - { per_second_usd: 0.0468 }
+        - { add_usd: -0.0094 }
+        - { when: { resolution: 540p }, per_second_usd: 0.0094 }
+        - { when: { resolution: 540p }, add_usd: 0.0187 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0468 }
+        - { when: { resolution: 1080p }, add_usd: 0.1171 }
+        - { when: { audio: true }, add_usd: 0.0703 }
+    capabilities: { text_to_video: false, image_to_video: true }
+    prompt: { required: false, max_length: 5000 }
+    params:
+      audio: { kind: bool, default: false }
+      # Image "1 ~ 10", start-end "1 ~ 8" (a start-end clip over 8 s is refused).
+      duration_seconds: { kind: int, min: 1, max: 10, default: 5 }
+      resolution: { kind: string, enum_values: [540p, 720p, 1080p], default: 720p }
+      seed: { kind: seed, min: 1, max: 2147483647 }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: true, min_count: 1, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [image-to-video]
+
+  # YouTu image-to-video (腾讯优图, Tencent's own): the model hunyuan/hunyuan-video-i2v
+  # calls on the old platform (SubmitImageToVideoGeneralJob), on TokenHub's
+  # OpenAI-style video API: POST /v1/api/video/submit {model, image, …} →
+  # {id, status: queued}; POST /v1/api/video/query {model, id} → {status,
+  # progress, data: {url}}. "请求的具体参数与原接口一致 … 参数统一以小写下划线形式呈现": the old
+  # action's Image / Prompt / Resolution / Fps as image / prompt / resolution / fps.
+  # @see https://cloud.tencent.com/document/product/1823/135716 (2026-11-09)
+  # @see https://cloud.tencent.com/document/api/1616/124465 (the action's fields; 2026-09-11)
+  - id: tokenhub/yt-video-2.0
+    provider: tokenhub
+    media_type: video
+    display_name: YouTu Video 2.0 (TokenHub)
+    description: Tencent YouTu image-to-video on TokenHub — 5 s at 480p, 720p or 1080p.
+    docs_url: https://cloud.tencent.com/document/product/1823/135716
+    # "YT-Video-2.0 | 1.0 | 按次计算消耗。480p：2 积分/次 720p/1080p：5 积分/次": ¥2 = $0.2997 at
+    # 480p, ¥5 = $0.7494 at 720p (the default) and 1080p.
+    pricing:
+      base_cost_usd: 0.7494
+      variable_pricing:
+        - { when: { resolution: 480p }, usd: 0.2997 }
+    capabilities: { text_to_video: false, image_to_video: true }
+    # The action's Prompt: "最多支持200个 utf-8 字符" (optional).
+    prompt: { required: false, max_length: 200 }
+    params:
+      # A 5 s clip; no duration field.
+      duration_seconds: { kind: float, min: 5.0, max: 5.0, default: 5.0 }
+      # Resolution "480p | 720p | 1080p" (no documented default: 720p is sent).
+      resolution: { kind: string, enum_values: ["480p", "720p", "1080p"], default: "720p" }
+      # Fps "16 | 24 | 30" (default 30).
+      fps: { kind: int, min: 16, max: 30, default: 30, values: [16, 24, 30] }
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: true, min_count: 1, max_count: 1 }
+    # logo_add (the action's LogoAdd).
+    extra_allowlist: [logo_add]
+    extra_params:
+      # From the comment above (the action's LogoAdd, an *int64 in hunyuan/vclm-*.txt).
+      logo_add: { kind: int }
+    tags: [image-to-video]

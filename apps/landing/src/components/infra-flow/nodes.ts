@@ -27,10 +27,15 @@ export interface InputVocab {
   multi: boolean;
 }
 
-/** Which output modalities a provider produces (many do both). */
+/**
+ * Which output modalities a provider produces (many do more than one). The
+ * shader streams image and video tiles; `model3d` only tags the node and its
+ * panel.
+ */
 export interface OutputModalities {
   image: boolean;
   video: boolean;
+  model3d: boolean;
 }
 
 /** A position within the stage, expressed in percent (0–100) of width/height. */
@@ -83,7 +88,7 @@ export const GATEWAY_NODE: FlowNode = {
  * Every integrated provider, shown as a node in the flow.
  *
  * The diagram is a *hub-and-spoke web*: the gateway sits dead-center, the prompt
- * (app) enters from due-left through a clear corridor, and the 18 providers are
+ * (app) enters from due-left through a clear corridor, and the providers are
  * *scattered* around the hub at varied radii and angles — deliberately NOT a
  * ring or a grid, so it reads as an organic mesh of services. Requests route
  * *through the middle* and media streams back out along every spoke.
@@ -120,7 +125,6 @@ const PROVIDER_NODES_RAW: FlowNode[] = [
   { id: 'kling', role: 'provider', name: 'Kling', initial: 'Kl', logo: 'kling.png', kind: 'video', pos: { x: 29.2, y: 84.5 }, posMobile: { x: 83.2, y: 63.6 } },
   { id: 'minimax', role: 'provider', name: 'MiniMax', initial: 'MM', logo: 'minimax.png', kind: 'video', pos: { x: 40, y: 75.9 }, posMobile: { x: 13, y: 74.6 } },
   { id: 'bytedance', role: 'provider', name: 'ByteDance', initial: 'BD', logo: 'bytedance.svg', kind: 'video', pos: { x: 65, y: 72.7 }, posMobile: { x: 39.5, y: 76 } },
-  { id: 'bedrock', role: 'provider', name: 'Bedrock', initial: 'Be', logo: 'amazon-bedrock.png', kind: 'video', pos: { x: 34.6, y: 28.3 }, posMobile: { x: 76.2, y: 74.5 } },
   { id: 'hunyuan', role: 'provider', name: 'Hunyuan', initial: 'Hy', logo: 'tencent-hunyuan.svg', kind: 'video', pos: { x: 78.7, y: 83 }, posMobile: { x: 23.3, y: 84.5 } },
   { id: 'vidu', role: 'provider', name: 'Vidu', initial: 'Vd', logo: 'vidu.png', kind: 'video', pos: { x: 89.4, y: 31.4 }, posMobile: { x: 60.9, y: 83.9 } },
   { id: 'pixverse', role: 'provider', name: 'PixVerse', initial: 'Px', logo: 'pixverse.png', kind: 'video', pos: { x: 73.6, y: 56.6 }, posMobile: { x: 87, y: 84.6 } },
@@ -139,7 +143,7 @@ function vocabFor(id: string): InputVocab {
 function outputsFor(id: string, kind: MediaKind | undefined): OutputModalities {
   const o = PROVIDER_CAPABILITIES[id]?.outputs;
   if (o && (o.image || o.video)) return o;
-  return { image: kind !== 'video', video: kind === 'video' };
+  return { image: kind !== 'video', video: kind === 'video', model3d: o?.model3d ?? false };
 }
 
 /** Provider nodes with input vocabulary + output modalities attached from the registry. */

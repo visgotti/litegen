@@ -12,15 +12,15 @@ T = TypeVar("T", bound="CredentialEntry")
 class CredentialEntry:
     """A signing credential set (key_id + key_secret, plus optional region for
     SigV4/TC3) with a weight for round-robin distribution. The signing-scheme
-    analogue of [`ApiKeyEntry`], used by providers like Bedrock, Hunyuan, and
-    Kling that authenticate with a credential *pair* rather than a bearer key.
+    analogue of [`ApiKeyEntry`], used by providers like Bedrock and Hunyuan
+    that authenticate with a credential *pair* rather than a bearer key.
 
         Attributes:
-            key_id (str): Access key id (SigV4) / secret id (TC3) / access key (Kling).
-            key_secret (str): Secret access key (SigV4) / secret key (TC3, Kling). Stored encrypted.
+            key_id (str): Access key id (SigV4) / secret id (TC3).
+            key_secret (str): Secret access key (SigV4) / secret key (TC3). Stored encrypted.
             label (Union[None, Unset, str]): Optional label for the credential set.
-            region (Union[None, Unset, str]): Region (SigV4 / TC3). Omitted for Kling; when absent the provider falls
-                back to its configured/default region.
+            region (Union[None, Unset, str]): Region (SigV4 / TC3). When absent the provider falls back to its
+                configured/default region.
             weight (Union[Unset, int]): Weight for round-robin (higher = more traffic). Default: 1.
     """
 

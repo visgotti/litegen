@@ -14,7 +14,7 @@ use rand::RngCore;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::proxy::storage::{ImageStorage, ImageStoreError};
+use crate::store::{ImageStorage, ImageStoreError};
 
 /// How long a published reference answers: past any vendor's fetch of a
 /// queued job's input, and never more than an hour (L4).
@@ -61,12 +61,7 @@ impl RefPublisher {
         let expiry = chrono::Utc::now().timestamp() + self.ttl.as_secs() as i64;
         let mut random = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut random);
-        let ext = match content_type {
-            "image/jpeg" => "jpg",
-            "image/webp" => "webp",
-            "image/gif" => "gif",
-            _ => "png",
-        };
+        let ext = crate::store::image_format(content_type);
         let token = format!("{expiry}-{}.{ext}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random));
         self.store
             .put(&format!("{REFS_PREFIX}/{token}"), &bytes::Bytes::copy_from_slice(bytes), content_type)
@@ -125,8 +120,8 @@ mod tests {
 
     fn publisher(ttl: std::time::Duration) -> RefPublisher {
         let dir = tempfile::tempdir().unwrap().keep();
-        let store: std::sync::Arc<dyn crate::proxy::storage::ImageStorage> =
-            std::sync::Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir, "https://litegen.example.com".into()));
+        let store: std::sync::Arc<dyn crate::store::ImageStorage> =
+            std::sync::Arc::new(crate::store::LocalModel3dStorage::new(dir, "https://litegen.example.com".into()));
         RefPublisher::new(store, "https://litegen.example.com".into()).with_ttl(ttl)
     }
 
@@ -145,8 +140,8 @@ mod tests {
         let png = crate::providers::image::mock::MockProvider::placeholder_png();
         for base in ["http://litegen.example.com", "https://100.64.0.7", "https://127.0.0.1", "https://localhost"] {
             let dir = tempfile::tempdir().unwrap().keep();
-            let store: std::sync::Arc<dyn crate::proxy::storage::ImageStorage> =
-                std::sync::Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir, base.into()));
+            let store: std::sync::Arc<dyn crate::store::ImageStorage> =
+                std::sync::Arc::new(crate::store::LocalModel3dStorage::new(dir, base.into()));
             assert!(RefPublisher::new(store, base.into()).publish(&png, "image/png").await.is_err(), "{base}");
         }
     }
@@ -165,8 +160,8 @@ mod tests {
     #[tokio::test]
     async fn the_sweep_removes_expired_refs_and_keeps_live_ones() {
         let dir = tempfile::tempdir().unwrap().keep();
-        let store: std::sync::Arc<dyn crate::proxy::storage::ImageStorage> =
-            std::sync::Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir.clone(), "https://litegen.example.com".into()));
+        let store: std::sync::Arc<dyn crate::store::ImageStorage> =
+            std::sync::Arc::new(crate::store::LocalModel3dStorage::new(dir.clone(), "https://litegen.example.com".into()));
         let expired = RefPublisher::new(store.clone(), "https://litegen.example.com".into()).with_ttl(std::time::Duration::ZERO);
         let live = RefPublisher::new(store, "https://litegen.example.com".into());
         let png = crate::providers::image::mock::MockProvider::placeholder_png();

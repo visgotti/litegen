@@ -480,6 +480,83 @@ pub struct GatewaySettings {
     pub default_end_user_max_budget_usd: Option<f64>,
     /// Window for that default end-user budget.
     pub default_end_user_budget_duration: Option<String>,
+    /// How stored outputs are handed out, unless an app says otherwise.
+    /// Overrides `storage_access.mode` in the config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_access_mode: Option<crate::access::AccessMode>,
+    /// Which keys may open a stored output. Overrides `storage_access.owner_scope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_access_owner_scope: Option<crate::access::OwnerScope>,
+    /// How long a signed link works, 60 to 604800 seconds. Overrides
+    /// `storage_access.signed_url_ttl_seconds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_access_signed_url_ttl_seconds: Option<u32>,
+    /// Whether litegen keeps a copy of each output. Overrides `storage_access.keep_outputs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_access_keep_outputs: Option<bool>,
+    /// Days after which kept files are deleted, 0 to 36500 (0: until deleted).
+    /// Overrides `storage_access.retention_days`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_access_retention_days: Option<u32>,
+    /// Who signs a signed link: `store` or `litegen`. Overrides `storage_access.signed_links`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_access_signed_links: Option<crate::access::SignedLinks>,
+    /// Whether image answers are cached. Overrides `cache.enabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_enabled: Option<bool>,
+    /// How long a cached answer lives, 1 to 604800 s. Overrides `cache.default_ttl_seconds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_seconds: Option<u64>,
+    /// How many answers the cache holds, 1 to 1000000. Overrides `cache.max_items`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_max_items: Option<u64>,
+    /// About how much memory the cached answers may take on each replica, in
+    /// bytes, 1048576 to 68719476736. Overrides `cache.max_bytes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_max_bytes: Option<u64>,
+    /// Tries after the first for a retryable vendor error, 0 to 5. Overrides `retries.max_retries`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_max_retries: Option<u32>,
+    /// The longest first wait before a retry, 0 to 60000 ms. Overrides `retries.backoff_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_ms: Option<u64>,
+    /// The longest any wait may be, up to 60000 ms. Overrides `retries.max_backoff_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_max_backoff_ms: Option<u64>,
+    /// Seconds one vendor call may take, 5 to 3600. Overrides `server.vendor_timeout_secs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_timeout_seconds: Option<u64>,
+    /// Consecutive failures that open a provider's breaker, 1 to 1000. Overrides `circuit_breaker.threshold`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_breaker_threshold: Option<u32>,
+    /// Seconds an open breaker stays open, 1 to 3600. Overrides `circuit_breaker.open_for_seconds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_breaker_open_for_seconds: Option<u64>,
+}
+
+/// The cache in force (`GET /v1/admin/settings`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EffectiveCache {
+    pub enabled: bool,
+    pub ttl_seconds: u64,
+    pub max_items: u64,
+    /// About how many bytes each replica's cache may hold.
+    pub max_bytes: u64,
+}
+
+/// Retries in force (`GET /v1/admin/settings`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EffectiveRetries {
+    pub max_retries: u32,
+    pub backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+/// The circuit breaker in force (`GET /v1/admin/settings`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EffectiveBreaker {
+    pub threshold: u32,
+    pub open_for_seconds: u64,
 }
 
 /// Response for `GET /v1/admin/settings`: the stored overrides plus the
@@ -488,4 +565,17 @@ pub struct GatewaySettings {
 pub struct GatewaySettingsView {
     pub settings: GatewaySettings,
     pub effective_cost_markup_percent: f64,
+    /// Who may open stored outputs for an app with no settings of its own:
+    /// these settings, else `storage_access` in `litegen.yaml`.
+    pub effective_storage_access: crate::access::AccessSettings,
+    /// The cache in force: these settings, else `cache` in `litegen.yaml`.
+    pub effective_cache: EffectiveCache,
+    /// Answers the cache holds now (on this replica).
+    pub cache_entries: u64,
+    /// Retries in force: these settings, else `retries` in `litegen.yaml`.
+    pub effective_retries: EffectiveRetries,
+    /// The vendor call timeout in force, in seconds.
+    pub effective_vendor_timeout_seconds: u64,
+    /// The circuit breaker in force.
+    pub effective_circuit_breaker: EffectiveBreaker,
 }

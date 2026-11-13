@@ -1,0 +1,10 @@
+# The Rust every build in this repo uses. rustup reads this file. Homebrew's
+# cargo (/opt/homebrew/bin/cargo, 1.98.1) does not, so put rustup's proxies
+# first: PATH=/opt/homebrew/opt/rustup/bin:$PATH. cargo finds clippy and rustc
+# through PATH, so calling the proxy's cargo by its full path isn't enough.
+# The Dockerfile's builder image and packages/3d-converter's own pin (which
+# adds the wasm target) are the same version.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

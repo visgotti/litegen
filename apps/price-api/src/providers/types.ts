@@ -20,7 +20,7 @@ export interface SeedPrice {
 
 /** A model declared in a provider's seed file. */
 export interface SeedModel {
-  /** Fully-qualified id, e.g. `openai/dall-e-3`. */
+  /** Fully-qualified id, e.g. `openai/gpt-image-2`. */
   id: string;
   displayName: string;
   mediaType: MediaType;
@@ -72,6 +72,12 @@ export interface ProviderScraper {
   readonly providerId: string;
   /** False for stubs that have no real parsing yet. */
   readonly implemented: boolean;
+  /**
+   * The model ids this scraper reports a price for; empty for a stub. The
+   * registry pins every other model of the provider to manual, so a scrape
+   * never degrades a price it doesn't look at.
+   */
+  readonly modelIds: readonly string[];
   scrape(ctx: ScrapeContext): Promise<ScrapedPriceComponent[]>;
 }
 

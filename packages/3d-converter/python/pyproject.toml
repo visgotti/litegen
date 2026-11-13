@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.16,<2"]
+build-backend = "maturin"
+
+[project]
+name = "litegen-3d-converter"
+dynamic = ["version"]
+description = "Convert 3D models between glb, gltf, obj, stl, ply, 3mf, dae, fbx, usdz and usda: litegen's converter as a native extension."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+keywords = ["3d", "gltf", "glb", "obj", "stl", "ply", "3mf", "collada", "fbx", "usdz", "usd", "converter"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/visgotti/litegen/tree/main/packages/3d-converter/python#readme"
+Repository = "https://github.com/visgotti/litegen"
+Issues = "https://github.com/visgotti/litegen/issues"
+
+[tool.maturin]
+# Pure-Rust layout: the extension is the whole package, and maturin ships the
+# stub beside it (litegen_3d_converter.pyi, written by `stub_gen`) with py.typed.
+module-name = "litegen_3d_converter"
+features = ["pyo3/extension-module"]

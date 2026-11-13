@@ -5,7 +5,8 @@ MCP is part of `litegen-core`: every deployment serves `/mcp` and
 
 ## Configuration
 
-`litegen.yaml` (or the matching `LITEGEN__MCP__*` environment variables):
+`litegen.yaml` (or the matching `LITEGEN__MCP__*` environment variables, where
+a list is a comma list: `LITEGEN__MCP__ALLOWED_HOSTS=litegen.example.com,api.example.com`):
 
 ```yaml
 server:
@@ -22,6 +23,7 @@ mcp:
     access_token_ttl_secs: 3600
     refresh_token_ttl_days: 30
     rate_limit_per_minute: 30   # sign-in requests per address a minute; 0 turns the limit off
+    trusted_redirect_hosts: []  # apps whose sign-in errors go straight back (see below), e.g. ["claude.ai"]
 ```
 
 `server.public_base_url` matters to MCP in four ways: it is the host MCP
@@ -166,6 +168,22 @@ does.
   running in a browser (the MCP Inspector) can sign in. None of them reads
   a cookie.
 
+**A broken sign-in request shows a page, unless LiteGen trusts the app.**
+When a sign-in link names a known app and one of its redirect URIs but is
+wrong in some other way (no PKCE, `response_type` other than `code`, mixed or
+unknown-endpoint scopes, a foreign `resource`), the error goes straight back
+to the app only if its redirect URI is on loopback (`localhost`, `127.0.0.1`,
+`[::1]`, as native apps such as Claude Code use) or on a host in
+`mcp.oauth.trusted_redirect_hosts`. Anyone may register an app with any
+`https` redirect URI, and nobody has signed in at that point, so otherwise a
+link to your LiteGen could send visitors on to any site (RFC 9700 §4.11.2).
+Every other app's error is a LiteGen page that names the problem and the
+app's host, with a link back the person may follow. List hosts exactly, such
+as `claude.ai` or `chatgpt.com`: case and port don't matter, and a listed host
+doesn't cover its subdomains. In a variable, give a comma list:
+`LITEGEN__MCP__OAUTH__TRUSTED_REDIRECT_HOSTS=claude.ai,chatgpt.com`. Answers
+after a person approves or denies always go back to the app.
+
 **Sign-in requests are limited per address.** Anyone may call
 `/oauth/register` and `/oauth/authorize`, so each address may make
 `mcp.oauth.rate_limit_per_minute` of those requests (30) and gets them back
@@ -174,6 +192,13 @@ their /64. Behind a proxy on the same machine or a private network, the
 address is the last one in `X-Forwarded-For` (see
 [behind a reverse proxy](#behind-a-reverse-proxy)). Tokens, revocation and
 discovery are not limited.
+
+With several replicas and Redis set, the limit is shared: an address gets
+its allowance once, however its requests are spread over the replicas. While
+Redis can't be reached, each replica counts for itself. If
+`LITEGEN_FAIL_CLOSED_RATE_LIMIT_ENFORCEMENT` is on, `/oauth/register` and
+`/oauth/authorize` answer a 503 with `Retry-After: 1` instead (a page, for a
+browser), until Redis is back. See [scaling](../scaling.md).
 
 ### Tokens and revoking
 
@@ -202,10 +227,23 @@ discovery are not limited.
 
 ## Observability
 
-- `GET /metrics` exports `litegen_mcp_requests_total{surface, method}` (every
+- The metrics endpoint, `GET /metrics` unless `observability.metrics_path`
+  moves it (`observability.metrics_enabled: false` turns it off), needs no
+  credential by default. Anyone who can reach it reads the process-wide
+  counters (no tenant ids, only totals). Behind the shipped `deploy/Caddyfile`
+  every `/api/*` path reaches litegen, so `https://<your host>/api/metrics` is
+  public: set `observability.metrics_require_auth: true`
+  (`LITEGEN__OBSERVABILITY__METRICS_REQUIRE_AUTH=true`) to require the master
+  key (or, in single-tenant mode, a key with `read` in the deployment's org),
+  or refuse the path at the proxy. Prometheus then sends the key as a bearer
+  token (`authorization` in its scrape config).
+- It exports `litegen_mcp_requests_total{surface, method}` (every
   MCP request, by JSON-RPC method) and
   `litegen_mcp_tool_calls_total{tool, surface, outcome}` (every tool call,
-  `ok` or `error`).
+  `ok` or `error`). The `tool` label is always a name from litegen's own
+  catalog: a call to a name the caller cannot call (made up, or hidden from
+  that caller) counts as `tool="unknown"`, so a client cannot add series.
 - Tracing spans `mcp.request` and `mcp.tool` carry the method or tool, the
-  endpoint and how the caller authenticated.
+  endpoint and how the caller authenticated. For a `tool="unknown"` call the
+  span's `requested` field holds the first 64 characters of the name asked for.
 - Every generation made through MCP carries the spend tag `mcp`.

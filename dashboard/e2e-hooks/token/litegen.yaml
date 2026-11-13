@@ -1,0 +1,4 @@
+# litegen for the browser hook tests: callers send x-acme-token, the
+# custom_auth example injects the key.
+hooks:
+  - path: ../../../examples/hooks/custom_auth.py

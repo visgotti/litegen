@@ -1,0 +1,37 @@
+# stubtest reports these, and each is a stubtest limitation, not a stub error.
+
+# A Literal alias of several values: stubtest wants a runtime Union. It
+# reports even a pure-Python `X: TypeAlias = Literal["a", "b"]` with runtime
+# `X = Literal["a", "b"]` this way (checked 2026-11-05). The runtime objects
+# are typing.Literal[...] of the stub's exact values (tests/test_api.py).
+litegen_3d_converter.BindPose
+litegen_3d_converter.DaeMorphs
+litegen_3d_converter.ErrorCode
+litegen_3d_converter.FbxColorSpace
+litegen_3d_converter.FileRole
+litegen_3d_converter.Format
+litegen_3d_converter.HumanoidNaming
+litegen_3d_converter.LightUnits
+litegen_3d_converter.LossKind
+litegen_3d_converter.MaterialLayer
+litegen_3d_converter.MaterialSupport
+litegen_3d_converter.OptionName
+litegen_3d_converter.Packaging
+litegen_3d_converter.StoredFrame
+litegen_3d_converter.TextureMap
+litegen_3d_converter.Unit
+litegen_3d_converter.UpAxis
+litegen_3d_converter.UsdClips
+litegen_3d_converter.UsdzRoot
+litegen_3d_converter.VrmBone
+
+# The native extension inside the package maturin builds; the package's
+# __init__ re-exports all of it, and the stub describes the package.
+litegen_3d_converter.litegen_3d_converter
+
+# BytesLike is PEP 688's Buffer in the stub (any buffer: bytes, bytearray,
+# memoryview, array.array, mmap, NumPy arrays), so type checkers take what
+# the runtime takes. The runtime object is the union of the built-in buffer
+# types, since typing_extensions is no runtime dependency; stubtest compares
+# the two as classes, members included.
+litegen_3d_converter\.BytesLike(\..*)?

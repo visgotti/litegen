@@ -3,7 +3,7 @@ import type { ChangeEvent } from 'react';
 import { X } from 'lucide-react';
 import type { MergedRole, RefEntry } from './types';
 import { roleLabel } from './params';
-import { MAX_INLINE_TOTAL_BYTES, MAX_UPLOAD_BYTES, formatMiB, inlineBytes, isFetchableUrl, readAsDataUrl } from './ref-images';
+import { MAX_INLINE_TOTAL_BYTES, MAX_UPLOAD_BYTES, formatMiB, inlineBytes, isFetchableUrl, readAsDataUrl, refsOfRoles } from './ref-images';
 
 interface Props {
   roles: MergedRole[];
@@ -31,7 +31,9 @@ export default function RefImagesField({ roles, refs, maxTotal, totalSelected, o
   const [errors, setErrors] = useState<Record<string, string>>({});
   if (roles.length === 0) return null;
 
-  const atTotalCap = maxTotal != null && refs.length >= maxTotal;
+  // Only the references in a role these models take count toward the caps.
+  const shown = refsOfRoles(refs, roles);
+  const atTotalCap = maxTotal != null && shown.length >= maxTotal;
   const setError = (role: string, msg: string) => setErrors(prev => ({ ...prev, [role]: msg }));
 
   const add = (entry: Omit<RefEntry, 'id'>) => {
@@ -62,7 +64,7 @@ export default function RefImagesField({ roles, refs, maxTotal, totalSelected, o
       setError(role, `${file.name} is ${formatMiB(file.size)}; uploads are capped at ${formatMiB(MAX_UPLOAD_BYTES)}. Use a URL for larger images.`);
       return;
     }
-    if (inlineBytes(refs) + file.size > MAX_INLINE_TOTAL_BYTES) {
+    if (inlineBytes(shown) + file.size > MAX_INLINE_TOTAL_BYTES) {
       setError(role, `Uploads in one request are capped at ${formatMiB(MAX_INLINE_TOTAL_BYTES)} in total. Use a URL instead.`);
       return;
     }
@@ -77,7 +79,7 @@ export default function RefImagesField({ roles, refs, maxTotal, totalSelected, o
     <div className="pg-refs" data-testid="pg-refs">
       <div className="pg-refs-title">
         Reference images
-        {maxTotal != null && <span className="pg-param-applies" data-testid="pg-refs-total">{refs.length}/{maxTotal}</span>}
+        {maxTotal != null && <span className="pg-param-applies" data-testid="pg-refs-total">{shown.length}/{maxTotal}</span>}
       </div>
       {roles.map(r => {
         const tid = `pg-ref-${r.role}`;

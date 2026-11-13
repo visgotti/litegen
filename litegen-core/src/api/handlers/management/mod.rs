@@ -23,7 +23,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::api::middleware::{is_platform_admin, AppState, KeyContext, Scope};
+use crate::api::middleware::{acts_in_default_org, is_platform_admin, AppState, KeyContext, Scope};
 use crate::auth::permissions::{role_has, Permission};
 use crate::management::store::ManagementStore;
 
@@ -82,7 +82,10 @@ pub(crate) fn require_gateway_admin(state: &AppState, ctx: &KeyContext) -> Resul
     if is_platform_admin(ctx) {
         return Ok(());
     }
-    if state.mode == crate::config::Mode::SingleTenant {
+    // Single-tenant: the deployment's owners and admins, and its admin-scope
+    // keys, act from the default org; a role or key of any other org is
+    // that org's alone.
+    if state.mode == crate::config::Mode::SingleTenant && acts_in_default_org(ctx) {
         if ctx.user.is_some() {
             if ctx.permissions.contains(&Permission::SystemConfig) {
                 return Ok(());
@@ -250,5 +253,6 @@ pub fn routes(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         )
         .route("/v1/admin/routes", get(admin::get_routes).put(admin::put_routes).delete(admin::delete_routes))
         .route("/v1/admin/settings", get(admin::get_settings).put(admin::put_settings))
+        .route("/v1/admin/revoke-links", post(admin::revoke_links))
         .layer(axum::middleware::from_fn_with_state(state, csrf_middleware))
 }
