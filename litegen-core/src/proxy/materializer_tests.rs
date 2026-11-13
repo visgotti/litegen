@@ -23,7 +23,7 @@ mod tests {
             docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.01, variable_pricing: Vec::new() },
             capabilities: ModelCapabilityFlags { text_to_image: true, ..Default::default() },
-            prompt: PromptSpec { required: true, min_length: None, max_length: None },
+            prompt: PromptSpec { required: true, min_length: None, max_length: None, required_for_text_to_video: false },
             params: Default::default(),
             ref_inputs: Some(RefInputSpec {
                 max_total: 2,
@@ -38,6 +38,7 @@ mod tests {
             }),
             extra_allowlist: vec![],
             extra_params: Default::default(),
+            litegen_params: Default::default(),
             tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         }

@@ -426,6 +426,68 @@ async fn the_webhook_carries_links_in_the_apps_mode() {
     assert_eq!(fetch_anonymously(&app, result_url).await.0, StatusCode::OK);
 }
 
+/// Every `http…` string anywhere in `v`: the links a payload carries.
+fn urls_in(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::String(s) if s.starts_with("http") => out.push(s.clone()),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| urls_in(x, out)),
+        serde_json::Value::Object(o) => o.values().for_each(|x| urls_in(x, out)),
+        _ => {}
+    }
+}
+
+/// `auth`'s view of `key_id`'s successful deliveries, once there are `n`: each
+/// payload's links.
+async fn delivered_links(app: &Router, key_id: &str, auth: &str, n: usize) -> Vec<Vec<String>> {
+    for _ in 0..100 {
+        let (status, page) = get_json_as(app, &format!("/v1/keys/{key_id}/webhook-deliveries"), Some(auth)).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let rows: Vec<&serde_json::Value> = page["data"].as_array().unwrap().iter().filter(|d| d["success"] == true).collect();
+        if rows.len() >= n {
+            return rows
+                .iter()
+                .map(|d| {
+                    let payload: serde_json::Value = serde_json::from_str(d["payload_json"].as_str().unwrap()).unwrap();
+                    let mut links = Vec::new();
+                    urls_in(&payload, &mut links);
+                    links
+                })
+                .collect();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("{n} deliveries never arrived");
+}
+
+/// SEC-WHDELIV (review 2026-11-11): a delivery's payload is the generation as
+/// presented to the key the webhook went to, signed links included. An admin
+/// key may list another key's deliveries, but outside the app's owner scope
+/// it holds no working link to that key's files, whichever link it is. The
+/// master key, in scope, still reads the webhook as sent, links that work.
+#[tokio::test]
+async fn another_keys_webhook_deliveries_hold_no_working_link_to_its_files() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST")).respond_with(wiremock::ResponseTemplate::new(200)).mount(&server).await;
+    let (app, db) = keyed_app(|_| {}).await;
+    set_access(&db, DEFAULT_APP_ID, Some("signed"), None, Some(900)).await;
+    let hooked = post_json_as(&app, "/v1/keys", MASTER, serde_json::json!({ "name": "hooked", "webhook_url": format!("{}/hook", server.uri()) })).await;
+    let (hooked_id, hooked_key) = (hooked["id"].as_str().unwrap().to_string(), hooked["key"].as_str().unwrap().to_string());
+    let ops = post_json_as(&app, "/v1/keys", MASTER, serde_json::json!({ "name": "ops", "scopes": "read,admin" })).await["key"].as_str().unwrap().to_string();
+    // Several jobs, so a link minted a millisecond apart from its asset's is among them.
+    for _ in 0..3 {
+        finished_3d(&app, &hooked_key).await;
+    }
+
+    let ops_view = delivered_links(&app, &hooked_id, &ops, 3).await;
+    assert!(ops_view.iter().all(|links| !links.is_empty()), "each payload names its files: {ops_view:?}");
+    for url in ops_view.iter().flatten() {
+        assert_ne!(fetch_anonymously(&app, url).await.0, StatusCode::OK, "an admin key outside the owner scope holds no working link: {url}");
+    }
+    for url in delivered_links(&app, &hooked_id, MASTER, 3).await.iter().flatten() {
+        assert_eq!(fetch_anonymously(&app, url).await.0, StatusCode::OK, "the master key reads the webhook as sent: {url}");
+    }
+}
+
 // ─── The file route's owner scope ───────────────────────────────────────────
 
 /// An API key of `app_id` in `org_id`, minted straight into the database.

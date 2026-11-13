@@ -948,6 +948,36 @@ async fn runtime_models_get_the_catalog_validation() {
     assert_eq!(s, StatusCode::CONFLICT);
 }
 
+/// Dashboard-server review #2 (orchestrator's ruling): `GET /v1/models/{id}`
+/// serves `litegen_params`, which the server computes. A served schema posted
+/// back to the admin API (or MCP `create_gateway_model`) is taken, with
+/// `litegen_params` read and ignored as `status` is: the copy is served the
+/// server's own bounds, never the posted ones, and nothing of it is stored.
+#[tokio::test]
+async fn a_served_schema_posted_back_is_taken_with_its_litegen_params_ignored() {
+    let fx = fixture().await;
+    let (s, served) = send(&fx.app, "GET", "/v1/models/mock/region-image", Auth::Bearer(&fx.gen_key.raw), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{served}");
+    let theirs = served["litegen_params"]["mask_grow_px"].clone();
+    assert!(theirs.is_object(), "the served schema carries litegen_params: {served}");
+    let id = "mock/region-image-copy";
+    let mut copy = served.clone();
+    copy["id"] = json!(id);
+    copy["display_name"] = json!("Region copy");
+    // A bound the server would never serve: posted, it must not be trusted.
+    copy["litegen_params"]["mask_grow_px"]["max"] = json!(9999);
+
+    let (s, created) = send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(copy.clone()), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "a served schema posted back: {created}");
+    let (s, again) = send(&fx.app, "GET", &format!("/v1/models/{id}"), Auth::Bearer(&fx.gen_key.raw), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{again}");
+    assert_eq!(again["litegen_params"]["mask_grow_px"], theirs, "the copy is served the server's own bounds, not the posted ones");
+    let (s, replaced) = send(&fx.app, "PUT", &format!("/v1/admin/models/{id}"), Auth::Bearer(MASTER), Some(copy), &[]).await;
+    assert_eq!(s, StatusCode::OK, "the same body sent to PUT: {replaced}");
+    let stored = fx.db.management().unwrap().list_runtime_models().await.unwrap();
+    assert!(stored.iter().all(|m| !m.schema_json.contains("litegen_params")), "the posted map was stored: {:?}", stored.iter().map(|m| &m.schema_json).collect::<Vec<_>>());
+}
+
 #[tokio::test]
 async fn disabling_a_model_hides_and_refuses_it() {
     let fx = fixture().await;
@@ -1484,6 +1514,64 @@ async fn turning_the_cache_on_empties_what_the_shared_tier_kept_while_it_was_off
     assert_eq!(status, StatusCode::OK);
     assert!(entry_keys(&shared_a).await.is_empty(), "a switch-on must not serve what an earlier switch-off failed to remove");
     crate::shared::testing::flush_keys(&shared_a).await;
+}
+
+/// Turning the cache on clears it before the new settings apply. A route
+/// saved on this replica during that clear (it answered 200) must still be in
+/// force once they do. No Redis needed: the clear stops before it would look
+/// for one.
+#[tokio::test]
+async fn a_route_saved_here_while_the_cache_is_switched_on_stays() {
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state_with(db, Mode::Hosted, None, None).await; // the cache is off by default
+    let app = create_router(a.clone());
+    let pause = a.router.cache.pause_next_clear();
+    let switching = switch_the_cache_on(&app);
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.reached.notified()).await.expect("the switch-on reached its clear");
+    assert_eq!(send(&app, "PUT", "/v1/admin/routes", Auth::Bearer(MASTER), Some(one_route()), &[]).await.0, StatusCode::OK);
+    pause.resume.notify_one();
+    assert_eq!(switching.await.unwrap(), StatusCode::OK);
+    assert_the_route_stands(&app, &a).await;
+}
+
+/// The same for a route saved on another replica, which a refresh here
+/// applies during the clear.
+#[tokio::test]
+async fn a_route_a_refresh_applies_while_the_cache_is_switched_on_stays() {
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let a = build_state(db.clone(), Mode::Hosted, Some([7u8; 32])).await;
+    let b = build_state(db, Mode::Hosted, Some([7u8; 32])).await;
+    let app = create_router(a.clone());
+    let pause = a.router.cache.pause_next_clear();
+    let switching = switch_the_cache_on(&app);
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.reached.notified()).await.expect("the switch-on reached its clear");
+    assert_eq!(send(&create_router(b), "PUT", "/v1/admin/routes", Auth::Bearer(MASTER), Some(one_route()), &[]).await.0, StatusCode::OK);
+    assert!(refresh(&a).await, "this replica's refresh applied the other replica's route");
+    pause.resume.notify_one();
+    assert_eq!(switching.await.unwrap(), StatusCode::OK);
+    assert_the_route_stands(&app, &a).await;
+}
+
+/// `PUT /v1/admin/settings {"cache_enabled": true}`, as a request of its own.
+fn switch_the_cache_on(app: &Router) -> tokio::task::JoinHandle<StatusCode> {
+    let app = app.clone();
+    tokio::spawn(async move { send(&app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cache_enabled": true })), &[]).await.0 })
+}
+
+fn one_route() -> Value {
+    json!({ "routes": [{ "model": "mock/*", "deployments": [{ "provider": "mock" }] }] })
+}
+
+/// After the switch-on: the cache is on, and [`one_route`], saved during its
+/// clear, is the route in force.
+async fn assert_the_route_stands(app: &Router, a: &AppState) {
+    assert!(a.router.settings().cache.enabled, "the switch-on applied");
+    let (_, v) = send(app, "GET", "/v1/admin/routes", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(
+        (v["source"].as_str(), v["routes"][0]["model"].as_str()),
+        (Some("runtime"), Some("mock/*")),
+        "a route saved while the cache was being switched on was undone when the switch applied: {v}"
+    );
 }
 
 #[tokio::test]

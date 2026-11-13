@@ -752,6 +752,50 @@ mod tests {
         assert_eq!(downloads, 0);
     }
 
+    /// A delivery gate that lets this observer deliver after a long wait.
+    struct SlowGo;
+
+    #[async_trait]
+    impl crate::providers::FetchGate for SlowGo {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::Go { waited: std::time::Duration::from_secs(11) }
+        }
+    }
+
+    /// Review 2026-11-11 P5 (payloads review #7): Meshy's links are signed
+    /// and expire (`?Expires=`), so an observer that waited long for the
+    /// delivery reads the task again and downloads the fresh link, not the
+    /// one it first saw, as Tripo's adapter does.
+    #[tokio::test]
+    async fn links_are_read_again_after_a_long_wait_for_the_delivery() {
+        let server = MockServer::start().await;
+        let rig = crate::providers::model3d::glb::generate_cube_glb("a rig");
+        Mock::given(method("GET")).and(path("/cdn/old.glb")).respond_with(ResponseTemplate::new(403)).mount(&server).await;
+        Mock::given(method("GET")).and(path("/cdn/new.glb")).respond_with(ResponseTemplate::new(200).set_body_bytes(rig.clone())).mount(&server).await;
+        let task = |at: &str| {
+            json!({ "id": "t-1", "status": "SUCCEEDED", "progress": 100, "result": { "rigged_character_glb_url": format!("{}{at}", server.uri()) } })
+        };
+        Mock::given(method("GET"))
+            .and(path("/openapi/v1/rigging/t-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(task("/cdn/old.glb")))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/openapi/v1/rigging/t-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(task("/cdn/new.glb")))
+            .mount(&server)
+            .await;
+        let r = provider(&server).poll_status_gated(&handle("rigging", json!(["glb"]), false), &SlowGo).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        assert_eq!(r.files[0].bytes, rig);
+        assert_eq!(r.files[0].source_url.as_deref(), Some(format!("{}/cdn/new.glb", server.uri()).as_str()));
+        let requests = server.received_requests().await.unwrap();
+        let at = |p: &str| requests.iter().filter(|q| q.url.path() == p).count();
+        assert_eq!(at("/cdn/old.glb"), 0, "the stale link was not tried");
+        assert_eq!(at("/openapi/v1/rigging/t-1"), 2, "the task was read again");
+    }
+
     #[tokio::test]
     async fn a_finished_animation_downloads_the_glb_and_the_rate_changed_fbx_promised() {
         let server = MockServer::start().await;

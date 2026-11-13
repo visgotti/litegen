@@ -361,9 +361,10 @@ impl ProviderRegistry {
             // serves only 3D would otherwise never appear in `/health` at all.
             futures::future::join_all(model3d.into_iter().map(|(name, p)| async move { (name, p.health_check().await) })),
         );
-        let entry = |modality: &str, (provider, hc): (String, crate::providers::HealthCheckResult)| ProviderHealth {
+        use crate::types::MediaType;
+        let entry = |modality: MediaType, (provider, hc): (String, crate::providers::HealthCheckResult)| ProviderHealth {
             provider,
-            modality: modality.to_string(),
+            modality,
             healthy: hc.healthy,
             message: Some(hc.message),
             latency_ms: hc.latency_ms,
@@ -371,9 +372,9 @@ impl ProviderRegistry {
         };
         image
             .into_iter()
-            .map(|r| entry("image", r))
-            .chain(video.into_iter().map(|r| entry("video", r)))
-            .chain(model3d.into_iter().map(|r| entry("model3d", r)))
+            .map(|r| entry(MediaType::Image, r))
+            .chain(video.into_iter().map(|r| entry(MediaType::Video, r)))
+            .chain(model3d.into_iter().map(|r| entry(MediaType::Model3d, r)))
             .collect()
     }
 

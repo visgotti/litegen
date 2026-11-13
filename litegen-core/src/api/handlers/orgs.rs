@@ -53,6 +53,32 @@ fn internal_error(message: &str) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "internal server error")
 }
 
+/// Whether `role` may send invitations (`member:invite`, `invitation:send`).
+pub(crate) fn role_may_invite(role: Role) -> bool {
+    role_has(role, Permission::MemberInvite) || role_has(role, Permission::InvitationSend)
+}
+
+/// Revoke pending invitations, in `org_id` or every org, to `email` or sent
+/// by `invited_by` (SEC-INVITES): a person who leaves, is deactivated, or can
+/// no longer invite keeps no way back in through one. Run before the change
+/// it goes with, so a failure (`Err`, a 500) leaves that change undone and
+/// safe to retry.
+pub(crate) async fn revoke_invitations(
+    state: &AppState,
+    org_id: Option<&str>,
+    email: Option<&str>,
+    invited_by: Option<&str>,
+) -> Result<(), Response> {
+    match state.db.revoke_pending_invitations(org_id, email, invited_by).await {
+        Ok(0) => Ok(()),
+        Ok(n) => {
+            tracing::info!(org_id = ?org_id, revoked = n, "pending invitations revoked");
+            Ok(())
+        }
+        Err(e) => Err(internal_error(&format!("revoking pending invitations: {e}"))),
+    }
+}
+
 /// Record an audit-log entry for a privileged org mutation, attributed to the
 /// acting principal and scoped to the *target* org (the path org, which is not
 /// necessarily the session's active org). Fire-and-forget: a failed insert is
@@ -479,13 +505,17 @@ pub async fn delete_org(
     if let Err(resp) = require_member_perm(&state, &ctx, &id, Permission::OrgDelete).await {
         return resp;
     }
-    // Read before the rows go: its apps' files in litegen's own store go with it.
+    // Read before the rows go: its apps' files in litegen's own store go with
+    // it, and its running jobs are stopped (SEC-INMEM), on the credentials
+    // the delete also takes.
     let kept = state.db.generations_with_kept_files("org", &id).await.unwrap_or_else(|e| {
         tracing::warn!(org_id = %id, error = %e, "could not list a deleted org's files; they stay until the store's own retention");
         Vec::new()
     });
+    let running = crate::api::handlers::jobs_left_running(&state, &id, None).await;
     match state.db.delete_organization(&id).await {
         Ok(true) => {
+            crate::api::handlers::stop_jobs_left_running(&state, running).await;
             crate::api::handlers::delete_files_in_litegens_store(&state, kept);
             log_org_audit(&state, &ctx, &id, "org.delete", "organization", &id);
             StatusCode::NO_CONTENT.into_response()
@@ -635,6 +665,13 @@ pub async fn patch_member(
             "Cannot change the Owner's role. Use transfer-owner.",
         );
     }
+    // Moved to a role that can't invite: the invitations they sent here go,
+    // or one sent to their own second address would make them an Admin again.
+    if role_may_invite(current) && !role_may_invite(body.role) {
+        if let Err(resp) = revoke_invitations(&state, Some(&id), None, Some(&user_id)).await {
+            return resp;
+        }
+    }
     match state.db.update_member_role(&id, &user_id, body.role).await {
         Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
         Err(e) => internal_error(&e.to_string()),
@@ -678,6 +715,15 @@ pub async fn remove_member(
         Ok(Some(_)) => {}
         Ok(None) => return err(StatusCode::NOT_FOUND, "member_not_found", "Member not found"),
         Err(e) => return internal_error(&e.to_string()),
+    }
+    // Their pending invitations to this org, and the ones they sent here, go
+    // first: either would let them back in (SEC-INVITES).
+    let email = match state.db.get_user_by_id(&user_id).await {
+        Ok(user) => user.map(|u| u.email.to_lowercase()),
+        Err(e) => return internal_error(&e.to_string()),
+    };
+    if let Err(resp) = revoke_invitations(&state, Some(&id), email.as_deref(), Some(&user_id)).await {
+        return resp;
     }
     match state.db.remove_org_member(&id, &user_id).await {
         Ok(()) => {
@@ -929,13 +975,16 @@ pub async fn delete_app(
     if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::AppDelete).await {
         return resp;
     }
-    // Read before the rows go: its files in litegen's own store go with it.
+    // Read before the rows go: its files in litegen's own store go with it,
+    // and its running jobs are stopped (SEC-INMEM).
     let kept = state.db.generations_with_kept_files("app", &app_id).await.unwrap_or_else(|e| {
         tracing::warn!(app_id = %app_id, error = %e, "could not list a deleted app's files; they stay until the store's own retention");
         Vec::new()
     });
+    let running = crate::api::handlers::jobs_left_running(&state, &org_id, Some(&app_id)).await;
     match state.db.delete_application(&app_id).await {
         Ok(true) => {
+            crate::api::handlers::stop_jobs_left_running(&state, running).await;
             crate::api::handlers::delete_files_in_litegens_store(&state, kept);
             log_org_audit(&state, &ctx, &org_id, "org.app.delete", "application", &app_id);
             StatusCode::NO_CONTENT.into_response()

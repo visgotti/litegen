@@ -243,3 +243,19 @@ export function buildCurl(model: ModelInfo, schema?: ModelSchema | null): string
     `  -d '${JSON.stringify(exampleBody(model, schema))}'`,
   ].join('\n');
 }
+
+/** How many decimals a number really has: its digits to 12 places, trailing
+ *  zeros dropped, so binary noise (0.1 * 3) is not shown as a digit. */
+function decimalsOf(x: number): number {
+  const fraction = Math.abs(x).toFixed(12).split('.')[1] ?? '';
+  return fraction.replace(/0+$/, '').length;
+}
+
+/**
+ * A model's catalog price as the API serves it (website N3): never rounded,
+ * every digit it has and at least two (`$0.2113536`, `$3.20`), and what it
+ * buys: `base_cost_usd` is the vendor's price for the model's default request.
+ */
+export function formatPrice(usd: number): string {
+  return `$${usd.toFixed(Math.max(2, decimalsOf(usd)))} / request`;
+}

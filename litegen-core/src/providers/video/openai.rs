@@ -351,7 +351,9 @@ impl VideoProvider for OpenAiVideoProvider {
             }
             // At most a video's cap, as Veo's and Bedrock's downloads: a
             // declared length past it is refused before reading, and the body
-            // is counted as it arrives. Read into one buffer, never copied.
+            // is counted as it arrives. Read into one buffer of the declared
+            // length, as `download_capped` reads theirs, so it never grows
+            // and is copied (payloads review #5).
             const MAX_VIDEO_BYTES: u64 = 1024 * 1024 * 1024;
             let too_large = || ProviderError::RequestFailed {
                 message: format!("Sora video is over {MAX_VIDEO_BYTES} bytes"),
@@ -362,7 +364,7 @@ impl VideoProvider for OpenAiVideoProvider {
             if content_resp.content_length().is_some_and(|n| n > MAX_VIDEO_BYTES) {
                 return Err(too_large());
             }
-            let mut bytes = Vec::new();
+            let mut bytes = Vec::with_capacity(content_resp.content_length().unwrap_or(0) as usize);
             while let Some(chunk) = content_resp.chunk().await.map_err(|e| ProviderError::RequestFailed {
                 message: format!("Failed to read Sora video bytes: {e}"),
                 status_code: None,
@@ -570,6 +572,30 @@ mod tests {
         assert!(err.to_string().contains("over 1073741824 bytes") && !err.is_retryable(), "{err}");
     }
 
+    /// Payloads review #5: a Sora video is read into one buffer of the
+    /// length the vendor declared, as `download_capped` reads Veo's and
+    /// Bedrock's. Grown as it arrives, the buffer doubled and was copied at
+    /// each step, and ended up to twice the video's size.
+    #[tokio::test]
+    async fn a_sora_video_is_read_into_a_buffer_of_its_declared_length() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/videos/video_1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "video_1", "status": "completed" })))
+            .mount(&server)
+            .await;
+        let video: Vec<u8> = (0..3 * 1024 * 1024 + 1).map(|i| (i % 251) as u8).collect();
+        Mock::given(method("GET"))
+            .and(path("/videos/video_1/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(video.clone(), "video/mp4"))
+            .mount(&server)
+            .await;
+        let polled = make_provider(&server.uri()).poll_status(&sora_handle()).await.unwrap();
+        let data = polled.video_data.expect("the video's bytes");
+        assert!(data == video, "the video arrived whole ({} of {} bytes)", data.len(), video.len());
+        assert_eq!(data.capacity(), video.len(), "the buffer is sized from the declared length");
+    }
+
     fn make_base(prompt: &str, model: &str) -> BaseGenerationRequest {
         BaseGenerationRequest {
             prompt: prompt.to_string(),
@@ -637,9 +663,6 @@ mod tests {
         assert_eq!(body["size"], "1280x720");
     }
 
-    /// `CreateVideoJsonBody.seconds` is `$ref: VideoSeconds`, which is
-    /// `{type: string, enum: ["4","8","12"]}`. The multipart path already
-    /// stringifies; the JSON (text-to-video) path sent a bare number.
     /// N1 (rule 11): `extra` cannot replace what litegen sends, the model it
     /// bills and the length and size it prices included; other keys still go.
     #[tokio::test]
@@ -655,11 +678,18 @@ mod tests {
         let base = make_base("a kite over dunes", "openai/sora");
         make_provider(&server.uri()).generate(&ref_schema("openai/sora"), &base, &extras, &empty_materialized()).await.expect("generate");
         let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
-        assert_eq!((&body["seconds"], &body["prompt"], &body["knob"]), (&json!("4"), &json!("a kite over dunes"), &json!(1)), "{body}");
-        assert_ne!(body["model"], "sora-2-pro", "{body}");
-        assert_ne!(body["size"], "1792x1024", "{body}");
+        // What litegen sends with no `extra` (`submits_sora_job_and_returns_handle`):
+        // the model it bills, the clip length it priced and the default size.
+        assert_eq!(
+            (&body["model"], &body["seconds"], &body["size"], &body["prompt"], &body["knob"]),
+            (&json!("sora-2"), &json!("4"), &json!("1280x720"), &json!("a kite over dunes"), &json!(1)),
+            "{body}"
+        );
     }
 
+    /// `CreateVideoJsonBody.seconds` is `$ref: VideoSeconds`, which is
+    /// `{type: string, enum: ["4","8","12"]}`. The multipart path already
+    /// stringifies; the JSON (text-to-video) path sent a bare number.
     /// @see openai/openai-openapi `VideoSeconds`
     #[tokio::test]
     async fn seconds_is_sent_as_a_string_in_the_json_body() {

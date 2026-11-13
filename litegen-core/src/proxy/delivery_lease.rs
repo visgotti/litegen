@@ -119,9 +119,12 @@ impl DeliveryClaim {
         }
     }
 
-    /// Run `work`, renewing the lease every third of [`DELIVERY_LEASE`] until
-    /// it ends.
+    /// Run `work`, renewing the lease as it starts and then every third of
+    /// [`DELIVERY_LEASE`] until it ends. The claim may be old by then: Veo,
+    /// Bedrock and Sora are claimed before their download, which may take up
+    /// to 600 s (payloads review #1).
     pub async fn renewing_while<T>(&self, work: impl std::future::Future<Output = T>) -> T {
+        self.renew().await;
         let every = DELIVERY_LEASE.to_std().unwrap_or(std::time::Duration::from_secs(300)) / 3;
         let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         tokio::pin!(work);
@@ -324,5 +327,32 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(claim_from(&slots, short, &db, "g-busy", Observer::Client).await.is_none(), "slots busy past the wait: stand aside");
         assert!(started.elapsed() >= short);
+    }
+
+    /// Payloads review #1: a keep renews its delivery lease as it starts.
+    /// Veo, Bedrock and Sora are claimed before the adapter's download (up
+    /// to 600 s), so a keep may start with most of the lease gone; renewed
+    /// first a third of the lease in, it could lapse before that renewal and
+    /// let another observer keep the video too.
+    #[tokio::test]
+    async fn a_keep_renews_its_lease_as_it_starts() {
+        let db: std::sync::Arc<dyn crate::db::DatabaseStore> =
+            std::sync::Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        db.insert_generation("g-keep", None, "openai/sora-2", "openai", "video", Some("j"), 0.0, None, None).await.unwrap();
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let claim = claim_from(&slots, CLIENT_SLOT_WAIT, &db, "g-keep", Observer::Poller).await.expect("claimed");
+        let holder = claim.holder.clone().expect("a lease was taken");
+        // 14 of its 15 minutes gone: taken before a long download, then a wait.
+        let taken = chrono::Utc::now() - chrono::Duration::minutes(14);
+        let aged = serde_json::json!({ "leases": { "delivery": crate::db::stage_claim_record(&holder, taken) } });
+        db.merge_generation_metadata_if_active("g-keep", &aged).await.unwrap();
+        let free_two_minutes_in = claim
+            .renewing_while(async {
+                let meta = db.get_generation("g-keep").await.unwrap().expect("the row").metadata;
+                let then = chrono::Utc::now() + chrono::Duration::minutes(2);
+                crate::db::lease_is_free(meta.as_ref(), DELIVERY_WORK, "client:another", DELIVERY_LEASE, then)
+            })
+            .await;
+        assert!(!free_two_minutes_in, "two minutes into the keep another observer could take the delivery: the lease was not renewed as the keep started");
     }
 }

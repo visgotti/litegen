@@ -355,6 +355,9 @@ fn gate_words(def: &ToolDef) -> String {
         Scope::Admin => "`admin`",
     };
     match def.gate {
+        // As `gate::passes` has it (`check_generation_principal`): a Viewer
+        // holds no `generation:create`, whatever their credential's scopes.
+        Gate::Scope(Scope::Generate) => "the `generate` scope (a signed-in person also needs `generation:create`)".to_string(),
         Gate::Scope(s) => format!("the {} scope", scope(&s)),
         Gate::AnyScope(scopes) => format!("the {} scope", scopes.iter().map(scope).collect::<Vec<_>>().join(" or ")),
         Gate::OrgRead(p) => format!("org read access (`read` or `admin` scope, or a member role with `{}`)", p.as_str()),

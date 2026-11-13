@@ -17,7 +17,8 @@
 //!   never from a replica. Replicas' clocks differ, and a replica a second
 //!   ahead would close the breaker a second early for all of them. For that
 //!   reason `is_open` is a script too: it compares `opened_ms` with Redis's
-//!   own time.
+//!   own time. So is `open_remaining`, the time a window has left, which a
+//!   route whose every breaker is open answers as `Retry-After`.
 //!
 //! The scripts read the clock and then write. Redis 5 and later (and Valkey)
 //! allow that, because they replicate a script's effects, not its text. They
@@ -81,6 +82,24 @@ end
 return 0
 "#;
 
+/// How long the window of the provider in `KEYS[1]` has left, in
+/// milliseconds: 0 when none runs. `ARGV[1]` is how long a window lasts, in
+/// milliseconds. Nothing is written. What a route whose every breaker is open
+/// puts in `Retry-After`.
+pub const OPEN_REMAINING_SCRIPT_SOURCE: &str = r#"
+local opened = tonumber(redis.call('HGET', KEYS[1], 'opened_ms'))
+if opened == nil then
+  return 0
+end
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local left = opened + tonumber(ARGV[1]) - now
+if left > 0 then
+  return left
+end
+return 0
+"#;
+
 /// Clears the streak of the provider in `KEYS[1]` after a success, unless a
 /// window is running: then it changes nothing, since the success is from a
 /// request sent before the breaker opened. `ARGV[1]` is how long a window
@@ -101,6 +120,7 @@ return 1
 /// Built once, so their SHA-1s are computed once.
 static RECORD_FAILURE: LazyLock<redis::Script> = LazyLock::new(|| redis::Script::new(SCRIPT_SOURCE));
 static IS_OPEN: LazyLock<redis::Script> = LazyLock::new(|| redis::Script::new(IS_OPEN_SCRIPT_SOURCE));
+static OPEN_REMAINING: LazyLock<redis::Script> = LazyLock::new(|| redis::Script::new(OPEN_REMAINING_SCRIPT_SOURCE));
 static RECORD_SUCCESS: LazyLock<redis::Script> = LazyLock::new(|| redis::Script::new(RECORD_SUCCESS_SCRIPT_SOURCE));
 
 /// The breaker state the replicas share through Redis. See the module docs.
@@ -152,6 +172,25 @@ impl BreakerStore for RedisBreakerStore {
             Err(error) => {
                 self.note_fallback(&error);
                 self.local.is_open(provider, open_for).await
+            }
+        }
+    }
+
+    async fn open_remaining(&self, provider: &str, open_for: Duration) -> Option<Duration> {
+        let key = self.key(provider);
+        let asked: Result<i64, SharedError> = self
+            .shared
+            .run(|mut connection| async move {
+                let mut invocation = OPEN_REMAINING.prepare_invoke();
+                invocation.key(key.as_str()).arg(open_for.as_millis() as u64);
+                invocation.invoke_async(&mut connection).await
+            })
+            .await;
+        match asked {
+            Ok(left_ms) => u64::try_from(left_ms).ok().filter(|ms| *ms > 0).map(Duration::from_millis),
+            Err(error) => {
+                self.note_fallback(&error);
+                self.local.open_remaining(provider, open_for).await
             }
         }
     }
@@ -219,7 +258,7 @@ mod tests {
 
     #[test]
     fn scripts_use_the_redis_clock() {
-        for source in [SCRIPT_SOURCE, IS_OPEN_SCRIPT_SOURCE, RECORD_SUCCESS_SCRIPT_SOURCE] {
+        for source in [SCRIPT_SOURCE, IS_OPEN_SCRIPT_SOURCE, OPEN_REMAINING_SCRIPT_SOURCE, RECORD_SUCCESS_SCRIPT_SOURCE] {
             assert!(source.contains("redis.call('TIME')"), "{source}");
         }
     }
@@ -310,6 +349,33 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(420)).await;
         assert!(!a.is_open("p").await, "the first window ended on time");
         flush_keys(&sa).await;
+    }
+
+    /// The router's `Retry-After` (handlers review #5) is the shared window's
+    /// time left, on Redis's clock: the same on every replica.
+    #[tokio::test]
+    async fn the_time_a_shared_breaker_has_left_is_the_same_on_both_replicas() {
+        let Some((sa, sb)) = two_shared().await else { return };
+        warm_up(&sa).await;
+        warm_up(&sb).await;
+        let a = breaker(sa.clone(), 1, Duration::from_secs(30));
+        let b = breaker(sb, 1, Duration::from_secs(30));
+        assert_eq!(b.open_remaining("v").await, None, "closed");
+        a.record_failure("v").await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let left = b.open_remaining("v").await.expect("A's failure opened it for B");
+        assert!((Duration::from_secs(25)..=Duration::from_millis(29_750)).contains(&left), "{left:?} of a 30 s window opened 250 ms ago");
+        flush_keys(&sa).await;
+    }
+
+    /// With Redis out, the time left is this replica's own breaker's.
+    #[tokio::test]
+    async fn a_dead_redis_says_this_replicas_own_time_left() {
+        let cb = breaker(dead_redis(false).await, 1, Duration::from_secs(30));
+        cb.record_failure("p").await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let left = cb.open_remaining("p").await.expect("this replica's breaker opened");
+        assert!((Duration::from_secs(25)..=Duration::from_millis(29_750)).contains(&left), "{left:?} of a 30 s window opened 250 ms ago");
     }
 
     #[tokio::test]

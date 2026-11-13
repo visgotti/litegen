@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ApiKeyInfo, EntityLimits, MemberView, ModelInfo } from '@litegen/sdk';
 import { client } from '../sdk-client';
 import { useTenant } from '../context/tenant';
+import { useCan } from '../components/useCan';
 import LimitsEditor, { BudgetMeter } from '../components/LimitsEditor';
 import { entityLabel, orNull } from '../components/limits';
 import '../management.css';
@@ -17,6 +18,11 @@ const TYPE_LABEL: Record<string, string> = {
 /** Budgets and limits for the active org, its app, its members and its keys. */
 export default function Budgets() {
   const { activeOrg, activeApp, apps } = useTenant();
+  // Each budget is offered for editing only to a role that may set it (the server
+  // refuses the rest): an org's needs org:write, an app's app:write, a member's
+  // member:write, a key's the key write the role has.
+  const can = useCan();
+  const canKeys = can('key:write:any') || can('key:write:own');
   const [rows, setRows] = useState<EntityLimits[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [members, setMembers] = useState<MemberView[]>([]);
@@ -97,6 +103,7 @@ export default function Budgets() {
         <>
           <LimitsEditor
             testid="org-limits"
+            readOnly={!can('org:write')}
             title="Organization budget"
             models={models}
             load={() => orNull(client.orgs.limits.get(activeOrg))}
@@ -108,6 +115,7 @@ export default function Budgets() {
             <LimitsEditor
               key={activeApp}
               testid="app-limits"
+              readOnly={!can('app:write')}
               title={`Application budget — ${names[activeApp] ?? activeApp}`}
               models={models}
               load={() => orNull(client.apps.limits.get(activeApp))}
@@ -128,6 +136,7 @@ export default function Budgets() {
             <LimitsEditor
               key={memberId}
               testid="member-limits"
+              readOnly={!can('member:write')}
               title={`Member budget — ${names[memberId] ?? memberId}`}
               models={models}
               load={() => orNull(client.orgs.memberLimits.get(activeOrg, memberId))}
@@ -151,6 +160,7 @@ export default function Budgets() {
         <LimitsEditor
           key={keyId}
           testid="key-limits"
+          readOnly={!canKeys}
           title={`Key budget — ${names[keyId] ?? keyId}`}
           models={models}
           load={() => orNull(client.keys.limits.get(keyId))}

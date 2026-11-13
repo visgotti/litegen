@@ -5,6 +5,7 @@
 //! or rate cap, since those all hang off the org.
 
 mod harness;
+mod mcp_support;
 
 use std::sync::Arc;
 
@@ -86,6 +87,17 @@ async fn app_and_db() -> (Router, Arc<SqliteDatabase>, tempfile::TempDir) {
     let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
     let app = harness::app_over_with(db.clone(), dir.path(), |c| c.dev.expose_invite_tokens = true, Some(MASTER_KEY), Mode::SingleTenant).await;
     (app, db, dir)
+}
+
+/// [`app_and_db`] over a database file, and a second connection to that file
+/// to break the database with.
+async fn app_on_file() -> (Router, Arc<SqliteDatabase>, sqlx::SqlitePool, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}/litegen.db?mode=rwc", dir.path().display());
+    let db = Arc::new(SqliteDatabase::connect(&url).await.unwrap());
+    let app = harness::app_over_with(db.clone(), dir.path(), |c| c.dev.expose_invite_tokens = true, Some(MASTER_KEY), Mode::SingleTenant).await;
+    let raw = sqlx::SqlitePool::connect(&url).await.unwrap();
+    (app, db, raw, dir)
 }
 
 async fn owner(app: &Router) -> Session {
@@ -446,6 +458,33 @@ async fn admin_scope_is_refused_for_a_key_whose_owner_cannot_hold_it() {
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
 }
 
+/// A key holds `generate` only while its owner may start generations, so
+/// giving a Viewer's key `generate` would answer 200 and do nothing: the
+/// scope is dropped at every request. It is refused instead, as `admin` is
+/// for a Member's key, whoever edits it, and the key keeps its scopes.
+#[tokio::test]
+async fn generate_scope_is_refused_for_a_key_whose_owner_is_a_viewer() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (member, org_id, member_id) = member(&app, &owner).await;
+    let (key_id, _) = new_key(&app, &signed_in(&member), "read").await;
+    let r = owner.call(&app, "PATCH", &format!("/v1/orgs/{org_id}/members/{member_id}"), Some(json!({ "role": "viewer" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "make them a viewer: {:?}", r.body);
+
+    let master = bearer(MASTER_KEY);
+    for (who, auth) in [("the owner", signed_in(&owner).to_vec()), ("the master key", vec![("authorization", master.as_str())])] {
+        let r = send(&app, "PATCH", &format!("/v1/keys/{key_id}"), Some(json!({ "scopes": "generate,read" })), &auth).await;
+        assert_eq!((r.status, r.body["error"]["code"].as_str()), (StatusCode::FORBIDDEN, Some("forbidden")), "{who}: {:?}", r.body);
+        assert!(r.body["error"]["message"].as_str().unwrap_or_default().contains("'generate'"), "{who}: {:?}", r.body);
+    }
+    let key = owner.call(&app, "GET", &format!("/v1/keys/{key_id}"), None).await;
+    assert_eq!(key.body["scopes"], "read", "the key is unchanged: {:?}", key.body);
+
+    // What the owner may hold is still accepted.
+    let r = owner.call(&app, "PATCH", &format!("/v1/keys/{key_id}"), Some(json!({ "scopes": "read" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+}
+
 /// `/mcp` authenticates keys the same way, so a removed Admin's key ends there
 /// too.
 #[tokio::test]
@@ -467,4 +506,212 @@ async fn mcp_status(app: &Router, key: &str) -> StatusCode {
     let headers = [("authorization", auth.as_str()), ("host", "localhost"), ("accept", "application/json, text/event-stream")];
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
     send(app, "POST", "/mcp", Some(body), &headers).await.status
+}
+
+// ─── A Viewer's keys only read (review 2026-11-12, security M2) ─────────────
+
+/// What `key` gets for an image generation, for its quote and for
+/// `GET /v1/generations`: each status, with a refusal's error code.
+async fn key_answers(app: &Router, key: &str) -> [(StatusCode, String); 3] {
+    let auth = bearer(key);
+    let body = json!({ "model": "mock/image-gen", "prompt": "a fox" });
+    let made = send(app, "POST", "/v1/images/generations", Some(body.clone()), &[("authorization", &auth)]).await;
+    let quoted = send(app, "POST", "/v1/images/cost", Some(body), &[("authorization", &auth)]).await;
+    let listed = send(app, "GET", "/v1/generations", None, &[("authorization", &auth)]).await;
+    [made, quoted, listed].map(|r| (r.status, r.body["error"]["code"].as_str().unwrap_or_default().to_string()))
+}
+
+fn served() -> (StatusCode, String) {
+    (StatusCode::OK, String::new())
+}
+
+fn no_scope() -> (StatusCode, String) {
+    (StatusCode::FORBIDDEN, "forbidden_scope".to_string())
+}
+
+/// Some of the tools that start or change a generation.
+const GENERATION_TOOLS: [&str; 6] = ["generate_image", "estimate_image_cost", "generate_video", "generate_3d_model", "cancel_generation", "delete_generation"];
+
+/// The tools `key` lists on `/mcp`.
+async fn ai_tools(app: &Router, key: &str) -> Vec<String> {
+    mcp_support::Mcp::new(app, "/mcp").bearer(key).tool_names().await
+}
+
+/// `key` reads, and starts or changes no generation, over HTTP and on `/mcp`.
+async fn assert_only_reads(app: &Router, key: &str, how: &str) {
+    assert_eq!(key_answers(app, key).await, [no_scope(), no_scope(), served()], "{how}: a viewer's key reads and starts nothing");
+    let listed = ai_tools(app, key).await;
+    for tool in GENERATION_TOOLS {
+        assert!(!listed.contains(&tool.to_string()), "{how}: a viewer's key still lists {tool}: {listed:?}");
+    }
+    assert!(listed.contains(&"get_generation".to_string()), "{how}: a viewer's key still reads generations on /mcp: {listed:?}");
+}
+
+/// Viewers only read (README's roles), and a key acts for its owner: once the
+/// owner is a Viewer, the key loses `generate` and keeps `read`, as it loses
+/// `admin` once its owner can't hold that. Otherwise a Member made a Viewer
+/// keeps generating, quoting, polling, cancelling and deleting through a key
+/// they made before.
+#[tokio::test]
+async fn a_member_made_a_viewer_keeps_reading_but_their_keys_stop_generating() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (member, org_id, member_id) = member(&app, &owner).await;
+    let key = key_made_by(&app, &member, "generate,read").await;
+    let generate_only = key_made_by(&app, &member, "generate").await;
+    assert_eq!(key_answers(&app, &key).await, [served(), served(), served()], "a member's key generates, quotes and reads");
+    assert_eq!(key_answers(&app, &generate_only).await, [served(), served(), served()], "`generate` reads generations too");
+    let listed = ai_tools(&app, &key).await;
+    for tool in GENERATION_TOOLS {
+        assert!(listed.contains(&tool.to_string()), "a member's key lists {tool}: {listed:?}");
+    }
+
+    let r = owner.call(&app, "PATCH", &format!("/v1/orgs/{org_id}/members/{member_id}"), Some(json!({ "role": "viewer" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "make them a viewer: {:?}", r.body);
+
+    assert_only_reads(&app, &key, "members page").await;
+    assert_eq!(key_answers(&app, &generate_only).await, [no_scope(), no_scope(), no_scope()], "a viewer's generate-only key is left with nothing");
+}
+
+/// The same when the Owner makes someone a Viewer on the users page
+/// (`PATCH /v1/users/{id}`), which in single-tenant mode sets their role in
+/// the deployment's org.
+#[tokio::test]
+async fn a_person_made_a_viewer_on_the_users_page_loses_generate_on_their_keys() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (member, _org_id, member_id) = member(&app, &owner).await;
+    let key = key_made_by(&app, &member, "generate,read").await;
+    assert_eq!(key_answers(&app, &key).await, [served(), served(), served()], "a member's key generates, quotes and reads");
+
+    let r = owner.call(&app, "PATCH", &format!("/v1/users/{member_id}"), Some(json!({ "role": "viewer" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "make them a viewer: {:?}", r.body);
+
+    assert_only_reads(&app, &key, "users page").await;
+}
+
+// ─── Pending invitations end with the person (review 2026-11-11 SEC-INVITES) ──
+
+/// An invitation `by` sends into `org_id`: its token.
+async fn invitation(app: &Router, by: &Session, org_id: &str, email: &str, role: &str) -> String {
+    let r = by.call(app, "POST", &format!("/v1/orgs/{org_id}/members"), Some(json!({ "email": email, "role": role }))).await;
+    assert_eq!(r.status, StatusCode::OK, "invite: {:?}", r.body);
+    r.body["_dev_token"].as_str().expect("dev invite token").to_string()
+}
+
+async fn accept(app: &Router, token: &str) -> Reply {
+    send(app, "POST", &format!("/v1/auth/invitations/{token}/accept"), Some(json!({ "password": PASSWORD })), &[]).await
+}
+
+fn no_such_invitation(r: &Reply) -> bool {
+    r.status == StatusCode::NOT_FOUND && r.body["error"]["code"] == "invitation_not_found"
+}
+
+async fn members_of(app: &Router, owner: &Session, org_id: &str) -> Vec<String> {
+    let r = owner.call(app, "GET", &format!("/v1/orgs/{org_id}/members"), None).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    r.body.as_array().unwrap().iter().filter_map(|m| m["email"].as_str().map(str::to_string)).collect()
+}
+
+#[tokio::test]
+async fn a_removed_member_cannot_rejoin_with_an_unused_invitation() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let org_id = owner.call(&app, "GET", "/v1/orgs", None).await.body[0]["id"].as_str().unwrap().to_string();
+    let first = invitation(&app, &owner, &org_id, MEMBER_EMAIL, "member").await;
+    let second = invitation(&app, &owner, &org_id, MEMBER_EMAIL, "member").await;
+    let joined = accept(&app, &first).await;
+    assert_eq!(joined.status, StatusCode::OK, "{:?}", joined.body);
+    let me = Session::from_reply(&app, &joined).await.call(&app, "GET", "/v1/auth/me", None).await;
+    let user_id = me.body["user"]["id"].as_str().expect("member id").to_string();
+    remove(&app, &owner, &org_id, &user_id).await;
+    let again = accept(&app, &second).await;
+    assert!(no_such_invitation(&again), "a removed member's second invitation still admits them: {} {:?}", again.status, again.body);
+    assert!(!members_of(&app, &owner, &org_id).await.contains(&MEMBER_EMAIL.to_string()), "a member again");
+}
+
+#[tokio::test]
+async fn invitations_a_removed_admin_sent_end_with_them() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    remove(&app, &owner, &org_id, &admin_id).await;
+    let r = accept(&app, &sock).await;
+    assert!(no_such_invitation(&r), "a removed admin's invitation still admits an admin: {} {:?}", r.status, r.body);
+}
+
+#[tokio::test]
+async fn invitations_a_deactivated_admin_sent_end_with_them() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    let r = owner.call(&app, "DELETE", &format!("/v1/users/{admin_id}"), None).await;
+    assert!(r.status.is_success(), "deactivate: {:?}", r.body);
+    let r = accept(&app, &sock).await;
+    assert!(no_such_invitation(&r), "a deactivated admin's invitation still admits an admin: {} {:?}", r.status, r.body);
+}
+
+#[tokio::test]
+async fn invitations_a_demoted_admin_sent_end_with_their_admin_role() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    let r = owner.call(&app, "PATCH", &format!("/v1/orgs/{org_id}/members/{admin_id}"), Some(json!({ "role": "member" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "demote: {:?}", r.body);
+    let r = accept(&app, &sock).await;
+    assert!(no_such_invitation(&r), "a demoted admin's invitation still admits an admin: {} {:?}", r.status, r.body);
+}
+
+/// The users page deactivates (`PATCH /v1/users/{id}` with `is_active: false`)
+/// as `DELETE /v1/users/{id}` does: the invitations they sent go too.
+#[tokio::test]
+async fn invitations_an_admin_deactivated_on_the_users_page_sent_end_with_them() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    let r = owner.call(&app, "PATCH", &format!("/v1/users/{admin_id}"), Some(json!({ "is_active": false }))).await;
+    assert_eq!(r.status, StatusCode::OK, "deactivate: {:?}", r.body);
+    let r = accept(&app, &sock).await;
+    assert!(no_such_invitation(&r), "an admin deactivated on the users page still admits an admin: {} {:?}", r.status, r.body);
+}
+
+/// In single-tenant mode the users page sets the role in the deployment's
+/// org, so a demotion there ends the invitations they sent, as on the
+/// members page.
+#[tokio::test]
+async fn invitations_an_admin_demoted_on_the_users_page_sent_end_with_their_admin_role() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    let r = owner.call(&app, "PATCH", &format!("/v1/users/{admin_id}"), Some(json!({ "role": "member" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "demote: {:?}", r.body);
+    let r = accept(&app, &sock).await;
+    assert!(no_such_invitation(&r), "an admin demoted on the users page still admits an admin: {} {:?}", r.status, r.body);
+}
+
+/// A PATCH that deactivates someone revokes the invitations they sent before
+/// it changes anything: when that fails (a 500), their role is as it was
+/// too, so the PATCH can be sent again whole.
+#[tokio::test]
+async fn a_deactivation_whose_invitations_cannot_be_revoked_changes_nothing() {
+    use litegen::db::DatabaseStore;
+    let (app, db, raw, _dir) = app_on_file().await;
+    let owner = owner(&app).await;
+    let (_member, org_id, member_id) = member(&app, &owner).await;
+    // A storage failure at the revoke: the table it deletes from is gone.
+    sqlx::query("ALTER TABLE invitations RENAME TO invitations_away").execute(&raw).await.unwrap();
+
+    let r = owner.call(&app, "PATCH", &format!("/v1/users/{member_id}"), Some(json!({ "role": "viewer", "is_active": false }))).await;
+    assert_eq!(r.status, StatusCode::INTERNAL_SERVER_ERROR, "{:?}", r.body);
+    assert_eq!(
+        db.get_membership(&org_id, &member_id).await.unwrap(),
+        Some(litegen::types::Role::Member),
+        "the PATCH failed, but their role changed"
+    );
+    assert!(db.get_user_by_id(&member_id).await.unwrap().expect("the account").is_active, "the PATCH failed, but the account was deactivated");
 }

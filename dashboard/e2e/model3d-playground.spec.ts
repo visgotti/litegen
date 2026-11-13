@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { feature, generateAndCapture, nextCall } from './support';
+import { checkOf, checked, feature, generateAndCapture, nextCall } from './support';
 
 // End-to-end coverage for the Playground's 3D INPUT side against the real
 // gateway binary (playwright.config.ts webServer): reference images and
@@ -156,7 +156,9 @@ test.describe('3D Playground inputs', () => {
     await page.getByTestId('pg-model-filter').fill('rodin');
     await pickModel(page, RODIN).check();
     const box = (f: string) => page.getByTestId(`pg-param-output_formats-${f}`);
-    const defaults = spec.default?.length ? spec.default : ['glb'];
+    // The server serves the list an omitted output_formats resolves to (E11d).
+    const defaults = spec.default!;
+    expect(defaults.length, 'the served default is never empty').toBeGreaterThan(0);
     await expect(box(defaults[0])).toBeChecked({ timeout: 30_000 });
     await expect(page.getByTestId('pg-param-output_formats-cap')).toHaveText(budgetText(spec).cap);
     await expectBoxesFollowTheBudget(page, spec, defaults);
@@ -261,20 +263,34 @@ test.describe('3D Playground inputs', () => {
     await page.getByTestId('playground-prompt').fill('a fox, from two sides');
     const generate = page.getByTestId('playground-generate');
     const problems = page.getByTestId('playground-problems');
+    // The pre-submit check of the body carrying exactly these roles (E11b).
+    const roles = (body: Record<string, unknown>) =>
+      ((body.reference_images ?? []) as Array<{ role: string }>).map(r => r.role).sort().join(',');
+    const checkOfRoles = (want: string) => checkOf(page, 'models3d', body => roles(body) === want);
 
-    // A side view alone: the server would refuse it without the front.
+    // A side view alone: the server refuses it without the front, in its words.
+    let quoted = checkOfRoles('view-left');
     await page.getByTestId('pg-ref-view-left-file').setInputFiles(SIDE_FIXTURE);
-    await expect(problems).toContainText('needs the front view');
+    expect((await quoted).status()).toBe(400);
+    await expect(problems).toContainText('needs a view-front image');
     await expect(generate).toBeDisabled();
+    quoted = checkOfRoles('view-front,view-left');
     await page.getByTestId('pg-ref-view-front-file').setInputFiles(IMAGE_FIXTURE);
+    expect((await quoted).status()).toBe(200);
+    await checked(page);
     await expect(problems).toHaveCount(0);
     await expect(generate).toBeEnabled();
 
     // An input image beside the views would be image-to-3D and multiview at once.
+    quoted = checkOfRoles('init,view-front,view-left');
     await page.getByTestId('pg-ref-init-file').setInputFiles(IMAGE_FIXTURE);
-    await expect(problems).toContainText('takes an input image or views, not both');
+    expect((await quoted).status()).toBe(400);
+    await expect(problems).toContainText('not both');
     await expect(generate).toBeDisabled();
+    // Back to the body already checked: its verdict stands, nothing is asked again.
     await page.getByTestId('pg-ref-init-remove-0').click();
+    await checked(page);
+    await expect(problems).toHaveCount(0);
     await expect(generate).toBeEnabled();
 
     const run = await generateAndCapture(page, MESHES, MESH_POLL);
@@ -297,6 +313,27 @@ test.describe('3D Playground inputs', () => {
     }
   });
 
+  test("Single Mode: an operation with no mesh to work on is held back, in the server's words", async ({ page }) => {
+    await feature('Pre-submit check — a rig with no mesh is refused by the server, and the page says so');
+    await openSingleMode(page, 'mock/rig-3d');
+    const generate = page.getByTestId('playground-generate');
+    const problems = page.getByTestId('playground-problems');
+    // The quote route runs the generation's validation and calls no vendor.
+    await expect(problems).toContainText('needs source_model: the mesh to work on');
+    await expect(generate).toBeDisabled();
+
+    await feature('Pre-submit check — a mesh named, the quote passes, and Generate opens');
+    const id = 'litegen-3d-does-not-exist';
+    const quoted = checkOf(page, 'models3d', body => (body.source_model as { value?: string } | undefined)?.value === id);
+    await page.getByTestId('pg-param-source_model-value').fill(id);
+    // The quote checks the request's shape only; the run would read the mesh.
+    expect((await quoted).status(), 'the server takes the body').toBe(200);
+    await checked(page);
+    await expect(problems).toHaveCount(0);
+    await expect(generate).toBeEnabled();
+    // Nothing is generated: the id names no mesh.
+  });
+
   test('Single Mode: a model that takes no prompt hides the box and waits for its image', async ({ page }) => {
     await feature('A model that takes no prompt — no prompt box, Generate waits for its image');
     await openSingleMode(page, TRELLIS);
@@ -304,15 +341,21 @@ test.describe('3D Playground inputs', () => {
     await expect(page.getByTestId('playground-prompt-unused')).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('playground-prompt')).toHaveCount(0);
 
-    // Its input image is required: Generate stays off and says why.
+    // Its input image is required: Generate stays off and says why, in the server's words.
     const generate = page.getByTestId('playground-generate');
+    await expect(page.getByTestId('playground-problems')).toContainText("role 'init' is required");
     await expect(generate).toBeDisabled();
-    await expect(page.getByTestId('playground-problems')).toContainText('needs an input image');
     await expect(page.getByTestId('pg-ref-init-required')).toHaveText('required');
 
+    // With the image, the request passes validation; fal has no key here, so
+    // the quote answers provider_not_configured: no verdict, the run would say.
+    const quoted = checkOf(page, 'models3d', body => Array.isArray(body.reference_images) && body.reference_images.length === 1);
     await page.getByTestId('pg-ref-init-url').fill('https://example.com/chair.png');
     await page.getByTestId('pg-ref-init-add-url').click();
     await expect(page.getByTestId('pg-ref-init-item-0')).toContainText('https://example.com/chair.png');
+    const answer = await quoted;
+    if (!answer.ok()) expect(((await answer.json()) as { error?: { type?: string } }).error?.type).toBe('provider_not_configured');
+    await checked(page);
     await expect(generate).toBeEnabled();
     await expect(page.getByTestId('playground-problems')).toHaveCount(0);
 
@@ -335,11 +378,15 @@ test.describe('3D Playground inputs', () => {
     await page.getByTestId('pg-prompt').fill('a fox');
     await expect(page.getByTestId('pg-prompt-not-sent')).toContainText('trellis');
     // TRELLIS still needs its input image before the run can start.
-    await expect(page.getByTestId(`pg-problems-${TRELLIS}`)).toContainText('needs an input image');
+    await expect(page.getByTestId(`pg-problems-${TRELLIS}`)).toContainText("role 'init' is required");
     await expect(page.getByTestId('pg-generate')).toBeDisabled();
 
+    const quoted = checkOf(page, 'models3d', body => body.model === TRELLIS && Array.isArray(body.reference_images));
     await page.getByTestId('pg-ref-init-url').fill('https://example.com/chair.png');
     await page.getByTestId('pg-ref-init-add-url').click();
+    const answer = await quoted;
+    if (!answer.ok()) expect(((await answer.json()) as { error?: { type?: string } }).error?.type).toBe('provider_not_configured');
+    await checked(page, 'pg-generate');
     await expect(page.getByTestId('pg-problems')).toHaveCount(0);
     await expect(page.getByTestId('pg-generate')).toBeEnabled();
 

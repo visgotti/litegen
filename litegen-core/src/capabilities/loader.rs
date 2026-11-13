@@ -154,10 +154,11 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             }
         }
     }
-    let edits_part = m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask")) || m.params.contains_key("region");
-    if m.preserves_unmasked.is_some() && !edits_part {
+    if m.preserves_unmasked.is_some() && !m.edits_part_of_an_image() {
         return Err(bad(format!(
-            "model '{}' declares preserves_unmasked but takes neither a mask nor a region", m.id
+            "model '{}' declares preserves_unmasked but edits no part of an image: it is an image model's promise \
+             about a mask or a region it takes",
+            m.id
         )));
     }
     if let Some(ParamSpec::Region(r)) = m.params.get("region") {
@@ -542,6 +543,13 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             "model '{}' prompt is required but max_length is 0 (which means no prompt)", m.id
         )));
     }
+    // N3: it refuses a text-to-video request with no prompt, which only a video
+    // model with a text-to-video mode can be sent.
+    if m.prompt.required_for_text_to_video && !(m.media_type == MediaType::Video && m.capabilities.text_to_video) {
+        return Err(bad(format!(
+            "model '{}' sets prompt.required_for_text_to_video, which only a video model with a text-to-video mode takes", m.id
+        )));
+    }
 
     // E4a: where a result goes, where it is stored and who sees it are
     // litegen's, whatever a vendor documents.
@@ -607,6 +615,11 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
                 m.id
             )));
         }
+    }
+    // E11a: computed by the server from the fields litegen applies itself. A
+    // catalog able to set it could serve bounds the validator does not keep.
+    if !m.litegen_params.is_empty() {
+        return Err(bad(format!("model '{}' sets litegen_params, which the server computes; remove it", m.id)));
     }
     match (m.media_type, m.params.get("output_format"), m.params.get("background")) {
         (MediaType::Model3d, Some(ParamSpec::String(s)), _) => in_vocab("output_format", &s.enum_values, &formats)?,

@@ -14,8 +14,8 @@ management API the way LiteLLM's key types do.
 
 | Scope | Opens |
 |---|---|
-| `generate` | Generating images, video and 3D; cost quotes; job status; mesh conversion; the model catalog (`/v1/models`, `/v1/providers`, `/v1/utils/models3d/formats`) and the key's generations and their assets (`/v1/generations…`) |
-| `read` | The model catalog and generations too, plus request logs, stats, spend, limits and end users; in single-tenant mode, in the deployment's org, also provider health (`GET /health`, which checks the gateway's own vendor keys; in hosted mode only the master key reads it) |
+| `generate` | Generating images, video and 3D; cost quotes; job status; mesh conversion; the model catalog (`/v1/models`, `/v1/providers`, `/v1/utils/models3d/formats`) and the key's generations and their assets (`/v1/generations…`); cancelling, deleting and revoking the links of the generations its app's owner scope lets it change (by default, its own) |
+| `read` | Reads only: the model catalog and generations too, plus request logs, stats, spend, limits and end users; in single-tenant mode, in the deployment's org, also provider health (`GET /health`, which checks the gateway's own vendor keys; in hosted mode only the master key reads it) |
 | `admin` | Managing keys, budgets and limits, end users, the audit log and the cache; in single-tenant mode also the gateway's models, providers, routes and settings |
 
 The Keys page offers them as presets:
@@ -31,6 +31,27 @@ A key created without `scopes` gets `generate,read`. A key never gets a scope
 its creator could not grant: only owners and admins, the master key, or an
 `admin`-scope key may grant `admin`. That check runs when a key is created and when its scopes
 are edited. An unknown scope is a 400.
+
+## Key webhooks
+
+A key's `webhook_url` gets a signed `POST` when one of its video or 3D jobs
+ends. Where it may point:
+
+- **Hosted mode:** public addresses only, for every key.
+- **Single-tenant mode:** the deployment's own network (private, loopback and
+  link-local addresses) is open only to the deployment's own keys: keys made
+  with the master key (no owner), and keys whose owner is an active Owner or
+  Admin of the deployment's org. Any other key, a Member's for instance, or
+  a key of a side org whose owner is not an Owner or Admin of the deployment's
+  org, is held to public addresses. The rule follows the key's owner, whoever
+  edits the key, and is checked when the URL is saved (400
+  `invalid_webhook_url`), at `POST /v1/keys/{id}/test-webhook`, and at every
+  delivery: a demoted or departed Admin's key stops reaching inside at once.
+  Set `webhooks.internal_targets: everyone` (`LITEGEN__WEBHOOKS__INTERNAL_TARGETS=everyone`)
+  to let any key's webhook reach inside, as before.
+
+A delivery keeps the first 16 KiB of the endpoint's reply
+(`GET /v1/keys/{id}/webhook-deliveries`).
 
 ## Limits and budgets
 

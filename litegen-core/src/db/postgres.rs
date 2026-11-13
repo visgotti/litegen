@@ -1711,6 +1711,19 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn revoke_pending_invitations(&self, org_id: Option<&str>, email: Option<&str>, invited_by: Option<&str>) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM invitations WHERE used_at IS NULL AND ($1::text IS NULL OR org_id = $1) \
+             AND (email = $2 OR invited_by = $3)",
+        )
+        .bind(org_id)
+        .bind(email)
+        .bind(invited_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     async fn list_invitations(&self) -> Result<Vec<Invitation>, sqlx::Error> {
         let rows = sqlx::query_as::<_, InvitationRow>(
             "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
@@ -2561,6 +2574,20 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     // ─── Tenant-scoped reads ────────────────────────────────────────────
+
+    async fn list_active_generations_for_tenant(&self, org_id: &str, app_id: Option<&str>) -> Result<Vec<Generation>, sqlx::Error> {
+        let sql = format!(
+            "SELECT {} FROM generations WHERE org_id = $1 AND ($2::text IS NULL OR app_id = $2) \
+             AND status IN ('pending', 'processing') ORDER BY created_at ASC",
+            GENERATION_COLS
+        );
+        let rows = sqlx::query_as::<_, GenerationRow>(&sql)
+            .bind(org_id)
+            .bind(app_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
 
     async fn list_generations_for_tenant(
         &self,

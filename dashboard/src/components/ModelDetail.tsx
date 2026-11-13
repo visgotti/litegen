@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ModelInfo, ModelSchema } from '@litegen/sdk';
 import { showToast } from './toast-store';
-import { buildCurl, capabilityLabels, catalogFacts, describePrompt, describeSpec, refRoleRows } from './model-detail';
+import { buildCurl, capabilityLabels, catalogFacts, describePrompt, describeSpec, formatPrice, refRoleRows } from './model-detail';
 import { docsUrlOf } from '../playground/params';
 
 /** The schema fetch, tagged with the model it belongs to: the drawer derives
@@ -101,8 +101,12 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
       <div style={card}>
         <div style={h4}>Pricing</div>
         <div style={{ color: '#e6edf3', fontSize: 14 }}>
-          {model.pricing ? `$${model.pricing.base_cost_usd.toFixed(4)} base` : '—'}
-          {model.pricing?.variable_pricing ? <span style={{ color: '#8b949e' }}> + variable</span> : null}
+          <span data-testid="model-detail-price">
+            {model.pricing ? `${formatPrice(model.pricing.base_cost_usd)}, every parameter at its default` : '—'}
+          </span>
+          {model.pricing?.variable_pricing?.length
+            ? <span style={{ color: '#8b949e' }}> · the price follows the request ({model.pricing.variable_pricing.length} rule{model.pricing.variable_pricing.length === 1 ? '' : 's'})</span>
+            : null}
         </div>
       </div>
 

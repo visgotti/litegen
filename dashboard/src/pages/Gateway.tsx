@@ -3,7 +3,8 @@ import type { AdminModelView, GatewaySettingsView, ModelSchema, ProviderConfigVi
 import { client } from '../sdk-client';
 import { showToast } from '../components/toast-store';
 import { accessBody, describeAccess, type AccessForm } from '../components/access';
-import { runtimeBody, runtimeFormOf, type RuntimeForm } from '../components/gateway-settings';
+import { runtimeBody, runtimeFormOf, settingsBody, type RuntimeForm } from '../components/gateway-settings';
+import { formatPrice } from '../components/model-detail';
 import '../management.css';
 
 type Tab = 'models' | 'providers' | 'routes' | 'settings';
@@ -20,6 +21,9 @@ const MODEL_TEMPLATE = {
 };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** A byte count in MiB: `256 MiB`, `1.5 MiB`. */
+const mib = (bytes: number) => `${(bytes / 1_048_576).toLocaleString('en-US', { maximumFractionDigits: 1 })} MiB`;
 
 /** Gateway admin: runtime models, provider configs, model routes and settings. */
 export default function Gateway() {
@@ -106,7 +110,7 @@ function ModelsTab() {
                   <td className="mg-mono">{m.id}</td>
                   <td><span className="badge">{m.source}</span></td>
                   <td>{m.schema.media_type}</td>
-                  <td>${m.schema.pricing.base_cost_usd.toFixed(4)}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{formatPrice(m.schema.pricing.base_cost_usd)}</td>
                   <td><span className={`badge ${m.disabled ? 'unhealthy' : 'healthy'}`}>{m.disabled ? 'disabled' : 'enabled'}</span></td>
                   <td>
                     <div className="mg-actions" style={{ marginTop: 0 }}>
@@ -328,12 +332,13 @@ function SettingsTab() {
       if (!files) throw new Error(filesError);
       const { body: runtimeFields, error: runtimeError } = runtimeBody(runtime);
       if (!runtimeFields) throw new Error(runtimeError);
-      apply(await client.admin.settings.update({
+      // Every field is sent, or the save would clear it: the form's over what
+      // the server gave, so a setting the form has no field for is kept.
+      apply(await client.admin.settings.update(settingsBody(view?.settings ?? {}, {
         cost_markup_percent: num(markup, 'Cost markup'),
         alert_webhook_url: webhook.trim() || null,
         default_end_user_max_budget_usd: num(euBudget, 'Default end-user budget'),
         default_end_user_budget_duration: euDuration.trim() || null,
-        // Every field is sent, or the save would clear it.
         storage_access_mode: files.mode ?? null,
         storage_access_owner_scope: files.owner_scope ?? null,
         storage_access_signed_url_ttl_seconds: files.signed_url_ttl_seconds ?? null,
@@ -341,7 +346,7 @@ function SettingsTab() {
         storage_access_retention_days: files.retention_days ?? null,
         storage_access_signed_links: files.signed_links ?? null,
         ...runtimeFields,
-      }));
+      })));
       showToast('Settings saved', 'info');
     } catch (e) {
       setError(errText(e));
@@ -429,7 +434,7 @@ function SettingsTab() {
       <h4 style={{ margin: '16px 0 4px' }}>Cache</h4>
       <p className="mg-muted" data-testid="gateway-cache-effective">
         {view
-          ? `${view.effective_cache.enabled ? 'on' : 'off'} · answers kept ${view.effective_cache.ttl_seconds} s · up to ${view.effective_cache.max_items} · ${view.cache_entries} cached now`
+          ? `${view.effective_cache.enabled ? 'on' : 'off'} · answers kept ${view.effective_cache.ttl_seconds} s · up to ${view.effective_cache.max_items} in ${mib(view.effective_cache.max_bytes)} · ${view.cache_entries} cached now`
           : '…'}
       </p>
       <div className="mg-form-grid">
@@ -442,6 +447,7 @@ function SettingsTab() {
         </label>
         <label>Kept for (seconds)<input className="input" placeholder="config default" data-testid="gateway-cache-ttl" {...field('cacheTtl')} /></label>
         <label>At most (answers)<input className="input" placeholder="config default" data-testid="gateway-cache-size" {...field('cacheMaxItems')} /></label>
+        <label>Memory, each replica (bytes)<input className="input" placeholder="config default" data-testid="gateway-cache-max-bytes" {...field('cacheMaxBytes')} /></label>
       </div>
       <div className="mg-actions"><button className="btn btn-secondary" data-testid="gateway-cache-clear" onClick={() => void clearCache()}>Clear cache</button></div>
       <h4 style={{ margin: '16px 0 4px' }}>Retries and timeouts</h4>

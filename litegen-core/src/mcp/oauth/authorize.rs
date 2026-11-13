@@ -25,7 +25,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::clients::{is_loopback_host, redirect_allowed, resolve_client};
+use super::clients::{is_loopback_host, redirect_allowed, resolve_client, ClientError};
 use super::crypto::{random_token, sha256_hex};
 use super::discovery::{issuer, resource_target, scopes as surface_scopes, surfaces, ResourceTarget};
 use super::store::{AuthRequest, Decision, McpOAuthStore};
@@ -102,7 +102,14 @@ pub async fn authorize(State(shared): State<Arc<OAuthShared>>, query: Result<Que
     let now = Utc::now();
     let client = match resolve_client(store, shared.fetcher.as_ref(), client_id, now).await {
         Ok(client) => client,
-        Err(e) => return error_page(&e.to_string()),
+        // A storage failure says nothing about the link, and its text names
+        // the database's tables: logged, and the person asked to try again
+        // (SEC-DBERR).
+        Err(ClientError::Store(detail)) => {
+            tracing::error!(error = %detail, "oauth authorize: the client could not be looked up");
+            return unavailable_page();
+        }
+        Err(ClientError::Unknown(why) | ClientError::InvalidMetadata(why)) => return error_page(&why),
     };
     let redirect_uri = match p.redirect_uri.as_deref() {
         Some(uri) if redirect_allowed(&client.redirect_uris, uri) => uri.to_string(),

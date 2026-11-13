@@ -27,11 +27,17 @@ export class LiteGenAPIError extends LiteGenError {
    * `vendor_rejected` or `vendor_error`): its HTTP status, code and message.
    */
   readonly providerError?: VendorError;
-  /** Whether the same request may work later (a vendor's 5xx, 429 or timeout). */
+  /**
+   * Whether the same request may work later: a vendor's 5xx, 429 or timeout,
+   * or a model route whose deployments were passed over (503 `circuit_open`:
+   * every circuit breaker open), but not a refusal. Sent on every vendor and
+   * router error; undefined when the server did not say.
+   */
   readonly retryable?: boolean;
   /**
    * The wait the server's `Retry-After` header asked for (a 429 or 503), in
-   * milliseconds; undefined when it sent none.
+   * milliseconds; undefined when it sent none. On a 503 `circuit_open` it is
+   * when the first deployment's breaker closes.
    */
   readonly retryAfterMs?: number;
   /**

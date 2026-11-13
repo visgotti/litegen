@@ -33,6 +33,10 @@ T = TypeVar("T", bound="ModelCapabilities")
 class ModelCapabilities:
     """
     Attributes:
+        max_request_bytes (int): The most bytes a generation or quote request for this model may be,
+            as sent. References carried inline (base64) count at 4/3 their size,
+            so a larger image goes as a URL, which litegen fetches itself. A larger
+            body is refused with 413 `body_too_large`. Always sent.
         supports_image_to_image (bool):
         supports_text_to_image (bool):
         task (ModelTask): What a catalog model does.
@@ -119,6 +123,7 @@ class ModelCapabilities:
             empty when it takes none.
     """
 
+    max_request_bytes: int
     supports_image_to_image: bool
     supports_text_to_image: bool
     task: ModelTask
@@ -180,6 +185,8 @@ class ModelCapabilities:
 
     def to_dict(self) -> Dict[str, Any]:
         from ..models.pixel_size import PixelSize
+
+        max_request_bytes = self.max_request_bytes
 
         supports_image_to_image = self.supports_image_to_image
 
@@ -367,6 +374,7 @@ class ModelCapabilities:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "max_request_bytes": max_request_bytes,
                 "supports_image_to_image": supports_image_to_image,
                 "supports_text_to_image": supports_text_to_image,
                 "task": task,
@@ -490,6 +498,8 @@ class ModelCapabilities:
         from ..models.pixel_size import PixelSize
 
         d = src_dict.copy()
+        max_request_bytes = d.pop("max_request_bytes")
+
         supports_image_to_image = d.pop("supports_image_to_image")
 
         supports_text_to_image = d.pop("supports_text_to_image")
@@ -736,6 +746,7 @@ class ModelCapabilities:
         texture_resolutions = cast(List[int], d.pop("texture_resolutions", UNSET))
 
         model_capabilities = cls(
+            max_request_bytes=max_request_bytes,
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
             task=task,

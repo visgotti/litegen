@@ -4,6 +4,7 @@ import { LiteGenAPIError } from '@litegen/sdk';
 import type { AppAccessSettings, AppStorageInfo, PutAppStorageRequest } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
 import { useTenant } from '../context/tenant';
+import { useCan } from '../components/useCan';
 import { accessBody, describeAccess, type AccessForm } from '../components/access';
 import { storageBody } from '../components/storage';
 
@@ -22,6 +23,13 @@ function accessFormOf(a: AppAccessSettings | null): AccessForm {
 
 export default function Organization() {
   const { orgs, activeOrg, activeApp, apps, refresh } = useTenant();
+  // What this role may change (README roles: an app's settings, storage and
+  // access are an Owner's or an Admin's); the rest is shown read-only.
+  const can = useCan();
+  const canRename = can('org:write');
+  const canEditApps = can('app:write');
+  const canDeleteApps = can('app:delete');
+  const canEditStorage = can('storage_cred:write');
 
   const currentOrg = orgs.find(o => o.id === activeOrg) ?? null;
   const loadedOrgName = currentOrg?.name ?? '';
@@ -222,22 +230,32 @@ export default function Organization() {
     <div style={{ padding: '0 0 32px' }}>
       <h2 style={{ margin: '0 0 24px', color: '#e6edf3', fontSize: 22, fontWeight: 600 }}>Organization</h2>
 
+      {!(canRename && canEditApps && canDeleteApps && canEditStorage) && (
+        <div data-testid="org-readonly-note" style={{ color: '#8b949e', fontSize: 13, margin: '-12px 0 20px' }}>
+          Only an owner or an admin can change these settings; your role reads them.
+        </div>
+      )}
+
       {/* Rename org */}
       <div style={cardStyle}>
         <h3 style={sectionTitle}>Name</h3>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            className="input"
-            data-testid="org-name-input"
-            value={orgName}
-            onChange={e => setOrgName(e.target.value)}
-            placeholder="Organization name"
-            style={{ maxWidth: 320 }}
-          />
-          <button className="btn btn-primary" data-testid="org-name-save" onClick={saveOrgName}>
-            Save
-          </button>
-        </div>
+        {canRename ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              className="input"
+              data-testid="org-name-input"
+              value={orgName}
+              onChange={e => setOrgName(e.target.value)}
+              placeholder="Organization name"
+              style={{ maxWidth: 320 }}
+            />
+            <button className="btn btn-primary" data-testid="org-name-save" onClick={saveOrgName}>
+              Save
+            </button>
+          </div>
+        ) : (
+          <div data-testid="org-name" style={{ color: '#e6edf3', fontSize: 14 }}>{loadedOrgName}</div>
+        )}
       </div>
 
       {/* Apps */}
@@ -257,31 +275,35 @@ export default function Organization() {
               }}
             >
               <span style={{ color: '#e6edf3', fontSize: 14 }}>{a.name}</span>
-              <button
-                className="btn btn-danger"
-                data-testid={`app-delete-${a.id}`}
-                onClick={() => deleteApp(a.id)}
-                style={{ fontSize: 12, padding: '4px 10px' }}
-              >
-                Delete
-              </button>
+              {canDeleteApps && (
+                <button
+                  className="btn btn-danger"
+                  data-testid={`app-delete-${a.id}`}
+                  onClick={() => deleteApp(a.id)}
+                  style={{ fontSize: 12, padding: '4px 10px' }}
+                >
+                  Delete
+                </button>
+              )}
             </div>
           ))}
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            className="input"
-            data-testid="app-create-name"
-            value={newAppName}
-            onChange={e => setNewAppName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && createApp()}
-            placeholder="New application name"
-            style={{ maxWidth: 320 }}
-          />
-          <button className="btn btn-primary" data-testid="app-create-submit" onClick={createApp}>
-            Create app
-          </button>
-        </div>
+        {canEditApps && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              className="input"
+              data-testid="app-create-name"
+              value={newAppName}
+              onChange={e => setNewAppName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && createApp()}
+              placeholder="New application name"
+              style={{ maxWidth: 320 }}
+            />
+            <button className="btn btn-primary" data-testid="app-create-submit" onClick={createApp}>
+              Create app
+            </button>
+          </div>
+        )}
       </div>
 
       {/* App storage (BYO S3) */}
@@ -299,62 +321,64 @@ export default function Organization() {
             )}
           </div>
         )}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
-          <input className="input" data-testid="storage-bucket" value={stBucket}
-            onChange={e => setStBucket(e.target.value)} placeholder="bucket name" disabled={!activeApp} />
-          <input className="input" data-testid="storage-region" value={stRegion}
-            onChange={e => setStRegion(e.target.value)} placeholder="region (e.g. us-east-1)" disabled={!activeApp} />
-          <input className="input" data-testid="storage-endpoint" value={stEndpoint}
-            onChange={e => setStEndpoint(e.target.value)} placeholder="endpoint URL (MinIO/R2/Spaces, optional)" disabled={!activeApp} />
-          <input className="input" data-testid="storage-public-url" value={stPublicUrl}
-            onChange={e => setStPublicUrl(e.target.value)} placeholder="custom public URL / CDN (optional)" disabled={!activeApp} />
-          <input className="input" data-testid="storage-prefix" value={stPrefix}
-            onChange={e => setStPrefix(e.target.value)} placeholder="path prefix (default litegen/images)" disabled={!activeApp} />
-          <label style={{ color: '#8b949e', fontSize: 13 }}>How litegen reaches the bucket
-            <select className="input" data-testid="storage-credential-mode" value={stMode} disabled={!activeApp}
-              onChange={e => setStMode(e.target.value === 'assume_role' ? 'assume_role' : 'access_key')}>
-              <option value="access_key">An access key pair</option>
-              <option value="assume_role">A cross-account IAM role (AWS)</option>
-            </select>
-          </label>
-          {stMode === 'access_key' ? (
-            <>
-              <input className="input" data-testid="storage-access-key-id" value={stAccessKeyId}
-                onChange={e => setStAccessKeyId(e.target.value)}
-                placeholder={storage?.configured ? 'access key id (leave blank to keep)' : 'access key id'} disabled={!activeApp} />
-              <input className="input" data-testid="storage-secret" type="password" value={stSecret}
-                onChange={e => setStSecret(e.target.value)}
-                placeholder={storage?.configured ? 'secret access key (leave blank to keep)' : 'secret access key'} disabled={!activeApp} />
-            </>
-          ) : (
-            <>
-              <input className="input" data-testid="storage-role-arn" value={stRoleArn}
-                onChange={e => setStRoleArn(e.target.value)} placeholder="role ARN (arn:aws:iam::123456789012:role/name)" disabled={!activeApp} />
-              <div data-testid="storage-role-trust" style={{ color: '#8b949e', fontSize: 12, lineHeight: 1.6 }}>
-                The role's trust policy must trust{' '}
-                <code data-testid="storage-principal" style={{ color: '#e6edf3' }}>{storage?.litegen_principal_arn ?? "litegen's AWS account"}</code>
-                {' '}with the external ID{' '}
-                <code data-testid="storage-external-id" style={{ color: '#e6edf3' }}>{storage?.external_id ?? '(set a secrets key)'}</code>.
-                litegen assumes the role when you save.
-              </div>
-            </>
-          )}
-          <label style={{ color: '#8b949e', fontSize: 13, display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input type="checkbox" data-testid="storage-fallback" checked={stFallback} disabled={!activeApp}
-              onChange={e => setStFallback(e.target.checked)} />
-            While the bucket can't be reached, keep this app's files in litegen's own store
-          </label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-primary" data-testid="storage-save" onClick={saveStorage} disabled={!activeApp}>
-              Save storage
-            </button>
-            {storage?.configured && (
-              <button className="btn btn-danger" data-testid="storage-remove" onClick={removeStorage} disabled={!activeApp}>
-                Remove storage
-              </button>
+        {canEditStorage && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
+            <input className="input" data-testid="storage-bucket" value={stBucket}
+              onChange={e => setStBucket(e.target.value)} placeholder="bucket name" disabled={!activeApp} />
+            <input className="input" data-testid="storage-region" value={stRegion}
+              onChange={e => setStRegion(e.target.value)} placeholder="region (e.g. us-east-1)" disabled={!activeApp} />
+            <input className="input" data-testid="storage-endpoint" value={stEndpoint}
+              onChange={e => setStEndpoint(e.target.value)} placeholder="endpoint URL (MinIO/R2/Spaces, optional)" disabled={!activeApp} />
+            <input className="input" data-testid="storage-public-url" value={stPublicUrl}
+              onChange={e => setStPublicUrl(e.target.value)} placeholder="custom public URL / CDN (optional)" disabled={!activeApp} />
+            <input className="input" data-testid="storage-prefix" value={stPrefix}
+              onChange={e => setStPrefix(e.target.value)} placeholder="path prefix (default litegen/images)" disabled={!activeApp} />
+            <label style={{ color: '#8b949e', fontSize: 13 }}>How litegen reaches the bucket
+              <select className="input" data-testid="storage-credential-mode" value={stMode} disabled={!activeApp}
+                onChange={e => setStMode(e.target.value === 'assume_role' ? 'assume_role' : 'access_key')}>
+                <option value="access_key">An access key pair</option>
+                <option value="assume_role">A cross-account IAM role (AWS)</option>
+              </select>
+            </label>
+            {stMode === 'access_key' ? (
+              <>
+                <input className="input" data-testid="storage-access-key-id" value={stAccessKeyId}
+                  onChange={e => setStAccessKeyId(e.target.value)}
+                  placeholder={storage?.configured ? 'access key id (leave blank to keep)' : 'access key id'} disabled={!activeApp} />
+                <input className="input" data-testid="storage-secret" type="password" value={stSecret}
+                  onChange={e => setStSecret(e.target.value)}
+                  placeholder={storage?.configured ? 'secret access key (leave blank to keep)' : 'secret access key'} disabled={!activeApp} />
+              </>
+            ) : (
+              <>
+                <input className="input" data-testid="storage-role-arn" value={stRoleArn}
+                  onChange={e => setStRoleArn(e.target.value)} placeholder="role ARN (arn:aws:iam::123456789012:role/name)" disabled={!activeApp} />
+                <div data-testid="storage-role-trust" style={{ color: '#8b949e', fontSize: 12, lineHeight: 1.6 }}>
+                  The role's trust policy must trust{' '}
+                  <code data-testid="storage-principal" style={{ color: '#e6edf3' }}>{storage?.litegen_principal_arn ?? "litegen's AWS account"}</code>
+                  {' '}with the external ID{' '}
+                  <code data-testid="storage-external-id" style={{ color: '#e6edf3' }}>{storage?.external_id ?? '(set a secrets key)'}</code>.
+                  litegen assumes the role when you save.
+                </div>
+              </>
             )}
+            <label style={{ color: '#8b949e', fontSize: 13, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="checkbox" data-testid="storage-fallback" checked={stFallback} disabled={!activeApp}
+                onChange={e => setStFallback(e.target.checked)} />
+              While the bucket can't be reached, keep this app's files in litegen's own store
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary" data-testid="storage-save" onClick={saveStorage} disabled={!activeApp}>
+                Save storage
+              </button>
+              {storage?.configured && (
+                <button className="btn btn-danger" data-testid="storage-remove" onClick={removeStorage} disabled={!activeApp}>
+                  Remove storage
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Who may open the app's stored files */}
@@ -370,71 +394,75 @@ export default function Organization() {
             Files follow: <strong style={{ color: '#e6edf3' }}>{describeAccess(access.effective)}</strong>
           </div>
         )}
-        {acError && <div className="alert alert-error" data-testid="access-error" style={{ marginBottom: 12 }}>{acError}</div>}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
-          <label style={{ color: '#8b949e', fontSize: 13 }}>Links
-            <select className="input" data-testid="access-mode" value={acForm.mode} disabled={!activeApp}
-              onChange={e => setAcForm({ ...acForm, mode: e.target.value })}>
-              <option value="">Gateway default</option>
-              <option value="public">Public: the stored URL itself</option>
-              <option value="signed">Signed: links that expire</option>
-              <option value="private">Private: litegen's file route, with a key</option>
-            </select>
-          </label>
-          <label style={{ color: '#8b949e', fontSize: 13 }}>Who may open a file through litegen
-            <select className="input" data-testid="access-scope" value={acForm.ownerScope} disabled={!activeApp}
-              onChange={e => setAcForm({ ...acForm, ownerScope: e.target.value })}>
-              <option value="">Gateway default</option>
-              <option value="key">The key that made it</option>
-              <option value="app">Any key of this app</option>
-              <option value="org">Any key of the organization</option>
-            </select>
-          </label>
-          <label style={{ color: '#8b949e', fontSize: 13 }}>Signed link life, in seconds
-            <input className="input" data-testid="access-ttl" value={acForm.ttl} placeholder="gateway default (60 to 604800)"
-              disabled={!activeApp} onChange={e => setAcForm({ ...acForm, ttl: e.target.value })} />
-          </label>
-          <label style={{ color: '#8b949e', fontSize: 13 }}>Who signs a signed link
-            <select className="input" data-testid="access-signed-links" value={acForm.signedLinks} disabled={!activeApp}
-              onChange={e => setAcForm({ ...acForm, signedLinks: e.target.value })}>
-              <option value="">Gateway default</option>
-              <option value="store">The store that holds the file (a bucket's link can't be revoked)</option>
-              <option value="litegen">litegen, for every file (revocable)</option>
-            </select>
-          </label>
-          <label style={{ color: '#8b949e', fontSize: 13 }}>Keep outputs
-            <select className="input" data-testid="access-keep" value={acForm.keepOutputs} disabled={!activeApp}
-              onChange={e => setAcForm({ ...acForm, keepOutputs: e.target.value })}>
-              <option value="">Gateway default</option>
-              <option value="true">Keep a copy of every output</option>
-              <option value="false">Keep nothing: images come back inline, video and 3D as the vendor's own links</option>
-            </select>
-          </label>
-          <label style={{ color: '#8b949e', fontSize: 13 }}>Delete kept files after, in days
-            <input className="input" data-testid="access-retention" value={acForm.retentionDays} placeholder="gateway default (0 keeps them until deleted)"
-              disabled={!activeApp} onChange={e => setAcForm({ ...acForm, retentionDays: e.target.value })} />
-          </label>
-          {access && access.effective.mode !== 'public' && (
-            <p data-testid="access-bucket-note" style={{ color: '#e3b341', fontSize: 12, margin: 0 }}>
-              Signed and private links protect nothing while the bucket itself is public: keep the bucket
-              private (S3 Block Public Access).
-            </p>
-          )}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" data-testid="access-save" onClick={saveAccess} disabled={!activeApp}>
-              Save access
-            </button>
-            <button className="btn btn-danger" data-testid="access-revoke" onClick={revokeLinks} disabled={!activeApp}>
-              Revoke links
-            </button>
-            {access?.links_revoked_at && (
-              <span data-testid="access-revoked-at" style={{ color: '#8b949e', fontSize: 12 }}>
-                Links issued before {new Date(access.links_revoked_at).toLocaleString()} are refused.
-                A bucket's own links work until they expire.
-              </span>
-            )}
-          </div>
-        </div>
+        {canEditStorage && (
+          <>
+            {acError && <div className="alert alert-error" data-testid="access-error" style={{ marginBottom: 12 }}>{acError}</div>}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
+              <label style={{ color: '#8b949e', fontSize: 13 }}>Links
+                <select className="input" data-testid="access-mode" value={acForm.mode} disabled={!activeApp}
+                  onChange={e => setAcForm({ ...acForm, mode: e.target.value })}>
+                  <option value="">Gateway default</option>
+                  <option value="public">Public: the stored URL itself</option>
+                  <option value="signed">Signed: links that expire</option>
+                  <option value="private">Private: litegen's file route, with a key</option>
+                </select>
+              </label>
+              <label style={{ color: '#8b949e', fontSize: 13 }}>Who may open a file through litegen
+                <select className="input" data-testid="access-scope" value={acForm.ownerScope} disabled={!activeApp}
+                  onChange={e => setAcForm({ ...acForm, ownerScope: e.target.value })}>
+                  <option value="">Gateway default</option>
+                  <option value="key">The key that made it</option>
+                  <option value="app">Any key of this app</option>
+                  <option value="org">Any key of the organization</option>
+                </select>
+              </label>
+              <label style={{ color: '#8b949e', fontSize: 13 }}>Signed link life, in seconds
+                <input className="input" data-testid="access-ttl" value={acForm.ttl} placeholder="gateway default (60 to 604800)"
+                  disabled={!activeApp} onChange={e => setAcForm({ ...acForm, ttl: e.target.value })} />
+              </label>
+              <label style={{ color: '#8b949e', fontSize: 13 }}>Who signs a signed link
+                <select className="input" data-testid="access-signed-links" value={acForm.signedLinks} disabled={!activeApp}
+                  onChange={e => setAcForm({ ...acForm, signedLinks: e.target.value })}>
+                  <option value="">Gateway default</option>
+                  <option value="store">The store that holds the file (a bucket's link can't be revoked)</option>
+                  <option value="litegen">litegen, for every file (revocable)</option>
+                </select>
+              </label>
+              <label style={{ color: '#8b949e', fontSize: 13 }}>Keep outputs
+                <select className="input" data-testid="access-keep" value={acForm.keepOutputs} disabled={!activeApp}
+                  onChange={e => setAcForm({ ...acForm, keepOutputs: e.target.value })}>
+                  <option value="">Gateway default</option>
+                  <option value="true">Keep a copy of every output</option>
+                  <option value="false">Keep nothing: images come back inline, video and 3D as the vendor's own links</option>
+                </select>
+              </label>
+              <label style={{ color: '#8b949e', fontSize: 13 }}>Delete kept files after, in days
+                <input className="input" data-testid="access-retention" value={acForm.retentionDays} placeholder="gateway default (0 keeps them until deleted)"
+                  disabled={!activeApp} onChange={e => setAcForm({ ...acForm, retentionDays: e.target.value })} />
+              </label>
+              {access && access.effective.mode !== 'public' && (
+                <p data-testid="access-bucket-note" style={{ color: '#e3b341', fontSize: 12, margin: 0 }}>
+                  Signed and private links protect nothing while the bucket itself is public: keep the bucket
+                  private (S3 Block Public Access).
+                </p>
+              )}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button className="btn btn-primary" data-testid="access-save" onClick={saveAccess} disabled={!activeApp}>
+                  Save access
+                </button>
+                <button className="btn btn-danger" data-testid="access-revoke" onClick={revokeLinks} disabled={!activeApp}>
+                  Revoke links
+                </button>
+                {access?.links_revoked_at && (
+                  <span data-testid="access-revoked-at" style={{ color: '#8b949e', fontSize: 12 }}>
+                    Links issued before {new Date(access.links_revoked_at).toLocaleString()} are refused.
+                    A bucket's own links work until they expire.
+                  </span>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

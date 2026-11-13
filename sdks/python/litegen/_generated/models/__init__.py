@@ -60,6 +60,7 @@ from .error_detail import ErrorDetail
 from .error_response import ErrorResponse
 from .expand import Expand
 from .extend_output import ExtendOutput
+from .frames_set_shape import FramesSetShape
 from .gateway_settings import GatewaySettings
 from .gateway_settings_view import GatewaySettingsView
 from .generation import Generation
@@ -136,6 +137,8 @@ from .model_list_response import ModelListResponse
 from .model_pricing import ModelPricing
 from .model_route import ModelRoute
 from .model_schema import ModelSchema
+from .model_schema_extra_params import ModelSchemaExtraParams
+from .model_schema_litegen_params import ModelSchemaLitegenParams
 from .model_schema_params import ModelSchemaParams
 from .model_source import ModelSource
 from .model_status import ModelStatus
@@ -348,6 +351,7 @@ __all__ = (
     "ErrorResponse",
     "Expand",
     "ExtendOutput",
+    "FramesSetShape",
     "GatewaySettings",
     "GatewaySettingsView",
     "Generation",
@@ -414,6 +418,8 @@ __all__ = (
     "ModelPricing",
     "ModelRoute",
     "ModelSchema",
+    "ModelSchemaExtraParams",
+    "ModelSchemaLitegenParams",
     "ModelSchemaParams",
     "ModelSource",
     "ModelStatus",

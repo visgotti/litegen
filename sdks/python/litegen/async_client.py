@@ -178,11 +178,14 @@ class _AsyncImages:
         return (await self._c._request_with_headers("POST", "/v1/images/generations", json=_clean(req), headers=headers))[0]
 
     async def estimate_cost(self, **req: Any) -> Any:
+        """Price an image request without running it (``POST
+        /v1/images/cost``); see :meth:`litegen.client._ImagesNamespace.estimate_cost`."""
         return await self._c._request("POST", "/v1/images/cost", json=_clean(req))
 
     async def segment(self, *, idempotency_key: str | None = None, **req: Any) -> ImageSegmentationResponse:
         """Masks for what ``prompts`` select in ``image`` (``POST
-        /v1/images/segmentations``); see :meth:`litegen.client._ImagesNamespace.segment`."""
+        /v1/images/segmentations``), ``strict`` as on a generation; see
+        :meth:`litegen.client._ImagesNamespace.segment`."""
         return (
             await self._c._request_with_headers(
                 "POST", "/v1/images/segmentations", json=_clean(req), headers=_idempotency(idempotency_key)
@@ -255,9 +258,12 @@ class AsyncVideoJob:
         return self._ensure_submitted()
 
     async def dropped_params(self) -> list[str]:
-        """Params the server dropped rather than rejected, because the request set
-        ``strict=False``; ``[]`` when nothing was dropped. A method, not a
-        property, because it submits the job first if it hasn't been yet."""
+        """What the server dropped rather than refused, because the request set
+        ``strict=False``: params the model does not take and fields the request
+        has no such name for (one inside an object by its path); ``[]`` when
+        nothing was dropped. A last ``+N more`` counts names past the 32 the
+        header lists. A method, not a property, because it submits the job
+        first if it hasn't been yet."""
         await self._ensure_submitted()
         return list(self._dropped_params)
 
@@ -307,6 +313,8 @@ class _AsyncVideos:
         )
 
     async def estimate_cost(self, **req: Any) -> Any:
+        """Price a video request without running it (``POST
+        /v1/videos/cost``); see :meth:`litegen.client._VideosNamespace.estimate_cost`."""
         return await self._c._request("POST", "/v1/videos/cost", json=_clean(req))
 
     async def get_status(self, video_id: str) -> Any:
@@ -402,9 +410,12 @@ class AsyncModel3dJob:
         return (await self._ensure_submitted())["id"]
 
     async def dropped_params(self) -> list[str]:
-        """Params the server dropped rather than rejected, because the request set
-        ``strict=False``; ``[]`` when nothing was dropped. Submits the job first if
-        it hasn't been yet."""
+        """What the server dropped rather than refused, because the request set
+        ``strict=False``: params the model does not take and fields the request
+        has no such name for (one inside an object by its path,
+        ``animations[0].duration``); ``[]`` when nothing was dropped. A last
+        ``+N more`` counts names past the 32 the header lists. Submits the job
+        first if it hasn't been yet."""
         await self._ensure_submitted()
         return list(self._dropped_params)
 
@@ -462,7 +473,8 @@ class _AsyncModels3d:
         )
 
     async def estimate_cost(self, **req: Unpack[Model3dGenerateParams]) -> CostEstimate:
-        """Price a 3D request without running it (``POST /v1/models3d/cost``)."""
+        """Price a 3D request without running it (``POST /v1/models3d/cost``);
+        see :meth:`litegen.client._Models3dNamespace.estimate_cost`."""
         return await self._c._request("POST", "/v1/models3d/cost", json=_clean(req))
 
     async def get_status(self, generation_id: str) -> Model3dGenerationResponse:
@@ -630,6 +642,8 @@ class _AsyncModels:
         return resp["data"] if isinstance(resp, dict) and "data" in resp else resp
 
     async def get(self, model_id: str) -> Any:
+        """One model's full schema, ``litegen_params`` and ``extra_params``
+        included; see :meth:`litegen.client._ModelsNamespace.get`."""
         return await self._c._request("GET", f"/v1/models/{model_id}")
 
 
@@ -638,6 +652,9 @@ class _AsyncHealth:
         self._c = c
 
     async def check(self) -> Any:
+        """Each provider set up with the gateway's own keys, one entry per
+        provider and ``modality``; the deployment's own, so other credentials
+        get a 403. See :meth:`litegen.client._HealthNamespace.check`."""
         return await self._c._request("GET", "/health")
 
     async def live(self) -> Any:
@@ -696,6 +713,8 @@ class _AsyncCache:
         self._c = c
 
     async def clear(self) -> Any:
+        """Empty the response cache; a 503 ``cache_clear_incomplete`` means only
+        this replica's was. See :meth:`litegen.client._CacheNamespace.clear`."""
         return await self._c._request("DELETE", "/v1/cache")
 
 
@@ -945,10 +964,13 @@ class _AsyncAdminModels:
         return await self._c._request("GET", f"/v1/admin/models/{model_id}")
 
     async def create(self, schema: Mapping[str, Any]) -> Any:
-        """Add a model at runtime; ``schema`` is a ``models/*.yaml`` row as JSON."""
+        """Add a model at runtime; ``schema`` is a ``models/*.yaml`` row as JSON,
+        or a schema ``models.get`` served, sent back as it came (its
+        ``litegen_params`` and ``status`` are read and ignored)."""
         return await self._c._request("POST", "/v1/admin/models", json=dict(schema))
 
     async def replace(self, model_id: str, schema: Mapping[str, Any]) -> Any:
+        """Replace a runtime model's schema, taken as :meth:`create` takes it."""
         return await self._c._request("PUT", f"/v1/admin/models/{model_id}", json=dict(schema))
 
     async def set_disabled(self, model_id: str, disabled: bool) -> Any:

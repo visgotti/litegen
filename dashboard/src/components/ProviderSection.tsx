@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ProviderCatalogEntry, ModelInfo } from '@litegen/sdk';
+import { formatPrice } from './model-detail';
 
 type CredRow = { values: Record<string, string>; weight: string };
 const emptyRow = (): CredRow => ({ values: {}, weight: '1' });
@@ -106,7 +107,7 @@ export default function ProviderSection(props: Props) {
                 <input type="checkbox" data-testid={`provider-model-enable-${m.id}`} checked={enabled.has(m.id)} onChange={() => onToggleModel(m.id)} />
                 <span style={{ color: '#e6edf3', fontSize: 14, flex: 1 }}>{m.name ?? m.id}</span>
                 <span className={`badge ${m.media_type}`}>{m.media_type}</span>
-                <span style={{ color: '#8b949e', fontSize: 12, width: 64, textAlign: 'right' }}>{m.pricing ? `$${m.pricing.base_cost_usd.toFixed(4)}` : '—'}</span>
+                <span style={{ color: '#8b949e', fontSize: 12, minWidth: 64, textAlign: 'right', whiteSpace: 'nowrap' }}>{m.pricing ? formatPrice(m.pricing.base_cost_usd) : '—'}</span>
                 <button className="btn btn-secondary" data-testid={`provider-model-open-${m.id}`} onClick={() => onOpenModel(m)} style={{ fontSize: 12, padding: '2px 8px' }}>›</button>
               </div>
             ))}

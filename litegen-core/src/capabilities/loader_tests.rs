@@ -347,8 +347,13 @@ models:
 
     #[test]
     fn height_m_is_a_float() {
-        let err = model3d_yaml("      height_m: { kind: int, min: 1, max: 3 }\n").unwrap_err();
-        assert!(err.to_string().contains("height_m"), "{err}");
+        // Dashboard-server review #4: a 3D row's own `height_m` of any other
+        // kind would be served as declared while the validator, which reads
+        // only a float spec, applied litegen's bound instead.
+        for spec in ["{ kind: int, min: 1, max: 3 }", "{ kind: string, enum_values: [tall] }"] {
+            let err = model3d_yaml(&format!("      height_m: {spec}\n")).unwrap_err();
+            assert!(err.to_string().contains("declares 'height_m' as kind:") && err.to_string().contains("it must be kind: float"), "{spec}: {err}");
+        }
     }
 
     #[test]
@@ -374,6 +379,41 @@ models:
             "      output_formats:\n        kind: string_array\n        enum_values: [glb]\n        derivable_values: [fbx]\n",
         ).unwrap_err();
         assert!(err.to_string().contains("derivable_values"), "{err}");
+    }
+
+    #[test]
+    fn required_for_text_to_video_is_a_video_text_mode_rule() {
+        // N3: it refuses a text-to-video request with no prompt, so it goes
+        // on a video model that has a text-to-video mode.
+        let row = |media: &str, caps: &str, refs: &str| yaml(&format!(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: {media}
+    display_name: M
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ {caps} }}
+    prompt: {{ required: false, required_for_text_to_video: true }}
+{refs}
+"#));
+        let frames = "    ref_inputs:\n      max_total: 1\n      default_role: first_frame\n      provider_format: { form: url }\n      roles:\n        first_frame: { required: false, min_count: 0, max_count: 1 }";
+        let ok = row("video", "text_to_video: true, image_to_video: true", frames);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        for (media, caps, refs) in [("image", "text_to_image: true", ""), ("video", "image_to_video: true", frames)] {
+            let err = row(media, caps, refs).unwrap_err().to_string();
+            assert!(err.contains("required_for_text_to_video") && err.contains("text-to-video mode"), "{media} {caps}: {err}");
+        }
+    }
+
+    #[test]
+    fn litegen_params_cannot_be_set_from_yaml() {
+        // E11a: the server computes them from what litegen applies itself; a
+        // row that could set them would serve bounds the validator does not
+        // keep. The loader's own refusal, not serde's unknown field.
+        let err = model3d_yaml("      texture: { kind: bool }\n    litegen_params:\n      ground: { kind: bool }\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("litegen_params") && err.contains("which the server computes"), "{err}");
     }
 
     #[test]
@@ -648,6 +688,32 @@ models:
     prompt: { required: true }
 "#).unwrap_err().to_string();
         assert!(err.contains("preserves_unmasked"), "{err}");
+    }
+
+    #[test]
+    fn preserves_unmasked_is_an_image_models_promise() {
+        // E11a: the loader, the validator and the listing share one predicate,
+        // `ModelSchema::edits_part_of_an_image`, so a mask role on another
+        // family does not make it an image edit.
+        let err = yaml(r#"
+models:
+  - id: x/vid
+    provider: x
+    media_type: video
+    display_name: Vid
+    preserves_unmasked: exact
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+"#).unwrap_err().to_string();
+        assert!(err.contains("preserves_unmasked") && err.contains("edits no part of an image"), "{err}");
     }
 
     // ─── Views (3D doc §3E) ──────────────────────────────────────────────────

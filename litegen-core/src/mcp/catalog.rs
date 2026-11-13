@@ -144,7 +144,7 @@ pub static TOOLS: &[ToolDef] = &[
         path: "/v1/generations/{id}",
         surfaces: Surfaces::Ai,
         toolset: "generations",
-        gate: Gate::AnyScope(&[Scope::Generate, Scope::Read]),
+        gate: Gate::Scope(Scope::Generate),
         title: "Cancel generation",
         description: None,
         catch_all: None,

@@ -195,9 +195,22 @@ each try:
     credential (BYO). One tenant's bad requests, revoked key, unpaid account
     or spent rate limit never cut a provider off for everyone. On a model
     route, each deployment is judged by the credential it used.
-  - A request whose route had every breaker open (or every provider
-    missing) answers a retryable 502 that names why each was skipped, and
-    doesn't spend its `Idempotency-Key`.
+  - **When no deployment of a route served the request**, and no vendor was
+    called, the answer says whether to retry:
+    - every breaker open: `503 circuit_open`, `retryable: true`, with
+      `Retry-After` the seconds until the first breaker closes;
+    - every provider missing: `400 provider_not_configured`, as a direct
+      request to that provider answers; a retry can't help;
+    - any other mix, such as one breaker open and one provider missing, or
+      a refusal after a skipped deployment (which may serve the request once
+      its breaker closes): a `502` with `retryable: true` that names why
+      each deployment didn't serve it;
+    - every deployment refused the request, with none skipped: the 400
+      `request_unsupported`.
+
+    None of these spends the `Idempotency-Key`. A deployment whose vendor
+    was called and failed is answered with that vendor's failure instead,
+    since it may have billed.
 
 ## Server limits (set at startup)
 
@@ -226,7 +239,9 @@ they are not gateway settings and have no database row.
   a request with an `Idempotency-Key` is read first, since its body is
   hashed to recognise a repeat. A body slower than its deadline:
   `408 body_timeout` (at the default, a 25 MiB body needs about 87 KB/s). A
-  body over 25 MiB, declared or sent: `413 body_too_large`. A body that
+  body over 25 MiB, declared or sent: `413 body_too_large`; `GET /v1/models`
+  serves that limit on every model as `capabilities.max_request_bytes`, so a
+  client sizes its inline uploads from it. A body that
   breaks off: `400 body_unreadable`. Headers slower than their deadline, or a
   connection that sends nothing: the connection is closed. One exception: a
   client speaking HTTP/2 without TLS (h2c) has no header or idle deadline

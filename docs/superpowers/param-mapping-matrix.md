@@ -237,26 +237,33 @@ and `/v1/stats` read 0. A cancel also sends the terminal webhook.
 
 Every request field a catalog row can take has a control in the Playground
 (`dashboard/src/playground/`): a structured param edits a draft that
-`wireValue` turns into the wire form, and a half-filled one is not sent. Single
-mode runs image, segmentation (`/v1/images/segmentations`), video and 3D
-models; Compare mode compares image and 3D generation.
+`wireValue` turns into the wire form, and a half-filled one is not sent; a
+complete one goes as typed. Single mode runs image, segmentation
+(`/v1/images/segmentations`), video and 3D models; Compare mode compares image
+and 3D generation. Before Generate, the exact body goes to the family's quote
+route (`/v1/{images,videos,models3d}/cost`, which validates as the generation
+does and calls no vendor): a refusal holds Generate back in the server's words
+(E11b; vitest `server-check.test.ts`, e2e `Single Mode: an operation with no
+mesh to work on is held back, in the server's words`). The page keeps no copy
+of the server's rules.
 
 | field | control | proof | status |
 |---|---|---|---|
 | `region` | x / y / width / height in pixels of the input image | vitest `sends a region only once all four sides are whole pixels`; e2e `a region edit sends the box, the mask growth and the kept pixels` (`mock/region-image`) | ✅ mock |
-| `mask_grow_px`, `preserve_unmasked`, `feather_px` | offered wherever a model takes a mask or a region (the server's rule; no catalog param declares them) | vitest `offers mask growth and keeping unmasked pixels wherever a mask or a region goes`; same e2e | ✅ mock |
+| `mask_grow_px`, `preserve_unmasked`, `feather_px` | offered as `GET /v1/models/{id}` serves them in `litegen_params`, with their bounds (a model that takes a mask or a region; no catalog param declares them); the page derives none | vitest `takes each field and its bounds from litegen_params`, `derives nothing from the model's shape`; same e2e | ✅ mock |
 | `expand` | pixels per side, up to `max_px` | vitest `sends the sides of an expand that grow…`; e2e `an expand sends the sides that grow` (`mock/expand-image`) | ✅ mock |
-| `layout` | rows of kind, word or prompt, and a box as fractions; a box off the canvas is flagged and not sent | vitest `sends layout boxes as fractions…`; e2e `layout boxes go as fractions…` (`mock/layout-image`) | ✅ mock |
-| `palette` | colour swatches, up to `max_colors` | vitest `sends a palette as distinct #rrggbb colours…`; e2e `a palette goes as its colours…` (`mock/pixel-art-image`) | ✅ mock |
+| `layout` | rows of kind, word or prompt, and a box as fractions, sent as typed once its four numbers are set; a box off the canvas is held back in the server's words | vitest `sends layout boxes as typed fractions…`; e2e `layout boxes go as fractions…` (`mock/layout-image`) | ✅ mock |
+| `palette` | colour swatches, up to `max_colors`, sent as typed | vitest `sends a palette as typed…`; e2e `a palette constrains the pixel art…` (`mock/pixel-art-image`) | ✅ mock |
 | `background`, `output_format`, `views`, `skeleton`, `joint_naming`, `camera`, `replace`, `direction` | the generic select or set | e2e `background and output format go as chosen`, `multiview views go as the set ticked`, `a mesh of mine is rigged…`, `a clip runs with its camera, audio and loop…` | ✅ mock |
 | `duration_seconds` with listed `values` | only the listed lengths | e2e `a clip runs with its camera, audio and loop, at a listed length` (`mock/sprite-video`) | ✅ mock |
 | `audio`, `loop` | checkboxes | same | ✅ mock |
 | keyframe `reference_images[].time_s` | a time beside each keyframe image; blank lets the model spread them | vitest `sends each keyframe its time, and no other role one`; e2e `keyframes go with the times they are pinned at` (`mock/keyframe-video`) | ✅ mock |
-| 3D `view-*` `reference_images` | an upload or URL row per view the model declares; Generate is held, as the server's `check_multiview_refs` would refuse, for an input image beside views, views without the front, and a gap in a model's `view_order` | vitest `refuses an input image beside views, as the server does`, `needs the front view once any view is sent`, `cannot skip a view on a model that reads its views by position`; e2e `Single Mode: multiview-to-3D from uploaded views, each under its own side` (`mock/all-params-3d`) | ✅ mock |
+| 3D `view-*` `reference_images` | an upload or URL row per view the model declares; Generate is held while the server's check refuses the body (`check_multiview_refs`: an input image beside views, views without the front, a gap in a model's `view_order`), in its words | e2e `Single Mode: multiview-to-3D from uploaded views, each under its own side` (`mock/all-params-3d`: "needs a view-front image", "not both") | ✅ mock |
 | `source_model`, `source_video` | a picker of the caller's completed generations of that kind (by id), a pasted id, or a URL with its format | vitest `sends a source by generation id or URL…`; e2e `a mesh of mine is rigged, then animated…`, `a clip of mine is picked by generation id to extend, then to retake…` | ✅ mock |
-| `time_range` | from / to in seconds | vitest `sends a time range only when it ends after it starts`; same e2e (`mock/retake-video`) | ✅ mock |
-| `animations` | rows of preset or motion prompt, name, loop, in place; a blank name is the preset's canonical name (`mock:walk` → `walk`), a typed one must be 1–64 of A–Z a–z 0–9 _ . - | vitest `sends each animation by a name the server takes…`; same e2e (`mock/animate-3d`) | ✅ mock |
-| segmentation `prompts` | rows of point, box or text, of the kinds the model takes; a text prompt alone | vitest `builds a segmentation request…`; e2e `an image is segmented by a point and a box…` (`mock/segment-image`) | ✅ mock |
+| `time_range` | from / to in seconds, sent as typed | vitest `sends a time range as typed once both ends are numbers…`; same e2e (`mock/retake-video`) | ✅ mock |
+| `animations` | rows of preset or motion prompt, name, loop, in place; a typed name goes as typed, a blank one not at all: the server names the clip (`mock:walk` → `walk`) and judges a typed name | vitest `sends a clip name as typed, and none for a blank one…`; same e2e (`mock/animate-3d`: sent unnamed, delivered `walk`) | ✅ mock |
+| segmentation `prompts` | rows of point, box or text, of the kinds the model takes; which go together is the server's to say (a text prompt mixed with a point is refused at submit, in its words) | vitest `builds a segmentation request…`; e2e `an image is segmented by a point and a box…` (`mock/segment-image`) | ✅ mock |
+| provider passthrough `extra` | one row per `extra_allowlist` key; a key typed in `extra_params` gets a control of its type (listed values, yes/no, a number) and goes as that type (fal FLUX's `safety_tolerance` as the string `"2"`), an untyped one as JSON where its text parses | vitest `typed passthrough fields (extra_params)` | ✅ mock |
 | results | an image, a clip (a GIF as an image), masks with scores and boxes, or the 3D inspector with the scene manifest, clips and the vendor's `original` file | vitest `scene-manifest.test.ts`; e2e above (`playground-video`, `playground-masks`, `playground-mesh-scene`, `playground-mesh-clips`) | ✅ mock |
 | model detail | `task`, every served capability flag, and the catalog facts (keyframes, durations, region input, mask convention, kept pixels, texture resolutions, layout and prompt kinds, lifecycle); segmentation's own endpoint and an operation's source in the copied curl | vitest `the catalog fields the drawer shows`, `segmentation and operation models`; e2e `states an operation's task, and a keyframe model's keyframes and lengths` | ✅ mock |
 
@@ -396,7 +403,7 @@ Twenty-five third-party models on `POST /v1/text_to_video` and `/v1/image_to_vid
 | frames | `first_frame` alone → `promptImage` string; with `last_frame` → `[{uri, position: first}, {uri, position: last}]` in that order; a last frame alone is refused | `a_resold_model_sends_its_own_branchs_fields`, `a_request_a_branch_cannot_take_is_refused_before_any_call` | ✅ wiremock |
 | references | `reference` images → `references` [{uri}] on the mode that takes them (text-to-video, or image-to-video beside the frame on Kling O3 and 4.0); refused where the chosen mode has none | same two tests | ✅ wiremock |
 | `duration_seconds`, `audio`, `seed`, `negative_prompt` | `duration` (int; Veo 4/6/8, Kling 2.5 5/10), `audio`, `seed`, `negativePrompt`, only where the row declares them; `audio` only when asked | `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
-| prompt | where text-to-video requires `promptText` but image-to-video doesn't, the row's prompt is optional and a text-only request without one is refused | `a_request_a_branch_cannot_take_is_refused_before_any_call` | ✅ wiremock |
+| prompt | where text-to-video requires `promptText` but image-to-video doesn't, the row's prompt is optional and says `required_for_text_to_video: true`: a request with no first frame and no prompt is refused at validation (`prompt_required`, N3), before it is quoted or reserved, and the adapter refuses it too; Kling 3.0/O3 and Seedance 2.5, whose text-to-video takes no `promptText`, leave it off | `a_request_a_branch_cannot_take_is_refused_before_any_call`; `the_catalog_says_which_text_to_video_needs_a_prompt_as_runway_does`; HTTP `a_text_to_video_request_with_no_prompt_is_refused_before_it_is_quoted_or_reserved` | ✅ wiremock |
 | owned fields | `extra` can't replace `model`, `promptText`, `promptImage`, `duration`, `ratio`, `seed`, `references`, `resolution`, `audio`, `negativePrompt` | `a_resold_model_sends_its_own_branchs_fields` | ✅ wiremock |
 | price | per second by tier and audio; + credits per reference image or frame (MiniMax H3 2, Gemini Omni and Grok 1); Seedance 2.5 `draft` at the 480p rate; Kling 4.0 at list price | `runway_resold_video_rows_are_carried_with_runways_contract` | ✅ |
 
@@ -563,7 +570,10 @@ promise. **`feather_px`** (0, a hard edge, by default; at most 256) blends from
 the init at the area's edge to the vendor's pixels that far inside it
 (chessboard distance), never outside. A vendor image of another size is
 resized to the init's first; the result is PNG, or lossless WebP when webp is
-asked. Every model taking a mask or region lists `supports_preserve_unmasked`.
+asked. Every model taking a mask or region lists `supports_preserve_unmasked`,
+and `GET /v1/models/{id}` serves it `mask_grow_px` (0–100), `preserve_unmasked`
+and `feather_px` (0–256) in `litegen_params` (E11a: HTTP
+`a_model_that_edits_part_of_an_image_serves_mask_growth_and_kept_pixels_with_their_caps`).
 Refused before billing (`param_conflict`): no mask or region, `output_format`
 jpeg, a `size` other than the init's, `feather_px` without
 `preserve_unmasked`; a feather over 256 is `param_out_of_range`.
@@ -911,7 +921,11 @@ Not verified live: no Tripo or fal key is available here.
 An `animate` model adds one clip per `animations[]` entry to a rigged source,
 in request order. litegen names the clips exactly as asked (dropping a static
 pose clip a vendor adds, and failing the generation when fewer clips come back
-than were asked), holds `in_place` clips the vendor did not, keys every clip at
+than were asked); a clip that leaves `name` out (or sends null) is named by the
+validator before anything is quoted or stored (E11c): after its canonical
+preset, else its preset id with every other character as `_`, a prompt clip
+`clip-<n>` by its place, `-2`, `-3`, … on a taken name. It holds `in_place`
+clips the vendor did not, keys every clip at
 `fps` when the vendor did not, and measures each clip into the manifest from
 its keys. An animate model returns its source's geometry, so its catalog row
 says `native_orientation: {up: source, front: source}` and the delivered front
@@ -920,7 +934,7 @@ is the source manifest's.
 | litegen param | ParamSpec | `tripo/animate` | `meshy/animate` | `mock/animate-3d` | proof | status |
 |---|---|---|---|---|---|---|
 | `animations[].preset` | `animation_list` | `animations` (≤ 5; the 16 v2.5/v3.0 preset ids, 10 tagged canonical) | `action_ids` (≤ 10, no repeats — refused before the call; 678 library ids with Meshy's names, 12 tagged canonical) | `mock:*` (3 canonical) | validator `a_clip_names_a_canonical_preset_or_one_of_the_models_own`; tripo `a_retarget_sends_the_rigs_task_id_its_presets_and_tripos_in_place_flag`; meshy `an_animation_goes_to_the_meshy_rig_with_its_action_ids_and_change_fps`, `a_repeated_action_is_refused_before_any_call`; conformance `tripo_animate_offers_the_retarget_presets_on_tripos_own_rig`, `meshy_rig_and_animate_take_what_meshys_endpoints_accept` | 🟡 wiremock / ✅ mock |
-| `animations[].name` | — | renamed by litegen in order | renamed by litegen | renamed by litegen | validator `clip_names_are_unique_and_well_formed`; delivery `a_pose_clip_beside_the_asked_ones_is_dropped_and_the_rest_named_in_order`, `a_vendor_returning_fewer_clips_than_asked_fails_the_delivery`; HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` | ✅ |
+| `animations[].name` | — (optional: litegen names an unnamed clip) | renamed by litegen in order | renamed by litegen | renamed by litegen | validator `clip_names_are_unique_and_well_formed`, `an_unnamed_clip_is_named_after_its_preset_or_its_place`, `a_typed_name_is_kept_and_an_unnamed_clip_steps_around_it`, `an_unnamed_clip_whose_preset_gives_no_name_is_named_by_its_place`, `a_clips_refusal_names_its_place_in_the_list`; HTTP `an_unnamed_clip_is_delivered_under_the_name_litegen_gives_it`; delivery `a_pose_clip_beside_the_asked_ones_is_dropped_and_the_rest_named_in_order`, `a_vendor_returning_fewer_clips_than_asked_fails_the_delivery`; HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` | ✅ |
 | `animations[].prompt`, `.duration_s` | `text_to_motion` | — | — (text-to-motion is a second billed task; not carried) | 1–10 s | validator `a_clip_is_exactly_one_of_a_preset_or_a_prompt`, `a_prompt_clip_lasts_within_the_models_text_to_motion_range`, `a_prompt_clip_needs_a_model_that_makes_motion_from_text`; HTTP `a_prompt_clip_lasts_the_duration_asked` | ✅ mock |
 | `animations[].in_place` | `in_place: native \| litegen` | `animate_in_place: true` when every clip asks; otherwise litegen holds the in-place ones | litegen holds them (`in_place: litegen`) | natively when every clip asks | tripo `clips_that_differ_on_in_place_leave_it_to_litegen`; HTTP `a_travelling_clip_moves_one_metre_along_z_and_litegen_holds_the_in_place_one` (manifest `in_place_by`) | 🟡 wiremock / ✅ mock |
 | `animations[].loop` | — | hint only | hint only | hint only | HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` (`loop_requested`) | ✅ |
@@ -968,10 +982,15 @@ scene — a uniform scale about the origin, then the move — so skins, clips an
 the vendor's own file (kept as `original`) are untouched. A rig model that
 declares `height_m` still sends it to its vendor too; elsewhere `height_m`
 must be above 0 and at most 10,000 m (`param_out_of_range`).
+`GET /v1/models/{id}` serves the three in `litegen_params` (E11a): `ground`
+and `center` as `bool`, `height_m` as `float` with `max: 10000` and no `min`
+(above 0 is exclusive). A rig that declares its own `height_m` keeps it in
+`params` alone, served with litegen's 10,000 m ceiling when it states none,
+since the validator holds it to that.
 
 | field | rule | proof | status |
 |---|---|---|---|
-| `ground`, `center`, `height_m` | one root transform; bounds measured at rest (a skinned mesh's bind pose); a mesh already placed is left alone | unit `placement_scales_grounds_and_centres_through_one_new_root_and_leaves_skins_and_clips_alone`; HTTP `ground_center_and_height_place_the_mesh_and_keep_the_vendors_file`, `height_m_scales_a_rigged_animated_mesh_without_touching_its_skin_or_clips`, `placement_is_offered_on_every_3d_model_and_a_height_must_be_one`; validator `every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared` (height_m passes as placement); OpenAPI `placement_is_three_request_fields_and_a_listed_capability` | ✅ |
+| `ground`, `center`, `height_m` | one root transform; bounds measured at rest (a skinned mesh's bind pose); a mesh already placed is left alone | unit `placement_scales_grounds_and_centres_through_one_new_root_and_leaves_skins_and_clips_alone`; HTTP `ground_center_and_height_place_the_mesh_and_keep_the_vendors_file`, `height_m_scales_a_rigged_animated_mesh_without_touching_its_skin_or_clips`, `placement_is_offered_on_every_3d_model_and_a_height_must_be_one`, `every_3d_model_serves_its_placement_fields_with_the_bounds_the_validator_keeps`, `a_declared_height_without_a_ceiling_is_served_with_the_ceiling_the_validator_keeps`; validator `every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared` (height_m passes as placement); loader `litegen_params_cannot_be_set_from_yaml`; OpenAPI `placement_is_three_request_fields_and_a_listed_capability`, `the_served_schema_documents_the_fields_litegen_applies` | ✅ |
 
 ### Normalised delivery (3D doc §2 rule 3, §3D)
 
@@ -1257,7 +1276,7 @@ contract fixes that touch no vendor field.
 | the image could not write its asset directory | `/app/data` created and owned by 1000:1000, a volume, `LITEGEN__IMAGE_STORAGE__LOCAL_DIR`; startup refuses an unwritable directory | `an_asset_directory_litegen_cannot_write_is_named_at_startup`; a trixie-slim probe image as 1000:1000 (before: `Permission denied`; after: written) |
 | `source_not_chainable` half built; `video_edit` had no mock | own-generations-only rows refuse a URL or upload before fetching, and compare the vendor account recorded on video rows; `mock/edit-video` | `a_model_that_edits_only_its_own_generations_refuses_any_other_source`, `a_whole_clip_edit_regenerates_every_frame_of_its_source` |
 | slow mock timed out only under 30 s | answers after a day | `the_slow_mock_outlasts_any_vendor_timeout` |
-| Playground: URL source format, segmentation by URL, history quota, placement | the shown format is sent; segmentation is upload-only; history drops inline images and masks and never fails a run; `ground` / `center` / `height_m` on every 3D model | vitest `sends a URL source with the format its select shows…`, `builds a segmentation request…`, `what a history entry keeps`, `a history write that cannot be stored`, `offers placement on every 3D model…` |
+| Playground: URL source format, segmentation by URL, history quota, placement | the shown format is sent; segmentation is upload-only; history drops inline images and masks and never fails a run; `ground` / `center` / `height_m` on every 3D model, as `litegen_params` serves them | vitest `sends a URL source with the format its select shows…`, `builds a segmentation request…`, `what a history entry keeps`, `a history write that cannot be stored`, `takes each field and its bounds from litegen_params` |
 
 ## Vendor feature audit (2026-11-03)
 

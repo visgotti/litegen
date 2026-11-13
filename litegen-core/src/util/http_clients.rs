@@ -16,8 +16,9 @@
 //!   retried). So each tokio runtime has its own clients, dropped when it
 //!   stops. Production runs one runtime; tests run one per test.
 //! - **Bounded:** at most [`MAX_PER_RUNTIME`] clients per runtime. Past that,
-//!   the runtime's clients are dropped and built again as they are asked for
-//!   (new keys come from operators editing settings, not from requests).
+//!   the client handed out longest ago is dropped for each new one, and the
+//!   log says so the first time (new keys come from operators editing
+//!   settings, not from requests).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -28,8 +29,11 @@ use std::time::Duration;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ClientKey {
     /// `providers::api_client`: a vendor API's client, with the operator's
-    /// extra headers. `headers` is a digest of their names and values, so the
-    /// map holds no copy of a header secret.
+    /// extra headers. `headers` is a digest of their names and values, so
+    /// the key holds no copy of a header secret, but the client built for it
+    /// keeps the headers as its default headers: after an operator changes a
+    /// header, the client built for the old value stays until it is the one
+    /// handed out longest ago at the bound, or its runtime stops.
     Api { timeout: Duration, headers: [u8; 32] },
     /// `ssrf::public_only_client_with_timeout`.
     PublicOnly { timeout: Duration },
@@ -49,7 +53,48 @@ pub(crate) const MAX_PER_RUNTIME: usize = 64;
 /// The runtime a client belongs to; `None` for one built outside any.
 type RuntimeId = Option<tokio::runtime::Id>;
 
-type Clients = HashMap<RuntimeId, HashMap<ClientKey, reqwest::Client>>;
+/// One runtime's clients, each with when it was last handed out.
+#[derive(Default)]
+struct RuntimeClients {
+    clients: HashMap<ClientKey, (reqwest::Client, u64)>,
+    /// Counts the hand-outs: a client's stamp is the count at its last one.
+    handed: u64,
+    /// Whether the log has said this runtime's set is full.
+    reported_full: bool,
+}
+
+impl RuntimeClients {
+    /// The client kept for `key`, stamped as just handed out.
+    fn hand_out(&mut self, key: &ClientKey) -> Option<reqwest::Client> {
+        self.handed += 1;
+        let now = self.handed;
+        self.clients.get_mut(key).map(|(client, at)| {
+            *at = now;
+            client.clone()
+        })
+    }
+
+    /// Keep `built` for `key` (or the client another caller kept first) and
+    /// hand it out. At the bound, the client handed out longest ago makes
+    /// room; the second value is true the first time that happens.
+    fn keep(&mut self, key: ClientKey, built: reqwest::Client) -> (reqwest::Client, bool) {
+        let mut first_full = false;
+        if self.clients.len() >= MAX_PER_RUNTIME && !self.clients.contains_key(&key) {
+            let oldest = self.clients.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| k.clone());
+            if let Some(oldest) = oldest {
+                self.clients.remove(&oldest);
+            }
+            first_full = !std::mem::replace(&mut self.reported_full, true);
+        }
+        self.handed += 1;
+        let now = self.handed;
+        let (client, at) = self.clients.entry(key).or_insert((built, now));
+        *at = now;
+        (client.clone(), first_full)
+    }
+}
+
+type Clients = HashMap<RuntimeId, RuntimeClients>;
 
 static CLIENTS: OnceLock<Mutex<Clients>> = OnceLock::new();
 
@@ -62,21 +107,27 @@ fn clients() -> MutexGuard<'static, Clients> {
 pub(crate) fn shared(key: ClientKey, build: impl FnOnce() -> reqwest::Client) -> reqwest::Client {
     let handle = tokio::runtime::Handle::try_current().ok();
     let runtime = handle.as_ref().map(|h| h.id());
-    if let Some(client) = clients().get(&runtime).and_then(|mine| mine.get(&key)) {
-        return client.clone();
+    if let Some(client) = clients().get_mut(&runtime).and_then(|mine| mine.hand_out(&key)) {
+        return client;
     }
     let built = build();
     #[cfg(test)]
     count_build(runtime, &key);
-    let (client, first) = {
+    let (client, first, full) = {
         let mut all = clients();
         let first = !all.contains_key(&runtime);
-        let mine = all.entry(runtime).or_default();
-        if mine.len() >= MAX_PER_RUNTIME && !mine.contains_key(&key) {
-            mine.clear();
-        }
-        (mine.entry(key).or_insert(built).clone(), first)
+        let (client, full) = all.entry(runtime).or_default().keep(key, built);
+        (client, first, full)
     };
+    if full {
+        // Registry review #7: past the bound each new client drops one, so a
+        // deployment using more clients than this builds some again (and
+        // opens new connections) as their turns come round.
+        tracing::warn!(
+            bound = MAX_PER_RUNTIME,
+            "this runtime's shared HTTP clients reached their bound: for each new one, the one handed out longest ago is dropped"
+        );
+    }
     // The runtime's clients go when it stops: tokio drops this task then,
     // polled or not, and `forget` with it.
     if let (true, Some(handle)) = (first, handle) {
@@ -129,7 +180,7 @@ mod tests {
         rt.block_on(async {
             shared(key.clone(), reqwest::Client::new);
         });
-        assert!(clients().get(&Some(id)).is_some_and(|m| m.contains_key(&key)), "kept while the runtime runs");
+        assert!(clients().get(&Some(id)).is_some_and(|m| m.clients.contains_key(&key)), "kept while the runtime runs");
         drop(rt);
         assert!(!clients().contains_key(&Some(id)), "dropped with the runtime");
     }
@@ -141,7 +192,63 @@ mod tests {
             shared(ClientKey::PublicOnly { timeout: Duration::from_millis(10_000 + i) }, reqwest::Client::new);
         }
         let id = tokio::runtime::Handle::current().id();
-        let n = clients().get(&Some(id)).map_or(0, HashMap::len);
+        let n = clients().get(&Some(id)).map_or(0, |m| m.clients.len());
         assert!(n <= MAX_PER_RUNTIME, "{n} clients kept for one runtime");
+    }
+
+    /// What the log lines written while the guard lives said.
+    #[derive(Clone, Default)]
+    struct Logs(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl Logs {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    /// Registry review #7: at the bound, the client used longest ago goes,
+    /// not the runtime's whole set, so a deployment with more clients in use
+    /// than the bound no longer goes back to a new client (and a new
+    /// connection) on every call. The first time a runtime's set is full, the
+    /// log says so, once.
+    #[tokio::test]
+    async fn the_bound_drops_only_the_client_used_longest_ago_and_says_so_once() {
+        let logs = Logs::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let key = |i: u64| ClientKey::PublicOnly { timeout: Duration::from_millis(20_000 + i) };
+        let bound = MAX_PER_RUNTIME as u64;
+        for i in 0..bound {
+            shared(key(i), reqwest::Client::new);
+        }
+        shared(key(0), reqwest::Client::new); // in use again: now the latest
+        shared(key(bound), reqwest::Client::new); // one more than the bound
+        shared(key(0), reqwest::Client::new);
+        assert_eq!(builds(&key(0)), 1, "a client in use was dropped at the bound");
+        shared(key(1), reqwest::Client::new);
+        assert_eq!(builds(&key(1)), 2, "the client used longest ago was the one dropped");
+        shared(key(bound + 1), reqwest::Client::new);
+        let id = tokio::runtime::Handle::current().id();
+        let n = clients().get(&Some(id)).map_or(0, |m| m.clients.len());
+        assert!(n <= MAX_PER_RUNTIME, "{n} clients kept for one runtime");
+        let text = logs.text();
+        assert_eq!(text.matches("shared HTTP clients").count(), 1, "the full set is reported once: {text:?}");
     }
 }

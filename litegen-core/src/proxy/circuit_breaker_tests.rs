@@ -133,6 +133,23 @@ mod tests {
         assert!(cb.is_open("p").await, "a late success ended the open window");
     }
 
+    /// The router's `Retry-After` for a route whose every breaker is open
+    /// (handlers review #5) is how long the first breaker has left, not the
+    /// whole window; a window that has ended has nothing left.
+    #[tokio::test]
+    async fn an_open_breaker_says_how_long_it_has_left() {
+        let cb = CircuitBreaker::new(1, Duration::from_secs(30));
+        assert_eq!(cb.open_remaining("p").await, None, "closed");
+        cb.record_failure("p").await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let left = cb.open_remaining("p").await.expect("open");
+        assert!((Duration::from_secs(25)..=Duration::from_millis(29_750)).contains(&left), "{left:?} of a 30 s window opened 250 ms ago");
+        let short = CircuitBreaker::new(1, Duration::from_millis(200));
+        short.record_failure("p").await;
+        tokio::time::sleep(Duration::from_millis(260)).await;
+        assert_eq!(short.open_remaining("p").await, None, "the window has ended");
+    }
+
     /// What a store was asked, in order.
     #[derive(Default)]
     struct Recorder(Mutex<Vec<String>>);

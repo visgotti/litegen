@@ -19,6 +19,8 @@ class GatewaySettings:
         alert_webhook_url (Union[None, Unset, str]): URL that receives budget alerts (soft budget crossed, hard budget
             hit).
         cache_enabled (Union[None, Unset, bool]): Whether image answers are cached. Overrides `cache.enabled`.
+        cache_max_bytes (Union[None, Unset, int]): About how much memory the cached answers may take on each replica, in
+            bytes, 1048576 to 68719476736. Overrides `cache.max_bytes`.
         cache_max_items (Union[None, Unset, int]): How many answers the cache holds, 1 to 1000000. Overrides
             `cache.max_items`.
         cache_ttl_seconds (Union[None, Unset, int]): How long a cached answer lives, 1 to 604800 s. Overrides
@@ -55,6 +57,7 @@ class GatewaySettings:
 
     alert_webhook_url: Union[None, Unset, str] = UNSET
     cache_enabled: Union[None, Unset, bool] = UNSET
+    cache_max_bytes: Union[None, Unset, int] = UNSET
     cache_max_items: Union[None, Unset, int] = UNSET
     cache_ttl_seconds: Union[None, Unset, int] = UNSET
     circuit_breaker_open_for_seconds: Union[None, Unset, int] = UNSET
@@ -86,6 +89,12 @@ class GatewaySettings:
             cache_enabled = UNSET
         else:
             cache_enabled = self.cache_enabled
+
+        cache_max_bytes: Union[None, Unset, int]
+        if isinstance(self.cache_max_bytes, Unset):
+            cache_max_bytes = UNSET
+        else:
+            cache_max_bytes = self.cache_max_bytes
 
         cache_max_items: Union[None, Unset, int]
         if isinstance(self.cache_max_items, Unset):
@@ -204,6 +213,8 @@ class GatewaySettings:
             field_dict["alert_webhook_url"] = alert_webhook_url
         if cache_enabled is not UNSET:
             field_dict["cache_enabled"] = cache_enabled
+        if cache_max_bytes is not UNSET:
+            field_dict["cache_max_bytes"] = cache_max_bytes
         if cache_max_items is not UNSET:
             field_dict["cache_max_items"] = cache_max_items
         if cache_ttl_seconds is not UNSET:
@@ -270,6 +281,15 @@ class GatewaySettings:
             return cast(Union[None, Unset, bool], data)
 
         cache_enabled = _parse_cache_enabled(d.pop("cache_enabled", UNSET))
+
+        def _parse_cache_max_bytes(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        cache_max_bytes = _parse_cache_max_bytes(d.pop("cache_max_bytes", UNSET))
 
         def _parse_cache_max_items(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -495,6 +515,7 @@ class GatewaySettings:
         gateway_settings = cls(
             alert_webhook_url=alert_webhook_url,
             cache_enabled=cache_enabled,
+            cache_max_bytes=cache_max_bytes,
             cache_max_items=cache_max_items,
             cache_ttl_seconds=cache_ttl_seconds,
             circuit_breaker_open_for_seconds=circuit_breaker_open_for_seconds,

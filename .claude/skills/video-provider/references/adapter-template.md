@@ -89,8 +89,11 @@ impl Default for AcmeVideoProvider {
 impl AcmeVideoProvider {
     /// The client for Acme's API, carrying the operator's `extra_headers`
     /// (result downloads use their own client and never carry them).
+    /// `providers::api_client` returns a shared, memoized client, one per
+    /// timeout and header set (`util/http_clients.rs`), so the poller's
+    /// instance for one row reuses the vendor connections.
     fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
-        crate::providers::api_client(Client::builder().timeout(std::time::Duration::from_secs(60)), extra_headers)
+        crate::providers::api_client(std::time::Duration::from_secs(60), extra_headers)
     }
 
     pub fn new() -> Self {
@@ -206,17 +209,21 @@ impl VideoProvider for AcmeVideoProvider {
             }
         };
 
-        // `extra` first (only its allowlisted keys arrive), so the fields this
-        // adapter owns win.
-        let mut body = match &extras.extra {
-            Some(Value::Object(m)) => Value::Object(m.clone()),
-            _ => json!({}),
-        };
+        // `extra` first (only its allowlisted keys arrive), through
+        // `providers::extra_fields`: never a field this adapter writes below,
+        // nor one litegen keeps for itself (vendor callbacks, storage,
+        // publishing). The fields this adapter owns then win.
+        let owned = |k: &str| matches!(k, "model" | "prompt" | "duration" | "resolution" | "seed" | "aspect_ratio" | "first_frame" | "last_frame");
+        let mut body = Value::Object(
+            crate::providers::extra_fields(extras.extra.as_ref(), owned).map(|(k, v)| (k.clone(), v.clone())).collect(),
+        );
         // The operator's `model_mapping` may rename the model on the wire.
         body["model"] = json!(crate::providers::wire_model(self.config.as_ref(), &model.id, native));
         body["prompt"] = json!(base.prompt);
         body["duration"] = json!(Self::resolve_duration(extras.duration_seconds)); // an INTEGER on the wire
-        if let Some(res) = extras.resolution.as_deref() {
+        // Unasked, the row's declared default: what the request is priced at,
+        // never a default the vendor picks for itself (`string_default`).
+        if let Some(res) = extras.resolution.as_deref().or(model.string_default("resolution")) {
             body["resolution"] = json!(res); // the YAML enum is the vendor enum
         }
         if let Some(seed) = base.seed {
@@ -497,11 +504,14 @@ don't leak" test, all in the image template's shape.
       # The text and image endpoints accept the same resolution enum.
       resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
       # Text-to-video only. CreateImageVideo has no aspect_ratio (the first
-      # frame sets the shape), so image-to-video requests ignore it.
+      # frame sets the shape), so with a frame image the validator refuses the
+      # ratio when `strict` and drops and names it otherwise. List the row in
+      # catalog_conformance's every_row_whose_frames_set_the_shape_declares_it.
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9", "9:16", "1:1"]
         default: "16:9"
+        frames_set_shape: without_references
       seed: { kind: seed, min: 0, max: 4294967295 }
     ref_inputs:
       max_total: 2
@@ -511,6 +521,9 @@ don't leak" test, all in the image template's shape.
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [camera_fixed]
+    extra_params:
+      # From CreateTextVideo.camera_fixed and CreateImageVideo.camera_fixed: "boolean".
+      camera_fixed: { kind: bool }
     tags: [text-to-video, image-to-video]
 ```
 

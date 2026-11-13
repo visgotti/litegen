@@ -24,7 +24,8 @@ class WebhookDelivery:
         success (bool): Whether this attempt was successful (HTTP 2xx).
         url (str):
         error_message (Union[None, Unset, str]):
-        response_body (Union[None, Unset, str]):
+        response_body (Union[None, Unset, str]): The first 16 KiB of the endpoint's reply, cut at a character boundary.
+            The rest is never read.
         status_code (Union[None, Unset, int]):
     """
 

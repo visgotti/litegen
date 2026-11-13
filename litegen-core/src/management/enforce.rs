@@ -538,13 +538,17 @@ pub async fn begin(
     }
 
     // Reserve the estimate on every row (rows without a cap still track spend).
+    // The guard counts the amount before the first reservation: `charged`
+    // holds only the rows actually reserved, so a guard dropped inside this
+    // loop (its task cut off, or a store call that panicked) gives back
+    // exactly those (handlers review #10).
     let amount = estimate.max(0.0);
+    guard.reserved = amount;
     for l in rows {
         if amount > 0.0 {
             match store.reserve_limits_spend(l.entity_type, &l.entity_id, amount).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    guard.reserved = amount;
                     guard.settle(state, 0.0).await;
                     let mut msg = format!("{} budget exceeded", l.entity_type.as_str());
                     if let Some(at) = l.budget_reset_at {
@@ -553,7 +557,6 @@ pub async fn begin(
                     return Err(refuse(StatusCode::PAYMENT_REQUIRED, "budget_exceeded", &msg));
                 }
                 Err(e) => {
-                    guard.reserved = amount;
                     guard.settle(state, 0.0).await;
                     return Err(store_error(e));
                 }
@@ -561,7 +564,6 @@ pub async fn begin(
         }
         guard.charged.push(l);
     }
-    guard.reserved = amount;
     Ok(guard)
 }
 
@@ -840,6 +842,82 @@ mod tests {
             left = key_spend(&db, &ctx).await;
         }
         assert_eq!(left, 0.0, "a guard dropped unsettled left {left} USD reserved");
+    }
+
+    /// `entity_type`/`id`'s tracked spend, as the store has it now.
+    async fn spend_of(db: &crate::db::sqlite::SqliteDatabase, entity_type: EntityType, id: &str) -> f64 {
+        use crate::db::DatabaseStore;
+        db.management().unwrap().get_limits(entity_type, id).await.unwrap().unwrap().spend_usd
+    }
+
+    /// Handlers review #10: a request cut off inside `begin()`'s reserve loop
+    /// (its task aborted, or the store call it waits on panicked) gives back
+    /// what it had already reserved. The guard counted its reservation only
+    /// after the loop, so dropped inside it, it released nothing, and the
+    /// key's reservation stayed held until its budget window rolled.
+    #[tokio::test]
+    async fn a_request_cut_off_between_two_reservations_gives_back_the_first() {
+        use crate::db::DatabaseStore;
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let mut ctx = capped_key(&db).await;
+        let app = format!("app-{}", uuid::Uuid::new_v4());
+        let now = Utc::now();
+        db.management()
+            .unwrap()
+            .upsert_limits(&EntityLimits {
+                entity_type: EntityType::App,
+                entity_id: app.clone(),
+                org_id: None,
+                max_budget_usd: None,
+                soft_budget_usd: None,
+                budget_duration: None,
+                spend_usd: 0.0,
+                budget_reset_at: None,
+                soft_budget_alerted_at: None,
+                allowed_models: None,
+                max_parallel_requests: None,
+                rpm_limit: None,
+                metadata: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        ctx.app_id = Some(app.clone());
+        let key = ctx.key_id.unwrap().to_string();
+        let state = replica(db.clone(), Arc::new(RateLimiter::new())).await;
+        let none = RequestAttribution::default();
+
+        // The key is reserved first, then the app. Drive `begin()` one poll
+        // at a time, and between polls wait, without polling, for the app's
+        // reservation to land: once it has, `begin()` is waiting on that
+        // answer, with the key's reservation taken and counted as charged.
+        // Once the key's has landed, the wait is long, so no poll can come
+        // after the app's answer and let `begin()` finish.
+        let mut begun = Box::pin(begin(&state, Some(&ctx), &none, "mock/image-gen", 0.5));
+        loop {
+            assert!(futures::poll!(begun.as_mut()).is_pending(), "begin() finished before it could be cut off");
+            let key_reserved = spend_of(&db, EntityType::Key, &key).await > 0.0;
+            let deadline = Instant::now() + Duration::from_millis(if key_reserved { 2000 } else { 20 });
+            while spend_of(&db, EntityType::App, &app).await == 0.0 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            if spend_of(&db, EntityType::App, &app).await > 0.0 {
+                break;
+            }
+        }
+        assert_eq!(spend_of(&db, EntityType::Key, &key).await, 0.5, "the key's estimate is reserved");
+        drop(begun); // cut off inside the loop
+
+        // The release is a task the drop spawns. (The app's reservation
+        // landed, but its answer never reached `begin()`: that one stays.)
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut left = spend_of(&db, EntityType::Key, &key).await;
+        while left != 0.0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            left = spend_of(&db, EntityType::Key, &key).await;
+        }
+        assert_eq!(left, 0.0, "a request cut off inside the reserve loop left {left} USD reserved on the key");
     }
 
     /// A settled guard's charge stands when it is dropped: the drop releases

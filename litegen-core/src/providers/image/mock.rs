@@ -45,6 +45,30 @@ pub fn slow_image_calls(prompt: &str) -> u32 {
     SLOW_IMAGE_CALLS.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|p| *p == prompt).count() as u32
 }
 
+/// The prompts whose `mock/slow-image` calls a test has let answer.
+static SLOW_IMAGE_RELEASED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static SLOW_IMAGE_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Let every `mock/slow-image` call with `prompt` answer now, running or yet
+/// to come, instead of after a day: a test that holds a request in flight
+/// ends it when it says, never on a timer a loaded machine can outrun.
+pub fn release_slow_image(prompt: &str) {
+    SLOW_IMAGE_RELEASED.lock().unwrap_or_else(|p| p.into_inner()).push(prompt.to_string());
+    SLOW_IMAGE_WAKE.notify_waiters();
+}
+
+/// Waits until a test lets `prompt`'s `mock/slow-image` calls answer.
+async fn slow_image_released(prompt: &str) {
+    loop {
+        // Made before the check, so a release between the two still wakes it.
+        let woken = SLOW_IMAGE_WAKE.notified();
+        if SLOW_IMAGE_RELEASED.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|p| p == prompt) {
+            return;
+        }
+        woken.await;
+    }
+}
+
 /// The model that turns a prompt's first call away with a 429 and a
 /// `Retry-After` (the prompt's `wait=<ms>`, 100 by default), then answers:
 /// litegen's retry backoff, observable (`docs/gateway-settings.md`).
@@ -523,7 +547,10 @@ impl ImageProvider for MockProvider {
         }
         if model.id == SLOW_MODEL {
             SLOW_IMAGE_CALLS.lock().unwrap_or_else(|p| p.into_inner()).push(base.prompt.clone());
-            tokio::time::sleep(SLOW_MODEL_DELAY).await;
+            tokio::select! {
+                _ = tokio::time::sleep(SLOW_MODEL_DELAY) => {}
+                _ = slow_image_released(&base.prompt) => {}
+            }
         }
         if model.id == RATE_LIMITED_MODEL {
             let earlier = {

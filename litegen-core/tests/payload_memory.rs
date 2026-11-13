@@ -232,3 +232,129 @@ async fn keeping_3d_files_makes_no_copy_of_them() {
     assert_eq!(kept[0].size_bytes, Some(FILE as u64));
     assert!(grew < BOUND, "keeping a 64 MiB 3D file raised the heap by {} MiB; it must not be copied", grew / MIB);
 }
+
+/// A Sora on 127.0.0.1: it takes any job as `sora_mem` (`POST /v1/videos`),
+/// reports it completed, and hands over a `FILE`-byte video with its length,
+/// sent from one 64 KiB buffer (`GET .../content`). Returns its API base.
+async fn sora_host() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let chunk = vec![7u8; 64 * 1024];
+                let mut seen: Vec<u8> = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    // One request: its head, then its body by its length.
+                    let end = loop {
+                        if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break end;
+                        }
+                        let Ok(n) = sock.read(&mut buf).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        seen.extend_from_slice(&buf[..n]);
+                    };
+                    let head = String::from_utf8_lossy(&seen[..end]).to_ascii_lowercase();
+                    let body_len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                    seen.drain(..end + 4);
+                    while seen.len() < body_len {
+                        let Ok(n) = sock.read(&mut buf).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        seen.extend_from_slice(&buf[..n]);
+                    }
+                    seen.drain(..body_len);
+                    let line = head.lines().next().unwrap_or("").to_string();
+                    if line.contains("/content") {
+                        let start = format!("HTTP/1.1 200 OK\r\ncontent-type: video/mp4\r\ncontent-length: {FILE}\r\n\r\n");
+                        if sock.write_all(start.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        for _ in 0..FILE / chunk.len() {
+                            if sock.write_all(&chunk).await.is_err() {
+                                return;
+                            }
+                        }
+                        continue;
+                    }
+                    let json = if line.starts_with("post") {
+                        r#"{"id":"sora_mem","status":"queued","model":"sora-2"}"#
+                    } else {
+                        r#"{"id":"sora_mem","status":"completed"}"#
+                    };
+                    let ok = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{json}", json.len());
+                    if sock.write_all(ok.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    format!("http://{addr}/v1")
+}
+
+/// Review 2026-11-11 P4, NEW 2 (payloads review #7): a video handed over as
+/// bytes (Veo, Bedrock, Sora) is kept without a copy on both paths that keep
+/// one: a client's poll (the router) and the poller. Each moves the poll's
+/// bytes into the store (`poll.video_data.take()`); a `clone()` there would
+/// hold the video twice. The download itself is the one `FILE` allowed.
+/// Sora has no catalog row since OpenAI retired it, so a route sends
+/// `luma/ray-2` to the OpenAI adapter, which takes any model through a route.
+#[tokio::test]
+async fn keeping_a_sora_video_on_either_path_holds_it_once() {
+    use litegen::types::GenerationStatus;
+    let _one = ONE_AT_A_TIME.lock().await;
+    let base = sora_host().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = std::sync::Arc::new(litegen::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let (app, state) = harness::app_and_state_over_with(db, dir.path(), |c| {
+        let openai = serde_json::json!({ "enabled": true, "api_key": "k", "api_base": base });
+        c.providers.insert("openai".to_string(), serde_json::from_value(openai).unwrap());
+        // Luma itself is never called: the route sends its model to OpenAI.
+        c.providers.insert("luma".to_string(), serde_json::from_value(serde_json::json!({ "enabled": true, "api_key": "unused" })).unwrap());
+        c.model_routes = vec![litegen::config::ModelRouteConfig {
+            model: "luma/ray-2".into(),
+            deployments: vec![litegen::config::DeploymentConfig { provider: "openai".into(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 }],
+            strategy: None,
+            cache: None,
+        }];
+    })
+    .await;
+    let submit = || async {
+        let body = serde_json::json!({ "model": "luma/ray-2", "prompt": "a wave" }).to_string();
+        let req = Request::post("/v1/videos/generations").header("content-type", "application/json").body(Body::from(body)).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body = harness::json_body(resp).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["id"].as_str().expect("an id").to_string()
+    };
+    let kept_len = |id: &str| std::fs::metadata(dir.path().join(format!("litegen/video/{id}/video.mp4"))).map(|m| m.len()).ok();
+
+    // A client's poll: the router keeps it.
+    let id = submit().await;
+    let start = reset_peak();
+    let resp = app.clone().oneshot(Request::get(format!("/v1/videos/{id}")).body(Body::empty()).unwrap()).await.unwrap();
+    let grew = grew_since(start);
+    let polled = harness::json_body(resp).await;
+    eprintln!("a client's poll kept a 64 MiB Sora video: the heap rose {} KiB", grew / 1024);
+    assert_eq!(polled["status"], "completed", "{polled}");
+    assert_eq!(kept_len(&id), Some(FILE as u64));
+    assert!(grew < FILE + BOUND, "a client's poll kept a 64 MiB Sora video and raised the heap by {} MiB: the download is one copy, more is a copy of it", grew / MIB);
+
+    // The poller keeps it.
+    let id = submit().await;
+    let start = reset_peak();
+    litegen::proxy::poller::poll_once_presenting(&state.db, &state.router.registry, state.secrets_key, state.mode, &state.router.model3d_store, None).await;
+    let grew = grew_since(start);
+    eprintln!("the poller kept a 64 MiB Sora video: the heap rose {} KiB", grew / 1024);
+    let row = state.db.get_generation(&id).await.unwrap().expect("the row");
+    assert_eq!(row.status, GenerationStatus::Completed, "{:?}", row.error_message);
+    assert_eq!(kept_len(&id), Some(FILE as u64));
+    assert!(grew < FILE + BOUND, "the poller kept a 64 MiB Sora video and raised the heap by {} MiB: the download is one copy, more is a copy of it", grew / MIB);
+}

@@ -181,6 +181,9 @@ status, code and message the HTTP API gives. Common ones:
 - `model_not_allowed` (403): the org or app restricts models.
 - `invalid_request_error` (400): a parameter is wrong; `get_model` shows the
   model's parameters.
+- `request_unsupported` (400): the model can't make this combination (for
+  example MiniMax Hailuo at 10 s and 1080P). Nothing was sent to the vendor or
+  billed; change the request.
 - `rate_limit_exceeded` (429): the key's per-minute limit. Each tool call
   counts as one request, and each status read `wait_for_generation` makes
   counts too. It paces itself to use at most half the key's limit and sits

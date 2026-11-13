@@ -11,7 +11,8 @@ class ReadinessChecks:
     """
     Attributes:
         db (bool):
-        providers (List[str]):
+        providers (List[str]): The providers configured with the gateway's own keys, by name, each
+            once. Readiness doesn't call them; `GET /health` checks each one.
     """
 
     db: bool

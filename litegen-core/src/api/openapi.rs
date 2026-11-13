@@ -8,7 +8,7 @@ use utoipa::OpenApi;
         version = env!("CARGO_PKG_VERSION"),
         description = "Universal proxy for AI image, video and 3D model generation."
     ),
-    modifiers(&OpenAllOfMembers),
+    modifiers(&OpenAllOfMembers, &ServedOnlyFields),
     paths(
         crate::api::handlers::generate_image,
         crate::api::handlers::segment_image,
@@ -455,6 +455,31 @@ impl utoipa::Modify for OpenAllOfMembers {
     }
 }
 
+/// Fields the server computes and serves but never takes, marked `readOnly`
+/// so a generated client leaves them out of what it sends (dashboard-server
+/// review #2). Set here because utoipa 5.4 drops `#[schema(read_only)]` on a
+/// map field: its map schema hands the attribute down to the key and value
+/// schemas instead.
+struct ServedOnlyFields;
+
+/// `(schema, field)`: each field [`ServedOnlyFields`] marks.
+const SERVED_ONLY_FIELDS: [(&str, &str); 1] = [("ModelSchema", "litegen_params")];
+
+impl utoipa::Modify for ServedOnlyFields {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::schema::Schema;
+        use utoipa::openapi::RefOr;
+        let Some(components) = openapi.components.as_mut() else { return };
+        for (schema, field) in SERVED_ONLY_FIELDS {
+            if let Some(RefOr::T(Schema::Object(o))) = components.schemas.get_mut(schema) {
+                if let Some(RefOr::T(Schema::Object(p))) = o.properties.get_mut(field) {
+                    p.read_only = Some(true);
+                }
+            }
+        }
+    }
+}
+
 /// A key a request body sent that its published schema documents no property
 /// for (E2).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -708,7 +733,11 @@ mod tests {
         for field in ["name", "preset", "prompt", "duration_s", "in_place", "loop"] {
             property(&s["AnimationRequest"], field);
         }
-        assert_eq!(s["AnimationRequest"]["required"], json!(["name"]));
+        // E11c: a clip may leave its name out; litegen names it.
+        let required = s["AnimationRequest"]["required"].as_array().cloned().unwrap_or_default();
+        assert!(!required.contains(&json!("name")), "{required:?}");
+        let name = property(&s["AnimationRequest"], "name");
+        assert!(mentions(name, "Leave it out"), "{name}");
         assert_eq!(
             s["Model3dAnimationPreset"]["enum"],
             json!(["idle", "walk", "run", "jump", "fall", "attack_melee", "attack_ranged", "cast", "hurt", "death", "crouch", "climb", "turn"]),
@@ -834,6 +863,71 @@ mod tests {
             property(&s["ParamSpecExpand"], f);
         }
         assert!(mentions(&s["ParamSpec"], "\"expand\""), "the union names the new kind");
+    }
+
+    #[test]
+    fn the_listing_says_how_large_a_request_may_be() {
+        // N2: the body limit a client sizes inline uploads from.
+        let d = doc();
+        let p = property(&d["components"]["schemas"]["ModelCapabilities"], "max_request_bytes");
+        assert!(mentions(p, "integer") && mentions(p, "body_too_large"), "{p}");
+    }
+
+    /// Every listed model carries the limit (`project_model_info`), so the
+    /// schema lists it as required and generated clients type it as always
+    /// there, not as optional.
+    #[test]
+    fn the_listing_types_the_request_limit_as_always_sent() {
+        let d = doc();
+        let required = d["components"]["schemas"]["ModelCapabilities"]["required"].as_array().cloned().unwrap_or_default();
+        assert!(required.contains(&json!("max_request_bytes")), "{required:?}");
+    }
+
+    #[test]
+    fn the_catalog_says_when_text_to_video_needs_its_prompt() {
+        // N3: a row's prompt can be optional for image-to-video yet needed
+        // for text-to-video; the flag says so, and what refusing looks like.
+        let d = doc();
+        let flag = property(&d["components"]["schemas"]["PromptSpec"], "required_for_text_to_video");
+        assert!(mentions(flag, "boolean") && mentions(flag, "prompt_required"), "{flag}");
+    }
+
+    #[test]
+    fn the_served_schema_documents_the_fields_litegen_applies() {
+        // E11a: `GET /v1/models/{id}` serves them; the catalog never sets them.
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let lp = property(&s["ModelSchema"], "litegen_params");
+        assert!(mentions(lp, "object"), "{lp}");
+        for name in ["ground", "height_m", "mask_grow_px", "feather_px"] {
+            assert!(mentions(lp, name), "the description names {name}: {lp}");
+        }
+        let required = s["ModelSchema"]["required"].as_array().cloned().unwrap_or_default();
+        assert!(!required.contains(&json!("litegen_params")), "{required:?}");
+    }
+
+    /// Dashboard-server review #2 (orchestrator's ruling): the server computes
+    /// `litegen_params` and serves it; it is never taken. The schema says so,
+    /// so a generator leaves it out of what a client sends to the admin API.
+    #[test]
+    fn litegen_params_is_read_only() {
+        let d = doc();
+        let lp = property(&d["components"]["schemas"]["ModelSchema"], "litegen_params");
+        assert_eq!(lp["readOnly"], json!(true), "{lp}");
+    }
+
+    /// Registry review #12: a `/health` entry's `modality` is one of three
+    /// words, typed as such for the SDKs, not a free string.
+    #[test]
+    fn a_health_entry_names_its_modality_from_a_closed_set() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let m = property(&s["ProviderHealth"], "modality");
+        let named = m["$ref"].as_str().or_else(|| m["allOf"][0]["$ref"].as_str());
+        let target = named.map_or(m, |r| &s[r.trim_start_matches("#/components/schemas/")]);
+        assert_eq!(target["enum"], json!(["image", "video", "model3d"]), "{m}");
+        let required = s["ProviderHealth"]["required"].as_array().cloned().unwrap_or_default();
+        assert!(required.contains(&json!("modality")), "{required:?}");
     }
 
     #[test]
@@ -1232,6 +1326,24 @@ mod tests {
         ] {
             let h = &d["paths"][path]["post"]["responses"][status]["headers"]["X-Litegen-Dropped-Params"];
             assert!(h.is_object(), "{path} {status} does not document X-Litegen-Dropped-Params");
+        }
+    }
+
+    /// E11b: a client may hold a generation back on its quote's refusal (the
+    /// dashboard's playground does), so each quote route says what makes that
+    /// sound: the generation's own validation, and no vendor call.
+    /// `tests/model3d_api.rs::the_quote_runs_the_generations_request_validation`
+    /// pins the behaviour.
+    #[test]
+    fn each_quote_says_it_validates_as_its_generation_does() {
+        let d = doc();
+        for path in ["/v1/images/cost", "/v1/videos/cost", "/v1/models3d/cost"] {
+            // A doc comment's line breaks stay in the text; read it as prose.
+            let text = d["paths"][path]["post"]["description"].as_str().unwrap_or_default();
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            for needle in ["same validation as the matching generation route", "calls no vendor", "the generation refuses too"] {
+                assert!(text.contains(needle), "{path}: the description lacks {needle:?}: {text:?}");
+            }
         }
     }
 

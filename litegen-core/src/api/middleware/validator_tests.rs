@@ -1332,6 +1332,98 @@ models:
         validate_image(m, req).unwrap_or_else(|e| panic!("{}", e.message));
     }
 
+    /// Passthrough review #6: a string param's `max_length` counts
+    /// characters, as the prompt's, a typed extra's and JSON Schema's
+    /// `maxLength` do. A byte count refused a non-ASCII value the vendor
+    /// takes ("日本語" is 3 characters and 9 bytes). Every string param, and
+    /// `negative_prompt` on images and videos.
+    #[test]
+    fn a_strings_max_length_counts_characters() {
+        use serde_json::json;
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/short
+    provider: t
+    media_type: image
+    display_name: T
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+    params:
+      style: { kind: string, max_length: 3 }
+      negative_prompt: { kind: string, max_length: 3 }
+  - id: t/short-video
+    provider: t
+    media_type: video
+    display_name: TV
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true }
+    params:
+      negative_prompt: { kind: string, max_length: 3 }
+"#)])
+        .expect("load");
+        let m = r.get("t/short").unwrap();
+        let image = |style: &str, negative: &str| {
+            let mut req = img("hi");
+            req.base.model = "t/short".into();
+            req.style = Some(style.into());
+            req.base.negative_prompt = Some(negative.into());
+            validate_image(m, req)
+        };
+        image("日本語", "ñoñ").unwrap_or_else(|e| panic!("3 characters fit a max_length of 3: {}", e.message));
+        for (style, negative, param) in [("日本語!", "ñoñ", "style"), ("日本語", "ñoño", "negative_prompt")] {
+            let err = image(style, negative).expect_err(param);
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_too_long", Some(param)), "{}", err.message);
+        }
+        let v = r.get("t/short-video").unwrap();
+        let video = |negative: &str| {
+            let req: VideoGenerationRequest =
+                serde_json::from_value(json!({ "model": "t/short-video", "prompt": "a cat", "negative_prompt": negative })).unwrap();
+            validate_video(v, req)
+        };
+        video("ñoñ").unwrap_or_else(|e| panic!("3 characters fit a max_length of 3: {}", e.message));
+        let err = video("ñoño").expect_err("4 characters");
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_too_long", Some("negative_prompt")), "{}", err.message);
+    }
+
+    /// Passthrough review #6: an `int` extra takes an integral number
+    /// written as a float (`2.0`), as JSON Schema's `integer` does, and the
+    /// vendor is sent the integer, which a strict integer field takes. A
+    /// fraction is still refused, and the range still holds.
+    #[test]
+    fn an_int_extra_takes_an_integral_float_and_sends_the_integer() {
+        use serde_json::json;
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/int-extra
+    provider: t
+    media_type: image
+    display_name: T
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+    extra_allowlist: [steps_x]
+    extra_params:
+      steps_x: { kind: int, min: 1, max: 50 }
+"#)])
+        .expect("load");
+        let m = r.get("t/int-extra").unwrap();
+        let check = |value: serde_json::Value| {
+            let mut req = img("hi");
+            req.base.model = "t/int-extra".into();
+            req.base.extra = Some(json!({ "steps_x": value }));
+            validate_image(m, req)
+        };
+        let out = check(json!(2.0)).unwrap_or_else(|e| panic!("2.0 is an integer: {}", e.message));
+        let sent = out.request.base.extra.expect("extra");
+        assert!(sent["steps_x"].is_i64() && sent["steps_x"] == json!(2), "the vendor gets the integer: {sent}");
+        for (value, code) in [(json!(1.5), "param_invalid"), (json!(51.0), "param_out_of_range"), (json!(1e300), "param_invalid")] {
+            let err = check(value.clone()).expect_err(&value.to_string());
+            assert_eq!((err.code.as_str(), err.param.as_deref()), (code, Some("extra.steps_x")), "{value}: {}", err.message);
+        }
+    }
+
     /// E4b: a typed extra is checked like a param, in either mode, with
     /// `param: "extra.<key>"`; an untyped one passes as any JSON, and `null`
     /// passes as given.

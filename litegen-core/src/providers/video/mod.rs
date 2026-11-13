@@ -55,11 +55,6 @@ pub(crate) async fn read_poll_json(
     })
 }
 
-/// A poll answer naming a job state its vendor doesn't document (or none):
-/// the job fails now, naming it, through the normal terminal path (its
-/// webhook fires), rather than polling until the reaper's maximum age.
-/// Every adapter lists its vendor's in-progress states and sends anything
-/// else here, as Replicate's and BFL's adapters did first (2026-10-30 audit).
 /// What a poll answers when its gate said another observer keeps the
 /// finished video ([`crate::providers::Fetch::StandAside`]): still
 /// processing, short of done, nothing downloaded and no error.
@@ -75,6 +70,11 @@ pub(crate) fn standing_aside() -> crate::providers::VideoGenerationPollResult {
     }
 }
 
+/// A poll answer naming a job state its vendor doesn't document (or none):
+/// the job fails now, naming it, through the normal terminal path (its
+/// webhook fires), rather than polling until the reaper's maximum age.
+/// Every adapter lists its vendor's in-progress states and sends anything
+/// else here, as Replicate's and BFL's adapters did first (2026-10-30 audit).
 pub(crate) fn unknown_state(vendor: &str, state: Option<&str>) -> crate::providers::VideoGenerationPollResult {
     crate::providers::VideoGenerationPollResult {
         status: crate::types::GenerationStatus::Failed,

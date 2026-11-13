@@ -153,3 +153,65 @@ async fn a_retired_model_answers_410_naming_its_replacement() {
     assert_eq!(schema.status, StatusCode::GONE, "{:?}", schema.body);
     assert_eq!(schema.body["error"]["replaced_by"], "mock/image-gen", "{:?}", schema.body);
 }
+
+/// N2: every listed model says how large a request to it may be, and that is
+/// the limit the server holds a body to: a quote body of exactly that many
+/// bytes is read, one byte more is 413 `body_too_large`. The playground sizes
+/// its uploads from it instead of a copied 25 MiB.
+#[tokio::test]
+async fn the_listing_serves_the_largest_request_body_the_server_reads() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let list = send(&app, "GET", "/v1/models", None, &[]).await;
+    assert_eq!(list.status, StatusCode::OK, "{:?}", list.body);
+    let models = list.body["data"].as_array().unwrap();
+    let max = models[0]["capabilities"]["max_request_bytes"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("served on every model: {}", models[0]["capabilities"]));
+    for m in models {
+        assert_eq!(m["capabilities"]["max_request_bytes"].as_u64(), Some(max), "{}", m["id"]);
+    }
+    // A JSON body padded with whitespace to exactly `len` bytes.
+    let body_of = |len: usize| {
+        let mut b = br#"{"model":"mock/image-gen","prompt":"a red fox""#.to_vec();
+        b.resize(len - 1, b' ');
+        b.push(b'}');
+        b
+    };
+    let quote = |bytes: Vec<u8>| {
+        let app = app.clone();
+        async move {
+            let req = Request::post("/v1/images/cost").header("content-type", "application/json").body(Body::from(bytes)).unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+    let max = usize::try_from(max).unwrap();
+    let (s, resp) = quote(body_of(max)).await;
+    assert_eq!(s, StatusCode::OK, "{resp}");
+    let (s, resp) = quote(body_of(max + 1)).await;
+    assert_eq!((s, resp["error"]["code"].as_str()), (StatusCode::PAYLOAD_TOO_LARGE, Some("body_too_large")), "{resp}");
+
+    // Dashboard-server review #1: a request with an `Idempotency-Key` is read
+    // first by the idempotency layer, which must take every body the listing
+    // says the server reads, and refuse one byte more as the route does.
+    let keyed = |bytes: Vec<u8>, key: &'static str| {
+        let app = app.clone();
+        async move {
+            let req = Request::post("/v1/images/generations")
+                .header("content-type", "application/json")
+                .header("idempotency-key", key)
+                .body(Body::from(bytes))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+    let (s, resp) = keyed(body_of(max), "n2-at-the-limit").await;
+    assert_eq!(s, StatusCode::OK, "a keyed generation of the served size: {resp}");
+    let (s, resp) = keyed(body_of(max + 1), "n2-past-the-limit").await;
+    assert_eq!((s, resp["error"]["code"].as_str()), (StatusCode::PAYLOAD_TOO_LARGE, Some("body_too_large")), "{resp}");
+}

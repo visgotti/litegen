@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ParamSpec } from '@litegen/sdk';
+import type { ModelInfo, ParamSpec } from '@litegen/sdk';
 import {
   allShareOneJob,
   buildRequestForModel,
@@ -10,6 +10,7 @@ import {
   extraForModel,
   extraFromBody,
   extraToRaw,
+  maxRequestBytesOf,
   maxTotalRefs,
   mergeExtras,
   mergeParams,
@@ -24,8 +25,8 @@ import {
   promptUsage,
   refsForModel,
   refsFromBody,
-  requestProblems,
   roleLabel,
+  schemaInputs,
   vendorJobsNeeded,
   wireValue,
 } from './params';
@@ -99,11 +100,13 @@ describe('defaultForSpec for string_array', () => {
     expect(defaultForSpec(formats({ default: ['glb', 'obj'] }))).toEqual(['glb', 'obj']);
   });
 
-  it('falls back to the first format only, never to all of them', () => {
-    // Each extra container is a file the caller pays for and a format the
-    // generation can now fail on; nobody should be opted into both by default.
-    expect(defaultForSpec(formats({}))).toEqual(['glb']);
-    expect(defaultForSpec(formats({ default: [] }))).toEqual(['glb']);
+  it('shows the default the server serves, and invents none', () => {
+    // GET /v1/models/{id} serves the list an omitted output_formats resolves
+    // to (E11d), so a format set the page is handed without one gets nothing
+    // ticked rather than a client's guess at the server's fallback.
+    expect(defaultForSpec(formats({ default: ['obj'] }))).toEqual(['obj']);
+    expect(defaultForSpec(formats({}))).toEqual([]);
+    expect(defaultForSpec(formats({ default: [] }))).toEqual([]);
   });
 
   it('is an empty array when the model declares no formats', () => {
@@ -339,9 +342,9 @@ describe('defaultForSpec never invents a value to send', () => {
     expect(defaultForSpec({ kind: 'size', mode: 'enum', values: [[512, 512]] } as unknown as ParamSpec)).toBe('');
   });
 
-  it('shows glb for a format set without a default — the server resolves to glb', () => {
+  it('shows a format set the default it is served with, and none without one', () => {
     expect(defaultForSpec(partlyDerivable as unknown as ParamSpec)).toEqual(['glb']);
-    expect(defaultForSpec({ kind: 'string_array', enum_values: ['fbx', 'glb'] } as unknown as ParamSpec)).toEqual(['glb']);
+    expect(defaultForSpec({ kind: 'string_array', enum_values: ['fbx', 'glb'] } as unknown as ParamSpec)).toEqual([]);
   });
 });
 
@@ -385,6 +388,54 @@ describe('buildRequestForModel', () => {
   it('sends seed only to a model that declares it', () => {
     expect(buildRequestForModel('m', schemaOf({ params: { seed: { kind: 'seed' } } }), state({ seed: '7' }))).toHaveProperty('seed', 7);
     expect(buildRequestForModel('m', schemaOf({}), state({ seed: '7' }))).not.toHaveProperty('seed');
+  });
+});
+
+// ─── Listed and bounded numbers: Compare narrows, the server judges ─────────
+//
+// Compare mode shares one value across models, so a model that lists its
+// values is sent only a value it lists (E11e). Otherwise a number goes as
+// typed, in its bounds or not: the server's check says what it takes (N5).
+
+describe('a listed value in a Compare run (E11e)', () => {
+  const listed = { kind: 'int', values: [512, 1024, 2048] } as unknown as AnySpecForTest;
+  const textureModel = (values: number[]) => schemaOf({ params: { texture_resolution: { kind: 'int', values } } });
+
+  it('sends a model that takes listed values only a listed one', () => {
+    expect(clampToSpec(listed, 1024, { compare: true })).toBe(1024);
+    expect(clampToSpec(listed, 768, { compare: true })).toBeUndefined();
+  });
+
+  it('leaves a listed param off a Compare model that does not list the shared value', () => {
+    const body = buildRequestForModel('mock/texture-3d', textureModel([1024, 2048]),
+      state({ params: { texture_resolution: '512' } })) as unknown as Record<string, unknown>;
+    expect('texture_resolution' in body).toBe(false);
+  });
+
+  it('offers in Compare only the listed values every model takes', () => {
+    const merged = mergeParams({ a: textureModel([512, 1024, 2048]), b: textureModel([1024, 2048, 4096]) });
+    expect((merged[0].spec as unknown as { values: number[] }).values).toEqual([1024, 2048]);
+  });
+
+  it('keeps the one list when only one of the models lists values', () => {
+    const ranged = schemaOf({ params: { texture_resolution: { kind: 'int', min: 256, max: 4096 } } });
+    const merged = mergeParams({ a: ranged, b: textureModel([512, 1024]) });
+    expect((merged[0].spec as unknown as { values: number[] }).values).toEqual([512, 1024]);
+  });
+
+  it('sends Single mode the value picked, listed or not: the server says why it will not do', () => {
+    // A history entry restored after the catalog changed is the one way there.
+    expect(schemaInputs(textureModel([1024, 2048]), { params: { texture_resolution: '512' } }))
+      .toEqual({ texture_resolution: 512 });
+  });
+});
+
+describe('a typed number goes as typed (N5)', () => {
+  const steps = schemaOf({ params: { steps: { kind: 'int', min: 1, max: 50 } } });
+
+  it('is not moved into its bounds: the server answers param_out_of_range, in its words', () => {
+    expect(schemaInputs(steps, { params: { steps: '500' } })).toEqual({ steps: 500 });
+    expect(buildRequestForModel('m', steps, state({ params: { steps: '0' } }))).toHaveProperty('steps', 0);
   });
 });
 
@@ -471,6 +522,24 @@ describe('mergeRefRoles', () => {
   it('is empty when no selected model takes images', () => {
     expect(mergeRefRoles({ 'mock/fail-3d': schemaOf({}) })).toEqual([]);
   });
+
+  it('marks a required role as needing an image even when its min_count is 0', () => {
+    // The server refuses a `required` role sent no image, whatever min_count says.
+    const roles = mergeRefRoles({ 'x/m': schemaOf({ ref_inputs: { roles: { init: { required: true, min_count: 0, max_count: 1 } } } }) });
+    expect(roles[0].requiredBy).toEqual(['x/m']);
+    expect(roles[0].minCount).toBe(1);
+  });
+});
+
+describe('maxRequestBytesOf', () => {
+  const info = (id: string, capabilities: Record<string, unknown>) => ({ id, capabilities }) as unknown as ModelInfo;
+  it("is the smallest request limit the selected models' listing states, or undefined", () => {
+    const models = [info('a', { max_request_bytes: 26_214_400 }), info('b', { max_request_bytes: 1_000_000 }), info('c', {})];
+    expect(maxRequestBytesOf(models, ['a'])).toBe(26_214_400);
+    expect(maxRequestBytesOf(models, ['a', 'b'])).toBe(1_000_000);
+    expect(maxRequestBytesOf(models, ['c'])).toBeUndefined();
+    expect(maxRequestBytesOf(models, [])).toBeUndefined();
+  });
 });
 
 describe('maxTotalRefs', () => {
@@ -485,76 +554,6 @@ describe('roleLabel', () => {
     expect(roleLabel('init')).toBe('Input image');
     expect(roleLabel('view-front')).toBe('Front view');
     expect(roleLabel('mask')).toBe('Mask');
-  });
-});
-
-describe('requestProblems', () => {
-  it('needs an input image for an image-only model, and nothing else', () => {
-    expect(requestProblems(trellisSchema, { prompt: '', refs: [] })).toEqual(['needs an input image']);
-  });
-
-  it('is satisfied by the image alone when the prompt is optional', () => {
-    expect(requestProblems(trellisSchema, { prompt: '', refs: [ref('init')] })).toEqual([]);
-  });
-
-  it('needs a prompt or an image on a text-or-image model', () => {
-    expect(requestProblems(rodinSchema, { prompt: '', refs: [] })).toEqual(['needs a prompt or a reference image']);
-    expect(requestProblems(rodinSchema, { prompt: 'a fox', refs: [] })).toEqual([]);
-    expect(requestProblems(rodinSchema, { prompt: '', refs: [ref('init')] })).toEqual([]);
-  });
-
-  it('needs a prompt where the model requires one, image or not', () => {
-    expect(requestProblems(multiviewSchema, { prompt: '  ', refs: [ref('init')] })).toEqual(['needs a prompt']);
-  });
-
-  it('applies the server rule that a used optional role must reach its minimum', () => {
-    const s = schemaOf({ prompt: { required: true }, ref_inputs: { max_total: 4, roles: { 'view-front': { required: false, min_count: 2, max_count: 4 } } } });
-    expect(requestProblems(s, { prompt: 'x', refs: [] })).toEqual([]);
-    expect(requestProblems(s, { prompt: 'x', refs: [ref('view-front')] })).toEqual(['needs 2 images for the front view']);
-  });
-
-  it('only counts images the model is actually sent', () => {
-    // A view-front image does nothing for TRELLIS, which only takes `init`.
-    expect(requestProblems(trellisSchema, { prompt: '', refs: [ref('view-front')] })).toEqual(['needs an input image']);
-  });
-
-  // The server's check_multiview_refs: views mean multiview, which cannot ride
-  // with an input image, always needs the front, and cannot skip a view on a
-  // model that reads its views by position.
-  it('refuses an input image beside views, as the server does', () => {
-    expect(requestProblems(multiviewSchema, { prompt: 'a fox', refs: [ref('init'), ref('view-front')] }))
-      .toEqual(['takes an input image or views, not both']);
-  });
-
-  it('needs the front view once any view is sent', () => {
-    expect(requestProblems(multiviewSchema, { prompt: 'a fox', refs: [ref('view-back')] }))
-      .toEqual(['needs the front view with any other view']);
-    expect(requestProblems(multiviewSchema, { prompt: 'a fox', refs: [ref('view-front'), ref('view-back')] })).toEqual([]);
-  });
-
-  it('cannot skip a view on a model that reads its views by position', () => {
-    // fal/tripo-h3.1-multiview as served.
-    const tripo = schemaOf({
-      prompt: { required: false, max_length: 0 },
-      ref_inputs: {
-        max_total: 4,
-        view_order: ['front', 'left', 'back', 'right'],
-        roles: {
-          'view-front': { required: true, min_count: 1, max_count: 1 },
-          'view-left': { required: true, min_count: 1, max_count: 1 },
-          'view-back': { required: false, min_count: 0, max_count: 1 },
-          'view-right': { required: false, min_count: 0, max_count: 1 },
-        },
-      },
-    });
-    const views = (...sides: string[]) => sides.map(s => ref(`view-${s}`));
-    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'left', 'right') }))
-      .toEqual(['reads its views in order (front, left, back, right): add the back view or leave out the views after it']);
-    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'left', 'back', 'right') })).toEqual([]);
-    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'left') })).toEqual([]);
-    // A missing required view already has its own problem; the order check
-    // does not repeat it.
-    expect(requestProblems(tripo, { prompt: '', refs: views('front', 'back') })).toEqual(['needs 1 image for the left view']);
   });
 });
 
@@ -587,17 +586,6 @@ describe('prompt limits', () => {
   it('counts characters as the server does, not UTF-16 code units', () => {
     expect(promptLength('fox')).toBe(3);
     expect(promptLength('🦊🦊')).toBe(2);
-  });
-
-  it('flags a prompt over the limit', () => {
-    const long = 'x'.repeat(1025);
-    expect(requestProblems(rodinSchema, { prompt: long, refs: [] }))
-      .toEqual(['takes a prompt of at most 1,024 characters']);
-    expect(requestProblems(rodinSchema, { prompt: 'x'.repeat(1024), refs: [] })).toEqual([]);
-  });
-
-  it('never faults a prompt left over for a model that takes none — it is not sent', () => {
-    expect(requestProblems(trellisSchema, { prompt: 'x'.repeat(5000), refs: [ref('init')] })).toEqual([]);
   });
 });
 
@@ -657,6 +645,45 @@ describe('mergeExtras / extraForModel', () => {
     expect(extraForModel(schemaOf({}), { quality: 'high' })).toBeUndefined();
     const body = buildRequestForModel('m', schemaOf({}), state({ extra: { quality: 'high' } })) as unknown as Record<string, unknown>;
     expect('extra' in body).toBe(false);
+  });
+});
+
+// A vendor field the catalog types (`extra_params`, served by GET
+// /v1/models/{id}) is checked like a param: a wrong type is refused in either
+// mode (`param_invalid`). So it goes as its type, never as whatever its text
+// happens to parse to.
+describe('typed passthrough fields (extra_params)', () => {
+  // fal FLUX.1 [pro] as served: its safety_tolerance is the string "1".."6".
+  const fluxPro = schemaOf({
+    extra_allowlist: ['safety_tolerance'],
+    extra_params: { safety_tolerance: { kind: 'string', enum_values: ['1', '2', '3', '4', '5', '6'], default: '2' } },
+  });
+  const ultra = schemaOf({
+    extra_allowlist: ['raw', 'image_prompt_strength', 'safety_tolerance', 'style_codes', 'note'],
+    extra_params: {
+      raw: { kind: 'bool' },
+      image_prompt_strength: { kind: 'float', min: 0, max: 1, default: 0.1 },
+      safety_tolerance: { kind: 'string', enum_values: [] },
+      style_codes: { kind: 'string_array' },
+    },
+  });
+
+  it("sends fal FLUX's safety_tolerance as the string it is typed as", () => {
+    expect(extraForModel(fluxPro, { safety_tolerance: '2' })).toEqual({ safety_tolerance: '2' });
+  });
+
+  it('sends a flag, a number, free text and a list as their types, and an untyped field as JSON where it parses', () => {
+    expect(extraForModel(ultra, { raw: 'true', image_prompt_strength: '0.25', safety_tolerance: '5', style_codes: 'AB12, CD34', note: '{"a":1}' }))
+      .toEqual({ raw: true, image_prompt_strength: 0.25, safety_tolerance: '5', style_codes: ['AB12', 'CD34'], note: { a: 1 } });
+  });
+
+  it('restores a typed string from history as the same string', () => {
+    expect(extraForModel(fluxPro, extraFromBody({ extra: { safety_tolerance: '2' } }))).toEqual({ safety_tolerance: '2' });
+  });
+
+  it('carries each key with the type the selected models give it', () => {
+    expect(mergeExtras({ 'fal/flux-pro': fluxPro }))
+      .toEqual([{ key: 'safety_tolerance', models: ['fal/flux-pro'], spec: { kind: 'string', enum_values: ['1', '2', '3', '4', '5', '6'], default: '2' } }]);
   });
 });
 

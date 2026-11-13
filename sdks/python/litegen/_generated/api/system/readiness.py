@@ -53,8 +53,9 @@ def sync_detailed(
     """GET /health/ready — Readiness probe.
     Returns 200 when the DB is reachable (the instance can accept requests).
     Provider availability is resolved per-request — globally configured creds OR
-    org-scoped BYO credentials — so it does NOT gate readiness; the healthy
-    provider list is reported in the body purely as an informational signal.
+    org-scoped BYO credentials — so it does NOT gate readiness. No vendor is
+    called: the body lists the providers configured with the gateway's own
+    keys, by name, and `GET /health` checks them.
     Returns 503 only when the DB is unreachable. No auth required.
     Live: `curl https://app.litegen.ai/api/health/ready`
 
@@ -82,8 +83,9 @@ def sync(
     """GET /health/ready — Readiness probe.
     Returns 200 when the DB is reachable (the instance can accept requests).
     Provider availability is resolved per-request — globally configured creds OR
-    org-scoped BYO credentials — so it does NOT gate readiness; the healthy
-    provider list is reported in the body purely as an informational signal.
+    org-scoped BYO credentials — so it does NOT gate readiness. No vendor is
+    called: the body lists the providers configured with the gateway's own
+    keys, by name, and `GET /health` checks them.
     Returns 503 only when the DB is unreachable. No auth required.
     Live: `curl https://app.litegen.ai/api/health/ready`
 
@@ -107,8 +109,9 @@ async def asyncio_detailed(
     """GET /health/ready — Readiness probe.
     Returns 200 when the DB is reachable (the instance can accept requests).
     Provider availability is resolved per-request — globally configured creds OR
-    org-scoped BYO credentials — so it does NOT gate readiness; the healthy
-    provider list is reported in the body purely as an informational signal.
+    org-scoped BYO credentials — so it does NOT gate readiness. No vendor is
+    called: the body lists the providers configured with the gateway's own
+    keys, by name, and `GET /health` checks them.
     Returns 503 only when the DB is unreachable. No auth required.
     Live: `curl https://app.litegen.ai/api/health/ready`
 
@@ -134,8 +137,9 @@ async def asyncio(
     """GET /health/ready — Readiness probe.
     Returns 200 when the DB is reachable (the instance can accept requests).
     Provider availability is resolved per-request — globally configured creds OR
-    org-scoped BYO credentials — so it does NOT gate readiness; the healthy
-    provider list is reported in the body purely as an informational signal.
+    org-scoped BYO credentials — so it does NOT gate readiness. No vendor is
+    called: the body lists the providers configured with the gateway's own
+    keys, by name, and `GET /health` checks them.
     Returns 503 only when the DB is unreachable. No auth required.
     Live: `curl https://app.litegen.ai/api/health/ready`
 

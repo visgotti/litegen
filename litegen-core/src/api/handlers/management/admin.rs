@@ -87,7 +87,13 @@ pub async fn get_model(State(state): State<Arc<AppState>>, ctx: Option<Extension
 }
 
 fn parse_model(body: serde_json::Value) -> Result<ModelSchema, Response> {
-    serde_json::from_value(body).map_err(|e| bad_request("invalid_model", &format!("invalid model schema: {e}")))
+    let mut m: ModelSchema = serde_json::from_value(body).map_err(|e| bad_request("invalid_model", &format!("invalid model schema: {e}")))?;
+    // `GET /v1/models/{id}` serves `litegen_params`, which the server
+    // computes: a served schema posted back carries it, read and ignored as
+    // `status` is (dashboard-server review #2). The loader still refuses it
+    // in a catalog row, where it can only be a mistake.
+    m.litegen_params.clear();
+    Ok(m)
 }
 
 async fn save_model(state: &AppState, ctx: &KeyContext, store: &dyn ManagementStore, m: ModelSchema, created: bool) -> Response {
@@ -581,8 +587,6 @@ pub async fn put_settings(
         return internal(&e.to_string());
     }
     let cache_now_on = crate::management::settings::effective(&state.router.config, &body).cache.enabled;
-    let mut o = state.router.overrides();
-    o.gateway = body.clone();
     if cache_was_on != cache_now_on {
         // Turning the gateway cache off or on empties it everywhere: this
         // replica's tiers, and the shared tier with the epoch raised, before
@@ -590,8 +594,12 @@ pub async fn put_settings(
         // was cached before the switch. Off: nothing is served from it.
         // On: nothing an earlier switch-off failed to remove from Redis, nor
         // what routes with their own cache settings stored meanwhile. Off
-        // switches first, so no new answer is stored during the clear; on
-        // clears first, so this replica serves nothing from before it.
+        // switches first, so no new answer is stored during the clear. On
+        // clears first and switches after it. The row is saved already,
+        // though, so a refresh during the clear can switch a replica on
+        // early, this one included, and it can then serve an answer from
+        // before the switch until the clear is done there (another replica:
+        // until it hears of it). That window is accepted.
         //
         // The save answers 200 whatever the clear did: the switch must work
         // while Redis is down, and the database carries it to every replica.
@@ -599,21 +607,31 @@ pub async fn put_settings(
         // so a client that goes away cannot leave the clear half done and the
         // others untold.
         let switching = state.clone();
+        let gateway = body.clone();
         runtime::finish_even_if_dropped(async move {
             if cache_now_on {
                 let _ = switching.router.cache.clear().await;
-                switching.router.set_overrides(o);
+                apply_gateway_settings(&switching.router, gateway);
             } else {
-                switching.router.set_overrides(o);
+                apply_gateway_settings(&switching.router, gateway);
                 let _ = switching.router.cache.clear().await;
             }
             runtime::announce(&switching, SharedEvent::Reload).await;
         })
         .await;
     } else {
-        state.router.set_overrides(o);
+        apply_gateway_settings(&state.router, body.clone());
         runtime::announce(&state, SharedEvent::Reload).await;
     }
     audit(&state, &ctx, None, "settings.update", "settings", "gateway", serde_json::to_value(&body).ok());
     (StatusCode::OK, Json(settings_view(&state).await)).into_response()
+}
+
+/// Put `gateway` in force and keep every other override as it is now. Read
+/// just before they are replaced, never before an await: a route saved on
+/// this replica meanwhile, or applied by a refresh, must not be undone.
+fn apply_gateway_settings(router: &crate::proxy::router::ProxyRouter, gateway: GatewaySettings) {
+    let mut o = router.overrides();
+    o.gateway = gateway;
+    router.set_overrides(o);
 }

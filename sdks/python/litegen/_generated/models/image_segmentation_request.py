@@ -29,6 +29,9 @@ class ImageSegmentationRequest:
             a text prompt selects every instance of what it names.
         metadata (Union['ImageSegmentationRequestMetadataType0', None, Unset]): Your own labels for the call, as on a
             generation (L17).
+        strict (Union[Unset, bool]): `true` (the default) refuses a field the request has no such name for
+            (`prompt` for `prompts`, say) with `param_unsupported`; `false` drops
+            it and names it in `X-Litegen-Dropped-Params`.
     """
 
     image: str
@@ -41,6 +44,7 @@ class ImageSegmentationRequest:
         ]
     ]
     metadata: Union["ImageSegmentationRequestMetadataType0", None, Unset] = UNSET
+    strict: Union[Unset, bool] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -74,6 +78,8 @@ class ImageSegmentationRequest:
         else:
             metadata = self.metadata
 
+        strict = self.strict
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -85,6 +91,8 @@ class ImageSegmentationRequest:
         )
         if metadata is not UNSET:
             field_dict["metadata"] = metadata
+        if strict is not UNSET:
+            field_dict["strict"] = strict
 
         return field_dict
 
@@ -166,11 +174,14 @@ class ImageSegmentationRequest:
 
         metadata = _parse_metadata(d.pop("metadata", UNSET))
 
+        strict = d.pop("strict", UNSET)
+
         image_segmentation_request = cls(
             image=image,
             model=model,
             prompts=prompts,
             metadata=metadata,
+            strict=strict,
         )
 
         image_segmentation_request.additional_properties = d

@@ -131,6 +131,57 @@ async fn a_ratio_an_image_overrides_is_refused_before_it_is_quoted() {
     }
 }
 
+/// N3: a video model whose text-to-video mode needs the prompt (its image
+/// mode does not, so the row's prompt is optional) refuses a request with no
+/// first frame and no prompt at validation, before it is quoted, reserved or
+/// sent. `runway/veo3.1` with nothing in it used to be quoted at $3.20, and a
+/// generation reserved, before its adapter refused it.
+#[tokio::test]
+async fn a_text_to_video_request_with_no_prompt_is_refused_before_it_is_quoted_or_reserved() {
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, |cfg| {
+        for v in ["runway", "tokenhub"] {
+            cfg.providers.insert(v.to_string(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await;
+    let image = |role: &str| json!({ "type": "url", "value": "https://example.com/a.png", "role": role });
+    // The rows whose vendor refuses text-to-video without a prompt: Runway's
+    // `t2v_needs_prompt` table, TokenHub's "文生视频必选".
+    for model in [
+        "runway/veo3.1", "runway/veo3.1_fast", "runway/gemini_omni_flash", "runway/kling_4", "runway/kling_4_flash",
+        "runway/seedance2", "runway/seedance2_fast", "runway/seedance2_mini", "runway/grok_imagine_1_5",
+        "runway/grok_imagine_1_5_lite", "runway/happyhorse_1_0", "tokenhub/hy-video-v1.5", "tokenhub/minimax-video-v2.3",
+    ] {
+        for at in ["/v1/videos/cost", "/v1/videos/generations"] {
+            let (s, resp) = post(&app, at, json!({ "model": model })).await;
+            assert_eq!(
+                (s, resp["error"]["code"].as_str(), resp["error"]["param"].as_str()),
+                (StatusCode::BAD_REQUEST, Some("prompt_required"), Some("prompt")),
+                "{model} at {at}: {resp}"
+            );
+        }
+    }
+    // A reference image is no frame: Runway still makes text-to-video of it.
+    let (s, resp) = post(&app, "/v1/videos/cost", json!({ "model": "runway/kling_4", "reference_images": [image("reference")] })).await;
+    assert_eq!((s, resp["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("prompt_required")), "{resp}");
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
+    // Guards: a first frame needs no prompt, a prompt needs no image, and a
+    // model whose text mode takes no prompt (Kling 3.0 on Runway: its shots
+    // can go in `providerSettings.multiPrompt`) is left to its vendor.
+    for body in [
+        json!({ "model": "runway/veo3.1", "reference_images": [image("first_frame")] }),
+        json!({ "model": "runway/veo3.1", "prompt": "a lighthouse at dusk" }),
+        json!({ "model": "tokenhub/hy-video-v1.5", "reference_images": [image("first_frame")] }),
+        json!({ "model": "runway/kling3.0_standard" }),
+    ] {
+        let (s, resp) = post(&app, "/v1/videos/cost", body.clone()).await;
+        assert_eq!(s, StatusCode::OK, "{body}: {resp}");
+    }
+}
+
 /// One job makes one clip or one mesh, and one is billed (E3): a quote for
 /// `n: 4` used to answer the price of one.
 #[tokio::test]

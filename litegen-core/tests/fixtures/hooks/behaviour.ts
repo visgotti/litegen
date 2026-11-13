@@ -125,7 +125,7 @@ export function file_access(request: HookRequest, file: StoredFile, caller: Reco
         if (file.created_by.end_user !== (request.headers ?? {})["x-litegen-end-user"]) throw refuse(403, "not your file");
         break;
       case "report":
-        throw refuse(418, JSON.stringify({ file, caller }));
+        throw refuse(418, JSON.stringify({ file, caller, request: { method: request.method, path: request.path } }));
       case "fail":
         throw new Error("boom");
       case "deny-string":

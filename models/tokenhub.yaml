@@ -480,9 +480,10 @@ models:
     # @see https://cloud.tencent.com/document/product/1823/130055 (2026-11-09)
     pricing: { base_cost_usd: 0.2248 }
     capabilities: { text_to_video: true, image_to_video: true }
-    # "文本提示词。文生视频必选；图生视频可选" — the adapter refuses a request with
-    # neither a prompt nor an image. TokenHub documents no prompt limit here.
-    prompt: { required: false }
+    # "文本提示词。文生视频必选；图生视频可选": a request with neither a prompt nor a
+    # first frame is refused at validation, before anything is quoted or reserved
+    # (the adapter refuses it too). TokenHub documents no prompt limit here.
+    prompt: { required: false, required_for_text_to_video: true }
     params:
       negative_prompt: { kind: string }
       # "视频时长（秒），小数将截断为整数。当前版本固定生成 5 秒。" — sent as 5.
@@ -813,8 +814,13 @@ models:
         - { when: { duration_seconds: 10 }, usd: 0.5995 }
         - { when: { resolution: 1080P }, usd: 0.5245 }
     capabilities: { text_to_video: true, image_to_video: true }
-    # "文本提示词，≤ 2000 字符" — required without an image (the adapter refuses neither).
-    prompt: { required: false, max_length: 2000 }
+    # The guide's 文生视频 "v2.3（扁平参数）" table: "prompt | 是 | string | 文本提示词，
+    # ≤ 2000 字符。支持 [指令] 运镜语法"; its 图生视频 "v2.3 / v2.3-fast（扁平参数）" table:
+    # "prompt | 否 | string | 文本提示词，≤ 2000 字符。" So a request with neither a
+    # prompt nor a first frame is refused at validation, before anything is quoted
+    # or reserved; the adapter (`minimax_flat_body`) refuses it too.
+    # @see https://cloud.tencent.com/document/product/1823/135737 (2026-11-13)
+    prompt: { required: false, required_for_text_to_video: true, max_length: 2000 }
     params:
       # "768P：6 或 10；1080P：仅 6。默认值：6。" — 10 s at 1080P is refused.
       duration_seconds: { kind: int, min: 6, max: 10, default: 6, values: [6, 10] }

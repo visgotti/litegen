@@ -420,6 +420,15 @@ fn queued_out() -> SharedError {
 /// every command, PING included). No script bug makes those three replies.
 /// OOM and MISCONF stay answers: a new connection can't help a full or
 /// misconfigured node.
+///
+/// A write inside a script gets READONLY too, but Redis 5 and 6 wrap it in
+/// `ERR`: `ERR Error running script (call to f_<sha>): @user_script:1:
+/// @user_script: 1: -READONLY You can't write against a read only replica.`
+/// (5.0 adds three spaces at the end). Redis 7 and Valkey send the READONLY
+/// itself. litegen's frequent writes are scripts (a rate-limit take, a slot's
+/// acquire and refresh, a cache put, the provider breaker's writes), so that
+/// `ERR` counts too. Only Redis's own text is matched: an `ERR` that says it
+/// ran a script and carries the replica error.
 fn cannot_use(e: &RedisError) -> bool {
     e.is_io_error()
         || e.is_connection_dropped()
@@ -432,6 +441,8 @@ fn cannot_use(e: &RedisError) -> bool {
             e.kind(),
             ErrorKind::Server(ServerErrorKind::ReadOnly | ServerErrorKind::BusyLoading | ServerErrorKind::MasterDown)
         )
+        || (matches!(e.kind(), ErrorKind::Server(ServerErrorKind::ResponseError))
+            && e.detail().is_some_and(|d| d.starts_with("Error running script") && d.contains("-READONLY ")))
 }
 
 /// An error for the caller. Redis's own text (a kind and a description from
@@ -833,10 +844,15 @@ iqpV3oUwNG5PuZeKHyYAzCICPaAVvzqLlCTVOAIgOpf/HuTPb1shoX8I5vrfsnij
         .await
     }
 
-    /// What a node answers when it can't serve: a primary demoted by a
-    /// failover, a Redis loading its data, a replica cut off from its primary.
-    const CANNOT_SERVE: [&str; 3] = [
+    /// What a node answers when it can't serve, as real servers send it: a
+    /// primary demoted by a failover (a plain write, or Redis 7 and Valkey),
+    /// then a write inside a script on that primary as Redis 6.2.24 and 5.0.14
+    /// answer it (wrapped in `ERR`; 5.0 ends it with three spaces), a Redis
+    /// loading its data, a replica cut off from its primary.
+    const CANNOT_SERVE: [&str; 5] = [
         "READONLY You can't write against a read only replica.",
+        "ERR Error running script (call to f_756928dd1246249109cfe8475bfa267e967ea948): @user_script:1: @user_script: 1: -READONLY You can't write against a read only replica.",
+        "ERR Error running script (call to f_756928dd1246249109cfe8475bfa267e967ea948): @user_script:1: @user_script: 1: -READONLY You can't write against a read only replica.   ",
         "LOADING Redis is loading the dataset in memory",
         "MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'.",
     ];
@@ -859,12 +875,40 @@ iqpV3oUwNG5PuZeKHyYAzCICPaAVvzqLlCTVOAIgOpf/HuTPb1shoX8I5vrfsnij
 
     #[tokio::test]
     async fn answers_from_a_node_that_cannot_serve_open_the_breaker() {
-        let Some((s, _)) = two_shared().await else { return };
-        for _ in 0..5 {
-            let _ = answer_with(&s, CANNOT_SERVE[0]).await;
+        for error in CANNOT_SERVE {
+            let Some((s, _)) = two_shared().await else { return };
+            for _ in 0..5 {
+                let _ = answer_with(&s, error).await;
+            }
+            let next = ping(&s).await;
+            assert!(matches!(next, Err(SharedError::Unavailable)), "five `{error}` answers in a row must open the breaker, got {next:?}");
         }
-        let next = ping(&s).await;
-        assert!(matches!(next, Err(SharedError::Unavailable)), "five READONLY answers in a row must open the breaker, got {next:?}");
+    }
+
+    /// Any other error inside a script, as Redis 6.2.24 wraps it: a
+    /// WRONGTYPE from `redis.call`, a Lua error, an unknown command.
+    const SCRIPT_ERRORS: [&str; 3] = [
+        "ERR Error running script (call to f_55adaad9aeacea76b502ddc5b6f00f789cec478c): @user_script:1: WRONGTYPE Operation against a key holding the wrong kind of value",
+        "ERR Error running script (call to f_d7b467a515fcbd21bd1b452549c352cfb23b2458): @user_script:1: user_script:1: Script attempted to access nonexistent global variable 'nosuch'",
+        "ERR Error running script (call to f_4bea801b1c3d4dabc2dcad5bce19abeff09aea95): @user_script:1: @user_script: 1: Unknown Redis command called from Lua script",
+    ];
+
+    /// Only a wrapped READONLY says the node can't serve. Every other script
+    /// error stays an answer: a bug in one script must not switch every
+    /// replica to its own counters.
+    #[tokio::test]
+    async fn a_script_error_other_than_readonly_stays_an_answer() {
+        let Some((s, _)) = two_shared().await else { return };
+        let before = client_id(&s).await.unwrap();
+        for error in SCRIPT_ERRORS {
+            // Over the default threshold of 5, for each.
+            for _ in 0..6 {
+                let answered = answer_with(&s, error).await;
+                assert!(matches!(&answered, Err(SharedError::Redis(text)) if text.contains("Error running script")), "{answered:?}");
+            }
+        }
+        assert_eq!(client_id(&s).await.unwrap(), before, "a script error leaves the connection in place");
+        assert_eq!(ping(&s).await, Ok("PONG".to_string()), "and the breaker closed");
     }
 
     /// A PING that `late` holds back once the connection is in hand: to `run`,
@@ -877,11 +921,18 @@ iqpV3oUwNG5PuZeKHyYAzCICPaAVvzqLlCTVOAIgOpf/HuTPb1shoX8I5vrfsnij
         .await
     }
 
+    /// A client with the shipped settings, the 250 ms slow-call rule
+    /// included, which the `testing` helpers' clients leave off.
+    async fn shipped() -> Option<Arc<SharedRedis>> {
+        let url = test_url()?;
+        Some(SharedRedis::connect(&RedisSettings::from_url(&url), &test_prefix()).await.unwrap())
+    }
+
     /// A Redis that answers, but slowly, costs a request as much as one that
     /// doesn't: five slow calls in a row open the breaker like five failures.
     #[tokio::test]
     async fn calls_that_redis_answers_slowly_open_the_breaker() {
-        let Some((s, _)) = two_shared().await else { return };
+        let Some(s) = shipped().await else { return };
         assert_eq!(ping(&s).await.unwrap(), "PONG"); // connected
         for i in 0..5 {
             // Late, but inside the 500 ms a call may take.
@@ -899,7 +950,7 @@ iqpV3oUwNG5PuZeKHyYAzCICPaAVvzqLlCTVOAIgOpf/HuTPb1shoX8I5vrfsnij
     /// would open the breaker for the whole recovery period.
     #[tokio::test]
     async fn slow_answers_to_calls_sent_together_count_once() {
-        let Some((s, _)) = two_shared().await else { return };
+        let Some(s) = shipped().await else { return };
         assert_eq!(ping(&s).await.unwrap(), "PONG");
         let answers = futures::future::join_all((0..8).map(|_| slow_ping(&s, Duration::from_millis(300)))).await;
         assert!(answers.iter().all(|a| a.as_deref() == Ok("PONG")), "{answers:?}");
@@ -922,6 +973,19 @@ iqpV3oUwNG5PuZeKHyYAzCICPaAVvzqLlCTVOAIgOpf/HuTPb1shoX8I5vrfsnij
         let next = ping(&strict).await;
         assert!(matches!(next, Err(SharedError::Unavailable)), "150 ms answers are slow under a 100 ms setting, got {next:?}");
         assert_eq!(ping(&off).await, Ok("PONG".to_string()), "a setting of 0 counts no answer as slow");
+    }
+
+    /// The clients the `testing` helpers build count no answer as slow: on a
+    /// busy test runner, five answers that happen to take 250 ms must not open
+    /// the breaker in a test that is about something else.
+    #[tokio::test]
+    async fn the_test_helpers_clients_count_no_answer_as_slow() {
+        let Some((s, _)) = two_shared().await else { return };
+        assert_eq!(ping(&s).await.unwrap(), "PONG"); // connected
+        for _ in 0..5 {
+            assert_eq!(slow_ping(&s, Duration::from_millis(260)).await.unwrap(), "PONG");
+        }
+        assert_eq!(ping(&s).await, Ok("PONG".to_string()), "five slow answers opened the breaker of a test helper's client");
     }
 
     #[tokio::test]

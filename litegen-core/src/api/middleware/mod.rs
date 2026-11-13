@@ -236,29 +236,44 @@ pub(crate) fn validate_grant(ctx: &KeyContext, scopes_csv: &str) -> Result<(), R
     Ok(())
 }
 
-/// Refuse `admin` in `scopes_csv` for a DB key whose owner's role in the key's
-/// org can't grant it. `resolve_db_key` drops `admin` from such a key on every
-/// request, so the edit would answer 200 and change nothing. A key with no
-/// owner (the org's) can hold any scope its editor may grant.
+/// What a key's owner's role must hold for the key to hold a scope, as
+/// `resolve_db_key` applies it at every request: `admin` while the role can
+/// grant it, `generate` while it may start generations (a Viewer only reads).
+const OWNER_MUST_HOLD: [(Scope, &str, Permission, &str); 2] = [
+    (Scope::Admin, "admin", Permission::KeyWriteAny, "can't grant it"),
+    (Scope::Generate, "generate", Permission::GenerationCreate, "can't start generations"),
+];
+
+/// Refuse `admin` or `generate` in `scopes_csv` for a DB key whose owner's
+/// role in the key's org can't hold it ([`OWNER_MUST_HOLD`]).
+/// `resolve_db_key` drops such a scope from the key on every request, so the
+/// edit would answer 200 and change nothing. A key with no owner (the org's)
+/// can hold any scope its editor may grant.
 pub(crate) async fn validate_owner_can_hold(state: &AppState, key: &crate::types::ApiKey, scopes_csv: &str) -> Result<(), Response> {
-    let wants_admin = scopes_csv.split(',').map(str::trim).any(|token| Scope::parse(token) == Some(Scope::Admin));
-    let Some(owner) = key.owner_user_id.as_deref().filter(|_| wants_admin) else { return Ok(()) };
+    let wanted: Vec<Scope> = scopes_csv.split(',').map(str::trim).filter_map(Scope::parse).collect();
+    let asked: Vec<_> = OWNER_MUST_HOLD.iter().filter(|(scope, ..)| wanted.contains(scope)).collect();
+    let Some(owner) = key.owner_user_id.as_deref().filter(|_| !asked.is_empty()) else { return Ok(()) };
     let role = match owner_org(state, key.org_id.as_deref()) {
         Some(org_id) => owner_role(state, owner, org_id).await,
         None => Ok(None),
     };
-    match role {
-        Ok(Some(role)) if permissions_for(role).contains(&Permission::KeyWriteAny) => Ok(()),
-        Ok(_) => Err(grant_error(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "the key's owner can't hold scope 'admin': their role in its organization can't grant it".to_string(),
-        )),
+    let role = match role {
+        Ok(role) => role,
         Err(e) => {
             tracing::error!(error = %e, "Failed to look up an API key's owner");
-            Err(internal_error_response("Internal error"))
+            return Err(internal_error_response("Internal error"));
+        }
+    };
+    for (_, name, permission, why) in asked {
+        if !role.is_some_and(|role| permissions_for(role).contains(permission)) {
+            return Err(grant_error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!("the key's owner can't hold scope '{name}': their role in its organization {why}"),
+            ));
         }
     }
+    Ok(())
 }
 
 fn grant_error(status: StatusCode, kind: &str, message: String) -> Response {
@@ -613,8 +628,10 @@ async fn resolve_db_key(state: &AppState, api_key: &str) -> Result<KeyContext, R
         .collect();
 
     // A key acts for the person who made it (`owner_user_id`). It works only
-    // while they're an active member of the key's org, and holds `admin` only
-    // while their role there could still grant it (`grantable_scopes`), so
+    // while they're an active member of the key's org, holds `admin` only
+    // while their role there could still grant it (`grantable_scopes`), and
+    // holds `generate` only while that role may start generations (a Viewer
+    // only reads, as their sessions and sign-ins do: review 2026-11-12), so
     // removing, deactivating or demoting someone ends what their keys can do.
     // Keys made with the master key have no owner: they belong to the org.
     match owner {
@@ -622,6 +639,9 @@ async fn resolve_db_key(state: &AppState, api_key: &str) -> Result<KeyContext, R
         crate::db::KeyOwner::Member(role) => {
             if !permissions_for(role).contains(&Permission::KeyWriteAny) {
                 scopes.retain(|s| *s != Scope::Admin);
+            }
+            if !permissions_for(role).contains(&Permission::GenerationCreate) {
+                scopes.retain(|s| *s != Scope::Generate);
             }
         }
         crate::db::KeyOwner::Gone => {
@@ -762,8 +782,8 @@ pub async fn check_generation_principal(request: Request, next: Next) -> Respons
             if ctx.org_id.is_none() {
                 return forbidden_with("forbidden", "no_active_org", "No active organization");
             }
-            // Every role holds it today; a role without it would lose these
-            // routes' status reads too.
+            // A Viewer lacks it (read-only), so these routes' status reads and
+            // quotes refuse them too; `GET /v1/generations/{id}` still reads.
             if !ctx.permissions.contains(&Permission::GenerationCreate) {
                 return forbidden_with("forbidden_permission", "forbidden_permission", "Permission 'generation:create' required");
             }

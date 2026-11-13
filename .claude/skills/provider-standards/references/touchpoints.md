@@ -54,6 +54,10 @@ This covers changes to params, limits or price.
 - Add `(id, "YYYY-MM-DD", "what happens; successor")` to
   `SCHEDULED_SHUTDOWNS` in `litegen-core/tests/catalog_conformance.rs`, with
   an `@see` pointing at the vendor's deprecations page.
+- Set the row's `retires_at` to the same date:
+  `every_scheduled_shutdown_is_its_rows_retires_at` requires the two to
+  match, and the drift check reads it. A deprecation with no date sets the
+  row's `deprecated_at` instead.
 - Prefix the row's `description` with `DEPRECATED:` and the date. Conformance
   enforces this for OpenAI rows; do it for every vendor.
 - Recommend a successor in your report. The user decides.
@@ -151,3 +155,13 @@ ids there are opaque strings that never reach the catalog.
 | README | A new vendor or family | Update the "Supported Providers" table and the roadmap. Both are stale today, so fix the rows you touch and mention the rest. |
 | price-api | Any row change | `cd apps/price-api && npm run coverage:fix && npm run coverage:check`. The seeds are generated from `models/*.yaml`, each at its `base_cost_usd`; a dropped row is retired from the service's lists on its next boot. |
 | Dashboard | Never, for a provider or model | It renders from `GET /v1/providers` and `GET /v1/models`. If you think it needs a change, ask first. |
+
+The landing models table (the `/reference` page) shows only the fields
+`apps/landing/scripts/derive-models.mjs` picks by name, and it words every
+price rule (catalog-yaml.md, "Pricing"). A rule, or a `frames_set_shape`
+value, that it can't word stops `sync-models`, and with it the landing
+build. A new caller-facing schema field, such as `frames_set_shape`, needs a
+line in `derive-models.mjs`, in `src/lib/model-format.mjs` and in both
+`messages/*.json`, with tests. After a change to row heads (price, unit,
+badges), also run `npx next build && npm run test:built` in `apps/landing`;
+CI's landing job runs both.

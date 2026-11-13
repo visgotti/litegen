@@ -32,8 +32,13 @@ pub struct LeonardoVideoProvider {
     auth: AuthSpec,
     client: Client,
     /// Start-image uploads to Leonardo's presigned storage URL, without the
-    /// operator's extra_headers.
+    /// operator's extra_headers: a URL from the vendor's answer, so the
+    /// client is public-only, follows no redirect and uses no proxy
+    /// (SEC-LEONARDO).
     upload_client: Client,
+    /// Whether the upload URL must be a public address. Only the tests,
+    /// whose mock storage runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 /// What litegen itself sends to `POST /generations-image-to-video`; `extra`
@@ -54,9 +59,10 @@ impl LeonardoVideoProvider {
             key_pool: None,
             auth: AuthSpec::bearer(),
             client: Self::api_client(&Default::default()),
-            // The process's shared client with the same settings (180 s, no
-            // extra headers), not one per instance (P8).
-            upload_client: crate::providers::api_client(std::time::Duration::from_secs(180), &Default::default()),
+            // The process's shared public-only client for this timeout, not
+            // one per instance (P8).
+            upload_client: crate::util::ssrf::public_only_client_with_timeout(std::time::Duration::from_secs(180)),
+            public_assets_only: true,
         }
     }
 
@@ -159,7 +165,9 @@ impl VideoProvider for LeonardoVideoProvider {
         let mut image_type = "UPLOADED";
         for r in &materialized.refs {
             if let MaterializedRefForm::MultipartField { bytes, .. } = &r.form {
-                image_id = Some(upload_init_image(&self.client, &self.upload_client, self.api_base(), &self.auth, &creds, bytes).await?);
+                image_id = Some(
+                    upload_init_image(&self.client, &self.upload_client, self.public_assets_only, self.api_base(), &self.auth, &creds, bytes).await?,
+                );
                 break;
             }
         }
@@ -473,6 +481,87 @@ mod tests {
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.video_url.unwrap(), "https://cdn.leo/v.mp4");
+    }
+
+    /// Leonardo, whose presign names an upload URL on `s3` (a loopback IP
+    /// literal) that redirects to `s3`'s `/landed`, which would accept it.
+    async fn leonardo_with_a_redirecting_upload() -> (MockServer, MockServer) {
+        let server = MockServer::start().await;
+        let s3 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/init-image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "uploadInitImage": { "id": "init-1", "url": format!("{}/upload", s3.uri()), "fields": "{\"key\":\"k\"}" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "motionVideoGenerationJob": { "generationId": "leo-vid-1" } })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/upload"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/landed", s3.uri())))
+            .mount(&s3)
+            .await;
+        Mock::given(path("/landed")).respond_with(ResponseTemplate::new(200)).mount(&s3).await;
+        (server, s3)
+    }
+
+    fn one_start_frame() -> MaterializedRequest {
+        MaterializedRequest {
+            refs: vec![MaterializedRef {
+                role: "start".into(),
+                form: MaterializedRefForm::MultipartField {
+                    field_name: "file".into(),
+                    bytes: bytes::Bytes::from_static(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16]),
+                    content_type: "image/jpeg".into(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        }
+    }
+
+    /// SEC-LEONARDO: the upload URL comes from Leonardo's answer, so the start
+    /// frame goes only to a public address, and nothing is created when it
+    /// can't.
+    #[tokio::test]
+    async fn a_start_frame_is_never_uploaded_to_an_internal_address() {
+        let (server, s3) = leonardo_with_a_redirecting_upload().await;
+        let mut extras = extras_with_image_id();
+        extras.extra = None;
+        let got = make_provider(&server.uri())
+            .generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras, &one_start_frame())
+            .await;
+        let seen: Vec<String> = s3.received_requests().await.unwrap().iter().map(|r| format!("{} {}", r.method, r.url.path())).collect();
+        assert!(seen.is_empty(), "the start frame went to an internal address: {seen:?}");
+        let err = got.expect_err("refused before the upload");
+        assert!(
+            matches!(&err, ProviderError::RequestFailed { retryable: false, status_code: None, message, .. } if message.contains("upload URL")),
+            "{err:?}"
+        );
+        let received = server.received_requests().await.unwrap();
+        assert!(received.iter().all(|r| r.url.path() != "/generations-image-to-video"), "a job was created after a refused upload");
+    }
+
+    /// The upload client follows no redirect: the storage URL Leonardo named
+    /// gets the upload, and a 3xx from it is a failed upload, never a second
+    /// request to wherever it points.
+    #[tokio::test]
+    async fn an_upload_url_that_redirects_is_not_followed() {
+        let (server, s3) = leonardo_with_a_redirecting_upload().await;
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = false;
+        let mut extras = extras_with_image_id();
+        extras.extra = None;
+        let got = provider.generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras, &one_start_frame()).await;
+        let seen: Vec<String> = s3.received_requests().await.unwrap().iter().map(|r| format!("{} {}", r.method, r.url.path())).collect();
+        assert_eq!(seen, vec!["POST /upload".to_string()], "the redirect was followed");
+        assert!(matches!(got, Err(ProviderError::RequestFailed { status_code: Some(302), retryable: false, .. })), "{got:?}");
+        let received = server.received_requests().await.unwrap();
+        assert!(received.iter().all(|r| r.url.path() != "/generations-image-to-video"), "a job was created after a failed upload");
     }
 
     /// Kling 2.5 Turbo takes `RESOLUTION_1080` ("resolution ... Set to

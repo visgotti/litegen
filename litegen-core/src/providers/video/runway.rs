@@ -759,6 +759,23 @@ mod tests {
         assert!(RunwayProvider::resolve_model("runway/not-a-model").is_none());
     }
 
+    /// N3: the catalog refuses an empty text-to-video request (no first frame,
+    /// no prompt) exactly where this adapter would (`t2v_needs_prompt`), so it
+    /// is refused before anything is reserved, and never where Runway takes
+    /// one (Kling 3.0's shots can carry their prompts in `providerSettings`).
+    #[test]
+    fn the_catalog_says_which_text_to_video_needs_a_prompt_as_runway_does() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for r in RESOLD {
+            let id = format!("runway/{}", r.wire);
+            let m = catalog.get(&id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+            assert_eq!(m.prompt.required_for_text_to_video, r.t2v_needs_prompt, "{id}");
+        }
+    }
+
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.pop();

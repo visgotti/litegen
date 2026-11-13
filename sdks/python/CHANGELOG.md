@@ -50,6 +50,50 @@ minor release may change behaviour, and says how here.
 - `output_packages` on 3D generation requests, and the `"package"` asset kind
   it delivers: one zip per requested container that has files to go beside
   its mesh.
+- `FramesSetShape` in `litegen.types`, the values of `frames_set_shape` on a
+  video model's `params.aspect_ratio`: whether a `first_frame`, `last_frame`
+  or `init` image sets the clip's shape, so `aspect_ratio` is refused (or
+  dropped in lax mode) beside one.
+- In the generated models: `ModelSchema.litegen_params` (read-only on the
+  server: the fields litegen applies to the model itself, in the `ParamSpec`
+  shape), `extra_params` (the types of its `extra_allowlist` keys) and
+  `status`; `ModelCapabilities.max_request_bytes` (required, as it is on
+  every listed model, so the generated class takes it and its `from_dict`
+  needs a server that sends it);
+  `PromptSpec.required_for_text_to_video`;
+  `ParamSpecAspectRatio.frames_set_shape`; `ProviderHealth.modality`
+  (required, so the generated `from_dict` needs a server that sends it);
+  `GatewaySettings.cache_max_bytes` and `EffectiveCache.max_bytes`;
+  `ImageSegmentationRequest.strict`. A schema `models.get` served may be posted
+  back to `admin.models.create` or `replace` as it came.
+
+### Changed
+
+- `AnimationRequest.name` is `NotRequired[str | None]`: litegen names a clip
+  that leaves it out (`walk` after its preset, else `clip-<n>`).
+- What `X-Litegen-Dropped-Params` covers: fields the request has no such name
+  for too, one inside an object by its path, on the quotes, `images.segment`
+  and the image 202 as well. It lists at most 32 names and ends with a
+  `+N more` count past that; `dropped_params` and `response_meta` keep that
+  entry.
+- `LiteGenAPIError.retryable` comes with every router error, such as a 503
+  `circuit_open` (every deployment of a model route cooling down, with
+  `retry_after`), not only a vendor's. New codes callers may see:
+  `circuit_open`, `cache_clear_incomplete` (`cache.clear`, 503),
+  `request_unsupported` and `prompt_required` (both `LiteGenValidationError`),
+  `provider_not_configured`, `range_not_satisfiable` (416).
+
+### Removed
+
+- The `additional_properties` bag of nine generated models, whose schemas
+  now refuse unknown keys (`additionalProperties: false`): `ModelSchema`,
+  `CapabilityModelPricing`, `ModelCapabilityFlags`, `PromptSpec`,
+  `RefInputSpec` and `RefRoleSpec` (also re-exported at `litegen.*`), and
+  `NativeOrientation`, `AnimationPresetSpec` and `TextToMotionSpec` in
+  `litegen._generated.models`. They lose `additional_properties`,
+  `additional_keys`, `obj[key]`, `obj[key] = value`, `del obj[key]` and
+  `key in obj`; `from_dict` drops a key the schema does not name instead of
+  keeping it, and `to_dict` sends declared fields only.
 
 ## [0.1.0] - 2026-10-30
 

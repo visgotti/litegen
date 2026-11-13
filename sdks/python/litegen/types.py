@@ -142,13 +142,23 @@ ImageBackground = Literal["transparent", "opaque"]
 channel, on models with ``supports_transparent_background``; it needs PNG or WebP."""
 
 ModelStatus = Literal["active", "deprecated", "retired"]
-"""Where a model is in its vendor's lifecycle (``status`` on ``GET /v1/models``):
-``deprecated`` models are still served until the day after their
+"""Where a model is in its vendor's lifecycle (``status`` on ``GET /v1/models``
+and ``GET /v1/models/{id}``, derived from its dates and ignored when a schema
+is posted back): ``deprecated`` models are still served until the day after their
 ``retires_at``; ``replaced_by`` names the catalog model to move to."""
 
 KeyframeTiming = Literal["any", "even"]
 """Where a video model's ``keyframe`` references may sit (``capabilities.keyframe_timing``):
 ``any`` time each, or ``even`` spacing from the start of the clip to its end."""
+
+FramesSetShape = Literal["always", "without_references"]
+"""When a video model's frame image sets the clip's shape
+(``params.aspect_ratio.frames_set_shape`` in ``GET /v1/models/{id}``): with a
+``first_frame``, ``last_frame`` or ``init`` image its vendor takes no ratio, so
+``aspect_ratio`` is refused (``param_unsupported``) when ``strict`` and dropped
+and named otherwise. ``always``: with any frame image; ``without_references``:
+unless a ``reference`` image goes too, which sends the request to a vendor
+mode that takes a ratio. Absent: the ratio applies with any image."""
 
 MaskConvention = Literal["white_edits", "black_edits", "transparent_edits"]
 """Which pixels of a mask edit. Callers always send ``white_edits`` (white,
@@ -354,11 +364,17 @@ class SourceRef(TypedDict):
 
 class AnimationRequest(TypedDict):
     """One clip an ``animate`` model makes: exactly one of ``preset`` and
-    ``prompt``. Delivered as a glTF animation named exactly ``name``, in
-    request order."""
+    ``prompt``. Delivered as a glTF animation, in request order, named its
+    ``name``, or the name litegen gives a clip that leaves it out."""
 
-    name: str
-    """Unique within the request, 1–64 characters of ``[A-Za-z0-9_.-]``."""
+    name: NotRequired[str | None]
+    """The clip's name in the delivered file: unique within the request, 1–64
+    characters of ``[A-Za-z0-9_.-]``. Leave it out (or send ``None``) and
+    litegen names the clip: a preset clip after its canonical preset
+    (``walk``), else after its preset id with every other character as ``_``;
+    a prompt clip, or one whose preset leaves no name, ``clip-<n>``, its place
+    in the list; ``-2``, ``-3``, … on a name already taken. A name you send is
+    kept as sent; an empty one is refused."""
     preset: NotRequired[str | None]
     """A :data:`Model3dAnimationPreset` or one of the model's own preset ids."""
     prompt: NotRequired[str | None]
@@ -380,12 +396,14 @@ class Model3dGenerateParams(TypedDict, total=False):
 
     Each model supports its own subset of these fields, listed by
     ``GET /v1/models/{id}``. With ``strict`` on (the default), sending one it
-    does not support is a 400. With ``strict=False`` (lax mode) the server drops
-    it and carries on, and the job handle's ``dropped_params`` names what went.
+    does not support, or a field the request has no such name for, is a 400.
+    With ``strict=False`` (lax mode) the server drops it and carries on, and
+    the job handle's ``dropped_params`` names what went.
 
     ``n`` is deliberately absent. It exists on the request base shared with
-    images and video, but a 3D job always produces exactly one result and the
-    3D validator never reads it, so offering it would only suggest otherwise.
+    images and video, but a 3D job always makes exactly one mesh: the server
+    refuses ``n`` above 1 (``param_out_of_range``), and 0 or 1 is what leaving
+    it out already means, so offering it would only suggest otherwise.
     """
 
     model: Required[str]
@@ -401,11 +419,18 @@ class Model3dGenerateParams(TypedDict, total=False):
     """Input images. Their ``role`` picks image-to-3D or multiview-to-3D; see
     :class:`ReferenceImage`."""
     strict: bool
-    """``True`` by default: an unsupported param is a 400. ``False`` drops it
-    instead and reports it through the job's ``dropped_params``."""
+    """``True`` by default: a param the model does not take, or a field the
+    request has no such name for (one inside an object by its path, such as
+    ``animations[0].duration``), is a 400 ``param_unsupported``. ``False``
+    drops it instead and reports it through the job's ``dropped_params``. A
+    bad value for a param the model does take is refused either way."""
     extra: dict[str, Any]
-    """Vendor-specific fields passed through to the provider. Only keys on the
-    model's ``extra_allowlist`` are accepted."""
+    """Vendor-specific fields passed through to the provider: only keys on the
+    model's ``extra_allowlist``, each of the type its ``extra_params`` entry
+    gives when it has one (a wrong value is a 400 in either mode, with
+    ``param`` ``"extra.<key>"``). Strict mode refuses any other key
+    (``extra_key_unsupported``); ``strict=False`` drops it and names it in
+    ``dropped_params``."""
     metadata: dict[str, str]
     """Your own labels for the job (string values, at most 1 KB as JSON). Kept
     on the generation, echoed on every answer and webhook, and filters
@@ -437,17 +462,23 @@ class Model3dGenerateParams(TypedDict, total=False):
     """The joint names to deliver the rig with (rig models)."""
     height_m: float | None
     """The delivered mesh's height in metres: LiteGen scales any mesh to it,
-    and a rig model that takes a height gets it too."""
+    and a rig model that takes a height gets it too. Above 0; the model's
+    ``litegen_params`` (``GET /v1/models/{id}``) give the ceiling, or its
+    ``params`` for a rig model that declares its own ``height_m``."""
     ground: bool | None
-    """Put the mesh's lowest point at y = 0 (applied by LiteGen on delivery)."""
+    """Put the mesh's lowest point at y = 0 (applied by LiteGen on delivery;
+    listed in every 3D model's ``litegen_params``)."""
     center: bool | None
-    """Centre the mesh's bounds on x and z (applied by LiteGen on delivery)."""
+    """Centre the mesh's bounds on x and z (applied by LiteGen on delivery;
+    listed in every 3D model's ``litegen_params``)."""
     output_packages: bool | None
     """Also deliver a zip per requested container whose mesh has files to go
     beside it (an OBJ's ``.mtl`` and textures): ``"package"`` assets. Refused
     (``option_needs_keeping``) when nothing is kept."""
     animations: list[AnimationRequest] | None
-    """The clips an ``animate`` model makes, in order."""
+    """The clips an ``animate`` model makes, in order: one glTF animation per
+    entry, named its ``name``, or the name litegen gives a clip that leaves it
+    out."""
     fps: int | None
     """Frames per second of the delivered clips."""
     fbx_color_space: Model3dFbxColorSpace | None
@@ -539,7 +570,9 @@ class ResponseMeta(TypedDict):
     """What :func:`litegen.response_meta` reads off a response's headers."""
 
     dropped_params: list[str]
-    """``X-Litegen-Dropped-Params``: what ``strict: false`` dropped instead of refusing."""
+    """``X-Litegen-Dropped-Params``: what ``strict: false`` dropped instead of
+    refusing, by name, and a last ``+N more`` when there were more than the
+    header lists."""
     rate_limit: RateLimit | None
     idempotent_replayed: bool
     """``Idempotent-Replayed: true``: the stored first answer to this ``Idempotency-Key``, billed nothing."""

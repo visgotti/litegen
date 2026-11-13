@@ -975,6 +975,9 @@ pub(crate) async fn dispatch_terminal_webhook(
     presenting: Option<crate::access::present::Presenting>,
 ) {
     let Some(key_id) = gen.key_id else { return };
+    // Who may reach the deployment's network: the deployment's setting, or
+    // its default when there is no state to read it from.
+    let internal = presenting.as_ref().map(|p| p.router.config.webhooks.internal_targets).unwrap_or_default();
     let db2 = db.clone();
     let wh_client = wh_client.clone();
     let gen_id = gen.id.clone();
@@ -998,19 +1001,27 @@ pub(crate) async fn dispatch_terminal_webhook(
         }
         match db2.get_api_key(&key_id).await {
             Ok(Some(key)) if key.webhook_url.is_some() => {
-                let url = key.webhook_url.unwrap();
-                // SSRF re-validation (hosted only): re-check the URL at
-                // dispatch time so a key whose webhook_url predates the
-                // create/patch validation — or a host that now resolves
-                // to an internal address — can't be used as an SSRF
-                // vector. Single-tenant operators may target internal
-                // hosts, so they're not re-validated.
-                if mode == crate::config::Mode::Hosted {
+                let url = key.webhook_url.clone().unwrap();
+                // SSRF re-validation: re-check the URL at dispatch time, for
+                // the key's owner now, so a key whose webhook_url predates
+                // the create/patch validation, a demoted or departed owner's
+                // key, or a host that now resolves to an internal address
+                // can't be used as an SSRF vector. Only a key of the
+                // deployment's may reach its network (SEC-STWEBHOOK); every
+                // other key goes out on a public-only client.
+                let inside = crate::proxy::webhook::may_reach_inside(&*db2, mode, internal, key.owner_user_id.as_deref()).await.unwrap_or_else(|e| {
+                    warn!(generation_id = %gen_id, error = %e, "could not look up a webhook key's owner; holding it to public addresses");
+                    false
+                });
+                let wh_client = if inside {
+                    wh_client
+                } else {
                     if let Err(reason) = crate::util::ssrf::validate_public_url(&url).await {
                         warn!(generation_id = %gen_id, reason = %reason, "skipping webhook dispatch: disallowed url");
                         return;
                     }
-                }
+                    crate::util::ssrf::public_only_client()
+                };
                 let secret = key.key_hash.clone();
                 let key_id_str = key_id.to_string();
                 // SSRF hardening: dispatch with the no-redirect client so a
@@ -1201,6 +1212,41 @@ mod poller_tests {
 
     async fn in_memory_db() -> Arc<SqliteDatabase> {
         Arc::new(SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite"))
+    }
+
+    /// Review 2026-11-11 P4, NEW 3's late-image part (payloads review #7): a
+    /// late image's bytes, and each further image's, reach the store as the
+    /// very buffers the vendor's answer holds, never a copy made first.
+    #[tokio::test]
+    async fn a_late_image_reaches_the_store_without_a_copy() {
+        use crate::proxy::storage::{ImageStorage, ImageStoreError};
+        /// A store that records where each put's bytes live.
+        struct Recording(std::sync::Mutex<Vec<usize>>);
+
+        #[async_trait::async_trait]
+        impl ImageStorage for Recording {
+            async fn put(&self, key: &str, bytes: &bytes::Bytes, _content_type: &str) -> Result<String, ImageStoreError> {
+                self.0.lock().unwrap().push(bytes.as_ptr() as usize);
+                Ok(format!("https://h/{key}"))
+            }
+            async fn delete(&self, _key: &str) -> Result<(), ImageStoreError> {
+                Ok(())
+            }
+        }
+
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        db.insert_generation("g-late", None, "mock/priced-image", "mock", "image", Some("j"), 0.0, None, None).await.unwrap();
+        let gen = db.get_generation("g-late").await.unwrap().expect("the row");
+        let (first, second) = (vec![7u8; 4096], vec![8u8; 4096]);
+        let want = vec![first.as_ptr() as usize, second.as_ptr() as usize];
+        let image = |data: Vec<u8>, more| crate::providers::GenerationOutput { data, content_type: "image/png".into(), metadata: Default::default(), more };
+        let output = image(first, vec![image(second, Vec::new())]);
+        let recording = Arc::new(Recording(Default::default()));
+        let store: Arc<dyn ImageStorage> = recording.clone();
+        let aws = crate::config::AwsConfig::default();
+        let kept = keep_late_image(&db, None, &aws, tenant_bucket(crate::config::Mode::SingleTenant, None), &store, &gen, output).await.expect("kept");
+        assert_eq!(kept.len(), 2);
+        assert_eq!(*recording.0.lock().unwrap(), want, "the store was handed copies, not the vendor's own buffers");
     }
 
     async fn make_registry() -> Arc<ProviderRegistry> {
@@ -1977,8 +2023,8 @@ mod poller_tests {
             display_name: model.into(), description: String::new(), docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
-            prompt: PromptSpec { required: true, min_length: None, max_length: None },
-            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), tags: vec![],
+            prompt: PromptSpec { required: true, min_length: None, max_length: None, required_for_text_to_video: false },
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), litegen_params: Default::default(), tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         }
     }
@@ -2113,8 +2159,8 @@ mod poller_tests {
             display_name: "staged".into(), description: String::new(), docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
-            prompt: PromptSpec { required: true, min_length: None, max_length: None },
-            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), tags: vec![],
+            prompt: PromptSpec { required: true, min_length: None, max_length: None, required_for_text_to_video: false },
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), litegen_params: Default::default(), tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         }
     }

@@ -44,6 +44,9 @@ const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 /// The vendor's API host. Our key never goes to any other host, except the
 /// configured `api_base` host.
 const ACME_API_HOST: &str = "api.acme.example";
+/// What litegen itself sends in the CreateImageRequest body; `extra` cannot
+/// replace it (rule 11).
+const OWNED_FIELDS: &[&str] = &["model", "prompt", "output_format", "seed", "negative_prompt", "aspect_ratio", "image", "style_images"];
 
 /// Acme image provider.
 ///
@@ -63,7 +66,8 @@ pub struct AcmeImageProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
-    /// Downloads vendor-returned URLs: no redirects (SSRF), short timeout.
+    /// Downloads vendor-returned URLs: no redirects, and only to public
+    /// addresses (SSRF).
     download_client: Client,
     /// Refuse download URLs that don't resolve to a public address. True in
     /// production. Tests turn it off to download from wiremock on 127.0.0.1,
@@ -80,8 +84,11 @@ impl Default for AcmeImageProvider {
 impl AcmeImageProvider {
     /// The client for Acme's API, carrying the operator's `extra_headers`
     /// (result downloads use their own client and never carry them).
+    /// `providers::api_client` returns a shared, memoized client, one per
+    /// timeout and header set (`util/http_clients.rs`), so an instance built
+    /// for a single BYO call reuses the vendor connections.
     fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
-        crate::providers::api_client(Client::builder().timeout(std::time::Duration::from_secs(30)), extra_headers)
+        crate::providers::api_client(std::time::Duration::from_secs(30), extra_headers)
     }
 
     pub fn new() -> Self {
@@ -90,7 +97,12 @@ impl AcmeImageProvider {
             key_pool: None,
             auth: AuthSpec::bearer(),
             client: Self::api_client(&Default::default()),
-            download_client: crate::util::ssrf::no_redirect_client_with_timeout(std::time::Duration::from_secs(30)),
+            // Shared like the API client: 120 s caps the transfer, 30 s of
+            // silence fails a stalled one (as bfl.rs).
+            download_client: crate::util::ssrf::public_only_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
             public_downloads_only: true,
         }
     }
@@ -145,9 +157,12 @@ impl AcmeImageProvider {
 
     /// Builds the CreateImageRequest body.
     ///
-    /// `extra` goes in FIRST (only its allowlisted keys arrive), so everything
-    /// this adapter owns is written afterwards and wins. `n` is never
-    /// forwarded: litegen returns and bills one image.
+    /// `extra` goes in FIRST (only its allowlisted keys arrive), through
+    /// `providers::extra_fields`, which drops `OWNED_FIELDS` and every field
+    /// litegen keeps for itself (`capabilities::gateway_owned_extra`: vendor
+    /// callbacks, storage, publishing). Everything this adapter owns is
+    /// written afterwards and wins. `n` is never forwarded: litegen returns
+    /// and bills one image.
     fn build_body(
         native: &str,
         model: &ModelSchema,
@@ -155,10 +170,11 @@ impl AcmeImageProvider {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<Value, ProviderError> {
-        let mut body = match &extras.extra {
-            Some(Value::Object(m)) => Value::Object(m.clone()),
-            _ => json!({}),
-        };
+        let mut body = Value::Object(
+            crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        );
         // The operator's `model_mapping` may rename the model on the wire.
         body["model"] = json!(crate::providers::wire_model(self.config.as_ref(), &model.id, native));
         body["prompt"] = json!(base.prompt);
@@ -577,7 +593,10 @@ mod tests {
         let mut base = make_base("acme/photo-2");
         base.n = 4; // the input that WOULD produce the field
         let mut extras = make_extras();
-        extras.extra = Some(json!({ "model": "photo-ultra", "output_format": "webp" }));
+        extras.extra = Some(json!({
+            "model": "photo-ultra", "output_format": "webp",
+            "callback_url": "https://cb.example", "safety_tolerance": 2,
+        }));
         make_provider(&server.uri())
             .generate(&ref_schema("acme/photo-2"), &base, &extras, &no_refs())
             .await
@@ -586,6 +605,8 @@ mod tests {
         assert!(body.get("n").is_none(), "n must not reach the vendor");
         assert_eq!(body["model"], "photo-2", "extra must not choose the billed model");
         assert_eq!(body["output_format"], "png", "extra must not change the format content_type claims");
+        assert!(body.get("callback_url").is_none(), "where results go is litegen's (gateway_owned_extra)");
+        assert_eq!(body["safety_tolerance"], 2, "an allowlisted vendor field still arrives");
     }
 
     #[tokio::test]
@@ -724,8 +745,11 @@ models:
         init:  { required: false, min_count: 0, max_count: 1 }
         style: { required: false, min_count: 0, max_count: 3 }
     # CreateImageRequest also takes `safety_tolerance` (0–6). It has no
-    # canonical param, so it is a passthrough.
+    # canonical param, so it is a passthrough, typed as the schema states it.
     extra_allowlist: [safety_tolerance]
+    extra_params:
+      # From CreateImageRequest.safety_tolerance: "integer, minimum 0, maximum 6".
+      safety_tolerance: { kind: int, min: 0, max: 6 }
     tags: [text-to-image, image-to-image]
 ```
 

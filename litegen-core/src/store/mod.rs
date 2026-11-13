@@ -158,9 +158,12 @@ pub trait ImageStorage: Send + Sync {
     /// video). The file is the caller's to remove afterwards, if still there.
     /// This default reads it whole and puts the bytes.
     async fn put_file(&self, key: &str, path: &std::path::Path, content_type: &str) -> Result<String, ImageStoreError> {
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|e| ImageStoreError::UploadFailed(format!("could not read {}: {e}", path.display())))?;
+        // The path is the log's: this text can end up as a generation's
+        // stored error, which its caller reads (payloads review #3).
+        let bytes = tokio::fs::read(path).await.map_err(|e| {
+            tracing::warn!(path = %path.display(), error = %e, "could not read a file to upload");
+            ImageStoreError::UploadFailed("could not read the file to upload".into())
+        })?;
         self.put(key, &bytes::Bytes::from(bytes), content_type).await
     }
     /// Where a file bound for this store may wait on disk before

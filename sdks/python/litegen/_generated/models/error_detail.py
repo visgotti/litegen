@@ -41,7 +41,8 @@ class ErrorDetail:
         replaced_by (Union[None, Unset, str]): On `model_retired` (410): the model that replaces the retired one,
             when the catalog names one.
         retryable (Union[None, Unset, bool]): Whether the same request may work later: a vendor's 5xx, 429 or
-            timeout, but not its refusal.
+            timeout, or a model route whose deployments were passed over (an open
+            circuit breaker), but not a refusal.
         status (Union[None, Unset, str]): `processing`, with `generation_id`: the job runs on.
         vendor_job_id (Union[None, Unset, str]): The vendor's own job id, on `vendor_timeout` (the job the vendor had
             accepted when litegen stopped waiting, if it had; not re-sent) and on

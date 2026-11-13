@@ -13,18 +13,18 @@ mod tests {
     use crate::proxy::materializer::MaterializedRequest;
     use crate::proxy::registry::ProviderRegistry;
     use crate::proxy::router::{OrgCredentials, ProxyRouter};
-
-    /// A database for the calls that take one (a video poll's claim): an
-    /// empty one, in memory.
-    async fn test_db() -> Arc<dyn crate::db::DatabaseStore> {
-        Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite"))
-    }
     use crate::proxy::storage::{ImageStore, ImageStoreError, LocalStore};
     use crate::providers::{
         GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
         ProviderError, ProviderInstanceConfig, build_cost_estimate,
     };
     use crate::types::*;
+
+    /// A database for the calls that take one (a video poll's claim): an
+    /// empty one, in memory.
+    async fn test_db() -> Arc<dyn crate::db::DatabaseStore> {
+        Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite"))
+    }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -997,19 +997,48 @@ mod tests {
         assert!(!router.circuit_breaker.is_open("refuses").await, "two vendor 422s opened the breaker");
     }
 
-    /// E9b: a route that asked no deployment (every breaker open) answers a
-    /// retryable 502 that reached no vendor, so it spends no key. It used to
-    /// be a 400 "Provider not configured" marked as a vendor attempt.
+    /// E9b, then handlers review #5: a route that asked no deployment because
+    /// every breaker is open answers a retryable 503 that says when to try
+    /// again (`Retry-After`: the window's time left, at most its 60 s) and
+    /// reached no vendor, so it spends no key. E9b made it a retryable 502;
+    /// before that it was a 400 "Provider not configured" marked as a
+    /// vendor attempt.
     #[tokio::test]
-    async fn a_route_whose_every_breaker_is_open_answers_a_retryable_502_and_spends_no_key() {
+    async fn a_route_whose_every_breaker_is_open_answers_a_503_with_the_wait_and_spends_no_key() {
         let router = routed(&["always-failing"], 1, vec![]).await;
         let first = generate(&router).await.expect_err("the only deployment fails");
         assert!(first.reached_vendor() && first.status_code() == 502, "{first:?}");
         let skipped = generate(&router).await.expect_err("its breaker is open");
-        assert_eq!(skipped.status_code(), 502, "{skipped:?}");
+        assert_eq!(skipped.status_code(), 503, "{skipped:?}");
         assert!(skipped.retryable(), "{skipped:?}");
         assert!(!skipped.reached_vendor(), "nothing was sent: {skipped:?}");
+        assert!(skipped.retry_after_secs().is_some_and(|s| (1..=60).contains(&s)), "{skipped:?}");
         assert!(!skipped.to_string().contains("Some("), "{skipped}");
+    }
+
+    /// Handlers review #5: a route none of whose providers is configured
+    /// answers 400 `provider_not_configured`, as a direct request to that
+    /// provider does: no retry can help. It answered a retryable 502.
+    #[tokio::test]
+    async fn a_route_with_no_configured_deployment_answers_provider_not_configured() {
+        let router = routed(&["nowhere"], 5, vec![]).await;
+        let err = generate(&router).await.expect_err("no deployment can serve it");
+        assert!(matches!(&err, crate::proxy::router::ProxyError::ProviderNotConfigured { provider, .. } if provider == "nowhere"), "{err:?}");
+        assert_eq!((err.status_code(), err.retryable(), err.reached_vendor()), (400, false, false), "{err:?}");
+    }
+
+    /// Handlers review #4: once the primary's breaker is open, a later
+    /// deployment's refusal no longer ends the request with a final 400:
+    /// the primary may serve it when its breaker closes, so the answer is
+    /// the retryable 502 that names the skip.
+    #[tokio::test]
+    async fn a_skipped_primary_keeps_a_later_refusal_retryable() {
+        let router = routed(&["always-failing", "refuses"], 1, vec![FailsWith { name: "refuses", fail: refuses_before_calling }]).await;
+        let first = generate(&router).await.expect_err("the primary fails, the second refuses");
+        assert!(first.reached_vendor(), "the primary's vendor failure wins: {first:?}");
+        let err = generate(&router).await.expect_err("the primary is skipped, the second refuses");
+        assert_eq!((err.status_code(), err.retryable(), err.reached_vendor()), (502, true, false), "{err:?}");
+        assert!(err.to_string().contains("always-failing: circuit open"), "{err}");
     }
 
     /// E9: a later deployment's refusal never hides an earlier deployment's
@@ -1257,6 +1286,57 @@ mod tests {
         let submitted = routed.generate_video(&schema, &base, &extras, &empty_materialized(), OrgCredentials::of("mock", Some(byo))).await.expect("routed, with the org's key");
         let polled = routed.get_video_status(&submitted.id, None, None, true, &test_db().await).await;
         assert!(polled.is_ok(), "a routed job keeps its deployment's instance: {:?}", polled.err());
+    }
+
+    /// What the log lines written while the guard lives said.
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    /// Payloads review #8: a client's poll runs in a span naming the job
+    /// (`id`), as it did before the poll handed back its delivery claim. The
+    /// handlers call the `_claimed` polls; only the wrappers, which tests
+    /// alone call, opened the span.
+    #[tokio::test]
+    async fn a_client_poll_runs_in_a_span_naming_its_job() {
+        let logs = Logs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NEW)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let router = ProxyRouter::new(
+            Arc::new(ProviderRegistry::new()),
+            Arc::new(GenerationCache::new(&CacheGlobalConfig::default())),
+            Arc::new(AppConfig::default()),
+            Arc::new(LocalStore),
+        );
+        let db = test_db().await;
+        assert!(router.get_video_status_claimed("p8-video-job", None, None, true, &db).await.is_err(), "no such job");
+        assert!(router.get_model3d_status_claimed("p8-3d-job", None, None, &db).await.is_err(), "no such job");
+        let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+        // A span's line names it, then its fields: `name{... id=<job> ...}`.
+        let opened = |name: &str, id: &str| text.lines().any(|l| l.contains(&format!("{name}{{")) && l.contains(&format!("id={id}")));
+        assert!(opened("get_video_status", "p8-video-job"), "a client's video poll opened no span naming its job: {text:?}");
+        assert!(opened("get_model3d_status", "p8-3d-job"), "a client's 3D poll opened no span naming its job: {text:?}");
     }
 }
 

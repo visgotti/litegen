@@ -108,7 +108,9 @@ without it.
   generates one signing key for its own file links, stores it in the database,
   and every replica uses it, so a link signed on one opens on the others and
   survives a restart ([storage and access](storage-access.md)). A set secrets
-  key still wins.
+  key still wins. A replica that can't read the stored key at startup tries
+  again for about 8 seconds, then refuses to start rather than sign with a key
+  of its own.
 
 The database already shared the rest: budgets and key quotas, API keys (a
 revoked key stops on every replica at once), login lockout, idempotency keys,
@@ -302,14 +304,16 @@ The settings for this are under
   Redis breaker opens, and calls fail at once without touching the network. So
   a dead Redis adds no latency once the breaker is open. A timeout or a
   connection error counts as a failure, and so does a reply saying the node
-  can't serve: `READONLY` (a primary demoted by a failover), `LOADING` (a
-  Redis reading its data after a restart) or `MASTERDOWN` (a replica cut off
-  from its primary). Any of these drops the connection, so the next call
-  connects afresh: behind a DNS name that moves on a failover, that reaches
-  the new primary. The calls in flight on a connection that is lost count as
-  one failure, not one each. Any other error reply (a script error,
-  `WRONGTYPE`, `OOM`) doesn't count, because Redis is there. A Redis still
-  loading its data therefore opens the breaker after five calls, and the
+  can't serve: `READONLY` (a primary demoted by a failover; for a write
+  inside a script, Redis 5 and 6 wrap it in an `ERR Error running script`
+  reply, which counts the same), `LOADING` (a Redis reading its data after a
+  restart) or `MASTERDOWN` (a replica cut off from its primary). Any of these
+  drops the connection, so the next call connects afresh: behind a DNS name
+  that moves on a failover, that reaches the new primary. The calls in flight
+  on a connection that is lost count as one failure, not one each. Any other
+  error reply (another script error, `WRONGTYPE`, `OOM`) doesn't count,
+  because Redis is there. A Redis still loading its data therefore opens the
+  breaker after five calls, and the
   shared counters come back at the first probe after loading ends, up to the
   recovery timeout later. An answer that Redis takes
   `LITEGEN_REDIS_SLOW_CALL_MS` (250 ms) or longer to give counts as a failure

@@ -204,7 +204,10 @@ specific to images:
 - **Roles**: `init` (image-to-image source), `mask` (inpainting), plus the
   vendor's reference kinds: `style`, `character`, `subject`, `modify`,
   `redux`. A model that cannot run without a reference marks the role
-  `required: true, min_count: 1`, as Runway `gen4_image_turbo` does.
+  `required: true, min_count: 1`, as Runway `gen4_image_turbo` does. A
+  model with a `mask` role or a `region` param gets `mask_grow_px`
+  (0–100), `preserve_unmasked` and `feather_px` (0–256) from litegen,
+  served in `litegen_params` on `GET /v1/models/{id}`; never declare them.
 - **Form**: `base64` wherever the vendor accepts it. A `url` row receives a
   non-fetchable value when the caller sends base64 or a blob (see
   known-gaps.md). Use `multipart` with a `field_map` for multipart endpoints,

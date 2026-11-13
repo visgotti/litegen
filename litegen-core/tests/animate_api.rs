@@ -117,6 +117,24 @@ async fn one_clip_per_name_in_request_order_kept_in_place_by_the_vendor() {
     assert_eq!(glb_mesh(&done)["scene"]["skin"]["root"], "hips");
 }
 
+/// E11c: a clip that leaves `name` out (or sends null) is quoted and made,
+/// and delivered under the name litegen gives it.
+#[tokio::test]
+async fn an_unnamed_clip_is_delivered_under_the_name_litegen_gives_it() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let src = rigged(&app).await;
+    let asked = json!({ "animations": [
+        { "preset": "mock:walk" },
+        { "name": null, "preset": "walk" },
+        { "prompt": "raises both fists and cheers", "duration_s": 2.0 },
+        { "name": "idle", "preset": "mock:idle" },
+    ] });
+    let (s, quote) = post_to(&app, "/v1/models3d/cost", animation(&src, asked.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{quote}");
+    let done = animate(&app, &src, asked).await;
+    assert_eq!(clips(&done).iter().map(|c| c["name"].as_str().unwrap()).collect::<Vec<_>>(), ["walk", "walk-2", "clip-3", "idle"]);
+}
+
 #[tokio::test]
 async fn a_travelling_clip_moves_one_metre_along_z_and_litegen_holds_the_in_place_one() {
     let (app, _db) = harness::app_with_mock_3d().await;

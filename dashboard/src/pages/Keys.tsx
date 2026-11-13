@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { client, getApiKey } from '../sdk-client';
+import { client, getApiKey, quietClient } from '../sdk-client';
 import type { ApiKeyInfo, PatchKeyBody, WebhookDelivery } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
 import { permissionsFor } from '../components/permissions';
@@ -43,6 +43,9 @@ export default function Keys() {
 
   // Edit state: null = not editing
   const [editState, setEditState] = useState<EditState | null>(null);
+  // Why the server refused the edit, shown in the form: e.g. a 403 when the
+  // key's owner's role cannot hold a scope asked (a Viewer's key and generate).
+  const [editError, setEditError] = useState('');
 
   // Webhook test results per key id
   const [webhookResults, setWebhookResults] = useState<Map<string, WebhookResult>>(new Map());
@@ -149,6 +152,7 @@ export default function Keys() {
   };
 
   const startEdit = (key: ApiKeyInfo) => {
+    setEditError('');
     setEditState({
       id: key.id,
       token_quota: key.token_quota != null ? String(key.token_quota) : '',
@@ -159,11 +163,12 @@ export default function Keys() {
     });
   };
 
-  const cancelEdit = () => setEditState(null);
+  const cancelEdit = () => { setEditState(null); setEditError(''); };
 
   const saveEdit = async () => {
     if (!editState) return;
     setError('');
+    setEditError('');
     try {
       const body: PatchKeyBody = {};
       if (editState.token_quota.trim()) {
@@ -184,11 +189,12 @@ export default function Keys() {
       } else {
         body.webhook_url = null;
       }
-      await client.keys.patch(editState.id, body);
+      // Quiet: a refusal (400, 403) is shown in the form, not as a toast too.
+      await quietClient.keys.patch(editState.id, body);
       setEditState(null);
       load();
     } catch (e: unknown) {
-      setError((e as Error).message);
+      setEditError((e as Error).message);
     }
   };
 
@@ -582,6 +588,11 @@ export default function Keys() {
                             onChange={e => setEditState({ ...editState, webhook_url: e.target.value })}
                           />
                         </div>
+                        {editError && (
+                          <div className="alert alert-error" data-testid="edit-key-error" style={{ gridColumn: '1 / -1', margin: 0 }}>
+                            {editError}
+                          </div>
+                        )}
                         <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8 }}>
                           <button
                             className="btn btn-primary"

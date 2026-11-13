@@ -30,6 +30,18 @@ describe("parseDroppedParams", () => {
   it("tolerates stray whitespace and empty entries", () => {
     expect(parseDroppedParams(" rig , ,pbr ")).toEqual(["rig", "pbr"]);
   });
+
+  it("keeps the server's count of the names it did not list, as the last entry", () => {
+    // The header lists at most 32 names, each 1–64 visible ASCII characters
+    // without a comma; every other name is counted in a last `+N more`. A
+    // field inside an object is named by its path.
+    expect(parseDroppedParams("fps,reference_images[0].weight,+2 more")).toEqual([
+      "fps",
+      "reference_images[0].weight",
+      "+2 more",
+    ]);
+    expect(parseDroppedParams("+1 more")).toEqual(["+1 more"]);
+  });
 });
 
 describe("droppedParams on a job handle", () => {

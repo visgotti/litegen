@@ -150,6 +150,73 @@ def test_a_vendor_rejection_carries_the_vendors_answer_and_whether_to_retry() ->
     assert exc.value.provider_error["code"] == "content_policy_violation"
 
 
+def _error(status: int, error: dict[str, Any], retry_after: str | None = None) -> Response:
+    return Response(status, json={"error": error}, headers={"Retry-After": retry_after} if retry_after else None)
+
+
+# The router's and storage's answers from the 2026-11 review, as the SDK raises them.
+_ROUTER_ANSWERS = [
+    pytest.param(
+        # Every deployment of a model route has its circuit breaker open.
+        "POST", "/v1/images/generations", lambda c: c.images.generate(model="fal/flux-dev", prompt="x"),
+        _error(503, {"message": "every deployment is cooling down", "type": "service_unavailable",
+                     "code": "circuit_open", "retryable": True}, "12"),
+        LiteGenAPIError, {"status": 503, "code": "circuit_open", "retryable": True, "retry_after": 12.0},
+        id="circuit_open",
+    ),
+    pytest.param(
+        # Only this replica's cache was emptied; the shared one in Redis was not.
+        "DELETE", "/v1/cache", lambda c: c.cache.clear(),
+        _error(503, {"message": "Only this replica's cache was emptied.", "type": "cache_clear_incomplete",
+                     "code": "cache_clear_incomplete"}, "1"),
+        LiteGenAPIError, {"status": 503, "code": "cache_clear_incomplete", "retryable": None, "retry_after": 1.0},
+        id="cache_clear_incomplete",
+    ),
+    pytest.param(
+        # The adapter refused the request before any vendor call.
+        "POST", "/v1/videos/cost", lambda c: c.videos.estimate_cost(model="minimax/MiniMax-Hailuo-02", prompt="x"),
+        _error(400, {"message": "10 s at 1080P is not offered", "type": "validation_error", "code": "request_unsupported",
+                     "model": "minimax/MiniMax-Hailuo-02", "retryable": False}),
+        LiteGenValidationError, {"status": 400, "code": "request_unsupported", "retryable": False, "model": "minimax/MiniMax-Hailuo-02"},
+        id="request_unsupported",
+    ),
+    pytest.param(
+        "POST", "/v1/images/generations", lambda c: c.images.generate(model="vidu/viduq2", prompt="x"),
+        _error(400, {"message": "Provider 'vidu' is not configured for this application.",
+                     "type": "provider_not_configured", "code": "provider_not_configured"}),
+        LiteGenAPIError, {"status": 400, "code": "provider_not_configured", "retryable": None},
+        id="provider_not_configured",
+    ),
+    pytest.param(
+        # A text-to-video request with no prompt, on a model whose vendor needs one.
+        "POST", "/v1/videos/cost", lambda c: c.videos.estimate_cost(model="runway/veo3.1"),
+        _error(400, {"message": "prompt is required", "type": "validation_error", "code": "prompt_required",
+                     "param": "prompt", "model": "runway/veo3.1"}),
+        LiteGenValidationError, {"status": 400, "code": "prompt_required", "param": "prompt"},
+        id="prompt_required",
+    ),
+    pytest.param(
+        "GET", "/v1/generations/litegen-vid-1/assets/0", lambda c: c.generations.download_asset("litegen-vid-1", 0),
+        _error(416, {"message": "the requested range lies outside the file", "type": "invalid_request_error",
+                     "code": "range_not_satisfiable"}),
+        LiteGenAPIError, {"status": 416, "code": "range_not_satisfiable"},
+        id="range_not_satisfiable",
+    ),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "call", "response", "cls", "want"), _ROUTER_ANSWERS)
+def test_router_and_storage_answers_reach_the_caller(
+    method: str, path: str, call: Any, response: Response, cls: type, want: dict[str, Any]
+) -> None:
+    with respx.mock:
+        respx.route(method=method, url=f"http://localhost:4000{path}").mock(return_value=response)
+        with pytest.raises(LiteGenAPIError) as exc:
+            call(LiteGenClient())
+    assert type(exc.value) is cls
+    assert {name: getattr(exc.value, name) for name in want} == want
+
+
 @respx.mock
 def test_video_wait_for_completion_polls_until_done() -> None:
     statuses = ["processing", "processing", "completed"]

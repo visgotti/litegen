@@ -611,7 +611,7 @@ async fn member_cannot_approve_admin() {
 }
 
 #[tokio::test]
-async fn viewer_can_approve_generation() {
+async fn a_viewer_may_approve_reading_but_not_generation() {
     let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
     let owner = mcp_support::oauth_session(&app).await;
     let org = own_org(&app, &owner).await;
@@ -620,17 +620,20 @@ async fn viewer_can_approve_generation() {
     use litegen::db::DatabaseStore;
     db.add_org_member(&org, &viewer_id, litegen::types::Role::Viewer).await.unwrap();
 
-    // A viewer may generate on the dashboard, so they may let an app do it.
+    // A viewer only reads (README: "cannot create or mutate"; review
+    // 2026-11-11), so they may let an app read, but not generate.
     let client = register(&app).await;
     let id = request_id(&app, &authorize_query(&client)).await;
     let (_, view) = consent(&app, &viewer, "GET", &format!("/v1/oauth/requests/{id}"), None).await;
     let theirs = view["orgs"].as_array().unwrap().iter().find(|o| o["id"] == org.as_str()).expect("the org they joined").clone();
     assert_eq!(theirs["role"], "viewer");
-    assert_eq!(theirs["grantable_scopes"], json!(["ai:generate", "ai:read"]), "{view}");
-    let (status, answer) = consent(&app, &viewer, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(json!({ "org_id": org, "scopes": ["ai:generate"] }))).await;
+    assert_eq!(theirs["grantable_scopes"], json!(["ai:read"]), "{view}");
+    let (status, err) = consent(&app, &viewer, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(json!({ "org_id": org, "scopes": ["ai:generate"] }))).await;
+    assert_eq!((status, err["error"]["code"].as_str()), (StatusCode::FORBIDDEN, Some("scope_not_grantable")), "{err}");
+    let (status, answer) = consent(&app, &viewer, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(json!({ "org_id": org, "scopes": ["ai:read"] }))).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
 
-    // But not management writes.
+    // Nor management writes.
     let id = request_id(&app, &with(authorize_query(&client), "scope", Some("admin:read admin:write"))).await;
     let (status, err) = consent(&app, &viewer, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(json!({ "org_id": org, "scopes": ["admin:write"] }))).await;
     assert_eq!((status, err["error"]["code"].as_str()), (StatusCode::FORBIDDEN, Some("scope_not_grantable")), "{err}");
@@ -1421,4 +1424,20 @@ async fn auth_config_names_the_mcp_endpoints() {
     let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, |c| c.mcp.enabled = false).await;
     let (_, config) = get_json(&app, "/v1/auth/config").await;
     assert!(config["mcp"].is_null(), "{config}");
+}
+
+/// SEC-DBERR (review 2026-11-11, authorize.rs part): a storage failure while
+/// the client is looked up answers a fixed "try again" page (503), never the
+/// database's own error text, which names its tables.
+#[tokio::test]
+async fn a_storage_failure_at_authorize_shows_no_database_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}/litegen.db?mode=rwc", dir.path().display());
+    let db = std::sync::Arc::new(litegen::db::sqlite::SqliteDatabase::connect(&url).await.unwrap());
+    let app = harness::app_over_with(db, dir.path(), |_| {}, Some(mcp_support::MASTER_KEY), Mode::SingleTenant).await;
+    let raw = sqlx::SqlitePool::connect(&url).await.unwrap();
+    sqlx::query("DROP TABLE mcp_oauth_clients").execute(&raw).await.unwrap();
+    let (status, location, page) = authorize(&app, &authorize_query("lgc_gone")).await;
+    assert_eq!((status, location), (StatusCode::SERVICE_UNAVAILABLE, None), "{page}");
+    assert!(!page.contains("mcp_oauth_clients") && !page.to_lowercase().contains("no such table"), "the database's own text: {page}");
 }

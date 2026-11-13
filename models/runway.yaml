@@ -1511,8 +1511,8 @@ models:
     # text-to-video requires ["promptText","ratio","model"], image-to-video ["promptImage","ratio","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 1000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 1000 }
     params:
       duration_seconds: { kind: int, min: 4, max: 8, default: 8, values: [4, 6, 8] }
       # `audio` "default": true; sent only when asked.
@@ -1555,8 +1555,8 @@ models:
     # text-to-video requires ["promptText","ratio","model"], image-to-video ["promptImage","ratio","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 1000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 1000 }
     params:
       duration_seconds: { kind: int, min: 4, max: 8, default: 8, values: [4, 6, 8] }
       # `audio` "default": true; sent only when asked.
@@ -1600,8 +1600,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 4000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 4000 }
     params:
       duration_seconds: { kind: int, min: 3, max: 10, default: 5 }
       # `ratio`: text-to-video always sent; image-to-video sent only when an aspect or a tier is asked (else the image sets the shape). Each aspect × tier is one size of the branch's enum (video/runway.rs GEMINI_OMNI_FLASH_SIZES).
@@ -2031,8 +2031,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 26000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 26000 }
     params:
       duration_seconds: { kind: int, min: 3, max: 30, default: 10 }
       # `ratio`: text-to-video always sent; image-to-video always `auto_<tier>`: the image sets the aspect. Each aspect × tier is one size of the branch's enum (video/runway.rs KLING_4_SIZES).
@@ -2077,8 +2077,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 26000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 26000 }
     params:
       duration_seconds: { kind: int, min: 3, max: 20, default: 5 }
       # `ratio`: text-to-video always sent; image-to-video not sent: the image sets the shape. Each aspect is one size of the branch's enum (video/runway.rs KLING_4_FLASH_SIZES).
@@ -2213,8 +2213,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 10000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 10000 }
     params:
       duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
       # `audio` "default": true; sent only when asked.
@@ -2261,8 +2261,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 10000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 10000 }
     params:
       duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
       # `audio` "default": true; sent only when asked.
@@ -2309,8 +2309,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 10000 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 10000 }
     params:
       duration_seconds: { kind: int, min: 4, max: 15, default: 5 }
       # `audio` "default": true; sent only when asked.
@@ -2415,8 +2415,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 2500 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 2500 }
     params:
       duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
       # `ratio`: text-to-video sent as the aspect itself, always; image-to-video not sent: the image sets the shape.
@@ -2463,8 +2463,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, max_length: 2500 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, max_length: 2500 }
     params:
       duration_seconds: { kind: int, min: 1, max: 15, default: 5 }
       # `ratio`: text-to-video always sent; image-to-video always `auto_<tier>`: the image sets the aspect. Each aspect × tier is one size of the branch's enum (video/runway.rs GROK_IMAGINE_1_5_LITE_SIZES).
@@ -2594,8 +2594,8 @@ models:
     # text-to-video requires ["promptText","model"], image-to-video ["promptImage","model"].
     # @see https://docs.dev.runwayml.com/openapi.json (2026-11-10)
     capabilities: { text_to_video: true, image_to_video: true }
-    # promptText is optional on image-to-video only: a text-only request without one is refused before any call.
-    prompt: { required: false, min_length: 2, max_length: 2500 }
+    # promptText is optional on image-to-video only: a text-to-video request (no first frame) without one is refused at validation, before anything is quoted or reserved.
+    prompt: { required: false, required_for_text_to_video: true, min_length: 2, max_length: 2500 }
     params:
       duration_seconds: { kind: int, min: 3, max: 15, default: 5 }
       # `ratio`: text-to-video always sent; image-to-video not sent: the image sets the shape. Each aspect × tier is one size of the branch's enum (video/runway.rs HAPPYHORSE_1_0_SIZES).

@@ -166,7 +166,7 @@ function LayoutControl({ tid, spec, value, onChange }: Props) {
               onChange={next => rows.set(i, next)} />
             {!layoutBox(d) && (
               <span className="pg-structured-note" data-testid={`${tid}-unsent-${i}`}>
-                Not sent: a box is fractions 0–1 of the canvas, inside it, with an area.
+                Not sent: a box needs its x, y, w and h.
               </span>
             )}
           </Row>
@@ -196,7 +196,7 @@ function AnimationsControl({ tid, spec, value, onChange }: Props) {
                 </select>
               )}
               <input className="input" data-testid={`${tid}-name-${i}`} aria-label={`Clip ${i + 1} name`}
-                placeholder={str(d.preset) || 'clip name'} value={str(d.name)}
+                placeholder="name (optional)" value={str(d.name)}
                 onChange={e => rows.set(i, { ...d, name: e.target.value })} />
             </div>
             {textToMotion && !d.preset && (
@@ -225,7 +225,7 @@ function AnimationsControl({ tid, spec, value, onChange }: Props) {
       <AddButton tid={tid} label="Clip" disabled={rows.full} onAdd={rows.add} />
       {rows.items.length > 0 && sent.length < rows.items.length && (
         <span className="pg-structured-note" data-testid={`${tid}-unsent`}>
-          A clip needs a preset or a motion prompt, and a name of A–Z, a–z, 0–9, _ . - (or none); the others are not sent.
+          A clip needs a preset or a motion prompt; the others are not sent.
         </span>
       )}
     </div>

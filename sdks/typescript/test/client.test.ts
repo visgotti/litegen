@@ -158,6 +158,49 @@ describe("vendor errors (L15)", () => {
   });
 });
 
+describe("router and storage answers (2026-11 review)", () => {
+  const answer = (status: number, error: Record<string, unknown>, retryAfter?: string) =>
+    new Response(JSON.stringify({ error }), {
+      status,
+      headers: { "Content-Type": "application/json", ...(retryAfter ? { "Retry-After": retryAfter } : {}) },
+    });
+
+  it.each([
+    {
+      // Every deployment of a model route has its circuit breaker open.
+      code: "circuit_open",
+      call: (c: LiteGenClient) => c.images.generate({ model: "fal/flux-dev", prompt: "x" } as never),
+      res: answer(503, { message: "every deployment is cooling down", type: "service_unavailable", code: "circuit_open", retryable: true }, "12"),
+      want: { status: 503, type: "service_unavailable", retryable: true, retryAfterMs: 12_000 },
+    },
+    {
+      // Only this replica's cache was emptied; the shared one in Redis was not.
+      code: "cache_clear_incomplete",
+      call: (c: LiteGenClient) => c.cache.clear(),
+      res: answer(503, { message: "Only this replica's cache was emptied.", type: "cache_clear_incomplete", code: "cache_clear_incomplete" }, "1"),
+      want: { status: 503, type: "cache_clear_incomplete", retryable: undefined, retryAfterMs: 1_000 },
+    },
+    {
+      // The adapter refused the request before any vendor call.
+      code: "request_unsupported",
+      call: (c: LiteGenClient) => c.videos.estimateCost({ model: "minimax/MiniMax-Hailuo-02", prompt: "x" } as never),
+      res: answer(400, { message: "10 s at 1080P is not offered", type: "validation_error", code: "request_unsupported", model: "minimax/MiniMax-Hailuo-02", retryable: false }),
+      want: { status: 400, type: "validation_error", retryable: false, model: "minimax/MiniMax-Hailuo-02" },
+    },
+    {
+      code: "range_not_satisfiable",
+      call: (c: LiteGenClient) => c.generations.downloadAsset("litegen-vid-1", 0),
+      res: answer(416, { message: "the requested range lies outside the file", type: "invalid_request_error", code: "range_not_satisfiable" }),
+      want: { status: 416, type: "invalid_request_error" },
+    },
+  ])("surfaces $code with its status, retryable and Retry-After", async ({ code, call, res, want }) => {
+    const client = new LiteGenClient({ apiKey: "lg", fetch: (async () => res.clone()) as unknown as typeof fetch });
+    const err = await call(client).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LiteGenAPIError);
+    expect(err).toMatchObject({ code, ...want });
+  });
+});
+
 describe("LiteGenClient.videos.waitForCompletion", () => {
   it("polls until status is completed", async () => {
     let calls = 0;

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { client } from '../sdk-client';
-import type { ModelInfo, Model3dGenerationRequest } from '@litegen/sdk';
+import type { ModelInfo } from '@litegen/sdk';
 import ModelPicker from './ModelPicker';
 import ParamField from './ParamField';
 import RefImagesField from './RefImagesField';
@@ -9,7 +9,8 @@ import ExtraParamsField from './ExtraParamsField';
 import ResultGrid from './ResultGrid';
 import { useUnifiedParams } from './useUnifiedParams';
 import { useFanOut } from './useFanOut';
-import { promptUsage, seedMaxOf } from './params';
+import { useServerChecks } from './useServerCheck';
+import { maxRequestBytesOf, promptUsage, seedMaxOf } from './params';
 import {
   getMultiHistory,
   pushMultiHistory,
@@ -25,10 +26,9 @@ export default function CompareMode() {
   const [selected, setSelected] = useState<string[]>([]);
   const [view, setView] = useState<ReqView>('results');
   const [error, setError] = useState('');
-  const [estCost, setEstCost] = useState<number | null>(null);
-  const [history, setHistory] = useState<MultiRunHistoryEntry[]>([]);
+  const [history, setHistory] = useState<MultiRunHistoryEntry[]>(() => getMultiHistory());
   const {
-    merged, roles, maxRefs, extras, form, params, setForm, setParam, resetParam, problems, buildRequests, schemasById,
+    merged, roles, maxRefs, extras, form, params, setForm, setParam, resetParam, buildRequests, schemasById,
   } = useUnifiedParams(selected);
   // Models that take no prompt never receive the shared one (see
   // promptForModel); the box only disappears when no selected model takes it.
@@ -43,7 +43,6 @@ export default function CompareMode() {
       .then(all => setModels(all.filter(m => m.media_type === 'model3d'
         || (m.media_type === 'image' && (m.capabilities as { task?: string } | undefined)?.task !== 'segment'))))
       .catch(e => setError(e.message));
-    setHistory(getMultiHistory());
   }, []);
 
   const toggle = (id: string) =>
@@ -65,36 +64,25 @@ export default function CompareMode() {
     models.find(m => m.id === modelId)?.media_type === 'model3d' ? 'model3d' : 'image';
 
   const requests = buildRequests(selected);
-  const sig = JSON.stringify(requests);
-  // A model the server would reject (no prompt where one is required, a
-  // missing input image) blocks the run instead of failing its tile.
-  const blocked = problems(selected).filter(p => p.problems.length > 0);
+  // Each model's request goes to its quote route (E11b): a model the server
+  // would refuse blocks the run, in the server's words, instead of failing its
+  // tile; the quotes are also the cost preview. Not while a run is going.
+  const checks = useServerChecks(running ? [] : requests.map(r => ({
+    lane: r.modelId,
+    kind: mediaTypeOf(r.modelId),
+    body: r.request,
+  })));
+  const blocked = requests
+    .map(r => ({ modelId: r.modelId, problems: checks[r.modelId]?.problems ?? [] }))
+    .filter(b => b.problems.length > 0);
+  const checking = requests.some(r => checks[r.modelId]?.checking);
+  // An image request is one image, so N of them cost N quotes; a model the
+  // server quoted nothing for (no key for its provider) counts nothing.
+  const estCost = !running && requests.length > 0 && !checking && blocked.length === 0
+    ? requests.reduce((sum, r) => sum + (checks[r.modelId]?.costUsd ?? 0) * (mediaTypeOf(r.modelId) === 'model3d' ? 1 : form.n), 0)
+    : null;
   const anyImageModel = selected.some(id => mediaTypeOf(id) === 'image');
   const any3dModel = selected.some(id => mediaTypeOf(id) === 'model3d');
-
-  // Debounced cost preview across all selected models.
-  useEffect(() => {
-    if (requests.length === 0 || blocked.length > 0) { setEstCost(null); return; }
-    const handle = setTimeout(async () => {
-      try {
-        // An image request is one image, so N of them cost N estimates.
-        const estimates = await Promise.all(requests.map(r => {
-          const is3d = mediaTypeOf(r.modelId) === 'model3d';
-          const estimate = is3d
-            ? client.models3d.estimateCost(r.request as Model3dGenerationRequest)
-            : client.images.estimateCost(r.request);
-          return estimate
-            .then(c => ((c as { total_cost_usd?: number }).total_cost_usd ?? 0) * (is3d ? 1 : form.n))
-            .catch(() => 0);
-        }));
-        setEstCost(estimates.reduce((a, b) => a + b, 0));
-      } catch {
-        setEstCost(null);
-      }
-    }, 400);
-    return () => clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, blocked.length, form.n]);
 
   const generate = async (only?: string) => {
     setError('');
@@ -156,7 +144,7 @@ export default function CompareMode() {
           )}
 
           <RefImagesField roles={roles} refs={form.refs} maxTotal={maxRefs} totalSelected={selected.length}
-            disabled={running}
+            maxRequestBytes={maxRequestBytesOf(models, selected)} disabled={running}
             onChange={refs => setForm(prev => ({ ...prev, refs }))} />
 
           {merged.length > 0 && (
@@ -214,7 +202,7 @@ export default function CompareMode() {
             <ul className="pg-problems" data-testid="pg-problems">
               {blocked.map(b => (
                 <li key={b.modelId} data-testid={`pg-problems-${b.modelId}`}>
-                  <code>{b.modelId}</code> {b.problems.join(', ')}
+                  <code>{b.modelId}</code> {b.problems.join(' ')}
                 </li>
               ))}
             </ul>
@@ -225,7 +213,8 @@ export default function CompareMode() {
               data-testid="pg-cancel" onClick={cancel}>Cancel</button>
           ) : (
             <button className="btn btn-primary" style={{ width: '100%' }} data-testid="pg-generate"
-              disabled={selected.length === 0 || blocked.length > 0} onClick={() => generate()}>
+              disabled={selected.length === 0 || blocked.length > 0}
+              data-checking={checking ? 'true' : undefined} onClick={() => generate()}>
               Generate {selected.length} model{selected.length === 1 ? '' : 's'}
             </button>
           )}

@@ -3,13 +3,16 @@ import type { ChangeEvent } from 'react';
 import { X } from 'lucide-react';
 import type { MergedRole, RefEntry } from './types';
 import { roleLabel } from './params';
-import { MAX_INLINE_TOTAL_BYTES, MAX_UPLOAD_BYTES, formatMiB, inlineBytes, isFetchableUrl, readAsDataUrl, refsOfRoles } from './ref-images';
+import { formatMiB, inlineBudget, inlineBytes, isFetchableUrl, readAsDataUrl, refsOfRoles } from './ref-images';
 
 interface Props {
   roles: MergedRole[];
   refs: RefEntry[];
   /** The tightest `max_total` among the selected models. */
   maxTotal?: number;
+  /** The largest request the server takes for these models, in bytes
+   *  (`capabilities.max_request_bytes`); uploads must fit inside it. */
+  maxRequestBytes?: number;
   totalSelected: number;
   onChange: (refs: RefEntry[]) => void;
   disabled?: boolean;
@@ -26,7 +29,7 @@ const newId = () => `ref-${Date.now().toString(36)}-${(nextId++).toString(36)}`;
  * to know. Each model is sent only the roles it declares (see
  * `refsForModel`), so a role's applicability note says who it reaches.
  */
-export default function RefImagesField({ roles, refs, maxTotal, totalSelected, onChange, disabled }: Props) {
+export default function RefImagesField({ roles, refs, maxTotal, maxRequestBytes, totalSelected, onChange, disabled }: Props) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   if (roles.length === 0) return null;
@@ -60,12 +63,11 @@ export default function RefImagesField({ roles, refs, maxTotal, totalSelected, o
       setError(role, `${file.name} is not an image.`);
       return;
     }
-    if (file.size > MAX_UPLOAD_BYTES) {
-      setError(role, `${file.name} is ${formatMiB(file.size)}; uploads are capped at ${formatMiB(MAX_UPLOAD_BYTES)}. Use a URL for larger images.`);
-      return;
-    }
-    if (inlineBytes(shown) + file.size > MAX_INLINE_TOTAL_BYTES) {
-      setError(role, `Uploads in one request are capped at ${formatMiB(MAX_INLINE_TOTAL_BYTES)} in total. Use a URL instead.`);
+    // The server's request-body limit, with each upload inline at 4/3 its size.
+    const budget = inlineBudget(maxRequestBytes);
+    if (budget !== undefined && inlineBytes(shown) + file.size > budget) {
+      setError(role, `${file.name} is ${formatMiB(file.size)}: uploads in one request are capped at ${formatMiB(budget)} `
+        + `in total, to fit the ${formatMiB(maxRequestBytes!)} request the server takes. Use a URL instead.`);
       return;
     }
     try {

@@ -89,24 +89,40 @@ impl Expiry<String, Cached> for PerEntryTtl {
 /// About how many bytes one answer holds in the local tier: the strings by
 /// length, the fixed parts by `size_of`. Nothing is serialized, which would
 /// copy a `b64_json` image's megabytes.
+///
+/// Every field is named, none passed over with `..` (registry review #9): a
+/// field added to either type stops this compiling until it is weighed here.
+/// `_` marks a field with nothing on the heap, which `size_of` counts.
 fn estimated_bytes(key: &str, value: &Cached) -> u64 {
-    let r = &value.response;
+    let ImageGenerationResponse { created: _, data, model, provider, usage: _, id, metadata } = &value.response;
     let text = |s: &Option<String>| s.as_ref().map_or(0, String::len);
-    let images: usize = r
-        .data
+    let images: usize = data
         .iter()
-        .map(|i| {
+        .map(|image| {
+            let crate::types::ImageResult {
+                url,
+                expires_at: _,
+                b64_json,
+                revised_prompt,
+                view,
+                yaw_deg: _,
+                direction,
+                content_type,
+                width: _,
+                height: _,
+                index: _,
+            } = image;
             std::mem::size_of::<crate::types::ImageResult>()
-                + text(&i.url)
-                + text(&i.b64_json)
-                + text(&i.revised_prompt)
-                + text(&i.view)
-                + text(&i.direction)
-                + i.content_type.len()
+                + text(url)
+                + text(b64_json)
+                + text(revised_prompt)
+                + text(view)
+                + text(direction)
+                + content_type.len()
         })
         .sum();
-    let metadata: usize = r.metadata.as_ref().map_or(0, |m| m.iter().map(|(k, v)| k.len() + v.len()).sum());
-    (key.len() + std::mem::size_of::<Cached>() + r.model.len() + r.provider.len() + r.id.len() + images + metadata) as u64
+    let metadata: usize = metadata.as_ref().map_or(0, |m| m.iter().map(|(k, v)| k.len() + v.len()).sum());
+    (key.len() + std::mem::size_of::<Cached>() + model.len() + provider.len() + id.len() + images + metadata) as u64
 }
 
 /// The local tier, bounded by `max_items` answers and about `max_bytes`

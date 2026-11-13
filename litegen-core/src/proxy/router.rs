@@ -690,12 +690,12 @@ impl ProxyRouter {
 
         for deployment in deployments {
             // ── Circuit breaker: skip provider if breaker is open ──
-            if self.circuit_breaker.is_open(&deployment.provider).await {
+            if let Some(left) = self.circuit_breaker.open_remaining(&deployment.provider).await {
                 warn!(
                     provider = %deployment.provider,
                     "Circuit breaker open — skipping deployment"
                 );
-                attempts.skipped(&deployment.provider, "circuit open");
+                attempts.skipped_open(&deployment.provider, left);
                 continue;
             }
 
@@ -710,7 +710,7 @@ impl ProxyRouter {
                 Some(p) => p,
                 None => {
                     warn!(provider = %deployment.provider, "Image provider not configured, skipping deployment");
-                    attempts.skipped(&deployment.provider, "not configured");
+                    attempts.skipped_unconfigured(&deployment.provider);
                     continue;
                 }
             };
@@ -1011,7 +1011,6 @@ impl ProxyRouter {
     }
 
     /// Look up an in-flight video generation by local ID and poll its provider.
-    #[tracing::instrument(skip(self, app_store, db), fields(id = %id))]
     /// Poll an in-flight video by local id. A finished video is re-hosted in
     /// the same call (`rehost_video`), into the app's own bucket when it has
     /// one, so the answer names litegen's copy; the second value is what its
@@ -1033,8 +1032,11 @@ impl ProxyRouter {
     /// claim when this call kept the finished video. The caller holds it until
     /// it has written the outcome to the row, so no other observer keeps the
     /// video again in between. Without the claim, a finished video is
-    /// reported still processing and nothing is downloaded or kept.
+    /// reported still processing and nothing is downloaded or kept. The poll
+    /// runs in a span named `get_video_status` with the job's `id`, as the
+    /// handler's polls did before the claim was handed back.
     #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "get_video_status", skip(self, app_store, db), fields(id = %id))]
     pub async fn get_video_status_claimed(
         &self,
         id: &str,
@@ -1309,7 +1311,6 @@ impl ProxyRouter {
     /// observe completion, and the poller already re-hosts into the app's
     /// bucket. Passing `None` here when the app has one would put that tenant's
     /// mesh in the operator's bucket depending only on which observer won.
-    #[tracing::instrument(skip(self, app_store, db), fields(id = %id))]
     pub async fn get_model3d_status(
         &self,
         id: &str,
@@ -1324,7 +1325,9 @@ impl ProxyRouter {
     /// [`get_model3d_status`](Self::get_model3d_status), also handing back the
     /// delivery claim when this call delivered the job. The caller holds it
     /// until it has written the outcome to the row, so no other observer
-    /// delivers the job again in between.
+    /// delivers the job again in between. The poll runs in a span named
+    /// `get_model3d_status` with the job's `id` (payloads review #8).
+    #[tracing::instrument(name = "get_model3d_status", skip(self, app_store, db), fields(id = %id))]
     pub async fn get_model3d_status_claimed(
         &self,
         id: &str,
@@ -1471,6 +1474,13 @@ impl ProxyRouter {
         self.video_jobs.write().await.remove(id).is_some()
     }
 
+    /// [`forget_video_job`](Self::forget_video_job), handing back the job's
+    /// handle and the instance that submitted it, as `forget_model3d_job`
+    /// does: a deleted org's job is stopped through it (SEC-INMEM).
+    pub async fn take_video_job(&self, id: &str) -> Option<(VideoGenerationHandle, Arc<dyn crate::providers::VideoProvider>)> {
+        self.video_jobs.write().await.remove(id).map(|j| (j.handle, j.provider))
+    }
+
     /// Provider job id for a submitted 3D generation (for the DB row).
     pub async fn get_model3d_provider_job_id(&self, local_id: &str) -> Option<String> {
         self.model3d_jobs.read().await.get(local_id).map(|j| j.handle.provider_job_id.clone())
@@ -1567,12 +1577,12 @@ impl ProxyRouter {
 
         for deployment in deployments {
             // ── Circuit breaker: skip provider if breaker is open ──
-            if self.circuit_breaker.is_open(&deployment.provider).await {
+            if let Some(left) = self.circuit_breaker.open_remaining(&deployment.provider).await {
                 warn!(
                     provider = %deployment.provider,
                     "Circuit breaker open — skipping video deployment"
                 );
-                attempts.skipped(&deployment.provider, "circuit open");
+                attempts.skipped_open(&deployment.provider, left);
                 continue;
             }
 
@@ -1584,7 +1594,7 @@ impl ProxyRouter {
                 Some(p) => p,
                 None => {
                     warn!(provider = %deployment.provider, "Video provider not configured, skipping deployment");
-                    attempts.skipped(&deployment.provider, "not configured");
+                    attempts.skipped_unconfigured(&deployment.provider);
                     continue;
                 }
             };
@@ -2301,9 +2311,11 @@ pub async fn rehost_video(
         // Streamed to a spool file on disk, hashed as it arrives, then handed
         // to the store from there: the video is never held in memory.
         let spool = SpoolFile::create(store.spool_dir().unwrap_or_else(crate::proxy::storage::video_spool_dir)).await?;
-        let mut file = tokio::fs::File::create(&spool.0)
-            .await
-            .map_err(|e| RehostError::Transient(format!("could not open a spool file in {}: {e}", spool.dir().display())))?;
+        // The path is the log's (payloads review #3), as in `SpoolFile::create`.
+        let mut file = tokio::fs::File::create(&spool.0).await.map_err(|e| {
+            tracing::warn!(dir = %spool.dir().display(), error = %e, "could not open a video spool file");
+            RehostError::Transient("could not open a spool file for the video".into())
+        })?;
         let got = crate::util::ssrf::download_to_file(&vendor_download_client(), url, MAX_VIDEO_BYTES as u64, &mut file)
             .await
             .map_err(download_failure)?;
@@ -2368,9 +2380,12 @@ struct SpoolFile(std::path::PathBuf);
 
 impl SpoolFile {
     async fn create(dir: std::path::PathBuf) -> Result<Self, RehostError> {
-        tokio::fs::create_dir_all(&dir)
-            .await
-            .map_err(|e| RehostError::Transient(format!("could not make the spool directory {}: {e}", dir.display())))?;
+        // The path is the log's: this text can end up as the generation's
+        // stored error, which its caller reads (payloads review #3).
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            tracing::warn!(dir = %dir.display(), error = %e, "could not make the video spool directory");
+            RehostError::Transient("could not make the spool directory for the video".into())
+        })?;
         let name = format!(
             "{}{}{}",
             crate::proxy::storage::SPOOL_FILE_PREFIX,
@@ -2407,12 +2422,24 @@ pub enum ProxyError {
     #[error("No deployments configured for model: {model}")]
     NoDeployments { model: String },
 
-    /// No deployment of a route was asked (every breaker open, every
-    /// provider missing): `last_error` says why each was skipped.
+    /// No vendor of a route was called, and the request may work later: its
+    /// deployments were skipped for different reasons (a breaker open, a
+    /// provider missing), or one refused it after another was skipped.
+    /// `last_error` says why each did not serve it.
     #[error("All deployments failed for model {model}{}", last_error.as_ref().map(|e| format!(": {e}")).unwrap_or_default())]
     AllDeploymentsFailed {
         model: String,
         last_error: Option<String>,
+    },
+
+    /// Every deployment of a route was skipped by its open circuit breaker,
+    /// so nothing was asked (handlers review #5). The same request may work
+    /// once the first of them closes, `retry_after_secs` from now.
+    #[error("Every deployment of model {model} is cooling down after failures ({skipped}); retry in {retry_after_secs} s")]
+    CoolingDown {
+        model: String,
+        retry_after_secs: u64,
+        skipped: String,
     },
 
     /// The adapter refused the request before calling its vendor (E9): a
@@ -2484,6 +2511,35 @@ impl ProxyError {
         Self::ProviderNotConfigured { provider: provider.to_string(), detail: None }
     }
 
+    /// The provider whose deployment this error came from, when it names
+    /// one. On a model route that is the deployment that failed, which need
+    /// not be the model's own provider (handlers review #8).
+    pub fn provider(&self) -> Option<&str> {
+        match self {
+            Self::ProviderNotConfigured { provider, .. }
+            | Self::Refused { provider, .. }
+            | Self::ProviderError { provider, .. }
+            | Self::PreflightFailed { provider, .. }
+            | Self::VendorRejected { provider, .. }
+            | Self::VendorFailed { provider, .. }
+            | Self::VendorTimeout { provider, .. } => Some(provider),
+            _ => None,
+        }
+    }
+
+    /// The error as a record a tenant can read keeps it (a failed request's
+    /// log row and error artifact, `/v1/logs`): its own text, except an
+    /// internal error's, which can carry a panic's (its file, line and
+    /// message). That one is kept as "internal server error", as the answer
+    /// says it; the server log has the detail (handlers review #7, the
+    /// SEC-DBERR class).
+    pub fn logged_message(&self) -> String {
+        match self {
+            Self::Internal(_) => "internal server error".to_string(),
+            other => other.to_string(),
+        }
+    }
+
     pub fn status_code(&self) -> u16 {
         match self {
             Self::ModelNotFound { .. } => 404,
@@ -2492,7 +2548,7 @@ impl ProxyError {
             // so not retryable. The documented BYO answer (README), the same 400
             // the handlers give when they notice it first (E8).
             Self::ProviderNotConfigured { .. } | Self::Refused { .. } => 400,
-            Self::NoDeployments { .. } => 503,
+            Self::NoDeployments { .. } | Self::CoolingDown { .. } => 503,
             Self::AllDeploymentsFailed { .. } => 502,
             Self::ProviderError { retryable, .. } | Self::PreflightFailed { retryable, .. } => {
                 if *retryable { 502 } else { 400 }
@@ -2516,8 +2572,17 @@ impl ProxyError {
             Self::VendorFailed { retryable, .. } => *retryable,
             Self::VendorRejected { .. } => false,
             Self::ProviderError { retryable, .. } | Self::PreflightFailed { retryable, .. } => *retryable,
-            Self::NoDeployments { .. } | Self::AllDeploymentsFailed { .. } | Self::Internal(_) => true,
+            Self::NoDeployments { .. } | Self::AllDeploymentsFailed { .. } | Self::CoolingDown { .. } | Self::Internal(_) => true,
             Self::ModelNotFound { .. } | Self::ProviderNotConfigured { .. } | Self::Refused { .. } | Self::NotFound(_) => false,
+        }
+    }
+
+    /// How many seconds until the same request may work, when litegen knows
+    /// (`Retry-After`): a route whose every breaker is open.
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            Self::CoolingDown { retry_after_secs, .. } => Some(*retry_after_secs),
+            _ => None,
         }
     }
 
@@ -2530,9 +2595,9 @@ impl ProxyError {
             Self::ModelNotFound { .. } | Self::ProviderNotConfigured { .. } | Self::NoDeployments { .. } => false,
             // The adapter's own verdict, before anything was sent (E9).
             Self::Refused { .. } => false,
-            // Built only when no deployment was asked: every circuit open,
-            // every provider missing.
-            Self::AllDeploymentsFailed { .. } | Self::PreflightFailed { .. } => false,
+            // Built only when no vendor was called: deployments skipped (a
+            // breaker open, a provider missing) or refused before any call.
+            Self::AllDeploymentsFailed { .. } | Self::CoolingDown { .. } | Self::PreflightFailed { .. } => false,
             Self::ProviderError { .. }
             | Self::VendorTimeout { .. }
             | Self::VendorRejected { .. }
@@ -2647,38 +2712,128 @@ fn retry_delay(retry: u32, err: &ProviderError, settings: &crate::management::se
 }
 
 /// What a route's deployments did, for the error a caller sees when none
-/// made the result (E9): which were skipped and why, the last failure that
-/// reached a vendor, and the last refusal before any call.
+/// made the result (E9): which were passed over and why, the last failure
+/// that reached a vendor, and the last refusal before any call.
 #[derive(Default)]
 struct Attempts {
-    skipped: Vec<String>,
+    skipped: Vec<(String, Skip)>,
     last_reached: Option<(String, ProviderError)>,
     last_refused: Option<(String, ProviderError)>,
 }
 
+/// Why a route's deployment was passed over without a vendor call.
+enum Skip {
+    /// Its breaker is open, for this much longer.
+    Open(std::time::Duration),
+    /// Its provider has no instance this request can use, or its adapter
+    /// found the credential unusable, with the adapter's advice (E9).
+    NotConfigured(Option<String>),
+}
+
 impl Attempts {
-    fn skipped(&mut self, provider: &str, why: &str) {
-        self.skipped.push(format!("{provider}: {why}"));
+    /// `provider`'s breaker is open, for `left` more.
+    fn skipped_open(&mut self, provider: &str, left: std::time::Duration) {
+        self.skipped.push((provider.to_string(), Skip::Open(left)));
+    }
+
+    /// `provider` has no instance this request can use.
+    fn skipped_unconfigured(&mut self, provider: &str) {
+        self.skipped.push((provider.to_string(), Skip::NotConfigured(None)));
     }
 
     fn failed(&mut self, provider: &str, err: ProviderError) {
+        // An adapter that finds no usable credential says what the registry
+        // says when it has no instance: the deployment is not configured
+        // (E8: one condition, one answer).
+        if let ProviderError::NotConfigured(advice) = err {
+            self.skipped.push((provider.to_string(), Skip::NotConfigured(Some(advice))));
+            return;
+        }
         let slot = if err.before_any_call() { &mut self.last_refused } else { &mut self.last_reached };
         *slot = Some((provider.to_string(), err));
     }
 
-    /// A vendor attempt wins over a later deployment's refusal: it may have
-    /// billed, so the caller's key must record it. With no attempt at all
-    /// (every breaker open, every provider missing), a retryable 502 that
-    /// reached no vendor.
+    /// The answer when no deployment made the result (E9, handlers review
+    /// #4 and #5):
+    /// - a vendor attempt wins: it may have billed, so the caller's key must
+    ///   record it;
+    /// - with nothing passed over, the last refusal: the caller's to fix;
+    /// - every deployment not configured: what a direct request to its
+    ///   provider answers, the 400 `provider_not_configured`;
+    /// - every deployment's breaker open: a retryable 503 for when the first
+    ///   one closes (`Retry-After`);
+    /// - any other mix (both kinds of skip, or a refusal after a skip, which
+    ///   the skipped deployment may serve once its breaker closes): a
+    ///   retryable 502 that names why each deployment did not serve it.
+    ///
+    /// None of these but the first reached a vendor.
     fn into_error(self, model: &str) -> ProxyError {
-        match self.last_reached.or(self.last_refused) {
-            Some((provider, err)) => failure(model, &provider, Some(err), None),
-            None => ProxyError::AllDeploymentsFailed {
-                model: model.to_string(),
-                last_error: (!self.skipped.is_empty()).then(|| self.skipped.join("; ")),
-            },
+        if let Some((provider, err)) = self.last_reached {
+            return failure(model, &provider, Some(err), None);
+        }
+        if self.skipped.is_empty() {
+            return match self.last_refused {
+                Some((provider, err)) => failure(model, &provider, Some(err), None),
+                None => ProxyError::AllDeploymentsFailed { model: model.to_string(), last_error: None },
+            };
+        }
+        let named = self
+            .skipped
+            .iter()
+            .map(|(provider, skip)| skip.named(provider))
+            .chain(self.last_refused.iter().map(|(provider, err)| format!("{provider}: {err}")))
+            .collect::<Vec<_>>()
+            .join("; ");
+        if self.last_refused.is_none() {
+            if self.skipped.iter().all(|(_, skip)| matches!(skip, Skip::NotConfigured(_))) {
+                return not_configured_route(model, self.skipped);
+            }
+            let open: Option<Vec<std::time::Duration>> =
+                self.skipped.iter().map(|(_, skip)| if let Skip::Open(left) = skip { Some(*left) } else { None }).collect();
+            if let Some(shortest) = open.and_then(|lefts| lefts.into_iter().min()) {
+                let retry_after_secs = u64::try_from(shortest.as_millis()).unwrap_or(u64::MAX).div_ceil(1000).max(1);
+                return ProxyError::CoolingDown { model: model.to_string(), retry_after_secs, skipped: named };
+            }
+        }
+        ProxyError::AllDeploymentsFailed { model: model.to_string(), last_error: Some(named) }
+    }
+}
+
+impl Skip {
+    /// `provider: why`, as an error names a passed-over deployment.
+    fn named(&self, provider: &str) -> String {
+        match self {
+            Skip::Open(_) => format!("{provider}: circuit open"),
+            Skip::NotConfigured(Some(advice)) if advice != provider => format!("{provider}: not configured ({advice})"),
+            Skip::NotConfigured(_) => format!("{provider}: not configured"),
         }
     }
+}
+
+/// A route none of whose deployments is configured answers as a direct
+/// request to its provider would (handlers review #5): 400
+/// `provider_not_configured`, naming the first deployment's provider and its
+/// adapter's advice when it is the only one, and every provider when there
+/// are several. `skipped` holds only [`Skip::NotConfigured`], at least one.
+fn not_configured_route(model: &str, skipped: Vec<(String, Skip)>) -> ProxyError {
+    let mut providers: Vec<String> = Vec::new();
+    let mut advice = None;
+    for (provider, skip) in skipped {
+        if let Skip::NotConfigured(Some(a)) = skip {
+            advice.get_or_insert(a);
+        }
+        if !providers.contains(&provider) {
+            providers.push(provider);
+        }
+    }
+    let detail = match providers.len() {
+        0 | 1 => advice,
+        _ => Some(format!(
+            "no deployment of model {model}'s route is configured ({}); add a provider credential in the dashboard",
+            providers.join(", ")
+        )),
+    };
+    ProxyError::ProviderNotConfigured { provider: providers.into_iter().next().unwrap_or_default(), detail }
 }
 
 /// `last_error`'s text, naming the vendor job when one was accepted.
@@ -2722,6 +2877,44 @@ mod rehost_tests {
         let gone = format!("{}/missing", MockServer::start().await.uri());
         assert!(rehost_video(&store, None, "g2", None, Some(&gone), None, true, false).await.is_err());
         assert_eq!(std::fs::read_dir(dir.path().join("litegen/.spool")).unwrap().count(), 0);
+    }
+
+    /// Payloads review #3: a spool failure's text names no server path. A
+    /// keep that keeps failing ends at the reaper, which stores this text as
+    /// the generation's error for its caller to read; the path is the log's.
+    #[tokio::test]
+    async fn a_spool_failure_names_no_server_path() {
+        let link = Some("http://127.0.0.1:9/v.mp4");
+        // `litegen` is a file, so the spool directory under it can't be made.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("litegen"), b"not a directory").unwrap();
+        let store: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(dir.path(), "https://h".into()));
+        let failed = rehost_video(&store, None, "g", None, link, None, true, false).await;
+        let Err(RehostError::Transient(why)) = &failed else { panic!("a passing failure: {:?}", failed.as_ref().err()) };
+        let root = dir.path().display().to_string();
+        assert!(!why.contains(&root), "the spool directory's failure names a server path: {why}");
+
+        // A spool directory litegen may not write in (not for root, whom no
+        // mode stops: then this half can't be set up).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let spool = dir.path().join("litegen/.spool");
+            std::fs::create_dir_all(&spool).unwrap();
+            std::fs::set_permissions(&spool, std::fs::Permissions::from_mode(0o555)).unwrap();
+            if std::fs::File::create(spool.join("probe")).is_ok() {
+                eprintln!("the spool's mode doesn't stop this user (root): the unwritable-spool half is skipped");
+            } else {
+                let store: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(dir.path(), "https://h".into()));
+                let failed = rehost_video(&store, None, "g", None, link, None, true, false).await;
+                let _ = std::fs::set_permissions(&spool, std::fs::Permissions::from_mode(0o755));
+                let Err(RehostError::Transient(why)) = &failed else { panic!("a passing failure: {:?}", failed.as_ref().err()) };
+                let root = dir.path().display().to_string();
+                assert!(!why.contains(&root), "the spool file's failure names a server path: {why}");
+            }
+            let _ = std::fs::set_permissions(&spool, std::fs::Permissions::from_mode(0o755));
+        }
     }
 
     /// A store that counts what it keeps, by bytes or by file.
@@ -2922,6 +3115,97 @@ mod failure_tests {
         assert_eq!(ProxyError::not_configured("x").status_code(), 400);
     }
 
+    /// Handlers review #5: a route none of whose deployments is configured
+    /// answers as a direct request to its provider would: 400
+    /// `provider_not_configured`, not retryable, no vendor reached. It
+    /// answered a retryable 502, though no retry can help.
+    #[test]
+    fn a_route_with_no_configured_deployment_answers_as_a_direct_request() {
+        let mut one = Attempts::default();
+        one.skipped_unconfigured("fal");
+        let e = one.into_error("m");
+        assert!(matches!(&e, ProxyError::ProviderNotConfigured { provider, .. } if provider == "fal"), "{e:?}");
+        assert_eq!((e.status_code(), e.retryable(), e.reached_vendor()), (400, false, false), "{e}");
+        let mut two = Attempts::default();
+        two.skipped_unconfigured("fal");
+        two.skipped_unconfigured("replicate");
+        let e = two.into_error("m");
+        assert!(matches!(&e, ProxyError::ProviderNotConfigured { .. }), "{e:?}");
+        assert_eq!((e.status_code(), e.retryable()), (400, false), "{e}");
+        assert!(e.to_string().contains("fal") && e.to_string().contains("replicate"), "names both: {e}");
+    }
+
+    /// Handlers review #5: a route whose every deployment's breaker is open
+    /// answers 503, retryable, after the shortest wait left (`Retry-After`,
+    /// whole seconds rounded up): when the first deployment is back. It
+    /// answered a 502 that said nothing of when to retry.
+    #[test]
+    fn a_route_whose_every_breaker_is_open_answers_503_after_the_shortest_wait() {
+        let mut a = Attempts::default();
+        a.skipped_open("fal", std::time::Duration::from_secs(30));
+        a.skipped_open("replicate", std::time::Duration::from_millis(4200));
+        let e = a.into_error("m");
+        assert_eq!((e.status_code(), e.retryable(), e.reached_vendor()), (503, true, false), "{e}");
+        assert_eq!(e.retry_after_secs(), Some(5), "{e}");
+        assert!(e.to_string().contains("fal") && e.to_string().contains("replicate"), "{e}");
+    }
+
+    /// Handlers review #4: a refusal after a skipped deployment is no
+    /// reason to give up: the skipped one may serve the request once its
+    /// breaker closes. The answer is the retryable 502 that names the skip
+    /// and the refusal. With nothing skipped, the refusal stands (E9).
+    #[test]
+    fn a_refusal_wins_only_when_nothing_was_skipped() {
+        let refusal = || ProviderError::InvalidRequest("cannot make 4K".into());
+        let mut skipped = Attempts::default();
+        skipped.skipped_open("fal", std::time::Duration::from_secs(10));
+        skipped.failed("replicate", refusal());
+        let e = skipped.into_error("m");
+        assert_eq!((e.status_code(), e.retryable(), e.reached_vendor()), (502, true, false), "{e}");
+        assert!(e.to_string().contains("fal: circuit open") && e.to_string().contains("cannot make 4K"), "{e}");
+        let mut none_skipped = Attempts::default();
+        none_skipped.failed("replicate", refusal());
+        let e = none_skipped.into_error("m");
+        assert!(matches!(e, ProxyError::Refused { .. }), "{e:?}");
+        assert_eq!((e.status_code(), e.retryable()), (400, false), "{e}");
+    }
+
+    /// Skips of both kinds (one breaker open, one provider missing) answer
+    /// the retryable 502 that names each, as before.
+    #[test]
+    fn mixed_skips_answer_a_retryable_502_that_names_each() {
+        let mut a = Attempts::default();
+        a.skipped_open("fal", std::time::Duration::from_secs(10));
+        a.skipped_unconfigured("replicate");
+        let e = a.into_error("m");
+        assert_eq!((e.status_code(), e.retryable(), e.reached_vendor()), (502, true, false), "{e}");
+        assert!(e.to_string().contains("fal: circuit open") && e.to_string().contains("replicate: not configured"), "{e}");
+    }
+
+    /// A vendor attempt wins over any skip: it may have billed, so the
+    /// caller's key must record it (E9).
+    #[test]
+    fn a_vendor_attempt_wins_over_skips() {
+        let mut a = Attempts::default();
+        a.skipped_open("fal", std::time::Duration::from_secs(10));
+        a.failed("replicate", ProviderError::RequestFailed { message: "boom".into(), status_code: Some(500), provider_error: None, retryable: true });
+        let e = a.into_error("m");
+        assert!(e.reached_vendor(), "{e:?}");
+        assert!(matches!(&e, ProxyError::VendorFailed { provider, .. } if provider == "replicate"), "{e:?}");
+    }
+
+    /// Handlers review #7: what a failed request's tenant-readable records
+    /// (its log row, a segmentation's row, the error artifact) keep of an
+    /// error: an internal error's fixed text, any other error's own. The
+    /// segmentation row and `log_failed_generation` both read it here.
+    #[test]
+    fn a_record_keeps_an_internal_errors_fixed_text_and_any_other_errors_own() {
+        let internal = ProxyError::Internal("preservation stopped: task 3 panicked at src/proxy/preserve.rs:40".into());
+        assert_eq!(internal.logged_message(), "internal server error");
+        let refused = ProxyError::Refused { model: "m".into(), provider: "p".into(), message: "cannot make 4K".into() };
+        assert_eq!(refused.logged_message(), refused.to_string());
+    }
+
     /// E9: an adapter's refusal before any call is the caller's to fix: a
     /// 400 that reached no vendor, so it spends no `Idempotency-Key`.
     #[test]
@@ -3051,6 +3335,12 @@ mod breaker_credential_tests {
     /// each, over the providers `providers` (name, config) registered as the
     /// platform's, with a breaker that opens after `threshold` failures.
     async fn routed(model: &str, deployments: &[&str], providers: &[(&str, serde_json::Value)], threshold: u32) -> ProxyRouter {
+        routed_with("fallback", model, deployments, providers, threshold).await
+    }
+
+    /// [`routed`], with the route's `strategy` (`fallback`,
+    /// `weighted_round_robin`, `lowest_cost` or `lowest_latency`).
+    async fn routed_with(strategy: &str, model: &str, deployments: &[&str], providers: &[(&str, serde_json::Value)], threshold: u32) -> ProxyRouter {
         let mut config = crate::config::AppConfig::default();
         for (name, cfg) in providers {
             config.providers.insert(name.to_string(), serde_json::from_value(cfg.clone()).unwrap());
@@ -3061,7 +3351,7 @@ mod breaker_credential_tests {
                 .iter()
                 .map(|p| crate::config::DeploymentConfig { provider: p.to_string(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 })
                 .collect(),
-            strategy: Some("fallback".into()),
+            strategy: Some(strategy.into()),
             cache: None,
         }];
         config.circuit_breaker = crate::config::CircuitBreakerConfig { threshold, open_for_seconds: 60 };
@@ -3136,6 +3426,81 @@ mod breaker_credential_tests {
         let sent = authorizations(&openai).await;
         assert!(!sent.iter().any(|a| a.contains("org-fal-key")), "the org's fal key reached the route's OpenAI deployment: {sent:?}");
         assert_eq!(sent, ["Bearer platform-openai-key", "Bearer org-openai-key"]);
+    }
+
+    /// Registry review #8: BYO-ROUTE holds whatever the route's strategy.
+    /// Each strategy orders the deployments its own way (`lowest_cost` quotes
+    /// each through `app_creds.get(&d.provider)`) and then dispatches; every
+    /// one hands a deployment only the org's key for its own provider. The
+    /// fallback strategy is the test above.
+    #[tokio::test]
+    async fn every_route_strategy_gives_an_image_deployment_only_its_own_providers_org_key() {
+        for strategy in ["weighted_round_robin", "lowest_cost", "lowest_latency"] {
+            let openai = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/images/generations"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "created": 1, "data": [{ "b64_json": "aW1n" }] })))
+                .mount(&openai)
+                .await;
+            let platform = serde_json::json!({ "api_key": "platform-openai-key", "api_base": format!("{}/v1", openai.uri()) });
+            let router = routed_with(strategy, "fal/flux-dev", &["openai"], &[("openai", platform)], 5).await;
+            let r = flux_dev(&router, OrgCredentials::of("fal", Some(key("org-fal-key")))).await;
+            assert!(r.is_ok(), "{strategy}: {:?}", r.err());
+            let mut both = OrgCredentials::of("fal", Some(key("org-fal-key")));
+            both.insert("openai", key("org-openai-key"));
+            let r = flux_dev(&router, both).await;
+            assert!(r.is_ok(), "{strategy}: {:?}", r.err());
+            assert_eq!(authorizations(&openai).await, ["Bearer platform-openai-key", "Bearer org-openai-key"], "{strategy}");
+        }
+    }
+
+    /// One `luma/ray-2` video through `router` on `creds`.
+    async fn ray_2(router: &ProxyRouter, creds: OrgCredentials) -> Result<VideoGenerationResponse, ProxyError> {
+        let mut models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        models.pop();
+        models.push("models");
+        let schema = crate::capabilities::CapabilityRegistry::from_dir(&models).unwrap().get("luma/ray-2").unwrap().clone();
+        let base: BaseGenerationRequest = serde_json::from_value(serde_json::json!({ "prompt": "a lighthouse", "model": "luma/ray-2" })).unwrap();
+        let extras = crate::providers::VideoExtras {
+            duration_seconds: 5.0,
+            aspect_ratio: None,
+            resolution: None,
+            fps: None,
+            extra: None,
+            camera: None, audio: None, r#loop: None,
+            source: None, direction: None, time_range: None, replace: None,
+        };
+        let materialized = MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() };
+        router.generate_video(&schema, &base, &extras, &materialized, creds).await
+    }
+
+    /// Registry review #8: the video twin of
+    /// `a_routes_deployment_gets_only_its_own_providers_org_key`, for every
+    /// strategy (`fallback_video`, and the `lowest_cost` quotes). A route
+    /// sends `luma/ray-2` to an OpenAI (Sora) deployment: the org's Luma key
+    /// never reaches OpenAI; the deployment runs on the org's OpenAI key when
+    /// it stored one, else on the platform's, as a direct request would.
+    #[tokio::test]
+    async fn a_video_routes_deployment_gets_only_its_own_providers_org_key() {
+        for strategy in ["fallback", "weighted_round_robin", "lowest_cost", "lowest_latency"] {
+            let openai = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/videos"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "video_1", "status": "queued", "model": "sora-2" })))
+                .mount(&openai)
+                .await;
+            let platform = serde_json::json!({ "api_key": "platform-openai-key", "api_base": format!("{}/v1", openai.uri()) });
+            let router = routed_with(strategy, "luma/ray-2", &["openai"], &[("openai", platform)], 5).await;
+            let r = ray_2(&router, OrgCredentials::of("luma", Some(key("org-luma-key")))).await;
+            assert!(r.is_ok(), "{strategy}: {:?}", r.err());
+            let mut both = OrgCredentials::of("luma", Some(key("org-luma-key")));
+            both.insert("openai", key("org-openai-key"));
+            let r = ray_2(&router, both).await;
+            assert!(r.is_ok(), "{strategy}: {:?}", r.err());
+            let sent = authorizations(&openai).await;
+            assert!(!sent.iter().any(|a| a.contains("org-luma-key")), "{strategy}: the org's Luma key reached the route's OpenAI deployment: {sent:?}");
+            assert_eq!(sent, ["Bearer platform-openai-key", "Bearer org-openai-key"], "{strategy}");
+        }
     }
 
     /// BYO-ROUTE with E9: whether a deployment's 401 counts toward its
@@ -3621,8 +3986,8 @@ mod model3d_router_tests {
             display_name: "slow".into(), description: String::new(), docs_url: None,
             pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
-            prompt: crate::capabilities::PromptSpec { required: true, min_length: None, max_length: None },
-            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), tags: vec![],
+            prompt: crate::capabilities::PromptSpec { required: true, min_length: None, max_length: None, required_for_text_to_video: false },
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), litegen_params: Default::default(), tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         };
         let base = crate::types::BaseGenerationRequest {
@@ -3714,8 +4079,8 @@ mod model3d_router_tests {
             display_name: "rig".into(), description: String::new(), docs_url: None,
             pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: Default::default(),
-            prompt: crate::capabilities::PromptSpec { required: false, min_length: None, max_length: None },
-            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), tags: vec![],
+            prompt: crate::capabilities::PromptSpec { required: false, min_length: None, max_length: None, required_for_text_to_video: false },
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], extra_params: Default::default(), litegen_params: Default::default(), tags: vec![],
             deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         };
         let extras = crate::providers::Model3dExtras {

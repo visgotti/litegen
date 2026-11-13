@@ -27,11 +27,12 @@ fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
         docs_url: None,
         pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
         capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
-        prompt: PromptSpec { required: true, min_length: None, max_length: None },
+        prompt: PromptSpec { required: true, min_length: None, max_length: None, required_for_text_to_video: false },
         params,
         ref_inputs: None,
         extra_allowlist: vec![],
         extra_params: Default::default(),
+        litegen_params: Default::default(),
         tags: vec![],
         deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
     }
@@ -550,7 +551,7 @@ const RIG_PARAMS: [&str; 5] = ["skeleton", "joint_naming", "height_m", "animatio
 
 fn clip(name: &str, preset: Option<&str>, prompt: Option<&str>) -> AnimationRequest {
     AnimationRequest {
-        name: name.into(),
+        name: Some(name.into()),
         preset: preset.map(str::to_string),
         prompt: prompt.map(str::to_string),
         duration_s: None,
@@ -686,6 +687,70 @@ fn clip_names_are_unique_and_well_formed() {
         assert_eq!((err.code.as_str(), err.param.as_deref()), ("animation_name_invalid", Some("animations")), "{clips:?}");
     }
     assert!(validate_model3d(&real("mock/animate-3d"), animate_request(vec![clip("Walk_01.v-2", Some("walk"), None)])).is_ok());
+}
+
+/// An animate request on `mock/animate-3d` with these clips, as a caller's
+/// JSON: it reaches the validator only if it deserializes.
+fn animate_json(clips: serde_json::Value) -> Model3dGenerationRequest {
+    serde_json::from_value(serde_json::json!({
+        "model": "mock/animate-3d",
+        "source_model": { "type": "generation", "value": "litegen-3d-x" },
+        "animations": clips,
+    }))
+    .expect("a clip may leave its name out, or send null")
+}
+
+/// The clip names a validated request carries, read through JSON.
+fn clip_names(r: &Model3dGenerationRequest) -> Vec<serde_json::Value> {
+    serde_json::to_value(r).unwrap()["animations"].as_array().unwrap().iter().map(|c| c["name"].clone()).collect()
+}
+
+/// E11c: litegen names a clip that leaves `name` out (or sends null): after
+/// its canonical preset, else its preset id with every other character as
+/// `_`; a prompt clip `clip-<n>`, its place in the list; `-2`, `-3`, … on a
+/// name already taken.
+#[test]
+fn an_unnamed_clip_is_named_after_its_preset_or_its_place() {
+    let r = animate_json(serde_json::json!([
+        { "preset": "mock:walk" },
+        { "name": null, "preset": "mock:walk" },
+        { "preset": "mock:wave" },
+        { "prompt": "a cheer", "duration_s": 3.0 },
+        { "name": "walk-3", "preset": "mock:run" },
+    ]));
+    let out = validate_model3d(&real("mock/animate-3d"), r).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(clip_names(&out.request), ["walk", "walk-2", "mock_wave", "clip-4", "walk-3"]);
+}
+
+/// E11c: typed names are taken first and never changed.
+#[test]
+fn a_typed_name_is_kept_and_an_unnamed_clip_steps_around_it() {
+    let r = animate_json(serde_json::json!([{ "preset": "mock:walk" }, { "name": "walk", "preset": "mock:run" }]));
+    let out = validate_model3d(&real("mock/animate-3d"), r).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(clip_names(&out.request), ["walk-2", "walk"]);
+}
+
+/// E11c: a preset that leaves no legal name (empty) names the clip by its
+/// place, so the caller gets the clip's own refusal, not a name it never sent.
+#[test]
+fn an_unnamed_clip_whose_preset_gives_no_name_is_named_by_its_place() {
+    let r = animate_json(serde_json::json!([{ "name": "a", "preset": "mock:walk" }, { "preset": "" }]));
+    let err = validate_model3d(&real("mock/animate-3d"), r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("animations")), "{}", err.message);
+    assert!(err.message.contains("'clip-2'"), "{}", err.message);
+}
+
+/// E11c: a clip's refusal says which clip, by its place in the list.
+#[test]
+fn a_clips_refusal_names_its_place_in_the_list() {
+    let mut timed = clip("b", Some("walk"), None);
+    timed.duration_s = Some(3.0);
+    let err = animate_err(vec![clip("a", Some("walk"), None), timed]);
+    assert_eq!(err.code, "animation_clip_invalid", "{}", err.message);
+    assert!(err.message.contains("clip 2"), "{}", err.message);
+    let err = animate_err(vec![clip("a", Some("walk"), None), clip("a", Some("run"), None)]);
+    assert_eq!(err.code, "animation_name_invalid", "{}", err.message);
+    assert!(err.message.contains("clip 2"), "{}", err.message);
 }
 
 #[test]
@@ -910,7 +975,7 @@ fn rig_schema() -> ModelSchema {
     s.id = "mock/rig-3d".into();
     s.task = ModelTask::Rig;
     s.capabilities = ModelCapabilityFlags::default();
-    s.prompt = PromptSpec { required: false, min_length: None, max_length: Some(0) };
+    s.prompt = PromptSpec { required: false, min_length: None, max_length: Some(0), required_for_text_to_video: false };
     s
 }
 

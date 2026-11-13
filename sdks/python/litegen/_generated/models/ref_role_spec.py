@@ -1,7 +1,13 @@
-from typing import Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    Any,
+    Dict,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
-from attrs import field as _attrs_field
 
 from ..models.keyframe_timing import KeyframeTiming
 from ..models.mask_convention import MaskConvention
@@ -35,7 +41,6 @@ class RefRoleSpec:
     required: Union[Unset, bool] = UNSET
     time_step_s: Union[None, Unset, float] = UNSET
     timing: Union[KeyframeTiming, None, Unset] = UNSET
-    additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         max_count = self.max_count
@@ -75,7 +80,6 @@ class RefRoleSpec:
             timing = self.timing
 
         field_dict: Dict[str, Any] = {}
-        field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "max_count": max_count,
@@ -171,21 +175,4 @@ class RefRoleSpec:
             timing=timing,
         )
 
-        ref_role_spec.additional_properties = d
         return ref_role_spec
-
-    @property
-    def additional_keys(self) -> List[str]:
-        return list(self.additional_properties.keys())
-
-    def __getitem__(self, key: str) -> Any:
-        return self.additional_properties[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.additional_properties[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self.additional_properties[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.additional_properties

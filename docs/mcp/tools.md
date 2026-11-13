@@ -8,26 +8,26 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`estimate_image_cost`](#estimate_image_cost) | Estimate image cost | `POST /v1/images/cost` | the `generate` scope | yes | no |
-| [`generate_image`](#generate_image) | Generate image | `POST /v1/images/generations` | the `generate` scope | no | no |
-| [`segment_image`](#segment_image) | Segment image | `POST /v1/images/segmentations` | the `generate` scope | no | no |
+| [`estimate_image_cost`](#estimate_image_cost) | Estimate image cost | `POST /v1/images/cost` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
+| [`generate_image`](#generate_image) | Generate image | `POST /v1/images/generations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`segment_image`](#segment_image) | Segment image | `POST /v1/images/segmentations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
 
 ### Toolset `videos`
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`estimate_video_cost`](#estimate_video_cost) | Estimate video cost | `POST /v1/videos/cost` | the `generate` scope | yes | no |
-| [`generate_video`](#generate_video) | Generate video | `POST /v1/videos/generations` | the `generate` scope | no | no |
-| [`get_video_status`](#get_video_status) | Get video status | `GET /v1/videos/{id}` | the `generate` scope | yes | no |
+| [`estimate_video_cost`](#estimate_video_cost) | Estimate video cost | `POST /v1/videos/cost` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
+| [`generate_video`](#generate_video) | Generate video | `POST /v1/videos/generations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`get_video_status`](#get_video_status) | Get video status | `GET /v1/videos/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
 
 ### Toolset `models3d`
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`convert_3d_model`](#convert_3d_model) | Convert 3D model | `POST /v1/utils/models3d/convert` | the `generate` scope | no | no |
-| [`estimate_3d_model_cost`](#estimate_3d_model_cost) | Estimate 3D model cost | `POST /v1/models3d/cost` | the `generate` scope | yes | no |
-| [`generate_3d_model`](#generate_3d_model) | Generate 3D model | `POST /v1/models3d/generations` | the `generate` scope | no | no |
-| [`get_3d_model_status`](#get_3d_model_status) | Get 3D model status | `GET /v1/models3d/{id}` | the `generate` scope | yes | no |
+| [`convert_3d_model`](#convert_3d_model) | Convert 3D model | `POST /v1/utils/models3d/convert` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`estimate_3d_model_cost`](#estimate_3d_model_cost) | Estimate 3D model cost | `POST /v1/models3d/cost` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
+| [`generate_3d_model`](#generate_3d_model) | Generate 3D model | `POST /v1/models3d/generations` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`get_3d_model_status`](#get_3d_model_status) | Get 3D model status | `GET /v1/models3d/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | yes | no |
 | [`list_3d_convert_formats`](#list_3d_convert_formats) | List 3D convert formats | `GET /v1/utils/models3d/formats` | the `generate` or `read` scope | yes | no |
 
 ### Toolset `catalog`
@@ -42,13 +42,13 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`cancel_generation`](#cancel_generation) | Cancel generation | `PATCH /v1/generations/{id}` | the `generate` or `read` scope | no | no |
-| [`delete_generation`](#delete_generation) | Delete generation | `DELETE /v1/generations/{id}` | the `generate` scope | no | yes |
+| [`cancel_generation`](#cancel_generation) | Cancel generation | `PATCH /v1/generations/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | no | no |
+| [`delete_generation`](#delete_generation) | Delete generation | `DELETE /v1/generations/{id}` | the `generate` scope (a signed-in person also needs `generation:create`) | no | yes |
 | [`get_generation`](#get_generation) | Get generation | `GET /v1/generations/{id}` | the `generate` or `read` scope | yes | no |
 | [`get_generation_asset`](#get_generation_asset) | Get generation asset | `GET /v1/generations/{id}/assets/{index}` | the `generate` or `read` scope | yes | no |
 | [`list_generation_assets`](#list_generation_assets) | List generation assets | `GET /v1/generations/{id}/assets` | the `generate` or `read` scope | yes | no |
 | [`list_generations`](#list_generations) | List generations | `GET /v1/generations` | the `generate` or `read` scope | yes | no |
-| [`revoke_generation_links`](#revoke_generation_links) | Revoke generation links | `POST /v1/generations/{id}/revoke-links` | the `generate` scope | no | yes |
+| [`revoke_generation_links`](#revoke_generation_links) | Revoke generation links | `POST /v1/generations/{id}/revoke-links` | the `generate` scope (a signed-in person also needs `generation:create`) | no | yes |
 | [`wait_for_generation`](#wait_for_generation) | Wait for generation | polls the job's status route | the `generate` or `read` scope | yes | no |
 
 ### Toolset `account`
@@ -263,7 +263,7 @@ No arguments.
 
 Soft-cancel a generation.
 
-`PATCH /v1/generations/{id}` · on `/mcp` · needs the `generate` or `read` scope
+`PATCH /v1/generations/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -274,7 +274,7 @@ Soft-cancel a generation.
 
 delete a finished generation's files and request.
 
-`DELETE /v1/generations/{id}` · on `/mcp` · needs the `generate` scope
+`DELETE /v1/generations/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -327,7 +327,7 @@ Paginated list of generations.
 
 end every litegen link to one generation's files.
 
-`POST /v1/generations/{id}/revoke-links` · on `/mcp` · needs the `generate` scope
+`POST /v1/generations/{id}/revoke-links` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -337,7 +337,7 @@ end every litegen link to one generation's files.
 
 Quote what generate_image would cost with the same arguments. Generates nothing and spends nothing.
 
-`POST /v1/images/cost` · on `/mcp` · needs the `generate` scope
+`POST /v1/images/cost` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -376,7 +376,7 @@ Quote what generate_image would cost with the same arguments. Generates nothing 
 
 Generate or edit images with any image model LiteGen serves. Returns the finished images as URLs plus small previews. Find a model with list_models (media_type image) and its parameters with get_model; quote first with estimate_image_cost. Spends your budget.
 
-`POST /v1/images/generations` · on `/mcp` · needs the `generate` scope
+`POST /v1/images/generations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -420,7 +420,7 @@ Generate or edit images with any image model LiteGen serves. Returns the finishe
 
 Cut an image into masks, or remove its background, with a segmentation model. Spends your budget.
 
-`POST /v1/images/segmentations` · on `/mcp` · needs the `generate` scope
+`POST /v1/images/segmentations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -437,7 +437,7 @@ Cut an image into masks, or remove its background, with a segmentation model. Sp
 
 Convert a mesh between formats on LiteGen itself: no AI model, no charge. Give the mesh as source_url or data_base64; list_3d_convert_formats says what converts to what.
 
-`POST /v1/utils/models3d/convert` · on `/mcp` · needs the `generate` scope
+`POST /v1/utils/models3d/convert` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -462,12 +462,12 @@ Convert a mesh between formats on LiteGen itself: no AI model, no charge. Give t
 
 Quote what generate_3d_model would cost with the same arguments. Generates nothing and spends nothing.
 
-`POST /v1/models3d/cost` · on `/mcp` · needs the `generate` scope
+`POST /v1/models3d/cost` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `model` | string | yes |  |
-| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named exactly its `name`. |
+| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named its `name`, or the name litegen gives a clip that leaves it out. |
 | `center` | boolean | no | Centre the mesh's bounds on x and z. |
 | `dae_morphs` | one of `bake`, `keep` | no | How the Collada (`dae`) litegen writes stores a mesh's morph targets, when litegen writes one for this request (a vendor Collada delivered as it is keeps the vendor's): `bake` (the default) applies… |
 | `extra` | any | no | Vendor fields with no canonical param, sent to the vendor as given: only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`), each of the type its `extra_params` entry gives, when it… |
@@ -507,12 +507,12 @@ Quote what generate_3d_model would cost with the same arguments. Generates nothi
 
 Start a 3D model generation (text-to-3D, image-to-3D, multiview, rigging and other 3D operations). Returns a job right away: pass its id to wait_for_generation to get the mesh files. Spends your budget.
 
-`POST /v1/models3d/generations` · on `/mcp` · needs the `generate` scope
+`POST /v1/models3d/generations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `model` | string | yes |  |
-| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named exactly its `name`. |
+| `animations` | array of object | no | The clips to make, in order: one glTF animation per entry, named its `name`, or the name litegen gives a clip that leaves it out. |
 | `center` | boolean | no | Centre the mesh's bounds on x and z. |
 | `dae_morphs` | one of `bake`, `keep` | no | How the Collada (`dae`) litegen writes stores a mesh's morph targets, when litegen writes one for this request (a vendor Collada delivered as it is keeps the vendor's): `bake` (the default) applies… |
 | `end_user` | string | no | Your own customer's id, so spend and budgets can be tracked per customer (sent as x-litegen-end-user). |
@@ -556,7 +556,7 @@ Start a 3D model generation (text-to-3D, image-to-3D, multiview, rigging and oth
 
 The current state of a 3D job; when completed, assets lists the mesh files in each requested format.
 
-`GET /v1/models3d/{id}` · on `/mcp` · needs the `generate` scope
+`GET /v1/models3d/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -574,7 +574,7 @@ No arguments.
 
 Quote what generate_video would cost with the same arguments. Generates nothing and spends nothing.
 
-`POST /v1/videos/cost` · on `/mcp` · needs the `generate` scope
+`POST /v1/videos/cost` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -603,7 +603,7 @@ Quote what generate_video would cost with the same arguments. Generates nothing 
 
 Start a video generation (text-to-video, image-to-video, keyframes, edits). Returns a job right away: pass its id to wait_for_generation to get the video. Spends your budget.
 
-`POST /v1/videos/generations` · on `/mcp` · needs the `generate` scope
+`POST /v1/videos/generations` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -636,7 +636,7 @@ Start a video generation (text-to-video, image-to-video, keyframes, edits). Retu
 
 The current state of a video job: queued, processing, completed (with video_url) or failed.
 
-`GET /v1/videos/{id}` · on `/mcp` · needs the `generate` scope
+`GET /v1/videos/{id}` · on `/mcp` · needs the `generate` scope (a signed-in person also needs `generation:create`)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -1184,6 +1184,7 @@ The body is a full model schema, the same shape as a `models/*.yaml` row, and pa
 | `docs_url` | string | no | The vendor's own API reference page for the endpoint this model calls — the page to re-read when a field mapping is questioned. |
 | `extra_allowlist` | array of string | no |  |
 | `extra_params` | object | no | The vendor's type for an `extra_allowlist` key, by key: `bool`, `int`, `float`, `string` or `string_array`, with its bounds or values when they are known. |
+| `litegen_params` | object | no | Request fields litegen applies to this model itself, beyond what its vendor takes, each with the bounds litegen holds it to and in the same `ParamSpec` shape as `params`: on every 3D model `ground`,… |
 | `native_orientation` | object | no | 3D only: the axes the vendor builds its meshes along, declared once a run has shown them. |
 | `params` | object | no |  |
 | `preserves_unmasked` | one of `exact`, `similar`, `unspecified` | no | Image edits: what the vendor promises about pixels outside the edit area, in its own words. |

@@ -6119,7 +6119,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to erase"
+        "description": "The rectangle to erase, sent drawn as the mask."
       }
     ],
     "pricing": {
@@ -6197,7 +6197,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to edit"
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
@@ -9682,7 +9682,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to edit"
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
@@ -17546,7 +17546,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to edit"
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
@@ -17693,7 +17693,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to edit"
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
@@ -17867,7 +17867,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to edit"
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
@@ -37058,7 +37058,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to edit"
+        "description": "The rectangle to edit, sent drawn as the mask."
       }
     ],
     "pricing": {
@@ -40340,7 +40340,7 @@ export const MODELS: ModelEntry[] = [
         "name": "region",
         "kind": "region",
         "label": "Region",
-        "description": "The rectangle to edit"
+        "description": "The rectangle to edit, sent drawn as the mask."
       },
       {
         "name": "negative_prompt",
@@ -40452,7 +40452,7 @@ export const MODELS: ModelEntry[] = [
         "name": "mask_prompt",
         "kind": "string",
         "label": "Find",
-        "description": "What to replace",
+        "description": "What to replace, named (Stability's search_prompt).",
         "maxLength": 10000
       },
       {

@@ -25,11 +25,20 @@ use tokio::sync::RwLock;
 ///   ones it accepted would otherwise make the breaker flap). So an open
 ///   window always runs its full length.
 /// - `is_open` is true while a window is running.
+/// - `open_remaining` is how long the running window has left, `None` when
+///   none runs.
 #[async_trait]
 pub trait BreakerStore: Send + Sync {
     async fn is_open(&self, provider: &str, open_for: Duration) -> bool;
     async fn record_success(&self, provider: &str, open_for: Duration);
     async fn record_failure(&self, provider: &str, threshold: u32, open_for: Duration);
+
+    /// How long the window running for `provider` has left: `None` when none
+    /// runs. A store that can only say whether one runs answers the whole
+    /// window, an upper bound.
+    async fn open_remaining(&self, provider: &str, open_for: Duration) -> Option<Duration> {
+        self.is_open(provider, open_for).await.then_some(open_for)
+    }
 }
 
 struct BreakerState {
@@ -46,13 +55,16 @@ impl BreakerState {
     }
 
     fn is_open(&self, open_for: Duration) -> bool {
-        if let Some(opened_at) = self.opened_at {
-            if opened_at.elapsed() < open_for {
-                return true; // Still open
-            }
-            // open_for has elapsed — breaker transitions to half-open (allow trial)
-        }
-        false
+        self.remaining(open_for).is_some()
+    }
+
+    /// How long the running window has left: `None` when none runs. Once
+    /// open_for has elapsed, calls go through again. The streak still
+    /// stands, so the first failure opens another window, and a success
+    /// clears it.
+    fn remaining(&self, open_for: Duration) -> Option<Duration> {
+        let opened_at = self.opened_at?;
+        Some(open_for.saturating_sub(opened_at.elapsed())).filter(|left| !left.is_zero())
     }
 }
 
@@ -67,6 +79,11 @@ impl BreakerStore for LocalBreakerStore {
     async fn is_open(&self, provider: &str, open_for: Duration) -> bool {
         let state = self.state.read().await;
         state.get(provider).map(|s| s.is_open(open_for)).unwrap_or(false)
+    }
+
+    async fn open_remaining(&self, provider: &str, open_for: Duration) -> Option<Duration> {
+        let state = self.state.read().await;
+        state.get(provider).and_then(|s| s.remaining(open_for))
     }
 
     async fn record_success(&self, provider: &str, open_for: Duration) {
@@ -130,6 +147,12 @@ impl CircuitBreaker {
     /// Returns `true` if the breaker for this provider is open (skip the call).
     pub async fn is_open(&self, provider: &str) -> bool {
         self.store.is_open(provider, self.open_for()).await
+    }
+
+    /// How long the breaker for this provider stays open: `None` when it is
+    /// closed (make the call). One check, like [`Self::is_open`].
+    pub async fn open_remaining(&self, provider: &str) -> Option<Duration> {
+        self.store.open_remaining(provider, self.open_for()).await
     }
 
     /// Call after a successful provider response. Resets the failure counter,

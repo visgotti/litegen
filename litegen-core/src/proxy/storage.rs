@@ -98,7 +98,7 @@ async fn send_signed(bucket: &s3::Bucket, request: reqwest::RequestBuilder) -> R
 /// ([`upload_client`]), cut off once it stops moving for `idle`
 /// ([`put_watched`]). Sent [`STREAM_CHUNK`] at a time, so the watch sees it
 /// move; the chunks share `bytes`, nothing is copied.
-async fn guarded_put(
+async fn presigned_put(
     client: &reqwest::Client,
     bucket: &s3::Bucket,
     key: &str,
@@ -334,7 +334,12 @@ async fn presigned_put_file(
     content_type: &str,
     idle: std::time::Duration,
 ) -> Result<(), ImageStoreError> {
-    let unread = |e: std::io::Error| ImageStoreError::UploadFailed(format!("could not read {}: {e}", path.display()));
+    // The path is the log's: this text can end up as the generation's stored
+    // error, which its caller reads (payloads review #3).
+    let unread = |e: std::io::Error| {
+        tracing::warn!(path = %path.display(), error = %e, "could not read a file to upload");
+        ImageStoreError::UploadFailed("could not read the file to upload".into())
+    };
     let url = bucket
         .presign_put(format!("/{key}"), PRESIGN_SECS, None, None)
         .await
@@ -374,7 +379,7 @@ impl ImageStore for S3Store {
         let key = format!("{}/{}.{}", self.path_prefix, generation_id, ext);
 
         if self.guarded {
-            guarded_put(&upload_client(true), &self.bucket, &key, bytes::Bytes::copy_from_slice(data), content_type, UPLOAD_IDLE).await?;
+            presigned_put(&upload_client(true), &self.bucket, &key, bytes::Bytes::copy_from_slice(data), content_type, UPLOAD_IDLE).await?;
             info!(key = %key, "Image uploaded to S3");
             return Ok(self.url_for(&key));
         }
@@ -575,11 +580,14 @@ impl S3Storage {
         })
     }
 
-    /// Test only: cut uploads off after `idle` without moving, instead of
-    /// [`UPLOAD_IDLE`].
+    /// Test only: this store's time limits scaled down to `idle`: an upload
+    /// is cut off after `idle` without moving, instead of [`UPLOAD_IDLE`],
+    /// and a request through rust-s3's own client after `idle` in all,
+    /// instead of its 60 s (the two are equal in production).
     #[cfg(test)]
     pub(crate) fn with_upload_idle(mut self, idle: std::time::Duration) -> Self {
         self.upload_idle = idle;
+        self.bucket.set_request_timeout(Some(idle));
         self
     }
 
@@ -603,18 +611,14 @@ impl S3Storage {
 
 #[async_trait::async_trait]
 impl ImageStorage for S3Storage {
+    /// A presigned PUT through [`upload_client`] (guarded for a tenant's
+    /// bucket), as [`put_file`](Self::put_file) sends a file: cut off once it
+    /// stops moving, never after a fixed time. rust-s3's own PUT had 60 s for
+    /// the whole request, too short for a large video handed over as bytes
+    /// (Veo, Bedrock, Sora), and hashed the whole body for its signature on
+    /// the runtime's thread (payloads fix-up follow-up 1).
     async fn put(&self, key: &str, bytes: &bytes::Bytes, content_type: &str) -> Result<String, ImageStoreError> {
-        if self.guard.is_some() {
-            guarded_put(&upload_client(true), &self.bucket, key, bytes.clone(), content_type, self.upload_idle).await?;
-            return Ok(self.object_url(key));
-        }
-        let response = self.bucket
-            .put_object_with_content_type(key, bytes.as_ref(), content_type)
-            .await
-            .map_err(|e| ImageStoreError::UploadFailed(format!("S3 PUT failed: {e}")))?;
-        if response.status_code() >= 300 {
-            return Err(ImageStoreError::UploadFailed(format!("S3 returned HTTP {}", response.status_code())));
-        }
+        presigned_put(&upload_client(self.guard.is_some()), &self.bucket, key, bytes.clone(), content_type, self.upload_idle).await?;
         Ok(self.object_url(key))
     }
     async fn delete(&self, key: &str) -> Result<(), ImageStoreError> {
@@ -1442,7 +1446,7 @@ mod guarded_bucket_tests {
         assert!(images.store(b"x", "image/png", "g1").await.is_err(), "store");
         assert_eq!(server.received_requests().await.unwrap().len(), 0, "nothing reached the address inside");
 
-        // rust-s3's own client, the operator's, gets there.
+        // The operator's upload client, which isn't address-guarded, gets there.
         S3Storage::from_config(&config(&by_name)).unwrap().put("k.glb", &body, "model/gltf-binary").await.unwrap();
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
@@ -1623,12 +1627,16 @@ mod guarded_bucket_tests {
         (endpoint, read)
     }
 
-    /// The three ways a kept file goes up to a bucket through litegen's own
-    /// client: a spool file (a video named by a link) to the operator's
-    /// bucket and to a tenant's (guarded) one, and bytes in memory (a video
-    /// handed over whole) to a tenant's.
-    const UPLOAD_PATHS: [(&str, bool, bool); 3] =
-        [("operator, from a file", false, true), ("guarded, from a file", true, true), ("guarded, from memory", true, false)];
+    /// The four ways a kept file goes up to a bucket: a spool file (a video
+    /// named by a link) and bytes in memory (a video handed over whole: Veo,
+    /// Bedrock, Sora), each to the operator's bucket and to a tenant's
+    /// (guarded) one.
+    const UPLOAD_PATHS: [(&str, bool, bool); 4] = [
+        ("operator, from a file", false, true),
+        ("guarded, from a file", true, true),
+        ("guarded, from memory", true, false),
+        ("operator, from memory", false, false),
+    ];
 
     /// One upload's path name, outcome, time taken and the body bytes its
     /// bucket read.
@@ -1713,6 +1721,36 @@ mod guarded_bucket_tests {
         }
     }
 
+    /// A store that keeps bytes: the trait's default `put_file` reads the
+    /// file and puts them.
+    struct BytesOnly;
+
+    #[async_trait::async_trait]
+    impl ImageStorage for BytesOnly {
+        async fn put(&self, key: &str, _bytes: &bytes::Bytes, _content_type: &str) -> Result<String, ImageStoreError> {
+            Ok(format!("https://h/{key}"))
+        }
+        async fn delete(&self, _key: &str) -> Result<(), ImageStoreError> {
+            Ok(())
+        }
+    }
+
+    /// Payloads review #3: an upload whose spool file can't be read names
+    /// no server path in its error. A keep that keeps failing ends at the
+    /// reaper, which stores this text as the generation's error for its
+    /// caller to read; the path is the log's.
+    #[tokio::test]
+    async fn an_upload_whose_file_cannot_be_read_names_no_server_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("litegen-video-gone.part");
+        let root = dir.path().display().to_string();
+        let s3 = S3Storage::from_config(&config("http://127.0.0.1:9")).unwrap();
+        let err = s3.put_file("litegen/video/g/video.mp4", &missing, "video/mp4").await.unwrap_err().to_string();
+        assert!(!err.contains(&root), "S3: {err}");
+        let err = BytesOnly.put_file("litegen/video/g/video.mp4", &missing, "video/mp4").await.unwrap_err().to_string();
+        assert!(!err.contains(&root), "the default put_file: {err}");
+    }
+
     /// No file litegen keeps is larger than 1 GiB, so an object that says it
     /// is larger is refused before any of it is read, through either client.
     #[tokio::test]
@@ -1787,6 +1825,17 @@ mod guarded_bucket_tests {
         assert!(storage.get("k/missing.glb").await.expect("a miss is no error").is_none());
         storage.delete("k/model.glb").await.expect("presigned DELETE accepted");
         assert!(storage.get("k/model.glb").await.unwrap().is_none(), "deleted");
+
+        // The operator's own bucket (no guard): bytes (a video Veo, Bedrock
+        // or Sora handed over) go in with a presigned PUT through litegen's
+        // upload client too, and the bucket takes its signature (payloads
+        // fix-up follow-up 1).
+        let operator = S3Storage::from_config(&cfg).unwrap();
+        let video = bytes::Bytes::from((0..300_000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+        operator.put("k/video.mp4", &video, "video/mp4").await.expect("the operator's presigned PUT accepted");
+        let (got, content_type) = operator.get("k/video.mp4").await.expect("read back").expect("found");
+        assert!(got == video && content_type == "video/mp4", "the video arrived whole ({} of {} bytes, {content_type})", got.len(), video.len());
+        operator.delete("k/video.mp4").await.expect("deleted");
 
         let images = S3Store::from_config(&cfg).unwrap().guarded();
         let url = images.store(b"png", "image/png", "g1").await.expect("presigned image PUT accepted");

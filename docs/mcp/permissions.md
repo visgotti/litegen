@@ -31,7 +31,10 @@ What each scope opens:
 A key is bound to one organization and app, and never sees another
 organization's data. Only owners and admins (or an `admin`-scope key) can
 give a key the `admin` scope; LiteGen checks that when a key is created and
-when its scopes are edited.
+when its scopes are edited. A key acts for the person who made it, so it
+holds `admin` only while they're an owner or admin, and `generate` only
+while they're not a viewer: the key of someone made a viewer sees at most
+the tools `read` opens.
 
 ## OAuth
 
@@ -58,16 +61,18 @@ each.
 
 The person's role still applies, read again on every call: a sign-in may do
 what both its scopes and the person's current role allow. Owners and admins
-can approve every scope; members and viewers, every scope but `admin:write`.
-A person moved to a smaller role loses what the new role does not allow at
-once.
+can approve every scope; members, every scope but `admin:write`; viewers,
+who only read, `ai:read` and `admin:read`. A person moved to a smaller role
+loses what the new role does not allow at once: a viewer's sign-in sees no
+tool that starts or changes a generation, whatever scopes it holds.
 
 Signed-in users also reach the organization, app and member tools
 (`list_orgs`, `invite_member`, `set_app_allowed_models`, …), which API keys
 never can, because those routes act on a person's membership. Reading them
 needs `admin:read`, changing them `admin:write`, and the role decides as it
 does on the dashboard: an owner can transfer the org, a member cannot
-invite.
+invite, and only owners and admins change an app's settings, limits, model
+access, storage and file access, or the org's vendor credentials.
 
 **Ending a sign-in.** Its tokens stop working at once when:
 
@@ -111,7 +116,7 @@ kinds:
 
 | Requirement | Who passes |
 |---|---|
-| a scope (`generate`, `read`, `admin`) | a credential holding it |
+| a scope (`generate`, `read`, `admin`) | a credential holding it; for `generate`, a signed-in person also needs `generation:create`, which viewers don't have |
 | `generate` or `read` | either |
 | org read access | the platform admin; a key with `read` or `admin` in that org; a member whose role may read it |
 | org write access | the platform admin; a key with `admin` in that org; a member whose role may change it |

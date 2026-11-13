@@ -9,8 +9,10 @@ use serde_json::{json, Map, Value};
 
 use crate::api::middleware::body::BodyBudget;
 
-/// The validator's own limit on a generation body.
-pub(crate) const MAX_BODY_BYTES: usize = 25 * 1024 * 1024;
+/// The validator's own limit on a generation body, which `GET /v1/models`
+/// serves as `capabilities.max_request_bytes`: a hook reads every body the
+/// listing says the server reads (dashboard-server review #1).
+pub(crate) const MAX_BODY_BYTES: usize = crate::api::middleware::body::MAX_GENERATION_BODY;
 
 /// Headers that describe one hop, never forwarded from a hook's answer.
 const HOP_BY_HOP: [&str; 7] = ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"];
@@ -326,6 +328,26 @@ mod tests {
     /// Room for any body these tests send.
     fn ample() -> BodyBudget {
         BodyBudget::new(4, MAX_BODY_BYTES, std::time::Duration::from_secs(60))
+    }
+
+    /// Dashboard-server review #1: a hook reads every body the listing says
+    /// the server reads (`capabilities.max_request_bytes`, the generation
+    /// routes' `MAX_GENERATION_BODY`), and refuses one byte more as they do.
+    /// A hook layer with a lower limit of its own would refuse, with hooks
+    /// configured, a request the served limit says is fine.
+    #[tokio::test]
+    async fn a_hooked_body_may_be_as_large_as_the_served_limit() {
+        let max = crate::api::middleware::body::MAX_GENERATION_BODY;
+        let body_of = |len: usize| {
+            let mut b = br#"{"model":"mock/image-gen","prompt":"a red fox""#.to_vec();
+            b.resize(len - 1, b' ');
+            b.push(b'}');
+            Request::post("/v1/images/generations").header("content-type", "application/json").body(Body::from(b)).unwrap()
+        };
+        let (_, view) = hook_view(body_of(max), &ample()).await.unwrap_or_else(|r| panic!("refused a body of the served size: {}", r.status()));
+        assert_eq!(view["body"]["prompt"], "a red fox");
+        let refused = hook_view(body_of(max + 1), &ample()).await.err().map(|r| r.status());
+        assert_eq!(refused, Some(axum::http::StatusCode::PAYLOAD_TOO_LARGE));
     }
 
     #[tokio::test]

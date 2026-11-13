@@ -111,8 +111,10 @@ jobs:
       LITEGEN_S3_TEST_SECRET: verySecretKey1
       # The timing tests run alone, in a step of their own: under the whole
       # suite's parallel load their limits measure the machine. The list is
-      # the local gates' (mesh-gaps items 4 to 8, and item 6's 2026-11-10
-      # follow-up), every one a lib test.
+      # the local gates' (mesh-gaps items 4 to 8, item 6's 2026-11-10
+      # follow-up, and five from the 2026-11-12 code-review fixes: a large
+      # body or reference must leave the runtime free, the webhook dispatcher,
+      # and the upload idle limit), every one a lib test.
       TIMING_TESTS: >-
         scale_animated_ancestors_are_found_once_per_chain
         many_distinct_key_time_arrays_write_in_linear_time
@@ -125,6 +127,11 @@ jobs:
         an_s3_store_presigns_on_the_bucket_endpoint_with_the_ttl
         a_wide_skeleton_and_its_meshes_read_in_linear_time
         skeletons_sharing_one_animation_read_in_linear_time
+        hashing_a_large_body_leaves_the_runtime_free
+        digesting_a_large_reference_leaves_the_runtime_free
+        decoding_a_large_reference_leaves_the_runtime_free
+        a_terminal_webhook_goes_through_the_process_dispatcher
+        an_upload_that_keeps_moving_is_not_cut_off_by_the_idle_limit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

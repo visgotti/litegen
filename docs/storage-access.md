@@ -91,7 +91,8 @@ request log. You need no bucket and no disk for outputs.
   streams the file from wherever it is stored, so the bucket can stay fully
   private.
 - **Streaming and ranges.** A file litegen keeps (the file route, its signed
-  link, and the local store's asset route) is passed on as the store reads
+  link, and the asset route `/v1/models3d/assets/...`, whether the deployment
+  stores on local disk or in its S3 bucket) is passed on as the store reads
   it, never read whole into memory, so a download costs the server a small
   buffer however large the file. These answers carry `Accept-Ranges: bytes`
   and honour one `Range: bytes=a-b`, `bytes=a-` or `bytes=-n`: 206 with
@@ -337,7 +338,10 @@ When your app serves many customers through one litegen key, the key is no
 boundary between them. A `file_access` hook is. It runs on the file route
 after litegen's owner check, sees the file (and the end user it was made
 for) and the caller, and can refuse. It can never open a file litegen would
-refuse.
+refuse. It runs too when a request names a stored generation as an input
+(`reference_images`, `source_video` or `source_model` of type `generation`),
+for the file the job would read, so a customer can't feed another
+customer's file into their own job ([docs/hooks.md](hooks.md)).
 
 Name the end user on every generation request with `x-litegen-end-user`. A
 custom-auth `pre_call` hook can set it for you. Then compare on the way out:
@@ -392,11 +396,13 @@ through `pre_call` (see the cookie example in docs/hooks.md).
   first time it starts and stores it in the database's `server_secrets` table.
   Every replica reads that key back. Anyone who can read the database can then
   forge file links, but database access already exposes the files' metadata and
-  URLs. If the database can't supply the stored key when a replica starts (it
-  can't be reached, or the stored value is damaged), that replica logs an error
-  and signs with a random key of its own. Its links then don't verify on the
-  other replicas, and the links it signs stop working when it restarts. Restart
-  it with the database reachable to put that right.
+  URLs. If the database answers with an error when a replica reads the key at
+  startup, litegen tries again for about 8 seconds. If it still can't read the
+  key, or the stored value is damaged, the replica refuses to start and says
+  why: a key of its own would sign links that no other replica, and no
+  restart, accepts. Fix the database, or set `LITEGEN__SECRETS_KEY`. For a
+  damaged value, delete the `link_signing_key` row of `server_secrets`; links
+  already handed out then stop verifying.
 - **Idempotent replays** (`Idempotency-Key`) return the first answer, links
   and all. Read the generation for fresh links.
 - **The dashboard** shows a private app's files through its own session, so
@@ -419,16 +425,19 @@ through `pre_call` (see the cookie example in docs/hooks.md).
     wait their turn. Veo, Bedrock and Sora hand a video over whole (up to 1 GiB
     each, Sora now capped like the others), so up to 8 such videos can be in
     memory at once on a replica, once each.
-  - **Into a bucket:** a video named by a link goes in with one presigned
-    PUT through litegen's own HTTP client, into the operator's bucket and a
-    tenant's alike. Into a tenant's bucket, a video handed over as bytes goes
-    the same way, as does every file litegen keeps there. Such an upload may
-    take up to an hour while it keeps moving. One that stops moving for 60 s
-    (the bucket takes nothing more, or hasn't answered 60 s after the last
-    byte) is cut off, and the next poll tries again. A video handed over as
-    bytes into the operator's own bucket still goes through rust-s3, which
-    makes one copy of it and gives the whole upload 60 s.
-  - **The claim** lasts 15 minutes and is renewed while a large upload runs.
+  - **Into a bucket:** a kept video goes in with one presigned PUT through
+    litegen's own HTTP client, whether a link named it or the vendor handed
+    it over as bytes (Veo, Bedrock, Sora), into the operator's bucket and a
+    tenant's alike; so does every other file litegen keeps there (3D files,
+    late images). Such an upload may take up to an hour while it keeps
+    moving. One that stops moving for 60 s (the bucket takes nothing more,
+    or hasn't answered 60 s after the last byte) is cut off, and the next
+    poll tries again. Only an image a generation call answers with still
+    goes into the operator's own bucket through rust-s3, which gives the
+    whole upload 60 s.
+  - **The claim** lasts 15 minutes. It is renewed as the keep starts (Veo,
+    Bedrock and Sora are claimed before their download, which may take up
+    to 10 minutes) and while a large upload runs.
 
 ## Not covered yet
 

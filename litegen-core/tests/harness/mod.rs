@@ -95,6 +95,17 @@ pub async fn app_over_with(
     build_app_in(db, asset_dir, tweak, master_key, Vec::new(), Arc::new(LocalStore), mode, None).await.0
 }
 
+/// [`app_over_with`], with the state behind it (the router's in-memory jobs).
+pub async fn app_and_state_in(
+    db: Arc<SqliteDatabase>,
+    asset_dir: &std::path::Path,
+    tweak: impl FnOnce(&mut AppConfig),
+    master_key: Option<&str>,
+    mode: Mode,
+) -> (Router, Arc<AppState>) {
+    build_app_in(db, asset_dir, tweak, master_key, Vec::new(), Arc::new(LocalStore), mode, None).await
+}
+
 /// [`app_over`], with the state behind it: what a background task (the
 /// settings refresher, the poller) is handed.
 pub async fn app_and_state_over(db: Arc<SqliteDatabase>, asset_dir: &std::path::Path) -> (Router, Arc<AppState>) {

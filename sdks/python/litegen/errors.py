@@ -15,13 +15,18 @@ class LiteGenAPIError(LiteGenError):
     (``"output_formats"``, ``"reference_images"``, ``"prompt"``, …) and ``model``
     the model the request named. Branch on ``code`` and ``param`` rather than
     parsing the message. ``retry_after`` is the wait, in seconds, the server's
-    ``Retry-After`` header asked for (a 429 or 503), else ``None``.
+    ``Retry-After`` header asked for (a 429 or 503), else ``None``; on a 503
+    ``circuit_open`` it is when the first deployment's breaker closes.
 
     When a vendor refused or failed the request (``type`` ``vendor_rejected``
     or ``vendor_error``), ``provider_error`` is the vendor's own answer —
-    ``{"status", "code", "message"}`` — and ``retryable`` says whether the
-    same request may work later. ``headers`` are the error response's — the
-    rate limit a 429 reports, for one (see :func:`litegen.response_meta`).
+    ``{"status", "code", "message"}``. ``retryable`` says whether the same
+    request may work later: a vendor's 5xx, 429 or timeout, or a model route
+    whose deployments were passed over (503 ``circuit_open``: every circuit
+    breaker open), but not a refusal. The server sends it on every vendor and
+    router error; ``None`` when it did not say. ``headers`` are the error
+    response's — the rate limit a 429 reports, for one (see
+    :func:`litegen.response_meta`).
     """
 
     def __init__(

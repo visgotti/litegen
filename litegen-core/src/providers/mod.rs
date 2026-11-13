@@ -1020,7 +1020,7 @@ impl AnimationClip {
         clips
             .iter()
             .map(|c| AnimationClip {
-                name: c.name.clone(),
+                name: c.name().to_string(),
                 preset: c.preset.as_deref().map(|p| {
                     spec.presets
                         .iter()
@@ -1561,8 +1561,19 @@ use std::sync::Arc;
 /// across those rebuilds. The credential *values* are still rebuilt per request,
 /// so editing a credential takes effect immediately; only the rotation index is
 /// shared. Stale entries for deleted credentials are harmless (just integers).
-static POOL_CURSORS: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<u64, Arc<AtomicUsize>>>> =
+static POOL_CURSORS: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<u64, PoolCursor>>> =
     std::sync::OnceLock::new();
+
+/// A shared rotation cursor, and when a pool last took it.
+struct PoolCursor {
+    at: Arc<AtomicUsize>,
+    /// [`CURSOR_CLOCK`] when a pool last took this cursor.
+    taken: std::sync::atomic::AtomicU64,
+}
+
+/// Counts the pools built on shared cursors: a cursor's `taken` is the count
+/// when a pool last took it.
+static CURSOR_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Test only: how many shared rotation cursors the process holds.
 #[cfg(test)]
@@ -1570,23 +1581,42 @@ fn pool_cursor_count() -> usize {
     POOL_CURSORS.get().map_or(0, |m| m.read().unwrap().len())
 }
 
-/// How many rotation cursors the process keeps before it drops the ones no
-/// pool holds (registry NEW 2): one per distinct key pool otherwise piled up
-/// for the life of the process, an org's own keys included.
+/// How many rotation cursors the process keeps (registry NEW 2): one per
+/// distinct key pool otherwise piled up for the life of the process, an
+/// org's own keys included. Past it, each new cursor drops the one no pool
+/// holds that a pool took longest ago (registry review #6).
 const MAX_POOL_CURSORS: usize = 1024;
 
 fn shared_cursor(fingerprint: u64) -> Arc<AtomicUsize> {
     let map = POOL_CURSORS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+    let now = CURSOR_CLOCK.fetch_add(1, Ordering::Relaxed);
     if let Some(c) = map.read().unwrap().get(&fingerprint) {
-        return Arc::clone(c);
+        c.taken.store(now, Ordering::Relaxed);
+        return Arc::clone(&c.at);
     }
     let mut cursors = map.write().unwrap();
-    if cursors.len() >= MAX_POOL_CURSORS && !cursors.contains_key(&fingerprint) {
-        // A pool in use holds its cursor, so it keeps its place; an idle
-        // one starts its rotation again at its first key.
-        cursors.retain(|_, c| Arc::strong_count(c) > 1);
+    // A BYO pool lives for one call, so an org that keeps calling holds its
+    // cursor only during each call: the cursor taken longest ago goes, not
+    // every one no pool holds this instant, and the org keeps its place in
+    // the rotation. A pool in use holds its cursor, so it is never dropped.
+    while cursors.len() >= MAX_POOL_CURSORS && !cursors.contains_key(&fingerprint) {
+        let oldest = cursors
+            .iter()
+            .filter(|(_, c)| Arc::strong_count(&c.at) == 1)
+            .min_by_key(|(_, c)| c.taken.load(Ordering::Relaxed))
+            .map(|(fp, _)| *fp);
+        match oldest {
+            Some(fp) => {
+                cursors.remove(&fp);
+            }
+            None => break,
+        }
     }
-    Arc::clone(cursors.entry(fingerprint).or_insert_with(|| Arc::new(AtomicUsize::new(0))))
+    let c = cursors
+        .entry(fingerprint)
+        .or_insert_with(|| PoolCursor { at: Arc::new(AtomicUsize::new(0)), taken: std::sync::atomic::AtomicU64::new(now) });
+    c.taken.store(now, Ordering::Relaxed);
+    Arc::clone(&c.at)
 }
 
 fn hash_with<F: FnOnce(&mut std::collections::hash_map::DefaultHasher)>(tag: &str, f: F) -> u64 {
@@ -1821,6 +1851,7 @@ mod instance_config_tests {
     /// keeps its place in the rotation across the pruning.
     #[test]
     fn the_shared_rotation_cursors_are_bounded_and_a_live_pool_keeps_its_place() {
+        let _one = CURSOR_BOUND_TESTS.lock().unwrap_or_else(|p| p.into_inner());
         let pool = |keys: &[&str]| ApiKeyPool::shared(keys.iter().map(|k| crate::types::ApiKeyEntry { key: k.to_string(), weight: 1, label: None }).collect());
         let live = pool(&["new2-live-a", "new2-live-b"]);
         assert_eq!(live.next(), "new2-live-a");
@@ -1831,6 +1862,36 @@ mod instance_config_tests {
         assert!(n <= 1025, "the process holds {n} rotation cursors after 3000 one-off pools");
         assert_eq!(pool(&["new2-live-a", "new2-live-b"]).next(), "new2-live-b", "a pool in use kept its place in the rotation");
         drop(live);
+    }
+
+    /// The cursor map is the process's: the tests that fill it to its bound
+    /// take turns, so one's thousands of pools never push out the other's.
+    static CURSOR_BOUND_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Registry review #6: past the bound, the cursors used longest ago go,
+    /// not every cursor no pool holds this instant. A BYO pool lives for one
+    /// call, so an org that keeps calling holds its cursor only during each
+    /// call; it must keep its place in the rotation however many other pools
+    /// come and go, instead of starting again at its first key at every prune.
+    #[test]
+    fn an_org_that_keeps_calling_keeps_its_place_past_the_bound() {
+        let _one = CURSOR_BOUND_TESTS.lock().unwrap_or_else(|p| p.into_inner());
+        let pool = |keys: &[String]| ApiKeyPool::shared(keys.iter().map(|k| crate::types::ApiKeyEntry { key: k.clone(), weight: 1, label: None }).collect());
+        // More keys than calls, so a rotation that starts again shows at once.
+        let org: Vec<String> = (0..512).map(|n| format!("r6-org-{n}")).collect();
+        let call = || pool(&org).next().to_string();
+        let mut seen = vec![call()];
+        for i in 0..3000 {
+            let _ = pool(&[format!("r6-gone-{i}")]);
+            if i % 10 == 9 {
+                seen.push(call());
+            }
+        }
+        // Each call takes the next key, in order, with no restart.
+        let restarted: Vec<usize> = (0..seen.len()).filter(|&n| seen[n] != org[n]).collect();
+        assert!(restarted.is_empty(), "the org's rotation started again at its first key at calls {restarted:?} of {}", seen.len());
+        let n = pool_cursor_count();
+        assert!(n <= MAX_POOL_CURSORS + 1, "the process holds {n} rotation cursors");
     }
 
     #[test]

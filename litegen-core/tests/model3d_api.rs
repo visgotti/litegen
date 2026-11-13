@@ -276,6 +276,52 @@ async fn a_media_type_mismatch_is_reported_before_param_validation() {
     assert_eq!(body["error"]["code"], "model_media_type_mismatch", "{body}");
 }
 
+// ─── A quote runs its generation's request validation (E11b) ───────────────
+//
+// The dashboard's playground holds Generate back on the quote's refusal, shown
+// in the quote's own words, instead of keeping a copy of the validator's
+// rules. That holds only while each quote route refuses a body as its
+// generation route does. Both take the same `Validated*` extractor today; this
+// catches a check moved into a generation handler, or a quote that skips
+// validation, either of which lets the playground pass a body the generation
+// then refuses. The generation refuses more than the quote (materializing,
+// quota, the keep-outputs header), so this pins one direction only.
+
+#[tokio::test]
+async fn the_quote_runs_the_generations_request_validation() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let url = |name: &str, role: &str| json!({ "type": "url", "value": format!("https://example.com/{name}.png"), "role": role });
+    // (route family, the refusal intended: code and param, a body that earns
+    // it and nothing else). The intended refusal is asserted, not only that
+    // the routes agree: a row that forgot its prompt would agree on
+    // `prompt_required`.
+    let rows = [
+        ("models3d", "source_model_required", "source_model", json!({ "model": "mock/rig-3d" })),
+        ("models3d", "ref_role_required", "reference_images", json!({
+            "model": "mock/all-params-3d", "prompt": "a fox", "reference_images": [url("left", "view-left")],
+        })),
+        ("models3d", "param_out_of_range", "height_m", json!({ "model": "mock/mesh-3d", "prompt": "a fox", "height_m": 0 })),
+        ("images", "param_out_of_range", "mask_grow_px", json!({
+            "model": "mock/region-image", "prompt": "make it glow", "mask_grow_px": 101,
+            "reference_images": [url("init", "init"), url("mask", "mask")],
+        })),
+        ("images", "param_out_of_range", "n", json!({ "model": "mock/visual-image-gen", "prompt": "a fox", "n": 2 })),
+        ("videos", "source_video_required", "source_video", json!({ "model": "mock/extend-video", "prompt": "a fox" })),
+    ];
+    fn refusal(status: StatusCode, v: &serde_json::Value) -> (StatusCode, Option<&str>, Option<&str>) {
+        (status, v["error"]["code"].as_str(), v["error"]["param"].as_str())
+    }
+    for (family, code, param, body) in rows {
+        let (quote_status, quote) = post_json(&app, &format!("/v1/{family}/cost"), body.clone()).await;
+        let (generation_status, generation) = post_json(&app, &format!("/v1/{family}/generations"), body.clone()).await;
+        let intended = (StatusCode::BAD_REQUEST, Some(code), Some(param));
+        assert_eq!(refusal(quote_status, &quote), intended, "the quote of {body}: {quote}");
+        assert_eq!(refusal(generation_status, &generation), intended, "the generation of {body}: {generation}");
+        // In the same words: the playground shows the quote's message.
+        assert_eq!(quote, generation, "{body}");
+    }
+}
+
 // ─── Request-log lifecycle ──────────────────────────────────────────────────
 //
 // The submit handler logs a 3D request `pending` under the generation's id.

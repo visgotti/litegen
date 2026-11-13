@@ -30,8 +30,10 @@ class ParamSpecStringArray:
       client rendering `params` offers exactly what will be honoured.
 
         Attributes:
-            default (Union[Unset, List[str]]): Applied when the caller omits the param entirely. Empty means the
-                resolver falls back to `glb`.
+            default (Union[Unset, List[str]]): Applied when the caller omits the param entirely. For
+                `output_formats`: in yaml, empty means the resolver falls back to
+                `glb`; `GET /v1/models/{id}` serves the resolved list, so it is never
+                empty there.
             derivable_values (Union[Unset, List[str]]): The members litegen produces locally from a single vendor job (for
                 `output_formats`, whatever its mesh converter covers — today `glb`,
                 `obj`, `stl`, `ply`). Present only in API

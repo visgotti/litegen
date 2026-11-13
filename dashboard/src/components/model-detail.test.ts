@@ -9,6 +9,7 @@ import {
   describePrompt,
   describeSpec,
   exampleBody,
+  formatPrice,
   generationEndpoint,
   refRoleRows,
 } from './model-detail';
@@ -248,5 +249,21 @@ describe('segmentation and operation models', () => {
     expect(describeSpec({ kind: 'source_model', formats: ['glb'] })).toBe('source_model: a glb, by generation id or URL');
     expect(describeSpec({ kind: 'palette', max_colors: 10 })).toBe('palette: up to 10 colours');
     expect(describeSpec({ kind: 'layout', max_items: 8, kinds: ['object', 'text'] })).toBe('layout: up to 8 boxes · object, text');
+  });
+});
+
+describe('formatPrice', () => {
+  // website N3: a catalog price is shown exactly as the API serves it, with
+  // what it buys: base_cost_usd is the vendor's price for the default request.
+  it('prints every digit the price has, at least two, per request', () => {
+    expect(formatPrice(0.2113536)).toBe('$0.2113536 / request');
+    expect(formatPrice(0.1555555)).toBe('$0.1555555 / request');
+    expect(formatPrice(0.04)).toBe('$0.04 / request');
+    expect(formatPrice(3.2)).toBe('$3.20 / request');
+    expect(formatPrice(0)).toBe('$0.00 / request');
+  });
+
+  it('keeps no binary noise as digits', () => {
+    expect(formatPrice(0.1 * 3)).toBe('$0.30 / request');
   });
 });

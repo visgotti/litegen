@@ -194,6 +194,36 @@ async fn oauth_principals_see_what_their_grant_allows() {
     assert!(!sees(&member, &hosted, "update_org"), "the role still decides");
 }
 
+/// Review 2026-11-11, roles match the README: a Member's grant never shows
+/// an app's or the org's settings tools, and a Viewer's never shows a tool
+/// that starts or changes a generation, whatever scopes it holds, since the
+/// routes refuse them.
+#[tokio::test]
+async fn members_and_viewers_see_only_what_their_role_allows() {
+    use crate::types::Role;
+    let hosted = state(Mode::Hosted, Some("mk")).await;
+    let admin = |ctx: KeyContext| caller(ctx, CallerKind::OAuth, Surface::Admin);
+    let ai = |ctx: KeyContext| caller(ctx, CallerKind::OAuth, Surface::Ai);
+    let member = admin(oauth(Role::Member, &[Scope::Read, Scope::Admin]));
+    let org_admin = admin(oauth(Role::Admin, &[Scope::Read, Scope::Admin]));
+    for tool in [
+        "create_app", "update_app", "set_app_allowed_models", "set_app_limits", "delete_app_limits", "reset_app_limits",
+        "set_app_storage", "set_app_access", "revoke_app_links", "set_org_provider_credential",
+    ] {
+        assert!(!sees(&member, &hosted, tool), "a member sees {tool}");
+        assert!(sees(&org_admin, &hosted, tool), "an admin sees {tool}");
+    }
+    let viewer = ai(oauth(Role::Viewer, &[Scope::Generate, Scope::Read]));
+    for tool in [
+        "generate_image", "estimate_image_cost", "segment_image", "generate_video", "get_video_status",
+        "generate_3d_model", "get_3d_model_status", "convert_3d_model", "delete_generation", "revoke_generation_links",
+    ] {
+        assert!(!sees(&viewer, &hosted, tool), "a viewer sees {tool}");
+    }
+    assert!(sees(&viewer, &hosted, "get_generation"), "a viewer reads");
+    assert!(sees(&ai(oauth(Role::Member, &[Scope::Generate])), &hosted, "generate_image"), "a member generates");
+}
+
 #[tokio::test]
 async fn single_tenant_deployment_tools_follow_the_default_org() {
     use crate::types::Role;
@@ -257,6 +287,9 @@ async fn gates_match_principals() {
     assert!(sees(&admin(key(&[Read]), ApiKey), &single, "get_spend_report"));
     assert!(!sees(&ai(key(&[Read]), ApiKey), &single, "generate_image"));
     assert!(!sees(&admin(key(&[Read]), ApiKey), &single, "set_org_limits"));
+    // Cancelling changes a job, as deleting it does (SEC-CANCEL).
+    assert!(!sees(&ai(key(&[Read]), ApiKey), &single, "cancel_generation"), "a read key cancels nothing");
+    assert!(sees(&ai(key(&[Generate]), ApiKey), &single, "cancel_generation"));
 
     // `admin` alone: require_org lets admin read too, check_scope(Read) does not.
     assert!(sees(&admin(key(&[Admin]), ApiKey), &single, "set_org_limits"));

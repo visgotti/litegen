@@ -100,7 +100,8 @@ def file_access(request, file, caller):
             if file["created_by"].get("end_user") != mine:
                 raise HTTPError(403, "not your file")
         elif action == "report":
-            raise HTTPError(418, json.dumps({"file": file, "caller": caller}))
+            seen = {"method": request.get("method"), "path": request.get("path")}
+            raise HTTPError(418, json.dumps({"file": file, "caller": caller, "request": seen}))
         elif action == "fail":
             raise RuntimeError("boom")
         elif action == "deny-string":

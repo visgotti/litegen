@@ -12,17 +12,21 @@ class EffectiveCache:
 
     Attributes:
         enabled (bool):
+        max_bytes (int): About how many bytes each replica's cache may hold.
         max_items (int):
         ttl_seconds (int):
     """
 
     enabled: bool
+    max_bytes: int
     max_items: int
     ttl_seconds: int
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         enabled = self.enabled
+
+        max_bytes = self.max_bytes
 
         max_items = self.max_items
 
@@ -33,6 +37,7 @@ class EffectiveCache:
         field_dict.update(
             {
                 "enabled": enabled,
+                "max_bytes": max_bytes,
                 "max_items": max_items,
                 "ttl_seconds": ttl_seconds,
             }
@@ -45,12 +50,15 @@ class EffectiveCache:
         d = src_dict.copy()
         enabled = d.pop("enabled")
 
+        max_bytes = d.pop("max_bytes")
+
         max_items = d.pop("max_items")
 
         ttl_seconds = d.pop("ttl_seconds")
 
         effective_cache = cls(
             enabled=enabled,
+            max_bytes=max_bytes,
             max_items=max_items,
             ttl_seconds=ttl_seconds,
         )

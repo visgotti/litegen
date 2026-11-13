@@ -202,7 +202,9 @@ test.describe('3D model generation', () => {
     await expect(page.getByTestId('pg-selected-count')).toContainText('2 selected');
     await page.getByTestId('pg-prompt').fill('a low-poly fox');
 
-    const meshEstimate = () => estimates.find(e => e.path === '/v1/models3d/cost' && e.model === MESH_MODEL);
+    // The latest quote the server gave: the page's checks also ask about the
+    // body before the prompt is typed, which the server refuses (prompt_required).
+    const meshEstimate = () => estimates.filter(e => e.path === '/v1/models3d/cost' && e.model === MESH_MODEL && e.status === 200).at(-1);
     await expect.poll(() => meshEstimate()?.status, { timeout: 30_000 }).toBe(200);
     expect(Number(meshEstimate()!.body.base_cost_usd), '3D estimate must be the model\'s catalog price')
       .toBe(meshPrice);

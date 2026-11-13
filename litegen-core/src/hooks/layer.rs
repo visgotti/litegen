@@ -238,9 +238,12 @@ fn caller_of(ctx: Option<&crate::api::middleware::KeyContext>, headers: &axum::h
 /// Ask every hook that defines `file_access` whether to serve a stored file,
 /// in order; the first refusal is the answer. Runs after litegen's own owner
 /// check, so a hook can only refuse what litegen would serve
-/// (`docs/storage-access.md`). `Err` is the response to send instead.
+/// (`docs/storage-access.md`): on the file route, and on a request that names
+/// a stored generation as an input, whose `method` it is. `Err` is the
+/// response to send instead.
 pub async fn file_access(
     hooks: &HookSet,
+    method: &axum::http::Method,
     uri: &axum::http::Uri,
     headers: &axum::http::HeaderMap,
     ctx: Option<&crate::api::middleware::KeyContext>,
@@ -250,7 +253,7 @@ pub async fn file_access(
         return Ok(());
     }
     let request = json!({
-        "method": "GET",
+        "method": method.as_str(),
         "path": uri.path(),
         "query": uri.query().unwrap_or(""),
         "headers": headers_view(headers),

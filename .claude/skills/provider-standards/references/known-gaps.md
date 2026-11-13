@@ -12,6 +12,7 @@ this file.
 ## Contents
 
 - [Billing](#billing)
+- [Adapters](#adapters)
 - [Surfaces that lag the catalog](#surfaces-that-lag-the-catalog)
 
 ## Billing
@@ -36,6 +37,23 @@ this file.
   beyond it go unbilled). *When a
   vendor publishes the price:* add the rule and a case to
   `varying_rows_price_the_variant_asked_for`.
+
+## Adapters
+
+- **Luma and MiniMax Hailuo send `resolution` only when asked.** When a
+  caller names no `resolution`, the Vidu, Kling, TokenHub Kling, ByteDance
+  and fal video adapters, and MiniMax's H3 path, send the row's declared
+  default, so the vendor makes what the request was priced at (Kling with
+  TokenHub's Kling routes, ByteDance and fal since E10, 2026-11-12, through
+  `extras.resolution.as_deref().or(model.string_default("resolution"))`).
+  Luma's video rows (`luma/dream-machine`, `luma/ray-2`, `luma/ray-flash-2`)
+  and MiniMax's Hailuo path (`MiniMax-Hailuo-02`, `MiniMax-Hailuo-2.3`,
+  `MiniMax-Hailuo-2.3-Fast`) still leave it out, and the vendor picks. Neither
+  vendor documents its default, so those rows declare none, except
+  `MiniMax-Hailuo-2.3-Fast` (`768P`), which that path still doesn't send.
+  *When the vendor documents its default:* declare it on the row and send it
+  the E10 way. Current state:
+  `grep -n 'extras.resolution' litegen-core/src/providers/video/{luma,minimax}.rs`.
 
 ## Surfaces that lag the catalog
 

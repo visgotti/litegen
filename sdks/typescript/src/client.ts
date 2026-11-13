@@ -24,6 +24,7 @@ type ModelSchema = Schemas["ModelSchema"];
 type ModelListResponse = Schemas["ModelListResponse"];
 type HealthResponse = Schemas["HealthResponse"];
 type LivenessResponse = Schemas["LivenessResponse"];
+type ReadinessResponse = Schemas["ReadinessResponse"];
 type ProxyStats = Schemas["ProxyStats"];
 type RequestLog = Schemas["RequestLog"];
 type ApiKeyInfo = Schemas["ApiKeyInfo"];
@@ -224,8 +225,15 @@ export interface WebhookDelivery {
   attempt_number: number;
   status_code: number | null;
   success: boolean;
+  /** The first 16 KiB of the endpoint's reply, cut at a character boundary. The rest is never read. */
   response_body: string | null;
   error_message: string | null;
+  /**
+   * The webhook as sent, when the reader is inside the app's owner scope for
+   * its generation (or the app's files are `public`). Any other reader gets
+   * the generation as stored now, presented for that reader, or `{}` once it
+   * is gone.
+   */
   payload_json: string;
   created_at: string;
 }
@@ -515,15 +523,23 @@ export interface ListModelsOptions {
 // ─── Lax-mode dropped params ─────────────────────────────────────────────────
 
 /**
- * Response header the generation POSTs set when `strict: false` made the server
- * drop params the model does not support instead of rejecting the request.
+ * Response header naming what `strict: false` made the server drop instead of
+ * refusing the request: params the model does not take, and fields the request
+ * has no such name for (one inside an object by its path,
+ * `reference_images[0].weight`). The generation POSTs set it (the image 202
+ * included), and so do the three `/cost` quotes and `images.segment`; it is
+ * absent when nothing was dropped. {@link readResponseMeta} reads it off any
+ * response.
  */
 export const DROPPED_PARAMS_HEADER = "x-litegen-dropped-params";
 
 /**
  * Parse an `X-Litegen-Dropped-Params` value — a comma-joined list such as
- * `"rig,symmetry,reference_images[view-top]"` — into its entries. A missing or
- * empty header means nothing was dropped.
+ * `"rig,symmetry,reference_images[view-top]"` — into its entries. The server
+ * lists at most 32 names, each 1–64 visible ASCII characters without a comma,
+ * and counts every other name in a last entry, `+N more`, kept here as it came
+ * (it holds a space, so it is never a name). A missing or empty header means
+ * nothing was dropped.
  */
 export function parseDroppedParams(value: string | null | undefined): string[] {
   if (!value) return [];
@@ -534,7 +550,11 @@ export function parseDroppedParams(value: string | null | undefined): string[] {
 
 /** What litegen's response headers say about one response. */
 export interface LiteGenResponseMeta {
-  /** `X-Litegen-Dropped-Params`: what `strict: false` dropped instead of refusing. */
+  /**
+   * `X-Litegen-Dropped-Params`: what `strict: false` dropped instead of
+   * refusing, by name, and a last `+N more` when there were more than the
+   * header lists ({@link parseDroppedParams}).
+   */
   droppedParams: string[];
   /** `X-RateLimit-*`, sent for a key with a requests-per-minute limit. */
   rateLimit?: { limit: number; remaining: number; resetAt?: Date };
@@ -964,10 +984,20 @@ class ImagesNamespace {
     };
     return this.client.request("POST", "/v1/images/generations", req, opts.signal, headers);
   }
+  /**
+   * Quote an image request without running it (`POST /v1/images/cost`). It
+   * runs the generation's own validation and calls no vendor: a request this
+   * refuses, `generate` refuses too.
+   */
   estimateCost(req: ImageRequest, signal?: AbortSignal): Promise<CostEstimate> {
     return this.client.request("POST", "/v1/images/cost", req, signal);
   }
-  /** Masks for what point, box or text prompts select (PixelGenie L7), answered at once. */
+  /**
+   * Masks for what point, box or text prompts select (PixelGenie L7), answered
+   * at once. Like a generation, `strict: false` drops a field the request has
+   * no such name for instead of refusing it, and names it in
+   * `X-Litegen-Dropped-Params` ({@link LiteGenClientOptions.onResponse}).
+   */
   segment(req: SegmentRequest, opts: ImageGenerateOptions = {}): Promise<SegmentResponse> {
     return this.client.request("POST", "/v1/images/segmentations", req, opts.signal, idempotencyHeaders(opts));
   }
@@ -976,7 +1006,10 @@ class ImagesNamespace {
 /** What a generation POST returned: its body, plus anything lax mode dropped. */
 export interface JobSubmission<T> {
   body: T;
-  /** Parsed `X-Litegen-Dropped-Params`; empty when nothing was dropped. */
+  /**
+   * Parsed `X-Litegen-Dropped-Params` ({@link parseDroppedParams}); empty when
+   * nothing was dropped.
+   */
   droppedParams: string[];
 }
 
@@ -1016,11 +1049,13 @@ export class GenerationJob<T extends { id: string }> implements PromiseLike<T>, 
   }
 
   /**
-   * Params the server dropped rather than rejected, because the request set
-   * `strict: false` and the model does not support them — e.g. `["rig",
-   * "reference_images[view-top]"]`. Always empty under `strict: true`, where
-   * an unsupported param is a 400 instead. Resolves once the job is submitted
-   * (submitting it if nothing else has yet).
+   * What the server dropped rather than refused, because the request set
+   * `strict: false`: params the model does not take and fields the request
+   * has no such name for, one inside an object by its path — e.g. `["rig",
+   * "reference_images[view-top]", "animations[0].duration"]`. The header
+   * lists at most 32 names; a last `+N more` counts the rest. Always empty
+   * under `strict: true`, which refuses them with a 400 instead. Resolves
+   * once the job is submitted (submitting it if nothing else has yet).
    */
   get droppedParams(): Promise<string[]> {
     return this.submit().then((s) => s.droppedParams);
@@ -1096,6 +1131,11 @@ class VideosNamespace {
       (id) => pollVideo(id, (vid) => this.getStatus(vid, opts?.signal), opts),
     );
   }
+  /**
+   * Quote a video request without running it (`POST /v1/videos/cost`). It
+   * runs the generation's own validation and calls no vendor: a request this
+   * refuses, `generate` refuses too.
+   */
   estimateCost(req: VideoRequest, signal?: AbortSignal): Promise<CostEstimate> {
     return this.client.request("POST", "/v1/videos/cost", req, signal);
   }
@@ -1167,7 +1207,11 @@ class Models3dNamespace {
       (id) => poll3d(id, (jid) => this.getStatus(jid, opts?.signal), opts),
     );
   }
-  /** Quote a 3D job without running it (`POST /v1/models3d/cost`). */
+  /**
+   * Quote a 3D job without running it (`POST /v1/models3d/cost`). It runs the
+   * generation's own validation and calls no vendor: a request this refuses,
+   * `generate` refuses too.
+   */
   estimateCost(req: Model3dRequest, signal?: AbortSignal): Promise<CostEstimate> {
     return this.client.request("POST", "/v1/models3d/cost", req, signal);
   }
@@ -1202,9 +1246,10 @@ class Models3dNamespace {
    *
    * Rejects with `LiteGenAPIError` on a pair the converter does not support
    * (400 `format_unsupported`, `param` says which), a file that is not a `from`
-   * file (400 `format_mismatch`), one over the size cap (413), or a mesh it
+   * file (400 `format_mismatch`), one over the size cap (413), a mesh it
    * cannot read or convert (422 `mesh_malformed` / `mesh_unsupported` /
-   * `mesh_empty`).
+   * `mesh_empty`), or 503 `server_at_capacity` (`retryAfterMs` set) while every
+   * conversion slot is busy or too many uploads are arriving at once.
    */
   async convert(input: RawBody, opts: ConvertModel3dOptions): Promise<Model3dConversion> {
     const query = new URLSearchParams({ from: opts.from, to: opts.to });
@@ -1289,8 +1334,10 @@ class ModelsNamespace {
   }
   /**
    * One model's full capability schema (`GET /v1/models/{id}`): its params
-   * with their allowed values, prompt rules, reference-image roles and
-   * provider passthrough keys — everything needed to build a valid request.
+   * with their allowed values, the fields litegen applies to it itself
+   * (`litegen_params`, in the same shape), prompt rules, reference-image
+   * roles and provider passthrough keys with their types (`extra_allowlist`,
+   * `extra_params`) — everything needed to build a valid request.
    */
   get(id: string, signal?: AbortSignal): Promise<ModelSchema> {
     return this.client.request("GET", `/v1/models/${encodeURIComponent(id)}`, undefined, signal);
@@ -1312,6 +1359,12 @@ class ProvidersNamespace {
 
 class HealthNamespace {
   constructor(private readonly client: LiteGenClient) {}
+  /**
+   * Each provider set up with the gateway's own keys, checked side by side
+   * (`GET /health`): one entry per provider and `modality`. It reports on the
+   * deployment's own keys, so it takes the master key, or in single-tenant
+   * mode the `read` scope in the deployment's org; other credentials get 403.
+   */
   check(signal?: AbortSignal): Promise<HealthResponse> {
     return this.client.request("GET", "/health", undefined, signal);
   }
@@ -1322,7 +1375,13 @@ class HealthNamespace {
   live(signal?: AbortSignal): Promise<LivenessResponse> {
     return this.client.request("GET", "/health/live", undefined, signal);
   }
-  ready(signal?: AbortSignal): Promise<{ status: string }> {
+  /**
+   * The readiness probe (`GET /health/ready`, no auth): ready when the
+   * database answers. No vendor is called; `checks.providers` names the
+   * providers set up with the gateway's own keys, which {@link check} checks.
+   * Not ready is a 503, thrown as `LiteGenAPIError`.
+   */
+  ready(signal?: AbortSignal): Promise<ReadinessResponse> {
     return this.client.request("GET", "/health/ready", undefined, signal);
   }
 }
@@ -1424,6 +1483,11 @@ class KeysNamespace {
   constructor(private readonly client: LiteGenClient) {
     this.limits = new KeyLimitsNamespace(client);
   }
+  /**
+   * Create a key (`POST /v1/keys`). A 400 names an unknown scope, or is
+   * `invalid_webhook_url`: a `webhook_url` the key may not use (a public
+   * address, unless in single-tenant mode the key is the deployment's own).
+   */
   create(body: CreateKeyBody | string, signal?: AbortSignal): Promise<ApiKeyCreatedResponse> {
     // Accept either a full body object or just a name string for back-compat.
     const reqBody = typeof body === "string" ? { name: body } : body;
@@ -1449,6 +1513,13 @@ class KeysNamespace {
   unblock(id: string, signal?: AbortSignal): Promise<KeyActiveResponse> {
     return this.client.request("POST", `/v1/keys/${encodeURIComponent(id)}/unblock`, undefined, signal);
   }
+  /**
+   * Edit a key (`PATCH /v1/keys/{id}`). A 400 names an unknown scope or is
+   * `invalid_webhook_url`; a 403 `forbidden` says the caller may not edit this
+   * key or grant a scope it lists, or the key's owner can't hold one (`admin`
+   * unless their role can grant it, `generate` for a Viewer), since a key acts
+   * for its owner. The key is unchanged after either.
+   */
   patch(id: string, body: PatchKeyBody, signal?: AbortSignal): Promise<ApiKeyDetail> {
     // Server returns ApiKeyDetail (key_prefix; no public_id/app_id) — not ApiKeyInfo.
     return this.client.request("PATCH", `/v1/keys/${encodeURIComponent(id)}`, body, signal);
@@ -1464,9 +1535,19 @@ class KeysNamespace {
     // Server returns RotatedKeyResponse (no created_at) — not ApiKeyCreatedResponse.
     return this.client.request("POST", `/v1/keys/${encodeURIComponent(id)}/rotate`, undefined, signal);
   }
+  /**
+   * Send the key's webhook a test delivery (`POST /v1/keys/{id}/test-webhook`).
+   * A 400 is `no_webhook_configured`, or `invalid_webhook_url`: a `webhook_url`
+   * the key may not use any more (its owner was demoted or left).
+   */
   testWebhook(id: string, signal?: AbortSignal): Promise<TestWebhookResponse> {
     return this.client.request("POST", `/v1/keys/${encodeURIComponent(id)}/test-webhook`, undefined, signal);
   }
+  /**
+   * The key's webhook deliveries, a page at a time
+   * (`GET /v1/keys/{id}/webhook-deliveries`). What `payload_json` holds
+   * depends on the reader: see {@link WebhookDelivery}.
+   */
   listWebhookDeliveries(
     id: string,
     opts: ListWebhookDeliveriesOptions = {},
@@ -1484,6 +1565,12 @@ class KeysNamespace {
 
 class CacheNamespace {
   constructor(private readonly client: LiteGenClient) {}
+  /**
+   * Empty the response cache (`DELETE /v1/cache`). With Redis, a 503
+   * `cache_clear_incomplete` (`retryAfterMs` 1 s) says only this replica's
+   * cache was emptied and the shared one was not, so the other replicas keep
+   * their answers: call it again once Redis answers.
+   */
   clear(signal?: AbortSignal): Promise<CacheClearedResponse> {
     return this.client.request("DELETE", "/v1/cache", undefined, signal);
   }
@@ -2258,11 +2345,16 @@ class AdminModelsNamespace {
   get(id: string, signal?: AbortSignal): Promise<AdminModelView> {
     return this.client.request("GET", `/v1/admin/models/${encodeURIComponent(id)}`, undefined, signal);
   }
-  /** Add a model at runtime. The body is a full model schema, validated like `models/*.yaml`. */
+  /**
+   * Add a model at runtime. The body is a full model schema, validated like
+   * `models/*.yaml`. A schema `models.get(id)` served may be sent back as it
+   * came: its `litegen_params` and `status` are read and ignored, since the
+   * server works both out itself.
+   */
   create(schema: ModelSchema, signal?: AbortSignal): Promise<AdminModelView> {
     return this.client.request("POST", "/v1/admin/models", schema, signal);
   }
-  /** Replace a runtime model's schema. Catalog models are read-only. */
+  /** Replace a runtime model's schema, taken as {@link create} takes it. Catalog models are read-only. */
   replace(id: string, schema: ModelSchema, signal?: AbortSignal): Promise<AdminModelView> {
     return this.client.request("PUT", `/v1/admin/models/${encodeURIComponent(id)}`, schema, signal);
   }

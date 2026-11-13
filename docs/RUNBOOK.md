@@ -50,6 +50,7 @@ An API key acts for one person, its owner (`owner_user_id`):
 What that means:
 - A key works only while its owner is an active member of the key's org. Removing them from the org, or deactivating their account, ends their keys. Adding them back makes the keys work again.
 - A key holds the `admin` scope only while its owner's role in that org could grant it, which means Owner or Admin. If they're demoted to Member, the key keeps `generate` and `read` and loses `admin`. Giving `admin` to such a key with `PATCH /v1/keys/{id}` is refused with 403.
+- A key holds the `generate` scope only while its owner's role may start generations, which means Owner, Admin or Member. If they're made a Viewer, the key keeps only `read`: its generations, quotes, status reads, cancels and deletes get 403 `forbidden_scope`, and on `/mcp` it lists no tool that starts or changes a generation. A key that held only `generate` then gets 403 everywhere until they're a Member again.
 - A key's spend counts against its owner's member budget, so a rotated key's spend moves to whoever rotated it.
 
 Keys made with the master key belong to the deployment, not to a person, so nobody leaving affects them. A hosted key with no org (none is made today) is refused.
@@ -119,7 +120,7 @@ To get a service going again:
 
 1. Bump container memory limit in `docker-compose.yml` or your orchestrator spec — start with 512 MB, tune from there.
 2. Check for stuck materializer temp uploads: reference-image blobs are held in memory during the request. Large batches of base64 images can spike RSS.
-3. Moka cache is bounded by `max_items` (default 1000) — verify it's not unconfigured and growing unbounded.
+3. The generation cache (moka, when `cache.enabled`) is bounded by `cache.max_items` (default 10,000 answers) and by `cache.max_bytes` (default 256 MiB, or `cache_max_bytes` set live in the gateway settings), whichever is reached first. A full cache at its defaults takes about half of a 512 MB container, so `cache.max_bytes` is the knob to lower.
 4. Enable `RUST_LOG=debug` briefly to look for allocation-heavy paths, then revert.
 
 ---

@@ -778,6 +778,8 @@ impl Default for ModelCapabilities {
             supported_sizes: Vec::new(),
             max_reference_images: 1,
             max_images: 1,
+            // Not stated: only the server knows its body limit.
+            max_request_bytes: 0,
             supports_text_to_video: false,
             supports_image_to_video: false,
             supports_first_frame: false,

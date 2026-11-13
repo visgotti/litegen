@@ -123,9 +123,31 @@ impl LinkSigner {
 /// The signer this process uses. A usable `LITEGEN__SECRETS_KEY` wins. Without
 /// one, the key stored in `server_secrets` (made on first use), which every
 /// replica reads back, so links verify on all of them and survive a restart.
-/// If the database can't supply one, a random key for this process, as
-/// `from_secrets_key(None)` gives.
+/// A database error is tried again for about 8 s ([`BOOT_RETRY_WAITS`]), so a
+/// blip at boot is ridden out. If the database still can't supply the key, or
+/// the stored value is not a key, this gives a random key for this process
+/// (`persistent()` false), as `from_secrets_key(None)` does, and `main`
+/// refuses to start on it.
 pub async fn link_signer_for(secrets_key: Option<&str>, db: &dyn DatabaseStore) -> LinkSigner {
+    link_signer_retrying(secrets_key, db, BOOT_RETRY_WAITS).await
+}
+
+/// The waits before each further try at the stored key, about 8 s in all.
+const BOOT_RETRY_WAITS: &[std::time::Duration] = &[
+    std::time::Duration::from_millis(250),
+    std::time::Duration::from_millis(500),
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(2),
+    std::time::Duration::from_secs(4),
+];
+
+/// [`link_signer_for`], trying the database again after each of `waits` when
+/// it answers with an error. A stored value that is not a key is not retried.
+async fn link_signer_retrying(
+    secrets_key: Option<&str>,
+    db: &dyn DatabaseStore,
+    waits: &[std::time::Duration],
+) -> LinkSigner {
     // A blank value is an unset one (an empty environment variable).
     if let Some(raw) = secrets_key.filter(|s| !s.trim().is_empty()) {
         if decode_key(raw).is_some() {
@@ -138,21 +160,33 @@ pub async fn link_signer_for(secrets_key: Option<&str>, db: &dyn DatabaseStore) 
         );
     }
     let generate = || base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 32]>());
-    match db.server_secret(LINK_SIGNING_KEY, &generate).await {
-        Ok(stored) => LinkSigner::from_stored_key(&stored).unwrap_or_else(|| {
-            tracing::error!(
-                "the link-signing key stored in the database is not base64 for 32 bytes: \
-                 using a random key instead, so signed links stop working when this process does"
-            );
-            LinkSigner::from_secrets_key(None)
-        }),
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "could not read or store the link-signing key in the database: \
-                 using a random key instead, so signed links stop working when this process does"
-            );
-            LinkSigner::from_secrets_key(None)
+    let mut waits = waits.iter();
+    loop {
+        match db.server_secret(LINK_SIGNING_KEY, &generate).await {
+            Ok(stored) => {
+                return LinkSigner::from_stored_key(&stored).unwrap_or_else(|| {
+                    // Never the value: it may be a damaged key.
+                    tracing::error!(
+                        "the link-signing key stored in the database is not base64 for 32 bytes \
+                         (server_secrets, name link_signing_key)"
+                    );
+                    LinkSigner::from_secrets_key(None)
+                })
+            }
+            Err(e) => match waits.next() {
+                Some(wait) => {
+                    tracing::warn!(
+                        error = %e,
+                        "could not read or store the link-signing key in the database: trying again in {} ms",
+                        wait.as_millis()
+                    );
+                    tokio::time::sleep(*wait).await;
+                }
+                None => {
+                    tracing::error!(error = %e, "could not read or store the link-signing key in the database");
+                    return LinkSigner::from_secrets_key(None);
+                }
+            },
         }
     }
 }
@@ -371,7 +405,8 @@ mod tests {
         let db = open(&dir).await;
         sqlx::query("DROP TABLE server_secrets").execute(db.pool()).await.unwrap();
         let (logs, _guard) = capture_logs();
-        let (a, b) = (link_signer_for(None, &db).await, link_signer_for(None, &db).await);
+        // No waits: `link_signer_for` would try for about 8 s each time.
+        let (a, b) = (link_signer_retrying(None, &db, &[]).await, link_signer_retrying(None, &db, &[]).await);
         assert!(!a.persistent() && !b.persistent());
         assert_ne!(a.sign("k", 1), b.sign("k", 1), "a random key each time");
         assert!(logs.text().contains("ERROR") && logs.text().contains("link-signing key"), "{}", logs.text());

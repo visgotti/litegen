@@ -173,9 +173,10 @@ export type SegmentationPromptType = components["schemas"]["SegmentationPromptTy
  */
 export type ImageView = components["schemas"]["ImageView"];
 /**
- * Where a model is in its vendor's lifecycle (`ModelInfo.status`): a
- * `deprecated` model is still served until the day after its `retires_at`;
- * `replaced_by` names the catalog model to move to.
+ * Where a model is in its vendor's lifecycle (`ModelInfo.status`, and
+ * `ModelSchema.status`, derived from its dates and ignored when a schema is
+ * posted back): a `deprecated` model is still served until the day after its
+ * `retires_at`; `replaced_by` names the catalog model to move to.
  */
 export type ModelStatus = components["schemas"]["ModelStatus"];
 /** A video's camera (`camera`): `fixed` holds the shot still (`supports_fixed_camera`). */
@@ -194,6 +195,16 @@ export type VendorError = components["schemas"]["VendorError"];
  * the start of the clip to its end.
  */
 export type KeyframeTiming = components["schemas"]["KeyframeTiming"];
+/**
+ * When a video model's frame image sets the clip's shape
+ * (`params.aspect_ratio.frames_set_shape` in `models.get(id)`): with a
+ * `first_frame`, `last_frame` or `init` image its vendor takes no ratio, so
+ * `aspect_ratio` is refused (`param_unsupported`) when `strict` and dropped
+ * and named otherwise. `always`: with any frame image; `without_references`:
+ * unless a `reference` image goes too, which sends the request to a vendor
+ * mode that takes a ratio. Absent: the ratio applies with any image.
+ */
+export type FramesSetShape = components["schemas"]["FramesSetShape"];
 /**
  * One rule of a model's `pricing.variable_pricing`: applied in order to a
  * running price that starts at `base_cost_usd`, when every `when` entry
@@ -288,7 +299,10 @@ export type Model3dUsdzRoot = components["schemas"]["Model3dUsdzRoot"];
 export type Model3dUsdClips = components["schemas"]["Model3dUsdClips"];
 /**
  * One clip an `animate` model makes (`animations[]`): exactly one of `preset`
- * and `prompt`, delivered as a glTF animation named exactly `name`, in order.
+ * and `prompt`, delivered as a glTF animation, in order, named its `name`. A
+ * clip that leaves `name` out (or sends `null`) is named by litegen: after its
+ * canonical preset (`walk`) or else its preset id, a prompt clip `clip-<n>` by
+ * its place, with `-2`, `-3`, … on a name already taken.
  */
 export type AnimationRequest = components["schemas"]["AnimationRequest"];
 /** The canonical presets; a model maps the ones it plays onto its own ids. */
@@ -312,11 +326,18 @@ export type SourceRef = components["schemas"]["SourceRef"];
 export type SourceKind = components["schemas"]["SourceKind"];
 export type ReferenceImage = components["schemas"]["ReferenceImage"];
 export type ModelInfo = components["schemas"]["ModelInfo"];
+/**
+ * One model's full schema (`models.get(id)`), also the admin API's input.
+ * `litegen_params` (read-only) holds the request fields litegen applies to the
+ * model itself, in the same `ParamSpec` shape as `params`; `extra_params`
+ * types the `extra_allowlist` keys.
+ */
 export type ModelSchema = components["schemas"]["ModelSchema"];
 export type CostEstimate = components["schemas"]["CostEstimate"];
 export type UsageInfo = components["schemas"]["UsageInfo"];
 export type ProxyStats = components["schemas"]["ProxyStats"];
 export type RequestLog = components["schemas"]["RequestLog"];
+/** One entry of `health.check()`: a provider, the `modality` it checked, and how it answered. */
 export type ProviderHealth = components["schemas"]["ProviderHealth"];
 export type ApiKeyInfo = components["schemas"]["ApiKeyInfo"];
 export type ApiKeyCreatedResponse = components["schemas"]["ApiKeyCreatedResponse"];
@@ -367,9 +388,19 @@ export type RefInputSpec = components["schemas"]["RefInputSpec"];
 export type RefRoleSpec = components["schemas"]["RefRoleSpec"];
 export type RefProviderFormat = components["schemas"]["RefProviderFormat"];
 export type RefProviderFormatMultipart = components["schemas"]["RefProviderFormatMultipart"];
+/**
+ * A model's prompt rules (`prompt` in `models.get(id)`). `required_for_text_to_video`:
+ * a video model needs the prompt without a `first_frame` or `init` image
+ * (`prompt_required` before anything is quoted), though not with one.
+ */
 export type PromptSpec = components["schemas"]["PromptSpec"];
 export type ModelCapabilityFlags = components["schemas"]["ModelCapabilityFlags"];
-/** The `capabilities` projection on each `GET /v1/models` entry (incl. the 3D `supports_*`, `output_formats`, `max_polycount`). */
+/**
+ * The `capabilities` projection on each `GET /v1/models` entry (incl. the 3D
+ * `supports_*`, `output_formats`, `max_polycount`, and `max_request_bytes`,
+ * on every model: the largest generation or quote body the server reads
+ * before a 413).
+ */
 export type ModelCapabilities = components["schemas"]["ModelCapabilities"];
 
 // Management API (budgets/limits, end users, spend, gateway admin).

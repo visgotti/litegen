@@ -615,6 +615,15 @@ pub async fn patch_user(
         }
     }
 
+    // A deactivated account's invitations go, in every org (SEC-INVITES).
+    // First, before the role below is set: a revoke that fails (a 500) then
+    // leaves the account as it was, and the PATCH can be sent again whole.
+    if body.is_active == Some(false) {
+        if let Err(resp) = crate::api::handlers::orgs::revoke_invitations(&state, None, None, Some(&id)).await {
+            return resp;
+        }
+    }
+
     // Single-tenant: the user's role in the default org is the one their
     // permissions come from, so a role set here is set there too. The org's
     // Owner keeps theirs, as on the members page.
@@ -627,7 +636,14 @@ pub async fn patch_user(
                     "Cannot change the Owner's role via PATCH. Use transfer-owner.",
                 );
             }
-            Ok(Some(_)) => {
+            Ok(Some(current)) => {
+                // Moved to a role that can't invite: the invitations they
+                // sent in the org go first (SEC-INVITES).
+                if crate::api::handlers::orgs::role_may_invite(current) && !crate::api::handlers::orgs::role_may_invite(role) {
+                    if let Err(resp) = crate::api::handlers::orgs::revoke_invitations(&state, Some(DEFAULT_ORG_ID), None, Some(&id)).await {
+                        return resp;
+                    }
+                }
                 if let Err(e) = state.db.update_member_role(DEFAULT_ORG_ID, &id, role).await {
                     return internal("db_error", &e);
                 }
@@ -695,6 +711,11 @@ pub async fn delete_user(
         }
         Ok(false) => {}
         Err(resp) => return resp,
+    }
+    // The invitations they sent, in every org, go with the account
+    // (SEC-INVITES): a deactivated Admin's invitation would let them back in.
+    if let Err(resp) = crate::api::handlers::orgs::revoke_invitations(&state, None, None, Some(&id)).await {
+        return resp;
     }
 
     match state.db.update_user(&id, None, Some(false), None).await {

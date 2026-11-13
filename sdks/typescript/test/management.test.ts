@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { LiteGenClient } from "../src";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
+import { LiteGenClient, type GatewaySettings, type GatewaySettingsView } from "../src";
 
 interface Captured {
   url: string;
@@ -186,5 +186,13 @@ describe("admin", () => {
     expect(last()).toMatchObject({ method: "GET", path: "/v1/admin/settings" });
     await client.admin.settings.update({ cost_markup_percent: 10 });
     expect(last()).toMatchObject({ method: "PUT", path: "/v1/admin/settings", body: { cost_markup_percent: 10 } });
+  });
+
+  it("settings carry the cache's memory bound, set and in force", async () => {
+    expectTypeOf<GatewaySettings["cache_max_bytes"]>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<GatewaySettingsView["effective_cache"]["max_bytes"]>().toEqualTypeOf<number>();
+    const { client, last } = recordingClient({});
+    await client.admin.settings.update({ cache_max_bytes: 268_435_456 });
+    expect(last()).toMatchObject({ method: "PUT", path: "/v1/admin/settings", body: { cache_max_bytes: 268_435_456 } });
   });
 });

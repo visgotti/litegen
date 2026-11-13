@@ -137,6 +137,14 @@ RUN = (
             ["rig", "symmetry", "reference_images[view-top]"],
         ),
         (" rig , symmetry ,, ", ["rig", "symmetry"]),
+        # At most 32 names are listed, each 1-64 visible ASCII characters
+        # without a comma; every other name is counted in a last "+N more",
+        # kept as the last entry. A field inside an object is named by its path.
+        (
+            "fps,reference_images[0].weight,+2 more",
+            ["fps", "reference_images[0].weight", "+2 more"],
+        ),
+        ("+1 more", ["+1 more"]),
     ],
 )
 def test_parse_dropped_params(value: str | None, expected: list[str]) -> None:

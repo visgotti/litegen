@@ -29,7 +29,7 @@ LiteGen provides a unified API gateway for the major image and video generation 
 - **Strict validation with per-request lax opt-out** — Default `strict: true` rejects unsupported parameters and fields the request has no such name for; set `strict: false` to drop them and get an `X-Litegen-Dropped-Params` response header.
 - **DB-backed multi-key auth: scopes, quotas, RPM rate limits** — Create API keys with per-key USD budget caps, requests-per-minute throttles, and CSV scope sets (`generate`, `read`, `admin`).
 - **DB-backed video generations + polling endpoint** — Video jobs are persisted to the `generations` table; poll status via `GET /v1/generations/{id}`. A background poller updates status every 5 s.
-- **Per-key webhook delivery on video completion** — When a generation reaches a terminal status (`completed`, `failed`, `cancelled`), the owning key's `webhook_url` receives a signed `POST` with the generation payload (`X-Litegen-Signature: sha256=<hex>`). Retries 3 times with exponential back-off.
+- **Per-key webhook delivery on video completion** — When a generation reaches a terminal status (`completed`, `failed`, `cancelled`), the owning key's `webhook_url` receives a signed `POST` with the generation payload (`X-Litegen-Signature: sha256=<hex>`). Retries 3 times with exponential back-off. In single-tenant mode only the deployment's own keys (master-key made, or an Owner's or Admin's) may point a webhook at its own network; see [docs/management-api.md](docs/management-api.md#key-webhooks).
 - **Request metadata, spend per tag** — Send `metadata` (a string map, at most 1 KB) on any generation or segmentation: it is kept on the row, echoed on every answer and webhook, and filters `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`, so spend splits by project or asset.
 - **Cancel at the vendor, refund on cancel or failure** — `PATCH /v1/generations/{id}` asks the vendor to stop (fal, Replicate and Runway have a cancel) and reports `vendor_cancelled`; a job that is cancelled or fails gives its charge back to the key's quota and every limit it counted against.
 - **OpenTelemetry OTLP gRPC export** — Set `OTEL_EXPORTER_OTLP_ENDPOINT` to ship traces to any OTel collector.
@@ -714,6 +714,7 @@ vendor variable counts as unset ([docs/configuration.md](docs/configuration.md))
 |----------|---------|
 | `GET /health/live` | Liveness — returns `200 OK {"status":"ok"}` as soon as the process is up. Use as a container liveness probe. |
 | `GET /health/ready` | Readiness — returns `200 OK {"status":"ready"}` when the database is reachable, and `503` with `"not_ready"` when it is not. The providers it lists are for information: a deployment whose only keys are its orgs' own is ready too. Use as a container readiness probe before routing traffic. |
+| `GET /health` | Provider health, for the operator: it checks every configured vendor with the gateway's own keys and answers `503` when any one of them is unhealthy. Only the master key reads it (in single-tenant mode, also a `read` credential acting in the default org). Never point a load balancer or a readiness probe at it: one vendor's outage would take every replica out of rotation. Use `/health/ready`. |
 
 ### CORS — default deny
 
@@ -788,6 +789,8 @@ If `LITEGEN__OWNER_EMAIL` is set, only that email address can claim ownership on
 | **Admin** | Full access to all resources except transferring ownership. |
 | **Member** | Manage own API keys, create generations, view own logs. |
 | **Viewer** | Read-only — view own keys and logs; cannot create or mutate. |
+
+An app's settings, budgets and limits, its model access, its storage and file-access settings, and the org's vendor credentials are changed by Owners and Admins only; Members and Viewers can read them. A Viewer can't start a generation or ask for a quote, and neither can their API keys: a key acts for the person who made it, so while they're a Viewer it keeps `read` and loses `generate` (and `admin`).
 
 ### Adding users
 

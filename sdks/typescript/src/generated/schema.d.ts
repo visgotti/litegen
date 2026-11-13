@@ -35,7 +35,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /health — Health check for all providers. */
+        /**
+         * GET /health — Health check for all providers.
+         * @description Checks each provider configured with the gateway's own keys, side by
+         *     side, and reports what each vendor answered. It reads the deployment's
+         *     own state, so it takes the master key, or, in single-tenant mode, the
+         *     `read` scope in the deployment's org.
+         */
         get: operations["health_check"];
         put?: never;
         post?: never;
@@ -73,8 +79,9 @@ export interface paths {
          * GET /health/ready — Readiness probe.
          *     Returns 200 when the DB is reachable (the instance can accept requests).
          *     Provider availability is resolved per-request — globally configured creds OR
-         *     org-scoped BYO credentials — so it does NOT gate readiness; the healthy
-         *     provider list is reported in the body purely as an informational signal.
+         *     org-scoped BYO credentials — so it does NOT gate readiness. No vendor is
+         *     called: the body lists the providers configured with the gateway's own
+         *     keys, by name, and `GET /health` checks them.
          *     Returns 503 only when the DB is unreachable. No auth required.
          *     Live: `curl https://app.litegen.ai/api/health/ready`
          */
@@ -936,7 +943,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** POST /v1/images/cost — Estimate cost for image generation. */
+        /**
+         * POST /v1/images/cost — Estimate cost for image generation.
+         * @description Runs the same validation as the matching generation route and calls no
+         *     vendor: a body this refuses, the generation refuses too.
+         */
         post: operations["estimate_image_cost"];
         delete?: never;
         options?: never;
@@ -1288,7 +1299,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** POST /v1/models3d/cost — Estimate cost for a 3D generation. */
+        /**
+         * POST /v1/models3d/cost — Estimate cost for a 3D generation.
+         * @description Runs the same validation as the matching generation route and calls no
+         *     vendor: a body this refuses, the generation refuses too.
+         */
         post: operations["estimate_3d_cost"];
         delete?: never;
         options?: never;
@@ -1846,7 +1861,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** POST /v1/videos/cost — Estimate cost for video generation. */
+        /**
+         * POST /v1/videos/cost — Estimate cost for video generation.
+         * @description Runs the same validation as the matching generation route and calls no
+         *     vendor: a body this refuses, the generation refuses too.
+         */
         post: operations["estimate_video_cost"];
         delete?: never;
         options?: never;
@@ -1978,9 +1997,14 @@ export interface components {
             loop?: boolean | null;
             /**
              * @description The clip's name in the delivered file: unique within the request, 1–64
-             *     characters of `[A-Za-z0-9_.-]`.
+             *     characters of `[A-Za-z0-9_.-]`. Leave it out (or send null) and
+             *     litegen names the clip: a preset clip after its canonical preset
+             *     (`walk`), else after its preset id with every other character as `_`;
+             *     a prompt clip, or one whose preset leaves no name, `clip-<n>`, its
+             *     place in the list; `-2`, `-3`, … on a name already taken. A name you
+             *     send is kept as sent; an empty one is refused.
              */
-            name: string;
+            name?: string | null;
             /**
              * @description A canonical preset (`Model3dAnimationPreset`) or one of the model's
              *     own preset ids. Exactly one of `preset` and `prompt`.
@@ -2230,6 +2254,16 @@ export interface components {
             user: components["schemas"]["PublicUser"];
         };
         BaseGenerationRequest: {
+            /**
+             * @description Vendor fields with no canonical param, sent to the vendor as given:
+             *     only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`),
+             *     each of the type its `extra_params` entry gives, when it has one (a
+             *     wrong value is refused in either mode, with `param: "extra.<key>"`).
+             *     Strict mode refuses any other key (`extra_key_unsupported`); `strict:
+             *     false` drops it and names it in `X-Litegen-Dropped-Params`. Where a
+             *     job's result is sent or stored, and whether the vendor publishes it,
+             *     are litegen's: it polls every job and fires your key's webhook.
+             */
             extra?: unknown;
             /**
              * @description Your own labels for the job (PixelGenie L17): a map of string values,
@@ -2241,7 +2275,12 @@ export interface components {
                 [key: string]: string;
             } | null;
             model: string;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description One image, video or mesh per request: more than 1 is refused
+             *     (`param_out_of_range`); send several requests for several. 0 is the
+             *     same as 1.
+             */
             n?: number;
             negative_prompt?: string | null;
             /**
@@ -2255,6 +2294,16 @@ export interface components {
             reference_images?: components["schemas"]["ReferenceImage"][];
             /** Format: int64 */
             seed?: number | null;
+            /**
+             * @description `true` (the default) refuses a field the request has no such name for,
+             *     and a param the model does not take, with `param_unsupported`; `false`
+             *     drops both and names them in `X-Litegen-Dropped-Params`. A field inside
+             *     one of the request's objects is named by its path, such as
+             *     `reference_images[0].weight`. A bad value for a param the model does
+             *     take is refused either way. A top-level field the model passes through
+             *     (its `extra_allowlist` in `GET /v1/models/{id}`, such as OpenAI's
+             *     `user`) is sent on as if it were in `extra`, in both modes.
+             */
             strict?: boolean;
         };
         /** @description Response for `DELETE /v1/cache`. */
@@ -2491,6 +2540,11 @@ export interface components {
         /** @description The cache in force (`GET /v1/admin/settings`). */
         EffectiveCache: {
             enabled: boolean;
+            /**
+             * Format: int64
+             * @description About how many bytes each replica's cache may hold.
+             */
+            max_bytes: number;
             /** Format: int64 */
             max_items: number;
             /** Format: int64 */
@@ -2627,7 +2681,8 @@ export interface components {
             replaced_by?: string | null;
             /**
              * @description Whether the same request may work later: a vendor's 5xx, 429 or
-             *     timeout, but not its refusal.
+             *     timeout, or a model route whose deployments were passed over (an open
+             *     circuit breaker), but not a refusal.
              */
             retryable?: boolean | null;
             /** @description `processing`, with `generation_id`: the job runs on. */
@@ -2667,12 +2722,24 @@ export interface components {
          * @enum {string}
          */
         ExtendOutput: "full" | "added";
+        /**
+         * @description When a frame image sets a video's shape (`ParamSpecAspectRatio`'s
+         *     `frames_set_shape`).
+         * @enum {string}
+         */
+        FramesSetShape: "always" | "without_references";
         /** @description Gateway-wide settings editable at runtime. */
         GatewaySettings: {
             /** @description URL that receives budget alerts (soft budget crossed, hard budget hit). */
             alert_webhook_url?: string | null;
             /** @description Whether image answers are cached. Overrides `cache.enabled`. */
             cache_enabled?: boolean | null;
+            /**
+             * Format: int64
+             * @description About how much memory the cached answers may take on each replica, in
+             *     bytes, 1048576 to 68719476736. Overrides `cache.max_bytes`.
+             */
+            cache_max_bytes?: number | null;
             /**
              * Format: int64
              * @description How many answers the cache holds, 1 to 1000000. Overrides `cache.max_items`.
@@ -3064,6 +3131,12 @@ export interface components {
              *     a text prompt selects every instance of what it names.
              */
             prompts: components["schemas"]["SegmentationPrompt"][];
+            /**
+             * @description `true` (the default) refuses a field the request has no such name for
+             *     (`prompt` for `prompts`, say) with `param_unsupported`; `false` drops
+             *     it and names it in `X-Litegen-Dropped-Params`.
+             */
+            strict?: boolean;
         };
         /** @description What the prompts selected. */
         ImageSegmentationResponse: {
@@ -3393,8 +3466,8 @@ export interface components {
          */
         Model3dGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             /**
-             * @description The clips to make, in order: one glTF animation per entry, named
-             *     exactly its `name`.
+             * @description The clips to make, in order: one glTF animation per entry, named its
+             *     `name`, or the name litegen gives a clip that leaves it out.
              */
             animations?: components["schemas"]["AnimationRequest"][] | null;
             /**
@@ -3612,6 +3685,14 @@ export interface components {
              *     name too: `max_images` is this same number (L14).
              */
             max_reference_images?: number;
+            /**
+             * Format: int64
+             * @description The most bytes a generation or quote request for this model may be,
+             *     as sent. References carried inline (base64) count at 4/3 their size,
+             *     so a larger image goes as a URL, which litegen fetches itself. A larger
+             *     body is refused with 413 `body_too_large`. Always sent.
+             */
+            max_request_bytes: number;
             /** @description Draws native pixel art (PixelGenie L16). */
             native_pixel_art?: boolean;
             /**
@@ -3823,7 +3904,33 @@ export interface components {
              */
             docs_url?: string | null;
             extra_allowlist?: string[];
+            /**
+             * @description The vendor's type for an `extra_allowlist` key, by key: `bool`,
+             *     `int`, `float`, `string` or `string_array`, with its bounds or values
+             *     when they are known. A request's value is checked like a param's
+             *     (`param: "extra.<key>"`); `null` passes as sent, and an allowlisted key
+             *     with no type here passes as any JSON.
+             */
+            extra_params?: {
+                [key: string]: unknown;
+            };
             id: string;
+            /**
+             * @description Request fields litegen applies to this model itself, beyond what its
+             *     vendor takes, each with the bounds litegen holds it to and in the same
+             *     `ParamSpec` shape as `params`: on every 3D model `ground`, `center` and
+             *     `height_m` (unless `params` declares the model's own `height_m`); on an
+             *     image model that takes a `mask` reference or a `region`,
+             *     `mask_grow_px`, `preserve_unmasked` and `feather_px`. No name is in
+             *     both maps. Computed by the server and served by `GET /v1/models/{id}`,
+             *     so read-only (`readOnly` in the OpenAPI document): a catalog row that
+             *     sets it is refused, and the admin API reads and ignores it, as it
+             *     does `status`, so a served schema posted back to `POST`/`PUT
+             *     /v1/admin/models` works.
+             */
+            readonly litegen_params?: {
+                [key: string]: unknown;
+            };
             media_type: components["schemas"]["CapabilityMediaType"];
             native_orientation?: null | components["schemas"]["NativeOrientation"];
             params?: {
@@ -3841,6 +3948,12 @@ export interface components {
              *     after it, litegen neither lists nor serves the model.
              */
             retires_at?: string | null;
+            /**
+             * @description Derived from the dates above when the model is served. A served
+             *     schema, a stored runtime model or a copy posted back carries it, and
+             *     so may yaml: it is read and ignored, never trusted.
+             */
+            status?: components["schemas"]["ModelStatus"];
             tags?: string[];
             /**
              * @description What the model does: `generate`, or an operation on an existing asset
@@ -4119,6 +4232,10 @@ export interface components {
                 id: string;
                 key_id: string;
                 payload_json: string;
+                /**
+                 * @description The first 16 KiB of the endpoint's reply, cut at a character boundary.
+                 *     The rest is never read.
+                 */
                 response_body?: string | null;
                 /** Format: int32 */
                 status_code?: number | null;
@@ -4210,6 +4327,7 @@ export interface components {
             allowed: string[];
             default?: string | null;
             description?: string | null;
+            frames_set_shape?: null | components["schemas"]["FramesSetShape"];
             label?: string | null;
         };
         ParamSpecBool: {
@@ -4381,7 +4499,16 @@ export interface components {
             description?: string | null;
             enum_values?: string[];
             label?: string | null;
+            /**
+             * @description The most characters a value may have, counted as JSON Schema's
+             *     `maxLength` counts them (characters, not bytes).
+             */
             max_length?: number | null;
+            /**
+             * @description A regular expression the value must match, anywhere in it as JSON
+             *     Schema's `pattern` does: `^…$` anchors it to the whole value. A value
+             *     it does not match is refused (`param_invalid`).
+             */
             pattern?: string | null;
         };
         /**
@@ -4406,8 +4533,10 @@ export interface components {
          */
         ParamSpecStringArray: {
             /**
-             * @description Applied when the caller omits the param entirely. Empty means the
-             *     resolver falls back to `glb`.
+             * @description Applied when the caller omits the param entirely. For
+             *     `output_formats`: in yaml, empty means the resolver falls back to
+             *     `glb`; `GET /v1/models/{id}` serves the resolved list, so it is never
+             *     empty there.
              */
             default?: string[];
             /**
@@ -4544,6 +4673,15 @@ export interface components {
              *     carries no image (text-to-3D).
              */
             required?: boolean;
+            /**
+             * @description A video model whose text-to-video mode needs the prompt though its
+             *     image-to-video mode does not (so `required` is false): a request with
+             *     no `first_frame` or `init` image and an empty prompt is refused with
+             *     `prompt_required` before anything is quoted or reserved. Absent
+             *     (false): an empty text-to-video request goes to the vendor, as for a
+             *     vendor whose shots can carry the prompts.
+             */
+            required_for_text_to_video?: boolean;
         };
         /**
          * @description Describes a provider and how the dashboard should render its credential
@@ -4628,6 +4766,11 @@ export interface components {
             /** Format: int64 */
             latency_ms?: number | null;
             message?: string | null;
+            /**
+             * @description What this entry checked: `image`, `video` or `model3d`. A provider
+             *     that serves several has one entry for each.
+             */
+            modality: components["schemas"]["MediaType"];
             provider: string;
         };
         /**
@@ -4746,6 +4889,10 @@ export interface components {
         };
         ReadinessChecks: {
             db: boolean;
+            /**
+             * @description The providers configured with the gateway's own keys, by name, each
+             *     once. Readiness doesn't call them; `GET /health` checks each one.
+             */
             providers: string[];
         };
         /** @description Response for `GET /health/ready`. */
@@ -5382,10 +5529,11 @@ export interface components {
             direction?: string | null;
             /**
              * Format: double
-             * @description Absent means the model's own `duration_seconds` default (resolved by
-             *     `resolve_duration_seconds`), not a fixed 5s: models whose minimum is
-             *     higher (fal/ltx-2.3, bedrock nova-reel) rejected every request that
-             *     omitted it.
+             * @description Seconds of video, above 0, as the model's `params.duration_seconds`
+             *     allows: within its range, and one of its `values` where it lists
+             *     them; a whole-second model gets the nearest whole second. Absent means
+             *     the model's own default. A model whose listing has no
+             *     `duration_seconds` takes none: refused when `strict`, dropped otherwise.
              */
             duration_seconds?: number | null;
             /** Format: int32 */
@@ -5471,6 +5619,10 @@ export interface components {
             id: string;
             key_id: string;
             payload_json: string;
+            /**
+             * @description The first 16 KiB of the endpoint's reply, cut at a character boundary.
+             *     The rest is never read.
+             */
             response_body?: string | null;
             /** Format: int32 */
             status_code?: number | null;
@@ -5543,13 +5695,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Health check results */
+            /** @description Health check results: one entry per provider and modality, each checked with the gateway's own keys */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+            /** @description Provider health covers the gateway's own vendor keys, so it is the deployment's: the master key, or, in single-tenant mode, the `read` scope in the deployment's org */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -5583,7 +5744,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Service is ready */
+            /** @description Service is ready: the database answered. No vendor is asked, so a slow vendor never fails readiness */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7431,6 +7592,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `cache_clear_incomplete`: this replica's cache was emptied, but the shared cache in Redis could not be cleared, so the other replicas keep their answers; retry once Redis answers (`Retry-After` is set). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     list_end_users: {
@@ -8049,8 +8219,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The file, with its content type */
+            /** @description The file, with its content type. A file litegen keeps carries `Accept-Ranges: bytes` */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The bytes one `Range: bytes=…` header asked for, with `Content-Range`; several ranges, or an `If-Range`, get the whole file (200) */
+            206: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8081,6 +8258,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes *\/<length>` when the length is known */
+            416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     get_signed_generation_asset: {
@@ -8104,8 +8290,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The file, with its content type. No credentials: the signature is the permission */
+            /** @description The file, with its content type. No credentials: the signature is the permission. A file litegen keeps carries `Accept-Ranges: bytes` */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The bytes one `Range: bytes=…` header asked for, with `Content-Range`; several ranges, or an `If-Range`, get the whole file (200) */
+            206: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8131,6 +8324,15 @@ export interface operations {
             };
             /** @description `vendor_file_gone`: the vendor no longer has a file litegen didn't keep */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes *\/<length>` when the length is known */
+            416: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8197,6 +8399,8 @@ export interface operations {
             /** @description Cost estimate */
             200: {
                 headers: {
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -8205,6 +8409,33 @@ export interface operations {
             };
             /** @description Bad request (validation failed) */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s). */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_too_large`: the request body is over 25 MiB, as declared or as sent. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8241,7 +8472,7 @@ export interface operations {
                     "Idempotent-Replayed"?: string;
                     /** @description What the cache did: `hit` (answered from it), `miss` (looked up, not found) or `bypass` (off for this model, or the request sent `Cache-Control: no-cache`). See docs/gateway-settings.md. */
                     "X-Litegen-Cache"?: string;
-                    /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
                     "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
@@ -8256,6 +8487,8 @@ export interface operations {
                     Location?: string;
                     /** @description The preference honoured: `respond-async`, `wait=N`, or both. */
                     "Preference-Applied"?: string;
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -8273,6 +8506,15 @@ export interface operations {
             };
             /** @description `model_not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s). */
+            408: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8298,6 +8540,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `body_too_large`: the request body is over 25 MiB, as declared or as sent. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description `region_too_small`: an edit region smaller than the vendor takes. A reference that names a generation litegen can't use (`reference_images`: unreadable, too large, a format the model doesn't take). */
             422: {
                 headers: {
@@ -8309,6 +8560,15 @@ export interface operations {
             };
             /** @description Provider error */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). `circuit_open`: on a model route, every deployment's circuit breaker is open, so no vendor was called; retry once the first one closes (`Retry-After` says when). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8348,13 +8608,15 @@ export interface operations {
                 headers: {
                     /** @description `true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise. */
                     "Idempotent-Replayed"?: string;
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ImageSegmentationResponse"];
                 };
             };
-            /** @description Refused before anything is billed. `param_required`: no prompts, or an empty text prompt. `capability_unsupported`: a prompt type the model does not take (its `segmentation_prompts`). `param_out_of_range`: more prompts than the model takes, more than one text prompt, a point label other than 0 or 1, or a box with no area. `param_conflict`: a text prompt mixed with point or box prompts, or only label-0 points. `prompt_out_of_bounds`: a point or box outside the image. `image_unreadable`: not base64 of a PNG, JPEG, WebP or GIF. `model_task_mismatch`: not a segmentation model. `model_media_type_mismatch`: not an image model. */
+            /** @description Refused before anything is billed. `param_unsupported`: a field the request has no such name for (`prompt` for `prompts`, say), when `strict` is true (the default). `param_required`: no prompts, or an empty text prompt. `capability_unsupported`: a prompt type the model does not take (its `segmentation_prompts`). `param_out_of_range`: more prompts than the model takes, more than one text prompt, a point label other than 0 or 1, or a box with no area. `param_conflict`: a text prompt mixed with point or box prompts, or only label-0 points. `prompt_out_of_bounds`: a point or box outside the image. `image_unreadable`: not base64 of a PNG, JPEG, WebP or GIF. `model_task_mismatch`: not a segmentation model. `model_media_type_mismatch`: not an image model. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8381,6 +8643,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s). */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
             409: {
                 headers: {
@@ -8392,6 +8663,15 @@ export interface operations {
             };
             /** @description `model_retired`: the model is past its retirement; `replaced_by` names its successor */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_too_large`: the request body is over 25 MiB, as declared or as sent. */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8417,7 +8697,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description litegen is at capacity, or the app's bucket can't be reached; retry shortly. */
+            /** @description litegen is at capacity (`server_at_capacity`: as many requests running as `backpressure.max_in_flight` allows, or as many request bodies held as it may; `Retry-After` is set), or the app's bucket can't be reached; retry shortly. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8477,6 +8757,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiKeyCreatedResponse"];
+                };
+            };
+            /** @description An unknown scope, or `invalid_webhook_url`: a `webhook_url` this key may not use. It must be a public address unless, in single-tenant mode, the key is the deployment's own (made with the master key, or by an Owner or Admin of its org; `webhooks.internal_targets`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8568,6 +8857,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiKeyDetail"];
+                };
+            };
+            /** @description An unknown scope, or `invalid_webhook_url`: a `webhook_url` the key may not use (a public address unless, in single-tenant mode, the key's owner is an Owner or Admin of the deployment's org, or it has none) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `forbidden`: the caller may not edit this key, or grant a scope it lists; or the key's owner can't hold one (`admin` unless their role can grant it, `generate` for a Viewer), since a key acts for its owner. The key is unchanged. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Key not found */
@@ -8807,7 +9114,7 @@ export interface operations {
                     "application/json": components["schemas"]["WebhookTestResult"];
                 };
             };
-            /** @description No webhook_url configured on the key */
+            /** @description `no_webhook_configured`: the key has no webhook_url; or `invalid_webhook_url`: one the key may not use any more (its owner was demoted or left) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8876,7 +9183,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paginated webhook deliveries */
+            /** @description Paginated webhook deliveries. A delivery's `payload_json` is the webhook as sent when the reader is inside the app's owner scope for its generation (or the app's files are `public`); for any other reader it is the generation as stored now, presented for that reader, or `{}` once it is gone. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9107,6 +9414,8 @@ export interface operations {
             /** @description Cost estimate */
             200: {
                 headers: {
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -9115,6 +9424,33 @@ export interface operations {
             };
             /** @description Bad request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s). */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_too_large`: the request body is over 25 MiB, as declared or as sent. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9147,7 +9483,7 @@ export interface operations {
                 headers: {
                     /** @description `true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise. */
                     "Idempotent-Replayed"?: string;
-                    /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
                     "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
@@ -9173,6 +9509,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s). */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
             409: {
                 headers: {
@@ -9191,6 +9536,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `body_too_large`: the request body is over 25 MiB, as declared or as sent. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description A `source_model` litegen can't use (unreadable, too large, too many triangles, no skin to animate), or the vendor's free preflight refused it (its own code). */
             422: {
                 headers: {
@@ -9202,6 +9556,15 @@ export interface operations {
             };
             /** @description `generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10948,7 +11311,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description All conversion slots are busy, retry shortly (`server_at_capacity`, with `Retry-After`). Conversions have slots of their own and never take a generation's */
+            /** @description All conversion slots are busy, or too many uploads are arriving at once; retry shortly (`server_at_capacity`, with `Retry-After`). Conversions have slots of their own and never take a generation's; a slot is taken once the upload has arrived */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -10995,6 +11358,8 @@ export interface operations {
             /** @description Cost estimate */
             200: {
                 headers: {
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -11003,6 +11368,33 @@ export interface operations {
             };
             /** @description Bad request (validation failed) */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s). */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `body_too_large`: the request body is over 25 MiB, as declared or as sent. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11035,7 +11427,7 @@ export interface operations {
                 headers: {
                     /** @description `true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise. */
                     "Idempotent-Replayed"?: string;
-                    /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
+                    /** @description Comma-separated names of the fields and params this request sent that the route or model does not take, dropped instead of refused because `strict` was false; a field inside an object is named by its path (`reference_images[0].weight`). At most 32 names: any further name, and any name that is not 1–64 visible ASCII characters without a comma, is counted in a last `+N more`. Absent when nothing was dropped. */
                     "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
@@ -11061,6 +11453,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `body_timeout`: the request body did not arrive within `server.request_body_timeout_secs` (default 300 s). */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
             409: {
                 headers: {
@@ -11079,6 +11480,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `body_too_large`: the request body is over 25 MiB, as declared or as sent. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description A `source_video` or reference generation litegen can't use: unreadable, too large, or a format the model doesn't take. */
             422: {
                 headers: {
@@ -11090,6 +11500,15 @@ export interface operations {
             };
             /** @description `generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). `circuit_open`: on a model route, every deployment's circuit breaker is open, so no vendor was called; retry once the first one closes (`Retry-After` says when). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -300,10 +300,14 @@ def _convert_params(
     return params
 
 
-# With `strict=False` (lax mode) the server drops params the model does not
-# support instead of rejecting the request, and names them in this header on the
-# generation POST, comma-joined: "rig,symmetry,reference_images[view-top]". It
-# is absent when nothing was dropped (litegen-core's validator `dropped_header`).
+# With `strict=False` (lax mode) the server drops params the model does not take,
+# and fields the request has no such name for (one inside an object by its path,
+# "reference_images[0].weight"), instead of refusing the request, and names them
+# in this header, comma-joined: "rig,symmetry,reference_images[view-top]". The
+# generation POSTs send it (the image 202 included), and so do the three /cost
+# quotes and the segmentation. At most 32 names are listed; a last "+N more"
+# counts the rest. It is absent when nothing was dropped (litegen-core's
+# validator `dropped_header`).
 _DROPPED_PARAMS_HEADER = "x-litegen-dropped-params"
 
 
@@ -334,7 +338,11 @@ def _metadata_params(metadata: Mapping[str, str] | None) -> dict[str, str]:
 
 
 def _parse_dropped_params(value: str | None) -> list[str]:
-    """Split an ``X-Litegen-Dropped-Params`` value into param names (``[]`` if absent)."""
+    """Split an ``X-Litegen-Dropped-Params`` value into its entries (``[]`` if absent).
+
+    The server lists at most 32 names, each 1-64 visible ASCII characters
+    without a comma, and counts every other name in a last entry, ``+N more``,
+    kept here as it came (it holds a space, so it is never a name)."""
     if not value:
         return []
     return [name.strip() for name in value.split(",") if name.strip()]
@@ -370,13 +378,20 @@ class _ImagesNamespace:
         return self._c._request_with_headers("POST", "/v1/images/generations", json=_clean(req), headers=headers)[0]
 
     def estimate_cost(self, **req: Any) -> Any:
+        """Price an image request without running it (``POST
+        /v1/images/cost``). It runs the generation's own validation and calls
+        no vendor: a request this refuses, ``generate`` refuses too."""
         return self._c._request("POST", "/v1/images/cost", json=_clean(req))
 
     def segment(self, *, idempotency_key: str | None = None, **req: Any) -> ImageSegmentationResponse:
         """Masks for what ``prompts`` select in ``image`` (``POST
         /v1/images/segmentations``), answered at once. Points and boxes
         together select one object; a text prompt every instance of what it
-        names. ``idempotency_key`` is sent as the ``Idempotency-Key`` header."""
+        names. ``idempotency_key`` is sent as the ``Idempotency-Key`` header.
+        Like a generation, ``strict=False`` drops a field the request has no
+        such name for instead of refusing it, and names it in
+        ``X-Litegen-Dropped-Params`` (``on_response`` and
+        :func:`response_meta` read it)."""
         return self._c._request_with_headers(
             "POST", "/v1/images/segmentations", json=_clean(req), headers=_idempotency(idempotency_key)
         )[0]
@@ -447,9 +462,12 @@ class VideoJob:
 
     @property
     def dropped_params(self) -> list[str]:
-        """Params the server dropped rather than rejected, because the request set
-        ``strict=False``; ``[]`` when nothing was dropped. Submits the job first if
-        it hasn't been yet."""
+        """What the server dropped rather than refused, because the request set
+        ``strict=False``: params the model does not take and fields the request
+        has no such name for (one inside an object by its path,
+        ``animations[0].duration``); ``[]`` when nothing was dropped. A last
+        ``+N more`` counts names past the 32 the header lists. Submits the job
+        first if it hasn't been yet."""
         self._ensure_submitted()
         return list(self._dropped_params)
 
@@ -492,6 +510,9 @@ class _VideosNamespace:
         )
 
     def estimate_cost(self, **req: Any) -> Any:
+        """Price a video request without running it (``POST
+        /v1/videos/cost``). It runs the generation's own validation and calls
+        no vendor: a request this refuses, ``generate`` refuses too."""
         return self._c._request("POST", "/v1/videos/cost", json=_clean(req))
 
     def get_status(self, video_id: str) -> Any:
@@ -601,9 +622,12 @@ class Model3dJob:
 
     @property
     def dropped_params(self) -> list[str]:
-        """Params the server dropped rather than rejected, because the request set
-        ``strict=False``; ``[]`` when nothing was dropped. Submits the job first if
-        it hasn't been yet."""
+        """What the server dropped rather than refused, because the request set
+        ``strict=False``: params the model does not take and fields the request
+        has no such name for (one inside an object by its path,
+        ``animations[0].duration``); ``[]`` when nothing was dropped. A last
+        ``+N more`` counts names past the 32 the header lists. Submits the job
+        first if it hasn't been yet."""
         self._ensure_submitted()
         return list(self._dropped_params)
 
@@ -655,7 +679,9 @@ class _Models3dNamespace:
         )
 
     def estimate_cost(self, **req: Unpack[Model3dGenerateParams]) -> CostEstimate:
-        """Price a 3D request without running it (``POST /v1/models3d/cost``)."""
+        """Price a 3D request without running it (``POST /v1/models3d/cost``).
+        It runs the generation's own validation and calls no vendor: a request
+        this refuses, ``generate`` refuses too."""
         return self._c._request("POST", "/v1/models3d/cost", json=_clean(req))
 
     def get_status(self, generation_id: str) -> Model3dGenerationResponse:
@@ -774,8 +800,10 @@ class _Models3dNamespace:
         which side), a unit or axis option for a container with its own
         (``param_unsupported``) or a value it does not take (``param_invalid``),
         or a file that is not a ``from_format`` file (``format_mismatch``), and
-        :class:`~litegen.errors.LiteGenAPIError` for one over the size cap (413)
-        or a mesh it cannot read or convert (422).
+        :class:`~litegen.errors.LiteGenAPIError` for one over the size cap (413),
+        a mesh it cannot read or convert (422), or a 503 ``server_at_capacity``
+        (``retry_after`` set) while every conversion slot is busy or too many
+        uploads are arriving at once.
         """
         body, headers = self._c._request_with_headers(
             "POST", "/v1/utils/models3d/convert",
@@ -892,6 +920,11 @@ class _ModelsNamespace:
         return resp["data"] if isinstance(resp, dict) and "data" in resp else resp
 
     def get(self, model_id: str) -> Any:
+        """One model's full schema (``GET /v1/models/{id}``): its ``params`` with
+        their allowed values, the fields litegen applies to it itself
+        (``litegen_params``, in the same shape), prompt rules, reference roles,
+        and the passthrough keys with their types (``extra_allowlist``,
+        ``extra_params``)."""
         return self._c._request("GET", f"/v1/models/{model_id}")
 
 
@@ -900,6 +933,11 @@ class _HealthNamespace:
         self._c = client
 
     def check(self) -> Any:
+        """Each provider set up with the gateway's own keys, checked side by
+        side (``GET /health``): one entry per provider and ``modality``. It
+        reports on the deployment's own keys, so it takes the master key, or in
+        single-tenant mode the ``read`` scope in the deployment's org; other
+        credentials get a 403."""
         return self._c._request("GET", "/health")
 
     def live(self) -> Any:
@@ -956,6 +994,10 @@ class _CacheNamespace:
         self._c = client
 
     def clear(self) -> Any:
+        """Empty the response cache (``DELETE /v1/cache``). With Redis, a 503
+        ``cache_clear_incomplete`` (``retry_after`` 1 s) says only this
+        replica's cache was emptied and the shared one was not, so the other
+        replicas keep their answers: call it again once Redis answers."""
         return self._c._request("DELETE", "/v1/cache")
 
 
@@ -1214,10 +1256,14 @@ class _AdminModelsNamespace:
         return self._c._request("GET", f"/v1/admin/models/{model_id}")
 
     def create(self, schema: Mapping[str, Any]) -> Any:
-        """Add a model at runtime; ``schema`` is a ``models/*.yaml`` row as JSON."""
+        """Add a model at runtime; ``schema`` is a ``models/*.yaml`` row as JSON.
+        A schema ``models.get`` served may be sent back as it came: its
+        ``litegen_params`` and ``status`` are read and ignored, since the server
+        works both out itself."""
         return self._c._request("POST", "/v1/admin/models", json=dict(schema))
 
     def replace(self, model_id: str, schema: Mapping[str, Any]) -> Any:
+        """Replace a runtime model's schema, taken as :meth:`create` takes it."""
         return self._c._request("PUT", f"/v1/admin/models/{model_id}", json=dict(schema))
 
     def set_disabled(self, model_id: str, disabled: bool) -> Any:

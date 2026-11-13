@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
 import {
-  API_BASE, FIXTURE_DATA_URI, IMAGE_FIXTURE, MASTER_KEY, authHeaders, coloursOf, feature,
-  generateAndCapture, gifFrames, pixelsAt, rgb,
+  API_BASE, FIXTURE_DATA_URI, IMAGE_FIXTURE, MASTER_KEY, authHeaders, checkOf, checked, coloursOf, feature,
+  generateAndCapture, gifFrames, nextCall, pixelsAt, rgb,
 } from './support';
 
 // End-to-end coverage for the Playground controls of the 3D doc / PixelGenie
@@ -135,7 +135,7 @@ test.describe('Playground: structured params', () => {
   });
 
   test('layout boxes go as fractions and land where their fractions put them', async ({ page }) => {
-    await feature('Layout — boxes as fractions; one off the canvas is not sent');
+    await feature('Layout — boxes as fractions; one off the canvas is held back in the server\'s words');
     await openModel(page, 'mock/layout-image');
     await page.getByTestId('playground-prompt').fill('a poster');
     await page.getByTestId('pg-param-layout-add').click();
@@ -143,9 +143,19 @@ test.describe('Playground: structured params', () => {
     await page.getByTestId('pg-param-layout-text-0').fill('SALE');
     await page.getByTestId('pg-param-layout-add').click();
     await page.getByTestId('pg-param-layout-text-1').fill('a red bicycle');
+    // Sent as typed (N4): the server's check says the box leaves the canvas.
+    const boxAt = (x: number) => (body: Record<string, unknown>) =>
+      ((body.layout ?? []) as Array<{ box: { x: number } }>)[1]?.box.x === x;
+    let quoted = checkOf(page, 'images', boxAt(0.9));
     await page.getByTestId('pg-param-layout-1-x').fill('0.9');
-    await expect(page.getByTestId('pg-param-layout-unsent-1')).toBeVisible();
+    expect((await quoted).status()).toBe(400);
+    await expect(page.getByTestId('playground-problems')).toContainText('layout box 1 is not inside the canvas');
+    await expect(page.getByTestId('playground-generate')).toBeDisabled();
+    quoted = checkOf(page, 'images', boxAt(0.5));
     await page.getByTestId('pg-param-layout-1-x').fill('0.5');
+    expect((await quoted).status()).toBe(200);
+    await checked(page);
+    await expect(page.getByTestId('playground-problems')).toHaveCount(0);
     await expect(page.getByTestId('pg-param-layout-unsent-1')).toHaveCount(0);
     const { wire, answer } = await generateAndCapture(page, IMAGES);
     expect(wire.layout).toEqual([
@@ -385,8 +395,8 @@ test.describe('Playground: 3D operations', () => {
     await page.getByTestId('pg-param-animations-preset-0').selectOption('mock:walk');
     await page.getByTestId('pg-param-animations-loop-0').check();
     const animate = await generateAndCapture(page, MESHES, MESH_POLL);
-    // Named for the preset's canonical name: `mock:walk` is not a legal clip name.
-    expect(animate.wire.animations).toEqual([{ name: 'walk', preset: 'mock:walk', loop: true }]);
+    // Sent unnamed: the server names the clip (E11c), as the delivered `walk` shows.
+    expect(animate.wire.animations).toEqual([{ preset: 'mock:walk', loop: true }]);
 
     await feature('Animate — exactly one 1 s clip named walk, loop asked, shown in the inspector');
     const clips = (animate.done!.assets as Array<{ kind: string; scene?: { animations: Array<{ name: string; duration_s: number; loop_requested?: boolean }> } }>)
@@ -411,11 +421,15 @@ test.describe('Playground: segmentation', () => {
     await page.getByTestId('pg-param-prompts-0-x').fill('128');
     await page.getByTestId('pg-param-prompts-0-y').fill('128');
     await page.getByTestId('pg-param-prompts-add').click();
-    // A text prompt selects every instance of what it names: never with a point.
+    // A text prompt selects every instance of what it names: never with a
+    // point. Segmentation has no quote route to ask first, so the submit
+    // says so, in the server's words (E11b).
     await page.getByTestId('pg-param-prompts-type-1').selectOption('text');
     await page.getByTestId('pg-param-prompts-text-1').fill('the square');
-    await expect(page.getByTestId('playground-problems')).toContainText('takes a text prompt alone');
-    await expect(page.getByTestId('playground-generate')).toBeDisabled();
+    const refused = nextCall(page, 'POST', /^\/v1\/images\/segmentations$/);
+    await page.getByTestId('playground-generate').click();
+    expect((await refused).status()).toBe(400);
+    await expect(page.locator('.alert-error')).toContainText('cannot be mixed with point or box prompts');
     await page.getByTestId('pg-param-prompts-type-1').selectOption('box');
     for (const [k, v] of Object.entries({ x: '96', y: '96', w: '64', h: '64' })) {
       await page.getByTestId(`pg-param-prompts-1-${k}`).fill(v);
@@ -463,5 +477,18 @@ test.describe('Model detail drawer: catalog facts', () => {
     await expect(page.getByTestId('model-detail-fact-durations'))
       .toContainText((sprite.duration_values as number[]).map(d => `${d} s`).join(', '));
     await expect(page.getByTestId('model-detail-panel')).toContainText('Loop');
+  });
+
+  test('shows a catalog price exactly as the API serves it, and what it buys', async ({ page, request }) => {
+    await feature('Models — a price never rounded (website N3)');
+    const id = 'fal/flux-pro-1.1-ultra-redux';
+    const res = await request.get(`${API_BASE}/v1/models`, { headers: authHeaders });
+    const list = ((await res.json()) as { data: Array<{ id: string; pricing?: { base_cost_usd: number } | null }> }).data;
+    const price = list.find(m => m.id === id)!.pricing!.base_cost_usd;
+    expect(price, 'a price with more than four decimals').toBe(0.2113536);
+    await page.goto('/models');
+    await expect(page.getByTestId(`model-row-${id}`)).toContainText('$0.2113536 / request');
+    await page.getByTestId(`model-row-${id}`).click();
+    await expect(page.getByTestId('model-detail-price')).toContainText('$0.2113536 / request');
   });
 });

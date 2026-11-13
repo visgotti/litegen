@@ -50,6 +50,40 @@ minor release may change behaviour, and says how here.
 - `output_packages` on 3D generation requests, and the `"package"` asset kind
   it delivers: one zip per requested container that has files to go beside
   its mesh.
+- `FramesSetShape`, the type of `frames_set_shape` on a video model's
+  `params.aspect_ratio`: whether a `first_frame`, `last_frame` or `init` image
+  sets the clip's shape, so `aspect_ratio` is refused (or dropped in lax mode)
+  beside one.
+- On `ModelSchema` (`models.get`): `litegen_params` (read-only), the fields
+  litegen applies to the model itself (`ground`, `center` and `height_m` on 3D
+  models; `mask_grow_px`, `preserve_unmasked` and `feather_px` on mask and
+  region editors) in the `ParamSpec` shape; `extra_params`, the types of its
+  `extra_allowlist` keys; and `status`. A served schema may be posted back to
+  `admin.models.create` or `replace` as it came.
+- `ModelCapabilities.max_request_bytes` (the largest generation or quote body,
+  25 MiB; on every listed model, so typed `number`, not optional),
+  `PromptSpec.required_for_text_to_video`, `ProviderHealth.modality`,
+  `GatewaySettings.cache_max_bytes` and the cache's `max_bytes` in force, and
+  `strict` on `images.segment` requests.
+
+### Changed
+
+- `AnimationRequest.name` is optional and may be `null`: litegen names a clip
+  that leaves it out (`walk` after its preset, else `clip-<n>`).
+- `health.ready()` resolves to the server's `ReadinessResponse` (`status`, and
+  `checks` with `db` and the providers set up with the gateway's own keys)
+  instead of `{ status }` alone.
+- What `X-Litegen-Dropped-Params` covers: fields the request has no such name
+  for too, one inside an object by its path, on the quotes, `images.segment`
+  and the image 202 as well. It lists at most 32 names and ends with a
+  `+N more` count past that; `parseDroppedParams`, `droppedParams` and
+  `readResponseMeta` keep that entry.
+- `LiteGenAPIError.retryable` comes with every router error, such as a 503
+  `circuit_open` (every deployment of a model route cooling down, with
+  `retryAfterMs`), not only a vendor's. New codes callers may see:
+  `circuit_open`, `cache_clear_incomplete` (`cache.clear`, 503),
+  `request_unsupported`, `provider_not_configured`, `prompt_required`,
+  `range_not_satisfiable` (416).
 
 ## [0.1.0] - 2026-10-30
 

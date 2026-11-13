@@ -217,6 +217,24 @@ async fn the_readmes_example_requests_are_valid() {
     }
 }
 
+/// Passthrough review #6: a field the model passes through, sent at the top
+/// level with a value its type refuses, is refused under the name the caller
+/// sent (`moderation`), in both modes. It was named `extra.moderation`, a
+/// field the caller never sent. Sent inside `extra`, it is `extra.moderation`.
+#[tokio::test]
+async fn a_top_level_field_is_refused_under_its_own_name() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    for strict in [true, false] {
+        let body = json!({ "model": "openai/gpt-image-2", "prompt": "a red cube", "moderation": "strict", "strict": strict });
+        let (s, _, resp) = post(&app, "/v1/images/cost", body).await;
+        assert_eq!((s, refusal(&resp)), (StatusCode::BAD_REQUEST, (Some("param_enum_mismatch"), Some("moderation"))), "strict={strict}: {resp}");
+        assert!(!resp["error"]["message"].as_str().unwrap_or_default().contains("extra.moderation"), "strict={strict}: {resp}");
+    }
+    let body = json!({ "model": "openai/gpt-image-2", "prompt": "a red cube", "extra": { "moderation": "strict" } });
+    let (s, _, resp) = post(&app, "/v1/images/cost", body).await;
+    assert_eq!((s, refusal(&resp)), (StatusCode::BAD_REQUEST, (Some("param_enum_mismatch"), Some("extra.moderation"))), "{resp}");
+}
+
 /// The OpenAI SDK sends `user` and `moderation` at the top level. On a row
 /// that passes them through (`extra_allowlist`), they reach the vendor as if
 /// sent in `extra`, under the default `strict`, instead of being dropped

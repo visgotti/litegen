@@ -253,6 +253,17 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
     // The signing key: LITEGEN__SECRETS_KEY when usable, else the one stored in
     // the database, so every replica signs and verifies links alike.
     let link_signer = litegen::access::signing::link_signer_for(config.secrets_key.as_deref(), &*db).await;
+    if !link_signer.persistent() {
+        // A key of this process's own: no other replica, and no restart,
+        // would accept the links it signs.
+        eprintln!(
+            "FATAL: litegen could not load its link-signing key from the database (the error is above). \
+             Without it this replica would sign links that no other replica, and no restart, accepts. \
+             Fix the database, or set LITEGEN__SECRETS_KEY. If the stored value is damaged, delete the \
+             link_signing_key row of server_secrets (links already handed out then stop verifying)."
+        );
+        std::process::exit(1);
+    }
     let router = ProxyRouter::new(
         registry.clone(),
         cache.clone(),

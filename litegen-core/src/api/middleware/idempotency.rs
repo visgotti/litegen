@@ -44,8 +44,10 @@ pub struct VendorAttempted;
 /// Longest key accepted, as Stripe and the IETF draft suggest.
 const MAX_KEY_LEN: usize = 255;
 
-/// The largest request body hashed; the generation routes refuse larger ones.
-const MAX_BODY: usize = 25 * 1024 * 1024;
+/// The largest request body hashed: the generation routes' own limit, which
+/// `GET /v1/models` serves as `capabilities.max_request_bytes`, so a keyed
+/// request may be as large as the listing says (dashboard-server review #1).
+const MAX_BODY: usize = super::body::MAX_GENERATION_BODY;
 
 /// The largest response stored for replay (an image response carries its
 /// image inline when `b64_json` was asked for).
@@ -227,8 +229,10 @@ async fn run_to_completion(fut: impl std::future::Future<Output = Response> + Se
     match tokio::spawn(fut.instrument(tracing::Span::current())).await {
         Ok(resp) => resp,
         Err(e) => {
+            // The panic's text stays in the log; the caller gets the JSON
+            // `internal_error` every other 500 has (handlers review #9).
             tracing::error!(error = %e, "a billed request's task failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "the request failed").into_response()
+            super::internal_error_response("internal server error")
         }
     }
 }
@@ -324,6 +328,32 @@ mod tests {
         .instrument(tracing::info_span!("billed-request"))
         .await;
         assert_eq!(resp.headers()["x-span"], "billed-request", "the handler ran outside the request's span");
+    }
+
+    /// A billed handler that panics.
+    async fn a_handler_that_panics() -> Response {
+        panic!("a handler bug at src/api/handlers/x.rs:12")
+    }
+
+    /// Handlers review #9: a billed request whose task panicked answers the
+    /// JSON `internal_error` body every other 500 has, naming nothing of the
+    /// panic. It answered `text/plain` "the request failed", which a client
+    /// that reads `error.code` can't parse; since E12 that is every billed
+    /// POST, keyed or not.
+    #[tokio::test]
+    async fn a_billed_request_that_panics_answers_the_json_internal_error() {
+        let resp = run_to_completion(a_handler_that_panics()).await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            (content_type.as_str(), body["error"]["code"].as_str(), body["error"]["type"].as_str()),
+            ("application/json", Some("internal_error"), Some("internal_error")),
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(body["error"]["message"], "internal server error", "{body}");
     }
 
     /// P15 (timing; run alone): hashing a maximum-size body holds no async

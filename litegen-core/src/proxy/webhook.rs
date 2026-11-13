@@ -10,8 +10,10 @@ use crate::types::{Generation, WebhookDelivery};
 // and so is the deployment mode it reads.
 /// The client a webhook goes out with. In hosted mode the URL is a tenant's,
 /// so the client connects only to public addresses, on the first attempt and
-/// on every retry. A single-tenant operator may target internal hosts
-/// (`validate_tenant_webhook_url`).
+/// on every retry. In single-tenant mode it connects anywhere, for the keys
+/// that may reach the deployment's network ([`may_reach_inside`]): a caller
+/// sends every other key's webhook on a public-only client instead
+/// (`dispatch_terminal_webhook`, test-webhook).
 pub fn webhook_client(mode: crate::config::Mode) -> reqwest::Client {
     match mode {
         crate::config::Mode::Hosted => crate::util::ssrf::public_only_client(),
@@ -319,7 +321,7 @@ pub async fn dispatch_webhook_logged(
             Ok(resp) => {
                 let status_code = resp.status().as_u16() as i32;
                 let success = resp.status().is_success();
-                let response_body = resp.text().await.ok();
+                let response_body = kept_reply(resp).await;
 
                 // Record this attempt.
                 let delivery = WebhookDelivery {
@@ -397,6 +399,93 @@ pub async fn dispatch_webhook_logged(
         "Webhook delivery failed after all retries"
     );
     Err(format!("webhook failed after {MAX_ATTEMPTS} attempts: {last_err}"))
+}
+
+/// Whether the webhook of a key owned by `owner` may reach the deployment's
+/// own network: private, loopback and link-local addresses (review 2026-11-11
+/// SEC-STWEBHOOK). Checked when a key's webhook is saved, tested and sent.
+///
+/// Hosted: never, a tenant's webhook goes to public addresses only.
+/// Single-tenant, with `webhooks.internal_targets: everyone`: any key's.
+/// Otherwise (the default) only the deployment's own: a key with no owner
+/// (made with the master key), or one whose owner is active and holds
+/// `system:config` or `key:write:any` in the deployment's org. A role in
+/// another org counts for nothing: a side org's owner holds no authority over
+/// the deployment's network, and a demoted or removed Admin's keys lose it.
+pub async fn may_reach_inside(
+    db: &dyn DatabaseStore,
+    mode: crate::config::Mode,
+    internal: crate::config::InternalTargets,
+    owner: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    if mode == crate::config::Mode::Hosted {
+        return Ok(false);
+    }
+    if internal == crate::config::InternalTargets::Everyone {
+        return Ok(true);
+    }
+    let Some(user_id) = owner else { return Ok(true) };
+    let role = match db.get_user_by_id(user_id).await? {
+        Some(user) if user.is_active => db.get_membership(crate::api::middleware::DEFAULT_ORG_ID, user_id).await?,
+        _ => None,
+    };
+    use crate::auth::permissions::{role_has, Permission};
+    Ok(role.is_some_and(|r| role_has(r, Permission::SystemConfig) || role_has(r, Permission::KeyWriteAny)))
+}
+
+/// The most of an endpoint's reply a delivery reads and keeps: its first 16 KiB
+/// (review 2026-11-11 SEC-WHBODY). The status, known before the body, decides
+/// the delivery, so the rest is never read.
+pub const WEBHOOK_REPLY_KEPT_BYTES: usize = 16 * 1024;
+
+/// Reads at most [`WEBHOOK_REPLY_KEPT_BYTES`] of `resp`'s body, then drops the
+/// response, which closes the connection: a huge or endless reply costs neither
+/// memory nor storage. A multi-byte character cut by the limit is dropped whole,
+/// so the text never grows past it. `None` when nothing could be read.
+async fn kept_reply(mut resp: reqwest::Response) -> Option<String> {
+    let mut kept: Vec<u8> = Vec::new();
+    while kept.len() < WEBHOOK_REPLY_KEPT_BYTES {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = WEBHOOK_REPLY_KEPT_BYTES - kept.len();
+                kept.extend_from_slice(&chunk[..chunk.len().min(room)]);
+            }
+            Ok(None) => break,
+            Err(_) if kept.is_empty() => return None,
+            Err(_) => break,
+        }
+    }
+    drop_a_cut_character(&mut kept);
+    let text = String::from_utf8_lossy(&kept);
+    // Bytes that are not UTF-8 read as U+FFFD, as `Response::text` gives them,
+    // which can lengthen the text; it still stops at the limit.
+    let mut end = text.len().min(WEBHOOK_REPLY_KEPT_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(text[..end].to_string())
+}
+
+/// Drops an incomplete UTF-8 sequence at the end of `bytes`: the character the
+/// read limit cut.
+fn drop_a_cut_character(bytes: &mut Vec<u8>) {
+    let len = bytes.len();
+    for back in 1..=len.min(3) {
+        let b = bytes[len - back];
+        if b & 0xC0 != 0x80 {
+            // The last lead byte (or ASCII): how long its character is.
+            let need = match b {
+                0xF0.. => 4,
+                0xE0.. => 3,
+                0xC0.. => 2,
+                _ => 1,
+            };
+            if need > back {
+                bytes.truncate(len - back);
+            }
+            return;
+        }
+    }
 }
 
 fn compute_signature(secret: &str, body: &str) -> String {
@@ -585,6 +674,96 @@ mod tests {
         assert_eq!(deliveries[2].status_code, Some(200));
     }
 
+    // ─── the endpoint's reply: only its start is read and kept (SEC-WHBODY) ──
+
+    /// One delivery to `url` through `client`, logged in a fresh database; returns
+    /// the result and the rows it recorded.
+    async fn deliver_logged(client: &reqwest::Client, url: &str) -> (Result<(), String>, Vec<WebhookDelivery>) {
+        use crate::db::sqlite::SqliteDatabase;
+        let db: Arc<dyn DatabaseStore> = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let gen = make_generation("litegen-vid-reply");
+        let result = dispatch_webhook_logged(client, url, None, &gen, db.clone(), "key-reply").await;
+        let (rows, _) = db.list_webhook_deliveries("key-reply", 1, 50).await.unwrap();
+        (result, rows)
+    }
+
+    #[tokio::test]
+    async fn dispatch_logged_keeps_only_the_start_of_a_large_reply() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/big-reply"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(1 << 20)))
+            .mount(&server)
+            .await;
+        let (result, rows) = deliver_logged(&reqwest::Client::new(), &format!("{}/big-reply", server.uri())).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(rows.len(), 1);
+        let kept = rows[0].response_body.as_deref().expect("the reply's start is kept");
+        assert!(kept.len() <= 16 * 1024, "a delivery keeps at most the first 16 KiB of the reply, kept {} bytes", kept.len());
+        assert!(!kept.is_empty() && kept.bytes().all(|b| b == b'x'), "what is kept is the reply's own start");
+    }
+
+    /// A host that answers any request `200` with a chunked body: `total` bytes,
+    /// then nothing for two minutes with the connection held open.
+    async fn stalling_reply_host(total: usize) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut req = [0u8; 8192];
+                    let _ = sock.read(&mut req).await;
+                    let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n").await;
+                    let chunk = vec![b'y'; 64 * 1024];
+                    for _ in 0..total / chunk.len() {
+                        if sock.write_all(format!("{:x}\r\n", chunk.len()).as_bytes()).await.is_err()
+                            || sock.write_all(&chunk).await.is_err()
+                            || sock.write_all(b"\r\n").await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                });
+            }
+        });
+        format!("http://{addr}/hook")
+    }
+
+    #[tokio::test]
+    async fn dispatch_logged_stops_reading_an_endless_reply() {
+        // About 1 MiB, then a stall: a reply that never ends. A client with no
+        // timeout of its own shows that the delivery stops reading by itself.
+        let url = stalling_reply_host(1024 * 1024).await;
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(10), deliver_logged(&reqwest::Client::new(), &url))
+            .await
+            .expect("kept reading an endless reply");
+        let (result, rows) = delivered;
+        assert!(result.is_ok(), "the status decides the delivery: {result:?}");
+        assert_eq!(rows.len(), 1, "one attempt, recorded");
+        let kept = rows[0].response_body.as_deref().unwrap_or_default();
+        assert!(kept.len() <= 16 * 1024 && kept.starts_with('y'), "kept {} bytes", kept.len());
+    }
+
+    #[tokio::test]
+    async fn a_kept_reply_is_cut_at_a_character_boundary() {
+        // 3-byte characters: 16 KiB falls inside one, which is dropped whole
+        // rather than replaced by U+FFFD (which would push past 16 KiB).
+        let sent = "€".repeat(100_000);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/euro-reply"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(sent.clone()))
+            .mount(&server)
+            .await;
+        let (_, rows) = deliver_logged(&reqwest::Client::new(), &format!("{}/euro-reply", server.uri())).await;
+        let kept = rows[0].response_body.as_deref().expect("kept");
+        assert!(kept.len() <= 16 * 1024, "at most 16 KiB, kept {} bytes", kept.len());
+        assert!(sent.starts_with(kept) && !kept.contains('\u{FFFD}'), "a prefix of the reply, whole characters only");
+        assert_eq!(kept.len(), (16 * 1024 / 3) * 3, "every whole character that fits is kept");
+    }
+
     #[tokio::test]
     async fn a_hosted_webhook_client_reaches_only_public_addresses() {
         use wiremock::matchers::method;
@@ -596,7 +775,8 @@ mod tests {
         let hosted = webhook_client(crate::config::Mode::Hosted);
         let err = hosted.post(&by_name).send().await.expect_err("a tenant's webhook can't reach inside the deployment");
         assert!(refused_by_the_guard(&err), "{err:?}");
-        // A single-tenant operator may target internal hosts (validate_tenant_webhook_url).
+        // The single-tenant client connects anywhere: it is the one for the
+        // keys that may reach inside (`may_reach_inside`).
         let single = webhook_client(crate::config::Mode::SingleTenant);
         assert_eq!(single.post(&by_name).send().await.expect("reachable").status(), 200);
     }

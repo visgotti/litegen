@@ -157,6 +157,21 @@ fn model3d_extras() -> Model3dExtras {
     }
 }
 
+/// [`build_video_provider`], except that Leonardo may upload its start frame
+/// to the mock's loopback [`UPLOAD_PATH`]: its guard refuses an upload URL
+/// that isn't a public address (SEC-LEONARDO, pinned by its own tests), which
+/// would stop every Leonardo video row before the create this harness checks.
+fn uploading_video_provider(name: &str, cfg: &ProviderInstanceConfig) -> Option<Box<dyn crate::providers::VideoProvider>> {
+    if name == "leonardo" {
+        use crate::providers::VideoProvider;
+        let mut p = crate::providers::video::leonardo::LeonardoVideoProvider::new();
+        p.configure(cfg.clone());
+        p.public_assets_only = false;
+        return Some(Box::new(p));
+    }
+    build_video_provider(name, cfg)
+}
+
 /// What one row's generation sent the mock vendor.
 struct Sent {
     row: String,
@@ -200,7 +215,7 @@ async fn send_answering(row: &ModelSchema, answer: ResponseTemplate) -> Option<S
             format!("{:?}", tokio::time::timeout(wait, p.generate(row, &base, &image_extras(row), &materialized)).await.map(|r| r.err()))
         }
         MediaType::Video => {
-            let p = build_video_provider(&row.provider, &cfg)?;
+            let p = uploading_video_provider(&row.provider, &cfg)?;
             format!("{:?}", tokio::time::timeout(wait, p.generate(row, &base, &video_extras(row), &materialized)).await.map(|r| r.err()))
         }
         MediaType::Model3d => {

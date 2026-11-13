@@ -26,11 +26,13 @@ work touches a definition.
 |---|---|---|
 | New vendor model | `new upstream` id | Scoped the sources to the families and endpoints you carry, so new ids in them appear and unrelated ids don't |
 | Retired or renamed model | `missing upstream` | Mapped every vendor id the adapter sends, as an array for multi-endpoint models, so even one endpoint vanishing is reported |
+| Model deprecated but still served | `deprecated upstream`, until the row records `deprecated_at` or `retires_at` | Given the source a `deprecated` reader where the vendor publishes such a status (fal's registry status) |
 | Schema change (enum, bound, field) | the snapshot is `changed` | Snapshotted each carried endpoint's request schema (typings coverage) |
 | Price change | the snapshot is `changed`, or a manual comparison | Kept price lines in a snapshot where the fetched page has them, **and** quoted the price with URL and date in the YAML |
 | A source moved | `FAILED`, `(canary)` | Picked a stable, machine-readable source |
 | Definition out of sync with YAML | `FAILED (config)` and the definitions test | Mapped every catalog row |
 | Model with no schema coverage | `FAILED (typings)` | Covered every carried id, or listed a schema-less one in `untyped` with a reason |
+| A source with no earlier snapshot | `no baseline` (exit 1): nothing was compared, so the file needs a whole-file review | Nothing: a new source's first run always shows it, and the weekly run reviews and commits the file |
 
 ## Writing a definition
 
@@ -98,31 +100,50 @@ export default {
   (dated aliases, `/stream` transport routes) gets a pattern.
 - **Index sources** (`index: true`) list pages or endpoints, such as
   `llms.txt`. A new page shows up as a changed snapshot, never as a model id.
+- **Say what counts as typings evidence.** A non-index source whose snapshot
+  is a lineup table or an id list says `typings: false` (vidu's Model Map,
+  Leonardo's `model-ids`); an index source whose snapshot is a request
+  schema says `typings: true`. Pin a model whose schema never names its
+  vendor id (Leonardo's free-form `modelId`), or whose id another carried
+  model sends to a different endpoint, with
+  `typingsFrom: { '<litegen id>': ['<source key>'] }`: its typings then come
+  from those sources only, and it is covered once they succeed.
 
 ## Verifying a definition
 
 ```bash
 node --test 'scripts/model-drift/test/*.test.mjs'
-node scripts/model-drift/check.mjs --provider <p> --snapshots "$(mktemp -d)"   # run 1: no FAILED, exit ≠ 2
-node scripts/model-drift/check.mjs --provider <p> --snapshots <same dir>       # run 2: no `changed`
+D="$(mktemp -d)"
+node scripts/model-drift/check.mjs --provider <p> --snapshots "$D"   # run 1: no FAILED, exit ≠ 2
+node scripts/model-drift/check.mjs --provider <p> --snapshots "$D"   # run 2: no `changed`, no `no baseline`
 ```
 
-The second run must show nothing `changed`. If it does, the snapshot isn't
-stable: there is prose, ordering or a timestamp in it. Fix the snapshot
-function.
+The first run exits 1 and lists every source under `no baseline`, since the
+folder starts empty. The second run must show nothing `changed` and nothing
+under `no baseline`. If it shows `changed`, the snapshot isn't stable: there
+is prose, ordering or a timestamp in it. Fix the snapshot function.
 
 Leave `scripts/model-drift/snapshots/` alone. Committed snapshots are the
-reviewed baseline. The first weekly run after your change reviews your new
-snapshot in full (an untracked snapshot gets a whole-file review) and commits
-it. Committing an unreviewed snapshot buries any mismatch it shows.
+reviewed baseline. The first weekly run after your change lists your new
+snapshot under `no baseline` (exit 1), reviews it in full and commits it.
+Committing an unreviewed snapshot buries any mismatch it shows.
 
 ## Shutdown lifecycle
 
-1. **The vendor announces a date.** Add `(id, "YYYY-MM-DD", "what happens;
-   successor")` to `SCHEDULED_SHUTDOWNS` in
-   `litegen-core/tests/catalog_conformance.rs`, with an `@see` to the
-   deprecations page. Prefix the row's description with `DEPRECATED: <date>`.
-   The model stays advertised while the vendor still serves it.
+- **The vendor deprecates a model with no date** (`deprecated upstream`):
+  set the row's `deprecated_at` to the day it did, and `replaced_by` when its
+  successor is a catalog model (moving callers to it is the user's call).
+  The model stays advertised as deprecated, and the report stops listing it.
+
+1. **The vendor announces a date.** Set the row's `retires_at` to it, and
+   add `(id, "YYYY-MM-DD", "what happens; successor")` to
+   `SCHEDULED_SHUTDOWNS` in `litegen-core/tests/catalog_conformance.rs`, with
+   an `@see` to the deprecations page:
+   `every_scheduled_shutdown_is_its_rows_retires_at` requires the two to
+   match, and the drift check reads the row's date. Prefix the row's
+   description with `DEPRECATED: <date>`. The model stays advertised while
+   the vendor still serves it; from the day after `retires_at`, litegen
+   neither lists nor serves it.
 2. **The day after the date,** `models_past_their_announced_shutdown_are_removed`
    fails. Remove the row and its drift mapping, and move the id to
    `no_retired_model_ids_are_advertised`. Run the consistency sweep in

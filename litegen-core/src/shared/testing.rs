@@ -46,12 +46,23 @@ pub fn addr_of(url: &str) -> SocketAddr {
         .expect("at least one address")
 }
 
+/// The settings of the clients these helpers build: `url` with the defaults,
+/// except that no answer counts as slow (`slow_call` 0). On a busy test
+/// runner, five answers that happen to take 250 ms would otherwise open a
+/// client's breaker in a test about something else. The slow-call tests
+/// build their own clients.
+fn settings_for(url: &str) -> RedisSettings {
+    let mut settings = RedisSettings::from_url(url);
+    settings.slow_call = std::time::Duration::ZERO;
+    settings
+}
+
 /// Two clients on one fresh prefix: two replicas sharing a Redis. `None`
 /// (after the skip line) without `LITEGEN_REDIS_TEST_URL`.
 pub async fn two_shared() -> Option<(Arc<SharedRedis>, Arc<SharedRedis>)> {
     let url = test_url()?;
     let prefix = test_prefix();
-    let settings = RedisSettings::from_url(&url);
+    let settings = settings_for(&url);
     let a = SharedRedis::connect(&settings, &prefix).await.expect("the test Redis URL is usable");
     let b = SharedRedis::connect(&settings, &prefix).await.expect("the test Redis URL is usable");
     Some((a, b))
@@ -68,7 +79,7 @@ pub async fn two_shared_limiters() -> Option<(Arc<RateLimiter>, Arc<RateLimiter>
 /// A client whose Redis is not there (`127.0.0.1:1` refuses at once), so it
 /// needs no container. `fail_closed` is its setting of that name.
 pub async fn dead_redis(fail_closed: bool) -> Arc<SharedRedis> {
-    let mut settings = RedisSettings::from_url("redis://127.0.0.1:1");
+    let mut settings = settings_for("redis://127.0.0.1:1");
     settings.fail_closed = fail_closed;
     SharedRedis::connect(&settings, &test_prefix()).await.expect("a usable URL")
 }

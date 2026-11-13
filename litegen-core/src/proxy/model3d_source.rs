@@ -147,13 +147,11 @@ pub fn prepare(bytes: Vec<u8>, format: &str, spec: &ParamSpecSourceModel) -> Res
     Ok(PreparedSource { bytes: out, format: out_format, received_format: from.as_str().to_string(), sha256, facts })
 }
 
-/// Bytes of a stored 3D generation's mesh, preferring a container the model
-/// takes as it is. `stores` are tried in order (the app's own bucket first).
-pub async fn read_generation_source(
-    stores: &[Arc<dyn crate::store::ImageStorage>],
-    gen: &crate::types::Generation,
-    spec: &ParamSpecSourceModel,
-) -> Result<(Vec<u8>, String), SourceError> {
+/// Which of a finished 3D generation's stored meshes a `source_model` reads:
+/// one in a container the model takes as it is, else the default container,
+/// else the first. Chosen before anything is read, so the server can ask the
+/// operator's `file_access` hook about that very file first (SEC-FILEHOOK).
+pub fn pick_source_mesh(gen: &crate::types::Generation, spec: &ParamSpecSourceModel) -> Result<crate::types::GenerationAsset, SourceError> {
     use crate::types::GenerationStatus;
     if gen.media_type != "model3d" {
         return Err(SourceError::NotFound(format!("generation {} is not a 3D generation", gen.id)));
@@ -168,12 +166,22 @@ pub async fn read_generation_source(
         GenerationStatus::Completed => {}
     }
     let meshes: Vec<_> = crate::types::generation::generation_assets(gen).into_iter().filter(|a| a.kind == "mesh").collect();
-    let pick = meshes
+    meshes
         .iter()
         .find(|a| spec.formats.iter().any(|f| f.eq_ignore_ascii_case(&a.format)))
         .or_else(|| meshes.iter().find(|a| a.format == crate::types::DEFAULT_MODEL3D_FORMAT))
         .or_else(|| meshes.first())
-        .ok_or_else(|| SourceError::NotFound(format!("generation {} has no mesh", gen.id)))?;
+        .cloned()
+        .ok_or_else(|| SourceError::NotFound(format!("generation {} has no mesh", gen.id)))
+}
+
+/// The bytes of `pick`, one of `gen`'s meshes ([`pick_source_mesh`]), and its
+/// container. `stores` are tried in order (the app's own bucket first).
+pub async fn read_source_mesh(
+    stores: &[Arc<dyn crate::store::ImageStorage>],
+    gen: &crate::types::Generation,
+    pick: &crate::types::GenerationAsset,
+) -> Result<(Vec<u8>, String), SourceError> {
     for store in stores {
         let Some(key) = store.key_of(&pick.url) else { continue };
         return match store.get(&key).await {

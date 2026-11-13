@@ -51,3 +51,20 @@ export const WithValues: Story = {
 export const MixedSelection: Story = {
   args: selection({ 'fal/hyper3d-rodin': RODIN, 'fal/trellis': TRELLIS }, { texture_size: '1024' }),
 };
+
+// Typed keys (`extra_params`) in the shape GET /v1/models/{id} serves them for
+// fal's FLUX.1 [pro] rows: `safety_tolerance` is the STRING "1".."6".
+const FLUX_PRO = {
+  extra_allowlist: ['raw', 'safety_tolerance', 'image_prompt_strength', 'enhance_prompt'],
+  extra_params: {
+    raw: { kind: 'bool', default: null },
+    safety_tolerance: { kind: 'string', enum_values: ['1', '2', '3', '4', '5', '6'], default: '2' },
+    image_prompt_strength: { kind: 'float', min: 0, max: 1, default: 0.1 },
+    enhance_prompt: { kind: 'bool', default: null },
+  },
+} as unknown as ModelSchema;
+
+/** Typed keys: each gets a control of its vendor type and goes as that type. */
+export const TypedFields: Story = {
+  args: selection({ 'fal/flux-pro': FLUX_PRO }, { safety_tolerance: '2', image_prompt_strength: '0.25' }),
+};

@@ -127,6 +127,9 @@ pub struct AppConfig {
     /// The MCP endpoints (`/mcp` and `/admin/mcp`).
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Where keys' webhooks may point (`docs/management-api.md`).
+    #[serde(default)]
+    pub webhooks: WebhooksConfig,
     /// Redis, shared by replicas (`docs/scaling.md`). Set by `LITEGEN_REDIS_URL`
     /// or `LITEGEN_REDIS_HOST` and their companions, never by `litegen.yaml`;
     /// `None` is one replica, as before.
@@ -234,6 +237,7 @@ impl Default for AppConfig {
             aws: AwsConfig::default(),
             retries: RetriesConfig::default(),
             mcp: McpConfig::default(),
+            webhooks: WebhooksConfig::default(),
             redis: None,
             startup_warnings: Vec::new(),
             config_file: None,
@@ -656,6 +660,28 @@ fn breaker_threshold<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::E
 
 fn breaker_open_for_seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
     in_range(d, "circuit_breaker.open_for_seconds", 1, 3600)
+}
+
+/// `webhooks` in `litegen.yaml` (review 2026-11-11 SEC-STWEBHOOK).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WebhooksConfig {
+    /// Whose keys' webhooks may reach the deployment's own network (private,
+    /// loopback and link-local addresses) in single-tenant mode. In hosted
+    /// mode no tenant's webhook ever may.
+    #[serde(default)]
+    pub internal_targets: InternalTargets,
+}
+
+/// `webhooks.internal_targets`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InternalTargets {
+    /// Only the deployment's own keys: made with the master key (no owner),
+    /// or owned by an active Owner or Admin of the deployment's org.
+    #[default]
+    Admins,
+    /// Any key's, as before 2026-11 (opt-in).
+    Everyone,
 }
 
 /// `retries` in `litegen.yaml`: how a vendor call turned away with a
@@ -1216,6 +1242,17 @@ impl<'a> serde::Serialize for ServerConfigSerialize<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SEC-STWEBHOOK: `webhooks.internal_targets` is `admins` unless set,
+    /// takes `everyone`, and refuses anything else.
+    #[test]
+    fn webhooks_internal_targets_default_to_admins() {
+        assert_eq!(AppConfig::default().webhooks.internal_targets, InternalTargets::Admins);
+        let read = |v: serde_json::Value| serde_json::from_value::<WebhooksConfig>(v).map(|w| w.internal_targets);
+        assert_eq!(read(serde_json::json!({})).unwrap(), InternalTargets::Admins);
+        assert_eq!(read(serde_json::json!({ "internal_targets": "everyone" })).unwrap(), InternalTargets::Everyone);
+        assert!(read(serde_json::json!({ "internal_targets": "nobody" })).is_err());
+    }
 
     #[test]
     fn provider_config_errors_name_the_provider_and_the_header() {

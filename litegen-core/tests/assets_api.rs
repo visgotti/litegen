@@ -253,6 +253,13 @@ async fn answers_ranges(app: &axum::Router, route: &str, whole: &[u8]) {
     assert_eq!(h["content-length"], "4", "{route}");
     assert_eq!(body, b"glTF", "{route}");
 
+    // Payloads review #10: a range unit is matched without regard to case
+    // (RFC 9110 §14.1).
+    let (s, h, body) = call(app, get(Some("Bytes=0-3".into()))).await;
+    assert_eq!(s, StatusCode::PARTIAL_CONTENT, "{route}: Bytes=0-3");
+    assert_eq!(h["content-range"], format!("bytes 0-3/{len}"), "{route}");
+    assert_eq!(body, b"glTF", "{route}");
+
     let (s, h, body) = call(app, get(None)).await;
     assert_eq!(s, StatusCode::OK, "{route}: a plain GET");
     assert_eq!(body, whole, "{route}: a plain GET is the whole file");

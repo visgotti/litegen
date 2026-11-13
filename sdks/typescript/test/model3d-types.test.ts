@@ -90,6 +90,14 @@ describe("3D vocabulary types", () => {
     expect([walk.name, preset]).toEqual(["walk", "attack_melee"]);
   });
 
+  it("lets a clip leave its name to litegen", () => {
+    // Left out or null, litegen names the clip: `walk` after its preset,
+    // `clip-<n>` for a prompt clip.
+    expectTypeOf<AnimationRequest["name"]>().toEqualTypeOf<string | null | undefined>();
+    const clips: AnimationRequest[] = [{ preset: "walk", loop: true }, { prompt: "a slow bow", name: null }];
+    expect(clips.map((c) => c.name ?? null)).toEqual([null, null]);
+  });
+
   it("types the rig params from their vocabularies", () => {
     expectTypeOf<Model3dGenerationRequest["skeleton"]>().toEqualTypeOf<Model3dSkeleton | null | undefined>();
     expectTypeOf<Model3dGenerationRequest["joint_naming"]>().toEqualTypeOf<Model3dJointNaming | null | undefined>();

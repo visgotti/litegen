@@ -191,11 +191,11 @@ pub fn validate_image(
 
     check_param!(req.base.negative_prompt, "negative_prompt", ParamSpec::String(s) => {
         if let Some(m) = s.max_length {
-            let v = req.base.negative_prompt.as_deref().unwrap();
-            if v.len() > m {
+            let len = char_len(req.base.negative_prompt.as_deref().unwrap());
+            if len > m {
                 return Err(ValidationError::new(
                     "param_too_long",
-                    format!("negative_prompt length {} exceeds {}", v.len(), m),
+                    format!("negative_prompt length {len} exceeds {m}"),
                     Some("negative_prompt"),
                 ));
             }
@@ -320,11 +320,11 @@ pub fn validate_video(
         match schema.params.get("negative_prompt") {
             Some(ParamSpec::String(s)) => {
                 if let Some(m) = s.max_length {
-                    let v = req.base.negative_prompt.as_deref().unwrap();
-                    if v.len() > m {
+                    let len = char_len(req.base.negative_prompt.as_deref().unwrap());
+                    if len > m {
                         return Err(ValidationError::new(
                             "param_too_long",
-                            format!("negative_prompt length {} > {}", v.len(), m),
+                            format!("negative_prompt length {len} > {m}"),
                             Some("negative_prompt"),
                         ));
                     }
@@ -828,7 +828,11 @@ pub fn validate_model3d(
     }
     if req.animations.is_some() {
         match schema.params.get("animations") {
-            Some(ParamSpec::AnimationList(spec)) => check_animations(req.animations.as_deref().unwrap_or_default(), spec, &schema.id)?,
+            Some(ParamSpec::AnimationList(spec)) => {
+                let clips = req.animations.get_or_insert_with(Vec::new);
+                name_unnamed_clips(clips, spec);
+                check_animations(clips, spec, &schema.id)?
+            }
             Some(_) | None => {
                 if strict {
                     return Err(ValidationError::new(
@@ -1108,9 +1112,8 @@ fn check_image_edit(
             }
         }
     }
-    let takes_mask = schema.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
     if let Some(grow) = req.mask_grow_px {
-        if !(takes_mask || schema.params.contains_key("region")) {
+        if !schema.edits_part_of_an_image() {
             if strict {
                 return Err(ValidationError::new("param_unsupported", format!("mask_grow_px not supported by '{}'", schema.id), Some("mask_grow_px")));
             }
@@ -1378,10 +1381,84 @@ pub const MAX_PLACEMENT_HEIGHT_M: f64 = 10_000.0;
 /// The most a mask may grow: Stability's own `grow_mask` ceiling.
 pub const MAX_MASK_GROW_PX: u32 = 100;
 
+/// The request fields litegen applies to `schema`'s model itself (E11a), with
+/// the bounds this module keeps, as `GET /v1/models/{id}` serves them in
+/// `litegen_params`: placement on every 3D model (3D doc §3D), and mask
+/// growth and kept pixels on an image model that edits part of an image (§4).
+/// A name the model's own `params` declare stays there alone.
+pub(crate) fn litegen_params(schema: &ModelSchema) -> std::collections::BTreeMap<String, ParamSpec> {
+    let text = |s: &str| Some(s.to_string());
+    let flag = |label: &str, description: &str| {
+        ParamSpec::Bool(ParamSpecBool { default: Some(false), label: text(label), description: text(description) })
+    };
+    let pixels = |max: u32, label: &str, description: &str| {
+        ParamSpec::Int(ParamSpecInt { min: Some(0), max: Some(max.into()), label: text(label), description: text(description), ..Default::default() })
+    };
+    let mut fields = Vec::new();
+    if schema.media_type == crate::capabilities::MediaType::Model3d {
+        fields.push(("ground", flag("Ground", "Put the mesh's lowest point at y = 0.")));
+        fields.push(("center", flag("Center", "Centre the mesh's bounds on x and z.")));
+        fields.push(("height_m", ParamSpec::Float(ParamSpecFloat {
+            // Above 0, which no inclusive `min` can say.
+            max: Some(MAX_PLACEMENT_HEIGHT_M),
+            label: text("Height (m)"),
+            description: Some(format!("Scale the mesh to this height in metres: above 0, at most {MAX_PLACEMENT_HEIGHT_M}.")),
+            ..Default::default()
+        })));
+    }
+    if schema.edits_part_of_an_image() {
+        fields.push(("mask_grow_px", pixels(MAX_MASK_GROW_PX, "Mask grow (px)", "Widen the mask or region by this many pixels before the edit.")));
+        fields.push(("preserve_unmasked", flag(
+            "Keep unmasked pixels",
+            "Paste the init image's pixels back outside the mask or region, byte for byte (png or webp output).",
+        )));
+        fields.push(("feather_px", pixels(MAX_FEATHER_PX, "Feather (px)", "Soften the kept edge over this many pixels. Only with preserve_unmasked: true.")));
+    }
+    fields.into_iter().filter(|(name, _)| !schema.params.contains_key(*name)).map(|(name, spec)| (name.to_string(), spec)).collect()
+}
+
+/// Names each clip a request leaves unnamed (E11c), before the clips are
+/// checked: a preset clip after the model's canonical name for that preset
+/// (`walk`), else its preset id with every character outside
+/// `[A-Za-z0-9_.-]` as `_`, cut to 64; a prompt clip, or one whose preset
+/// leaves no name, `clip-<n>` by its place; `-2`, `-3`, … on a name already
+/// taken. Typed names are taken first and never changed: `check_animations`
+/// judges them. A list over the model's limit is left alone, since it is
+/// refused before any name is read.
+fn name_unnamed_clips(clips: &mut [AnimationRequest], spec: &crate::capabilities::ParamSpecAnimationList) {
+    if clips.len() > spec.max_items {
+        return;
+    }
+    let legal = |ch: char| if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-') { ch } else { '_' };
+    let mut taken: std::collections::HashSet<String> = clips.iter().filter_map(|c| c.name.clone()).collect();
+    for (i, c) in clips.iter_mut().enumerate() {
+        if c.name.is_some() {
+            continue;
+        }
+        let from_preset = c.preset.as_deref().map(|p| {
+            spec.presets
+                .iter()
+                .find(|s| s.id == p)
+                .and_then(|s| s.canonical.clone())
+                .unwrap_or_else(|| p.chars().map(legal).take(64).collect())
+        });
+        let base = from_preset.filter(|b| !b.is_empty()).unwrap_or_else(|| format!("clip-{}", i + 1));
+        let (mut name, mut n) = (base.clone(), 2);
+        while taken.contains(&name) {
+            let suffix = format!("-{n}");
+            name = base.chars().take(64 - suffix.len()).chain(suffix.chars()).collect();
+            n += 1;
+        }
+        taken.insert(name.clone());
+        c.name = Some(name);
+    }
+}
+
 /// A clip list against the model's `animation_list` spec (3D doc §3C): every
 /// name unique and 1–64 of `[A-Za-z0-9_.-]`; each clip exactly one of a
 /// preset the model plays (canonical or its own id) and a prompt (where it
-/// makes motion from text, for a length within its range).
+/// makes motion from text, for a length within its range). A refusal names
+/// the clip by its place in the list.
 fn check_animations(
     clips: &[AnimationRequest],
     spec: &crate::capabilities::ParamSpecAnimationList,
@@ -1395,20 +1472,21 @@ fn check_animations(
         return fail("param_too_many", format!("'{model}' makes at most {} clips per request; {} asked", spec.max_items, clips.len()));
     }
     let mut names: Vec<&str> = Vec::new();
-    for c in clips {
-        let well_formed = (1..=64).contains(&c.name.chars().count())
-            && c.name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'));
+    for (i, c) in clips.iter().enumerate() {
+        let (at, name) = (i + 1, c.name());
+        let well_formed = (1..=64).contains(&name.chars().count())
+            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'));
         if !well_formed {
-            return fail("animation_name_invalid", format!("clip name '{}' must be 1–64 characters of A–Z, a–z, 0–9, _ . -", c.name));
+            return fail("animation_name_invalid", format!("clip {at}: name '{name}' must be 1–64 characters of A–Z, a–z, 0–9, _ . -"));
         }
-        if names.contains(&c.name.as_str()) {
-            return fail("animation_name_invalid", format!("clip name '{}' is used twice; names must be unique", c.name));
+        if names.contains(&name) {
+            return fail("animation_name_invalid", format!("clip {at}: name '{name}' is used twice; names must be unique"));
         }
-        names.push(&c.name);
+        names.push(name);
         match (c.preset.as_deref(), c.prompt.as_deref()) {
             (Some(p), None) => {
                 if c.duration_s.is_some() {
-                    return fail("animation_clip_invalid", format!("clip '{}': duration_s is for prompt clips; a preset lasts as long as it lasts", c.name));
+                    return fail("animation_clip_invalid", format!("clip {at} '{name}': duration_s is for prompt clips; a preset lasts as long as it lasts"));
                 }
                 let known = spec.presets.iter().any(|s| s.id == p || s.canonical.as_deref() == Some(p));
                 if !known {
@@ -1417,33 +1495,42 @@ fn check_animations(
                         .iter()
                         .flat_map(|s| s.canonical.as_deref().into_iter().chain(std::iter::once(s.id.as_str())))
                         .collect();
-                    return fail("param_enum_mismatch", format!("clip '{}': '{model}' has no preset '{p}'; it plays {offered:?}", c.name));
+                    return fail("param_enum_mismatch", format!("clip {at} '{name}': '{model}' has no preset '{p}'; it plays {offered:?}"));
                 }
             }
             (None, Some(_)) => {
                 let Some(t) = &spec.text_to_motion else {
-                    return fail("param_unsupported", format!("clip '{}': '{model}' makes no motion from a prompt", c.name));
+                    return fail("param_unsupported", format!("clip {at} '{name}': '{model}' makes no motion from a prompt"));
                 };
                 if let Some(d) = c.duration_s {
                     if !(d.is_finite() && d >= t.min_duration_s && d <= t.max_duration_s) {
                         return fail("param_out_of_range", format!(
-                            "clip '{}': duration_s {d} is outside {}–{} s", c.name, t.min_duration_s, t.max_duration_s
+                            "clip {at} '{name}': duration_s {d} is outside {}–{} s", t.min_duration_s, t.max_duration_s
                         ));
                     }
                 }
             }
-            _ => return fail("animation_clip_invalid", format!("clip '{}' needs exactly one of preset and prompt", c.name)),
+            _ => return fail("animation_clip_invalid", format!("clip {at} '{name}' needs exactly one of preset and prompt")),
         }
     }
     Ok(())
 }
 
+/// A string's length as a `max_length` counts it: in characters, as the
+/// prompt's, a typed extra's and JSON Schema's `maxLength` do, never in
+/// bytes, which refused a non-ASCII value the vendor takes (passthrough
+/// review #6).
+fn char_len(v: &str) -> usize {
+    v.chars().count()
+}
+
 fn check_string(v: &str, spec: &crate::capabilities::ParamSpecString, param: &str) -> Result<(), ValidationError> {
     if let Some(m) = spec.max_length {
-        if v.len() > m {
+        let len = char_len(v);
+        if len > m {
             return Err(ValidationError::new(
                 "param_too_long",
-                format!("{} length {} > {}", param, v.len(), m),
+                format!("{param} length {len} > {m}"),
                 Some(param),
             ));
         }
@@ -1706,6 +1793,18 @@ fn check_video_request(schema: &ModelSchema, req: &VideoGenerationRequest) -> Re
             "capability_unsupported",
             format!("'{}' makes video from text only; it takes no frame image", schema.id),
             Some("reference_images"),
+        ));
+    }
+    // N3: without a frame to start from the request is text-to-video, which
+    // this model's vendor makes only from a prompt. Refused here, before
+    // anything is quoted or reserved, not by the adapter after. Runs after
+    // `check_refs`, so a role-less image counts under its `default_role`.
+    let starts_from_a_frame = refs.iter().any(|r| matches!(r.role.as_deref(), Some("first_frame" | "init")));
+    if schema.prompt.required_for_text_to_video && !starts_from_a_frame && req.base.prompt.trim().is_empty() {
+        return Err(ValidationError::new(
+            "prompt_required",
+            format!("'{}' makes text-to-video from a prompt; send one, or a first_frame image to animate", schema.id),
+            Some("prompt"),
         ));
     }
     Ok(())
@@ -1994,6 +2093,17 @@ pub fn check_unknown_fields(
             names.push(key);
             continue;
         }
+        // The value the vendor will get, when it is this one: a typed field
+        // is judged here, by the name the caller sent (passthrough review
+        // #6). `check_extra` judges it again, as `extra.<key>`.
+        let forwarded = match extra {
+            None => true,
+            Some(Value::Object(map)) => map.get(&key).is_none_or(|sent| *sent == value),
+            Some(_) => false,
+        };
+        if let Some(why) = schema.extra_params.get(&key).filter(|_| forwarded).and_then(|spec| spec.extra_misfit(&value)) {
+            return Err(extra_misfit_error(&shown(&key), &value, why, schema));
+        }
         match extra {
             None => *extra = Some(Value::Object(serde_json::Map::from_iter([(key, value)]))),
             Some(Value::Object(map)) => match map.get(&key) {
@@ -2183,19 +2293,32 @@ fn check_extra(
     // out-of-range param is; `null` and untyped keys pass as sent.
     for (k, val) in &filtered {
         let Some(why) = schema.extra_params.get(k).and_then(|spec| spec.extra_misfit(val)) else { continue };
-        let code = match why {
-            crate::capabilities::ExtraMisfit::Type(_) => "param_invalid",
-            crate::capabilities::ExtraMisfit::Range(_) => "param_out_of_range",
-            crate::capabilities::ExtraMisfit::NotListed(_) => "param_enum_mismatch",
-            crate::capabilities::ExtraMisfit::TooLong(_) => "param_too_long",
-            crate::capabilities::ExtraMisfit::TooMany(_) => "param_too_many",
-            crate::capabilities::ExtraMisfit::Pattern(_) => "param_invalid",
-        };
-        let param = format!("extra.{k}");
-        return Err(ValidationError::new(code, format!("{param} is {} for model '{}': {why}", shown(&val.to_string()), schema.id), Some(&param)));
+        return Err(extra_misfit_error(&format!("extra.{k}"), val, why, schema));
+    }
+    // An `int` extra sent as `2.0` goes to the vendor as `2` (passthrough
+    // review #6).
+    for (k, val) in filtered.iter_mut() {
+        if let Some(spec) = schema.extra_params.get(k) {
+            spec.normalize_extra(val);
+        }
     }
     *extra = Some(Value::Object(filtered));
     Ok(())
+}
+
+/// The refusal of a typed extra's value (E4b), under the name the caller
+/// sent it by: `extra.<key>`, or the key itself for a field sent at the top
+/// level (passthrough review #6).
+fn extra_misfit_error(param: &str, val: &Value, why: crate::capabilities::ExtraMisfit, schema: &ModelSchema) -> ValidationError {
+    let code = match why {
+        crate::capabilities::ExtraMisfit::Type(_) => "param_invalid",
+        crate::capabilities::ExtraMisfit::Range(_) => "param_out_of_range",
+        crate::capabilities::ExtraMisfit::NotListed(_) => "param_enum_mismatch",
+        crate::capabilities::ExtraMisfit::TooLong(_) => "param_too_long",
+        crate::capabilities::ExtraMisfit::TooMany(_) => "param_too_many",
+        crate::capabilities::ExtraMisfit::Pattern(_) => "param_invalid",
+    };
+    ValidationError::new(code, format!("{param} is {} for model '{}': {why}", shown(&val.to_string()), schema.id), Some(param))
 }
 
 // ─── Axum extractor implementations ─────────────────────────────────────────

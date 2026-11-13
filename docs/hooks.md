@@ -103,8 +103,12 @@ A caller on custom auth polls a job through `GET /v1/videos/{id}` or
 
 `pre_call(request)` runs **before authentication**.
 `post_call(request, response, caller)` runs **after the handler**, inside
-authentication. It sees every response the handler produced, validation
-errors included, so check `response.status`. Auth refusals never reach it.
+authentication. It sees every response the handler sends, validation
+errors included, so check `response.status`. Auth refusals never reach it,
+and neither does the answer to a client that hung up first: a billed
+request (a generation or segmentation) still runs to its end then, and is
+charged, logged and delivered to the key's webhook, but its response has no
+one to go to and `post_call` doesn't run for it.
 
 **`request`**
 
@@ -125,11 +129,20 @@ litegen's own owner check** passed (see
 [docs/storage-access.md](storage-access.md)). It can only refuse: a file the
 owner check refuses never reaches it.
 
+It also runs when a request names a stored generation as an input:
+`reference_images`, `source_video` or `source_model` of type `generation`.
+litegen first picks the file the job will read (the image, the clip, or the
+mesh in the container the model takes), then asks `file_access` about that
+file, before reading it or reserving anything. `request` is then that request
+(`method` `POST`, its path and headers as `pre_call` left them, `body`
+`null`), and a refusal answers the generation request as it would the file
+route. So a customer can't chain another customer's file into their own job.
+
 **`file`** (in `file_access`): the stored file and who made it.
 
 | field | |
 |---|---|
-| `generation_id`, `index` | the file the route names |
+| `generation_id`, `index` | the file the route names, or the one a request reads as its input |
 | `kind`, `format`, `size_bytes` | `image`, `video`, `mesh`, `texture`…; `png`, `mp4`, `glb`…; its size |
 | `media_type`, `model`, `created_at` | of the generation that made it |
 | `created_by` | `{key_id, app_id, org_id, end_user}`: the key, app and org that made it, and the end user it was made for (`x-litegen-end-user` on the request that made it) |

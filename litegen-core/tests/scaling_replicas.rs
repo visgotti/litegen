@@ -335,14 +335,15 @@ async fn a_keys_rpm_is_shared_by_both_replicas() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_parallel_cap_holds_across_replicas() {
     let Some(mut world) = World::start().await else { return };
-    // A request runs to its end even when its client hangs up (E12): A's
-    // slow request ends when the vendor timeout cuts it.
-    let (a, b) = world.pair(ReplicaOptions::default, |c| c.server.vendor_timeout_secs = Some(3)).await;
+    // A's slow request holds its slot until the test lets the vendor answer
+    // (handlers review #3): B's refusal never races a timer.
+    let (a, b) = world.pair(ReplicaOptions::default, |_| {}).await;
     let (key_id, key) = a.create_key(json!({ "name": "one at a time", "scopes": "generate,read" })).await;
     let limits = a.call("PUT", &format!("/v1/keys/{key_id}/limits"), Some(MASTER), Some(json!({ "max_parallel_requests": 1 }))).await;
     assert_eq!(limits.status, StatusCode::OK, "{}", limits.body);
 
-    // A request that stays in flight on A: mock/slow-image answers after a day.
+    // A request that stays in flight on A: mock/slow-image answers when the
+    // test releases it (or after a day).
     let prompt = format!("a slow lighthouse {}", uuid::Uuid::new_v4());
     let slow = tokio::spawn({
         let app = a.app.clone();
@@ -362,9 +363,10 @@ async fn a_parallel_cap_holds_across_replicas() {
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "B counts A's request against the cap: {}", refused.body);
     assert_eq!(Replica::code(&refused), "parallel_limit_exceeded", "{}", refused.body);
 
-    // A's request ends (the vendor timed out): its slot goes back.
+    // A's request ends (the vendor answers): its slot goes back.
+    litegen::providers::image::mock::release_slow_image(&prompt);
     let ended = slow.await.expect("A's request ran to its end").unwrap();
-    assert_eq!(ended.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(ended.status(), StatusCode::OK);
     let freed = until(SLACK, || b.generate("mock/image-gen", "after A's request ended", &key), |r| r.status == StatusCode::OK).await;
     assert_eq!(freed.status, StatusCode::OK, "B gets the slot once A's request has ended (waited up to {SLACK:?} for the release): {}", freed.body);
 }
@@ -648,9 +650,16 @@ async fn a_provider_that_keeps_failing_stays_cut_off_on_both_replicas() {
     assert_eq!(ask(&b).await.status, StatusCode::BAD_GATEWAY, "B's first call reaches it too");
     assert_eq!(hits().await, 2);
     assert!(a.state.router.circuit_breaker.is_open("fal").await && b.state.router.circuit_breaker.is_open("fal").await, "two failures between them opened the breaker on both");
+    // A skipped call (handlers review #5): 503 `circuit_open`, retryable,
+    // with `Retry-After` the shared window's time left (at most its 3 s).
+    fn cooling_down(name: &str, skipped: &Reply) {
+        let wait = skipped.headers.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+        assert_eq!((skipped.status, Replica::code(skipped)), (StatusCode::SERVICE_UNAVAILABLE, "circuit_open"), "{name}: {}", skipped.body);
+        assert!(wait.is_some_and(|s| (1..=3).contains(&s)), "{name}: Retry-After {wait:?}: {}", skipped.body);
+        assert_eq!(skipped.body["error"]["retryable"], true, "{name}: {}", skipped.body);
+    }
     for (name, replica) in [("A", &a), ("B", &b)] {
-        let skipped = ask(replica).await;
-        assert!(!skipped.status.is_success(), "{name}: {}", skipped.body);
+        cooling_down(name, &ask(replica).await);
     }
     assert_eq!(hits().await, 2, "with the breaker open neither replica calls the vendor");
 
@@ -661,7 +670,6 @@ async fn a_provider_that_keeps_failing_stays_cut_off_on_both_replicas() {
     assert_eq!(hits().await, 3, "the probe was the only call");
     // The failed probe opened it again, for B too: B never calls the vendor.
     assert!(b.state.router.circuit_breaker.is_open("fal").await, "A's failed probe opened the breaker again for B");
-    let skipped = ask(&b).await;
-    assert!(!skipped.status.is_success(), "{}", skipped.body);
+    cooling_down("B, after A's probe", &ask(&b).await);
     assert_eq!(hits().await, 3, "B stays cut off: its own count was one failure, and it never called the vendor");
 }

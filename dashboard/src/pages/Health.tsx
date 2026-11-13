@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
-import { client } from '../sdk-client';
+import { client, quietClient } from '../sdk-client';
 import type { HealthResponse } from '@litegen/sdk';
 
 type ProbeStatus = 'unknown' | 'alive' | 'ready' | 'not_ready' | 'error';
 
 export default function Health() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  // `/health` checks the gateway's own vendor keys, so only its operator reads
+  // it (registry P1): anyone else is refused 403, and the page keeps the probes.
+  const [operatorOnly, setOperatorOnly] = useState(false);
   const [error, setError] = useState('');
   const [liveness, setLiveness] = useState<ProbeStatus>('unknown');
   const [readiness, setReadiness] = useState<ProbeStatus>('unknown');
@@ -15,9 +18,13 @@ export default function Health() {
 
   useEffect(() => {
     let current = true;
-    client.health.get()
-      .then(h => { if (current) setHealth(h); })
-      .catch(e => { if (current) setError(e.message); });
+    quietClient.health.get()
+      .then(h => { if (current) { setHealth(h); setOperatorOnly(false); } })
+      .catch(e => {
+        if (!current) return;
+        if ((e as { status?: unknown }).status === 403) setOperatorOnly(true);
+        else setError(e.message);
+      });
     // Liveness + readiness entirely through the SDK (the SDK throws on non-2xx).
     client.health.live()
       .then(() => 'alive' as const, () => 'error' as const)
@@ -38,7 +45,46 @@ export default function Health() {
   };
 
   if (error) return <div className="alert alert-error">{error}</div>;
-  if (!health) return <div className="loading">Loading health data...</div>;
+  if (!health && !operatorOnly) return <div className="loading">Loading health data...</div>;
+
+  const probes = (
+    <>
+      <div className="stat-card">
+        <div className="label">Liveness</div>
+        <div
+          className={`value ${liveness === 'alive' ? 'green' : liveness === 'unknown' ? '' : 'red'}`}
+          data-testid="health-liveness-badge"
+        >
+          {liveness === 'alive' ? '✓ alive' : liveness === 'unknown' ? '…' : '✗ error'}
+        </div>
+      </div>
+      <div className="stat-card">
+        <div className="label">Readiness</div>
+        <div
+          className={`value ${readiness === 'ready' ? 'green' : readiness === 'unknown' ? '' : 'red'}`}
+          data-testid="health-readiness-badge"
+        >
+          {readiness === 'ready' ? '✓ ready' : readiness === 'unknown' ? '…' : '✗ not ready'}
+        </div>
+      </div>
+    </>
+  );
+
+  if (!health) {
+    return (
+      <div>
+        <div className="flex-between mb-24">
+          <h2 className="page-title" style={{ margin: 0 }}>Provider Health</h2>
+          <button className="btn btn-secondary" onClick={refresh}>Refresh</button>
+        </div>
+        <div className="stat-grid mb-24">{probes}</div>
+        <p className="mg-hint" data-testid="health-provider-note">
+          Provider health is the gateway operator&apos;s: it checks the gateway&apos;s own vendor keys, so only its
+          operator reads it. Your organization&apos;s own provider keys are under Providers.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -51,24 +97,7 @@ export default function Health() {
       </div>
 
       <div className="stat-grid mb-24">
-        <div className="stat-card">
-          <div className="label">Liveness</div>
-          <div
-            className={`value ${liveness === 'alive' ? 'green' : liveness === 'unknown' ? '' : 'red'}`}
-            data-testid="health-liveness-badge"
-          >
-            {liveness === 'alive' ? '✓ alive' : liveness === 'unknown' ? '…' : '✗ error'}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="label">Readiness</div>
-          <div
-            className={`value ${readiness === 'ready' ? 'green' : readiness === 'unknown' ? '' : 'red'}`}
-            data-testid="health-readiness-badge"
-          >
-            {readiness === 'ready' ? '✓ ready' : readiness === 'unknown' ? '…' : '✗ not ready'}
-          </div>
-        </div>
+        {probes}
         <div className="stat-card">
           <div className="label">Overall Status</div>
           <div className={`value ${health.status === 'healthy' ? 'green' : 'red'}`}>

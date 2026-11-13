@@ -1027,8 +1027,14 @@ pub struct SegmentationMask {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct AnimationRequest {
     /// The clip's name in the delivered file: unique within the request, 1–64
-    /// characters of `[A-Za-z0-9_.-]`.
-    pub name: String,
+    /// characters of `[A-Za-z0-9_.-]`. Leave it out (or send null) and
+    /// litegen names the clip: a preset clip after its canonical preset
+    /// (`walk`), else after its preset id with every other character as `_`;
+    /// a prompt clip, or one whose preset leaves no name, `clip-<n>`, its
+    /// place in the list; `-2`, `-3`, … on a name already taken. A name you
+    /// send is kept as sent; an empty one is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// A canonical preset (`Model3dAnimationPreset`) or one of the model's
     /// own preset ids. Exactly one of `preset` and `prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1047,6 +1053,14 @@ pub struct AnimationRequest {
     /// loop.
     #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
     pub loop_requested: Option<bool>,
+}
+
+impl AnimationRequest {
+    /// The clip's name; validation names every clip a request leaves
+    /// unnamed, so this is empty only before validation.
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or_default()
+    }
 }
 
 /// OpenAPI schema for the superseded `output_format`: the format vocabulary,
@@ -1140,8 +1154,8 @@ pub struct Model3dGenerationRequest {
     /// on delivery, to any model's mesh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub center: Option<bool>,
-    /// The clips to make, in order: one glTF animation per entry, named
-    /// exactly its `name`.
+    /// The clips to make, in order: one glTF animation per entry, named its
+    /// `name`, or the name litegen gives a clip that leaves it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub animations: Option<Vec<AnimationRequest>>,
     /// Frames per second of the delivered clips.
@@ -1729,6 +1743,13 @@ pub struct ModelCapabilities {
     pub max_reference_images: u32,
     #[serde(default = "default_max_images")]
     pub max_images: u32,
+    /// The most bytes a generation or quote request for this model may be,
+    /// as sent. References carried inline (base64) count at 4/3 their size,
+    /// so a larger image goes as a URL, which litegen fetches itself. A larger
+    /// body is refused with 413 `body_too_large`. Always sent.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub max_request_bytes: u64,
     // Video-specific
     #[serde(default)]
     pub supports_text_to_video: bool,
@@ -2113,7 +2134,7 @@ pub struct ProviderHealth {
     pub provider: String,
     /// What this entry checked: `image`, `video` or `model3d`. A provider
     /// that serves several has one entry for each.
-    pub modality: String,
+    pub modality: MediaType,
     pub healthy: bool,
     pub message: Option<String>,
     pub latency_ms: Option<u64>,
@@ -2225,7 +2246,8 @@ pub struct ErrorDetail {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_error: Option<VendorError>,
     /// Whether the same request may work later: a vendor's 5xx, 429 or
-    /// timeout, but not its refusal.
+    /// timeout, or a model route whose deployments were passed over (an open
+    /// circuit breaker), but not a refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retryable: Option<bool>,
     /// The request field that failed validation — `output_formats`, `prompt`,
@@ -2763,6 +2785,8 @@ pub struct WebhookDelivery {
     pub status_code: Option<i32>,
     /// Whether this attempt was successful (HTTP 2xx).
     pub success: bool,
+    /// The first 16 KiB of the endpoint's reply, cut at a character boundary.
+    /// The rest is never read.
     pub response_body: Option<String>,
     pub error_message: Option<String>,
     pub payload_json: String,

@@ -746,6 +746,8 @@ async fn file_access_sees_the_file_and_the_caller() {
         assert_eq!(file["created_by"]["end_user"], "alice", "{}: who made it: {seen}", rt.label);
         assert_eq!(seen["caller"]["key_id"], key_id.as_str(), "{}: {seen}", rt.label);
         assert_eq!(seen["caller"]["end_user"], "carol", "{}: who is asking: {seen}", rt.label);
+        let route = format!("/v1/generations/{id}/assets/0");
+        assert_eq!((&seen["request"]["method"], &seen["request"]["path"]), (&json!("GET"), &json!(route)), "{}: the request it decides on: {seen}", rt.label);
     }
 }
 
@@ -814,5 +816,65 @@ async fn pre_call_custom_auth_reaches_the_file_route() {
         // post_call sees the file's answer too (its body is the file, so null).
         let (status, headers, _) = send(&app, file_get(&id, &[("x-test-action", "inject"), ("x-test-post", "tag")])).await;
         assert_eq!((status, headers.get("x-hooked").map(|v| v.to_str().unwrap())), (StatusCode::OK, Some(rt.label)), "{}", rt.label);
+    }
+}
+
+// ─── file_access on a stored file a new job reads (review 2026-11-11 SEC-FILEHOOK) ──
+
+/// A finished job (`kind` is `models3d` or `videos`) made with the master
+/// key for `end_user`: its id.
+async fn finished_for(app: &Router, kind: &str, body: Value, end_user: &str) -> String {
+    let auth = bearer();
+    let (status, _, made) = send(app, post(&format!("/v1/{kind}/generations"), body, &[("authorization", auth.as_str()), ("x-litegen-end-user", end_user)])).await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let id = made["id"].as_str().unwrap().to_string();
+    for _ in 0..20 {
+        let (_, _, v) = send(app, get(&format!("/v1/{kind}/{id}"))).await;
+        if v["status"] == "completed" {
+            return id;
+        }
+        assert_ne!(v["status"], "failed", "{v}");
+    }
+    panic!("{kind} job {id} never finished");
+}
+
+/// A request naming a stored generation as its input reads that file, so the
+/// operator's `file_access` hook decides, as on the file route: once the
+/// file is chosen, with that file in its `file` view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chaining_another_end_users_file_asks_file_access() {
+    for rt in runtimes() {
+        let (app, _a) = behaviour_app(rt, json!({})).await;
+        let image = kept_image(&app, &bearer(), "alice").await;
+        let mesh = finished_for(&app, "models3d", json!({ "model": "mock/mesh-3d", "prompt": "a chair" }), "alice").await;
+        let clip = finished_for(&app, "videos", json!({ "model": "mock/sprite-video", "prompt": "a knight walks", "duration_seconds": 2 }), "alice").await;
+        let chains = [
+            ("/v1/images/generations", &image, "image", json!({ "model": "mock/base64-refs-image", "prompt": "reuse", "reference_images": [{ "type": "generation", "value": image, "role": "init" }] })),
+            ("/v1/models3d/generations", &mesh, "mesh", json!({ "model": "mock/rig-3d", "source_model": { "type": "generation", "value": mesh } })),
+            (
+                "/v1/videos/generations",
+                &clip,
+                "video",
+                json!({ "model": "mock/extend-video", "prompt": "he keeps walking", "source_video": { "type": "generation", "value": clip }, "direction": "forward", "duration_seconds": 1 }),
+            ),
+        ];
+        let auth = bearer();
+        for (uri, source, kind, body) in &chains {
+            let as_ = |who: &'static str, action: &'static str| post(uri, body.clone(), &[("authorization", auth.as_str()), ("x-litegen-end-user", who), ("x-test-file", action)]);
+            let (status, _, refused) = send(&app, as_("bob", "deny-other-end-user")).await;
+            assert_eq!(
+                (status, &refused["error"]["code"], &refused["error"]["message"]),
+                (StatusCode::FORBIDDEN, &json!("refused_by_hook"), &json!("not your file")),
+                "{}: bob chains alice's file into {uri}: {refused}",
+                rt.label
+            );
+            let (status, _, seen) = send(&app, as_("alice", "report")).await;
+            assert_eq!(status, StatusCode::IM_A_TEAPOT, "{}: {uri}: the hook runs: {seen}", rt.label);
+            let seen: Value = serde_json::from_str(seen["error"]["message"].as_str().unwrap()).unwrap();
+            assert_eq!((&seen["file"]["generation_id"], &seen["file"]["kind"]), (&json!(source), &json!(kind)), "{}: {uri}: the file it reads: {seen}", rt.label);
+            assert_eq!((&seen["request"]["method"], &seen["request"]["path"]), (&json!("POST"), &json!(uri)), "{}: {uri}: the request it decides on: {seen}", rt.label);
+            let (status, _, made) = send(&app, as_("alice", "deny-other-end-user")).await;
+            assert_eq!(status, StatusCode::OK, "{}: alice chains her own file into {uri}: {made}", rt.label);
+        }
     }
 }

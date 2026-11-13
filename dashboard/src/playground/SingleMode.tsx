@@ -17,16 +17,18 @@ import ParamField from './ParamField';
 import RefImagesField from './RefImagesField';
 import ExtraParamsField from './ExtraParamsField';
 import { useUnifiedParams } from './useUnifiedParams';
+import { useServerChecks } from './useServerCheck';
+import { retryWaitMs, runErrorText } from './run-error';
 import {
   availabilityOf,
   docsUrlOf,
   extraFromBody,
+  maxRequestBytesOf,
   paramsFromBody,
   promptLength,
   promptMaxLength,
   promptUsage,
   refsFromBody,
-  requestProblems,
   schemaInputs,
   sizeEnumOptions,
   sortModels,
@@ -96,13 +98,9 @@ export function buildSegmentationBody(
   const problems: string[] = [];
   if (ref && !image) problems.push('segments an uploaded image, not a URL');
   else if (!image) problems.push('needs an image to segment');
-  const sent = Array.isArray(prompts) ? (prompts as Array<{ type?: string }>) : [];
-  if (!sent.length) problems.push('needs a point, box or text prompt');
-  // "a text prompt selects every instance of what it names and cannot be
-  // mixed with point or box prompts" (validator.rs).
-  else if (sent.some(p => p.type === 'text') && sent.length > 1) {
-    problems.push('takes a text prompt alone, not with point or box prompts or a second text prompt');
-  }
+  // Only what is missing: which prompts go together is the server's to say,
+  // and the submit says it (segmentation has no quote route to ask first).
+  if (!(Array.isArray(prompts) && prompts.length)) problems.push('needs a point, box or text prompt');
   return { body: { model: modelId, image, prompts }, problems };
 }
 
@@ -302,6 +300,14 @@ export default function SingleMode() {
   const [progress, setProgress] = useState<number | null>(null);
   const [history, setHistory] = useState<PlaygroundHistoryEntry[]>([]);
   const [error, setError] = useState('');
+  // Until when the server asked for runs to wait (a 503 `circuit_open` or
+  // another 503/429 with Retry-After): Generate waits it out.
+  const [coolingUntil, setCoolingUntil] = useState<number | null>(null);
+  useEffect(() => {
+    if (coolingUntil === null) return;
+    const t = setTimeout(() => setCoolingUntil(null), Math.max(0, coolingUntil - Date.now()));
+    return () => clearTimeout(t);
+  }, [coolingUntil]);
 
   // The schema-driven half of the form — params, reference images, provider
   // passthrough — shares Compare Mode's machinery for the one selected model.
@@ -323,15 +329,32 @@ export default function SingleMode() {
   const size = effectiveSize(form.size, sizeOptions);
 
   const promptsSpec = declaredParams?.prompts;
-  // Before the schema arrives, only the prompt can be judged.
-  const problems = [
+  const usage = schema ? promptUsage(schema) : 'required';
+  const promptMax = promptMaxLength(schema);
+
+  /** The full request: the dedicated fields plus the schema-driven ones. A
+   *  segmentation request is its own shape: the image and the prompts. */
+  const buildBody = (): Record<string, unknown> => kind === 'segment'
+    ? buildSegmentationBody(form.model, promptsSpec, unified.form).body
+    : {
+      ...buildGenerationBody({ ...form, size }, mediaType, usage, declaredParams),
+      ...schemaInputs(schema, unified.form),
+    };
+
+  // What would hold Generate back. The form's own gaps — no model yet, a
+  // segmentation missing its image or prompts — are the page's; whether the
+  // request is one the model takes is the server's: the exact body Generate
+  // would send goes to the quote route, and a refusal is shown in its words
+  // (E11b). Segmentation has no quote route; its submit says.
+  const formProblems = [
     ...modelProblem(form.model),
-    ...(kind === 'segment'
-      ? buildSegmentationBody(form.model, promptsSpec, unified.form).problems
-      : schema
-        ? requestProblems(schema, { prompt: form.prompt, refs: unified.form.refs })
-        : form.prompt.trim() ? [] : ['needs a prompt']),
+    ...(kind === 'segment' ? buildSegmentationBody(form.model, promptsSpec, unified.form).problems : []),
   ];
+  const checks = useServerChecks(form.model && kind !== 'segment' && !loading
+    ? [{ lane: 'single', kind, body: buildBody() }]
+    : []);
+  const check = checks.single ?? { problems: [], checking: false };
+  const problems = [...formProblems, ...check.problems];
 
   // Load every image and 3D model on mount, mock and real alike — the full
   // inspector lives here, so every model has to be reachable from it.
@@ -380,18 +403,6 @@ export default function SingleMode() {
     setForm(prev => ({ ...prev, model, size: '' }));
     unified.setForm(prev => ({ ...prev, params: {}, extra: {} }));
   };
-
-  const usage = schema ? promptUsage(schema) : 'required';
-  const promptMax = promptMaxLength(schema);
-
-  /** The full request: the dedicated fields plus the schema-driven ones. A
-   *  segmentation request is its own shape: the image and the prompts. */
-  const buildBody = (): Record<string, unknown> => kind === 'segment'
-    ? buildSegmentationBody(form.model, promptsSpec, unified.form).body
-    : {
-      ...buildGenerationBody({ ...form, size }, mediaType, usage, declaredParams),
-      ...schemaInputs(schema, unified.form),
-    };
 
   /** Runs one request for `model` and records it; shared by Generate and Re-submit. */
   const runRequest = async (model: string, prompt: string, body: Record<string, unknown>) => {
@@ -445,7 +456,9 @@ export default function SingleMode() {
       refreshHistory();
     } catch (e: unknown) {
       if (ctrl.signal.aborted) return; // left Single mode; nothing to show
-      setError((e as Error).message);
+      setError(runErrorText(e));
+      const wait = retryWaitMs(e);
+      if (wait !== undefined) setCoolingUntil(Date.now() + wait);
     } finally {
       setLoading(false);
       setProgress(null);
@@ -584,7 +597,7 @@ export default function SingleMode() {
           ) : (
             <div className="playground-form-group">
               <label htmlFor="playground-prompt-input" data-testid="playground-prompt-label">
-                Prompt{usage === 'optional' ? ' (optional with a reference image)' : ''}
+                Prompt{usage === 'optional' ? ' (optional)' : ''}
               </label>
               <textarea
                 id="playground-prompt-input"
@@ -603,7 +616,7 @@ export default function SingleMode() {
           )}
 
           <RefImagesField roles={refRoles} refs={unified.form.refs} maxTotal={kind === 'segment' ? 1 : unified.maxRefs}
-            totalSelected={1} disabled={loading}
+            maxRequestBytes={maxRequestBytesOf(models, [form.model])} totalSelected={1} disabled={loading}
             onChange={refs => unified.setForm(prev => ({ ...prev, refs }))} />
 
           <div className="playground-form-group">
@@ -714,15 +727,19 @@ export default function SingleMode() {
             data-testid="playground-generate"
             className="btn btn-primary"
             style={{ width: '100%' }}
-            disabled={loading || problems.length > 0}
+            disabled={loading || problems.length > 0 || coolingUntil !== null}
+            // The server has not yet judged this body: nothing holds it back meanwhile.
+            data-checking={check.checking ? 'true' : undefined}
             onClick={handleGenerate}
           >
             {loading ? (progress != null ? `Generating… ${progress}%` : 'Generating...') : 'Generate'}
           </button>
           {problems.length > 0 && !loading && (
-            <p className="pg-problems-inline" data-testid="playground-problems">
-              This model {problems.join(', ')}.
-            </p>
+            <div className="pg-problems-inline" data-testid="playground-problems">
+              {formProblems.length > 0 && <p>This model {formProblems.join(', ')}.</p>}
+              {/* The server's own words: why it would refuse this request. */}
+              {check.problems.map(p => <p key={p}>{p}</p>)}
+            </div>
           )}
         </div>
 
@@ -880,7 +897,7 @@ export default function SingleMode() {
                 data-testid={`playground-history-resubmit-${i}`}
                 className="btn btn-secondary"
                 style={{ fontSize: 12, padding: '4px 10px', whiteSpace: 'nowrap' }}
-                disabled={loading}
+                disabled={loading || coolingUntil !== null}
                 onClick={e => { e.stopPropagation(); handleResubmit(entry); }}
                 title="Re-submit"
               >

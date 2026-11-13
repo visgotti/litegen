@@ -38,6 +38,14 @@ async function getCsrfToken(): Promise<string | undefined> {
 
 export function clearCsrfCache() { csrfCache = null; }
 
+/** A 401 means the session (or key) is gone: sign out everywhere. */
+function onUnauthenticated(status: number) {
+  if (status !== 401) return;
+  localStorage.removeItem('litegen_api_key');
+  csrfCache = null;
+  window.dispatchEvent(new Event('litegen:unauthenticated'));
+}
+
 export const client = new LiteGenClient({
   baseUrl: BASE,
   // Bearer (API-key) fallback: pulled from localStorage by the master-key flow.
@@ -46,16 +54,35 @@ export const client = new LiteGenClient({
   credentials: 'include',
   getCsrfToken,
   onError: (status: number, body: unknown) => {
-    if (status === 401) {
-      localStorage.removeItem('litegen_api_key');
-      csrfCache = null;
-      window.dispatchEvent(new Event('litegen:unauthenticated'));
-    }
+    onUnauthenticated(status);
     if ([402, 403, 429].includes(status)) {
       const bodyObj = body as { error?: { message?: string } } | null;
       showToast(bodyObj?.error?.message ?? 'Request denied', 'error');
     }
   },
+});
+
+/**
+ * The same API for reads whose refusal the page shows itself, so a 402, 403
+ * or 429 raises no toast here: the Playground's pre-submit checks (E11b),
+ * which ask a quote route after every edit, and the Health page's provider
+ * read, which a hosted tenant is refused. It sends the main client's active
+ * org and app with every request.
+ */
+export const quietClient = new LiteGenClient({
+  baseUrl: BASE,
+  getAuthToken: () => localStorage.getItem('litegen_api_key') ?? undefined,
+  credentials: 'include',
+  getCsrfToken,
+  fetch: (input, init) => {
+    const headers = new Headers(init?.headers);
+    const org = client.getActiveOrgId();
+    const app = client.getActiveAppId();
+    if (org) headers.set('X-Litegen-Org-Id', org);
+    if (app) headers.set('X-Litegen-App-Id', app);
+    return fetch(input, { ...init, headers });
+  },
+  onError: onUnauthenticated,
 });
 
 // Initialize the active-tenant headers from localStorage so the very first

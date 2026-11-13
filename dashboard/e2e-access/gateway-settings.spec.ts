@@ -59,6 +59,30 @@ test('the cache, retries, timeout and breaker, set on the Gateway page', async (
   await expect(adminPage.getByTestId('gateway-retry-effective')).toContainText('2 retries');
   await expect(adminPage.getByTestId('gateway-breaker-effective')).toContainText('after 5 failures');
 
+  await feature('A setting the API set survives a save from the page (registry NEW 5)');
+  const auth = { authorization: `Bearer ${MASTER_KEY}` };
+  const before = await (await request.get(`${BACKEND}/v1/admin/settings`, { headers: auth })).json();
+  const put = await request.put(`${BACKEND}/v1/admin/settings`, { headers: auth, data: { ...before.settings, cache_max_bytes: 2_097_152 } });
+  expect(put.status(), await put.text()).toBe(200);
+  await adminPage.reload();
+  await adminPage.getByTestId('gateway-tab-settings').click();
+  await expect(adminPage.getByTestId('gateway-cache-max-bytes')).toHaveValue('2097152');
+  let saved = adminPage.waitForResponse(r => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/v1/admin/settings');
+  await adminPage.getByTestId('gateway-settings-save').click();
+  expect((await saved).status()).toBe(200);
+  const after = await (await request.get(`${BACKEND}/v1/admin/settings`, { headers: auth })).json();
+  expect(after.settings.cache_max_bytes, 'the save sent it back').toBe(2_097_152);
+  expect(after.effective_cache.max_bytes).toBe(2_097_152);
+  await expect(adminPage.getByTestId('gateway-cache-effective')).toContainText('in 2 MiB');
+
+  // The memory bound's range is the server's: the page shows its 400.
+  await adminPage.getByTestId('gateway-cache-max-bytes').fill('1024');
+  saved = adminPage.waitForResponse(r => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/v1/admin/settings');
+  await adminPage.getByTestId('gateway-settings-save').click();
+  expect((await saved).status()).toBe(400);
+  await expect(adminPage.getByTestId('gateway-settings-error')).toContainText('cache_max_bytes must be between 1048576 and 68719476736');
+  await adminPage.getByTestId('gateway-cache-max-bytes').fill('2097152');
+
   // A value the gateway would refuse never leaves the page.
   await adminPage.getByTestId('gateway-retries').fill('9');
   await adminPage.getByTestId('gateway-settings-save').click();
@@ -78,7 +102,7 @@ test('the cache, retries, timeout and breaker, set on the Gateway page', async (
   await expect(adminPage.getByTestId('gateway-retry-effective')).toContainText('vendor calls end after 30 s');
   await expect(adminPage.getByTestId('gateway-breaker-effective')).toContainText('after 3 failures');
   const settings = await (await request.get(`${BACKEND}/v1/admin/settings`, { headers: { authorization: `Bearer ${MASTER_KEY}` } })).json();
-  expect(settings.effective_cache).toEqual({ enabled: true, ttl_seconds: 600, max_items: 50 });
+  expect(settings.effective_cache).toEqual({ enabled: true, ttl_seconds: 600, max_items: 50, max_bytes: 2_097_152 });
   expect(settings.effective_retries).toEqual({ max_retries: 1, backoff_ms: 200, max_backoff_ms: 10000 });
   expect(settings.effective_vendor_timeout_seconds).toBe(30);
   expect(settings.effective_circuit_breaker).toEqual({ threshold: 3, open_for_seconds: 30 });
@@ -94,11 +118,12 @@ test('the cache, retries, timeout and breaker, set on the Gateway page', async (
   expect(await cacheSays(request, key, `a fox ${RUN}`)).toBe('miss');
 
   // Back to the config's values, as the next spec on this backend expects.
-  for (const id of ['gateway-cache-ttl', 'gateway-cache-size', 'gateway-retries', 'gateway-backoff', 'gateway-vendor-timeout', 'gateway-breaker-threshold']) {
+  for (const id of ['gateway-cache-ttl', 'gateway-cache-size', 'gateway-cache-max-bytes', 'gateway-retries', 'gateway-backoff', 'gateway-vendor-timeout', 'gateway-breaker-threshold']) {
     await adminPage.getByTestId(id).fill('');
   }
   await adminPage.getByTestId('gateway-cache-enabled').selectOption('');
   await adminPage.getByTestId('gateway-settings-save').click();
   await expect(adminPage.getByTestId('gateway-cache-effective')).toContainText('off');
+  await expect(adminPage.getByTestId('gateway-cache-effective')).toContainText('in 256 MiB');
   await admin.close();
 });

@@ -52,6 +52,27 @@ export function terminalPoll(page: Page, route: RegExp, timeout = 120_000): Prom
   });
 }
 
+/** The Playground's pre-submit check of a body `matches` accepts: the quote
+ *  (`POST /v1/{family}/cost`) it asks with exactly the body Generate would
+ *  send. Arm it BEFORE the edit that makes that body (E11b). */
+export function checkOf(
+  page: Page,
+  family: 'images' | 'videos' | 'models3d',
+  matches: (body: Record<string, unknown>) => boolean,
+  timeout = 30_000,
+): Promise<Response> {
+  return page.waitForResponse(r => {
+    if (r.request().method() !== 'POST' || pathOf(r) !== `/v1/${family}/cost`) return false;
+    try { return matches(r.request().postDataJSON() as Record<string, unknown>); } catch { return false; }
+  }, { timeout });
+}
+
+/** Until the page shows the verdict on its current body: no check pending
+ *  on the Generate button (`data-checking`), so what it shows is the answer. */
+export async function checked(page: Page, generate = 'playground-generate'): Promise<void> {
+  await expect(page.getByTestId(generate)).not.toHaveAttribute('data-checking', 'true', { timeout: 30_000 });
+}
+
 /** The request the Playground's Request tab says it sent. */
 export async function requestTab(page: Page): Promise<Record<string, unknown>> {
   await page.getByTestId('playground-tab-request').click();

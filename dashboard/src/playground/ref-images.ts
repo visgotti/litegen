@@ -5,15 +5,23 @@
  */
 import type { RefEntry } from './types';
 
+/** What a request carries besides its uploaded images: the prompt, the params
+ *  and the JSON around them, well within a megabyte. */
+const REQUEST_ENVELOPE_BYTES = 1024 * 1024;
+
 /**
- * Upload caps. The generation endpoints buffer a request body of at most
- * 25 MiB (`axum::body::to_bytes` in the validated extractors), and an uploaded
- * image travels inside that body as base64 — 4/3 its size. These leave room
- * for the encoding and the rest of the request; anything bigger should be a URL,
- * which the server fetches itself (up to 20 MiB per image).
+ * How many bytes of uploaded images fit in one request. The server says how
+ * large a request it takes (`capabilities.max_request_bytes` on
+ * `GET /v1/models`, N2), and an uploaded image travels inside the request as
+ * base64, 4/3 its size; a megabyte stays free for the rest of the request.
+ * Anything bigger goes as a URL, which the server fetches itself.
+ * `undefined` when the server states no limit: then its own answer
+ * (413 `body_too_large`) is what says a request is too large.
  */
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-export const MAX_INLINE_TOTAL_BYTES = 18 * 1024 * 1024;
+export function inlineBudget(maxRequestBytes: number | undefined): number | undefined {
+  if (typeof maxRequestBytes !== 'number' || !(maxRequestBytes > 0)) return undefined;
+  return Math.max(0, Math.floor(((maxRequestBytes - REQUEST_ENVELOPE_BYTES) * 3) / 4));
+}
 
 /** Whether `s` is a URL the server can fetch: absolute http(s) only. */
 export function isFetchableUrl(s: string): boolean {

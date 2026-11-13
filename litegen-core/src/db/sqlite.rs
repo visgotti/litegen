@@ -1818,6 +1818,20 @@ impl DatabaseStore for SqliteDatabase {
         Ok(())
     }
 
+    async fn revoke_pending_invitations(&self, org_id: Option<&str>, email: Option<&str>, invited_by: Option<&str>) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM invitations WHERE used_at IS NULL AND (? IS NULL OR org_id = ?) \
+             AND (email = ? OR invited_by = ?)",
+        )
+        .bind(org_id)
+        .bind(org_id)
+        .bind(email)
+        .bind(invited_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     async fn list_invitations(&self) -> Result<Vec<Invitation>, sqlx::Error> {
         let rows = sqlx::query_as::<_, InvitationRow>(
             "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
@@ -2655,6 +2669,21 @@ impl DatabaseStore for SqliteDatabase {
 
     // ─── Tenant-scoped reads ────────────────────────────────────────────
 
+    async fn list_active_generations_for_tenant(&self, org_id: &str, app_id: Option<&str>) -> Result<Vec<Generation>, sqlx::Error> {
+        let sql = format!(
+            "SELECT {} FROM generations WHERE org_id = ? AND (? IS NULL OR app_id = ?) \
+             AND status IN ('pending', 'processing') ORDER BY created_at ASC",
+            GENERATION_COLS
+        );
+        let rows = sqlx::query_as::<_, GenerationRow>(&sql)
+            .bind(org_id)
+            .bind(app_id)
+            .bind(app_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
     async fn list_generations_for_tenant(
         &self,
         org_id: &str,
@@ -3298,9 +3327,12 @@ pub(crate) fn session_from_row(r: SessionRow) -> Session {
 
 // ─── One-statement auth reads (review 2026-11-11, P14), both backends ────────
 
-/// [`API_KEY_COLS`] read from `api_keys k`.
-pub(crate) fn key_cols_of_k() -> String {
-    API_KEY_COLS.split(',').map(|c| format!("k.{}", c.trim())).collect::<Vec<_>>().join(", ")
+/// [`API_KEY_COLS`] read from `api_keys k`: built once, not on every
+/// authenticated request (payloads review #12).
+pub(crate) fn key_cols_of_k() -> &'static str {
+    static COLS: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| API_KEY_COLS.split(',').map(|c| format!("k.{}", c.trim())).collect::<Vec<_>>().join(", "));
+    &COLS
 }
 
 /// A key and what the joined `users`/`organization_members` rows say about

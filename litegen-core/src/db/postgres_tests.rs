@@ -1381,3 +1381,149 @@ async fn a_key_lookup_reports_its_owners_standing_against_postgres() {
     })
     .await;
 }
+
+/// SEC-INMEM (review 2026-11-11): deleting an org or an app first lists the
+/// jobs it leaves running, to stop them at their vendors: the org's (or one
+/// app's) generations still `pending` or `processing`, and no other org's.
+#[tokio::test]
+async fn active_generations_of_an_org_are_listed_against_postgres() {
+    use crate::types::{Application, Organization};
+    let Ok(url) = std::env::var("LITEGEN_PG_TEST_URL") else {
+        eprintln!("skipping active_generations_of_an_org_are_listed_against_postgres: set LITEGEN_PG_TEST_URL");
+        return;
+    };
+    let db = PostgresDatabase::connect(&url).await.expect("connect + migrate against the test Postgres");
+    let now = chrono::Utc::now();
+    let org = |name: &str| Organization {
+        id: Uuid::new_v4().to_string(),
+        name: name.into(),
+        slug: format!("{name}-{}", Uuid::new_v4().simple()),
+        plan: "free".into(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    let (mine, other) = (org("running"), org("other"));
+    db.create_organization(&mine).await.unwrap();
+    db.create_organization(&other).await.unwrap();
+    let app = |org_id: &str, slug: &str| Application {
+        id: Uuid::new_v4().to_string(),
+        org_id: org_id.into(),
+        name: slug.into(),
+        slug: slug.into(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    let (web, batch, theirs) = (app(&mine.id, "web"), app(&mine.id, "batch"), app(&other.id, "web"));
+    for a in [&web, &batch, &theirs] {
+        db.create_application(a).await.unwrap();
+    }
+    let job = |org: &Organization, app: &Application, media: &str| {
+        let id = format!("litegen-test-{}", Uuid::new_v4());
+        (id, org.id.clone(), app.id.clone(), media.to_string())
+    };
+    let pending = job(&mine, &web, "video");
+    let processing = job(&mine, &web, "model3d");
+    let in_batch = job(&mine, &batch, "video");
+    let finished = job(&mine, &web, "video");
+    let elsewhere = job(&other, &theirs, "video");
+    for (id, org_id, app_id, media) in [&pending, &processing, &in_batch, &finished, &elsewhere] {
+        db.insert_generation(id, None, "mock/held-video", "mock", media, Some("job"), 0.0, Some(org_id.as_str()), Some(app_id.as_str())).await.unwrap();
+    }
+    db.update_generation_if_active(&processing.0, "processing", 50, None, None, None, None).await.unwrap();
+    db.update_generation_if_active(&finished.0, "completed", 100, Some("https://x/v.mp4"), None, Some(now), None).await.unwrap();
+
+    let ids = |gens: Vec<crate::types::Generation>| {
+        let mut ids: Vec<String> = gens.into_iter().map(|g| g.id).collect();
+        ids.sort();
+        ids
+    };
+    let mut want = vec![pending.0.clone(), processing.0.clone(), in_batch.0.clone()];
+    want.sort();
+    assert_eq!(ids(db.list_active_generations_for_tenant(&mine.id, None).await.unwrap()), want, "the org's running jobs");
+    let mut in_web = vec![pending.0.clone(), processing.0.clone()];
+    in_web.sort();
+    assert_eq!(ids(db.list_active_generations_for_tenant(&mine.id, Some(&web.id)).await.unwrap()), in_web, "one app's");
+    assert_eq!(ids(db.list_active_generations_for_tenant(&mine.id, Some(&theirs.id)).await.unwrap()), Vec::<String>::new(), "another org's app");
+    db.delete_organization(&mine.id).await.unwrap();
+    db.delete_organization(&other.id).await.unwrap();
+}
+
+/// SEC-INVITES (review 2026-11-11): a person who leaves an org, or can no
+/// longer invite, takes their pending invitations with them: those to their
+/// email in that org, and those they sent there (or anywhere, when the
+/// account itself is deactivated). Used ones and other people's stay.
+#[tokio::test]
+async fn pending_invitations_are_revoked_against_postgres() {
+    use crate::types::{Invitation, Organization, Role, User};
+    let Ok(url) = std::env::var("LITEGEN_PG_TEST_URL") else {
+        eprintln!("skipping pending_invitations_are_revoked_against_postgres: set LITEGEN_PG_TEST_URL");
+        return;
+    };
+    let db = PostgresDatabase::connect(&url).await.expect("connect + migrate against the test Postgres");
+    let now = chrono::Utc::now();
+    let org = |name: &str| Organization {
+        id: Uuid::new_v4().to_string(),
+        name: name.into(),
+        slug: format!("{name}-{}", Uuid::new_v4().simple()),
+        plan: "free".into(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    let (mine, other) = (org("invites"), org("elsewhere"));
+    db.create_organization(&mine).await.unwrap();
+    db.create_organization(&other).await.unwrap();
+    let user = || User {
+        id: Uuid::new_v4().to_string(),
+        email: format!("{}@invites.test", Uuid::new_v4().simple()),
+        password_hash: None,
+        role: Role::Admin,
+        oauth_github_id: None,
+        oauth_google_id: None,
+        created_at: now,
+        updated_at: now,
+        last_login_at: None,
+        is_active: true,
+    };
+    let (leaver, stayer) = (user(), user());
+    db.create_user(&leaver).await.unwrap();
+    db.create_user(&stayer).await.unwrap();
+    let invite = |org: &Organization, email: &str, by: &User| Invitation {
+        id: Uuid::new_v4().to_string(),
+        email: email.to_string(),
+        role: Role::Member,
+        token: Uuid::new_v4().simple().to_string(),
+        invited_by: Some(by.id.clone()),
+        org_id: org.id.clone(),
+        expires_at: now + chrono::Duration::days(7),
+        used_at: None,
+        created_at: now,
+    };
+    let to_leaver = invite(&mine, &leaver.email, &stayer);
+    let sent_here = invite(&mine, "friend@invites.test", &leaver);
+    let sent_there = invite(&other, "friend@invites.test", &leaver);
+    let used = invite(&mine, "used@invites.test", &leaver);
+    let others = invite(&mine, "someone@invites.test", &stayer);
+    for inv in [&to_leaver, &sent_here, &sent_there, &used, &others] {
+        db.create_invitation(inv).await.unwrap();
+    }
+    assert!(db.mark_invitation_used(&used.token).await.unwrap());
+    let alive = |token: String| {
+        let db = &db;
+        async move { db.get_invitation(&token).await.unwrap().is_some_and(|i| i.used_at.is_none()) }
+    };
+
+    // Leaving one org: the invitations to them there, and those they sent there.
+    let gone = db.revoke_pending_invitations(Some(&mine.id), Some(&leaver.email), Some(&leaver.id)).await.unwrap();
+    assert_eq!(gone, 2, "the one to them and the one they sent, in that org");
+    assert!(!alive(to_leaver.token.clone()).await && !alive(sent_here.token.clone()).await);
+    assert!(alive(sent_there.token.clone()).await, "another org's stays");
+    assert!(alive(others.token.clone()).await, "someone else's stays");
+    assert!(db.get_invitation(&used.token).await.unwrap().is_some(), "a used one stays");
+    // Deactivated: what they sent, everywhere.
+    assert_eq!(db.revoke_pending_invitations(None, None, Some(&leaver.id)).await.unwrap(), 1);
+    assert!(!alive(sent_there.token.clone()).await);
+    assert!(alive(others.token).await);
+}

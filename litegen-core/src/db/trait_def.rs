@@ -163,6 +163,29 @@ pub(crate) fn key_owner_of(owner_user_id: Option<&str>, owner_active: Option<boo
     }
 }
 
+#[cfg(test)]
+mod key_owner_tests {
+    use super::*;
+
+    /// Payloads review #7 (the parity test's unparseable role): the joined
+    /// statement hands back the member's role as stored text, and a text that
+    /// names no role grants none: the key's owner counts as gone, as
+    /// `get_membership` (which parses the same text with `Role::parse`) makes
+    /// the three lookups judge it. Both schemas `CHECK` the column against
+    /// the four roles, so no database row can carry such a text and the
+    /// parity test, which goes through the database, can't hold this case.
+    #[test]
+    fn a_role_text_that_names_no_role_grants_none() {
+        for text in ["superuser", "Admin", " admin", ""] {
+            assert_eq!(key_owner_of(Some("u"), Some(true), Some(text)), KeyOwner::Gone, "{text:?}");
+        }
+        assert_eq!(key_owner_of(Some("u"), Some(true), Some("admin")), KeyOwner::Member(Role::Admin));
+        assert_eq!(key_owner_of(Some("u"), Some(false), Some("admin")), KeyOwner::Gone, "an inactive maker");
+        assert_eq!(key_owner_of(Some("u"), None, None), KeyOwner::Gone, "a maker with no row");
+        assert_eq!(key_owner_of(None, None, None), KeyOwner::None);
+    }
+}
+
 /// Optional filters for a tenant-scoped request-log query. Any `None` field is
 /// ignored. `from`/`to` bound the `created_at` range (inclusive).
 #[derive(Default)]
@@ -1009,6 +1032,19 @@ pub trait DatabaseStore: Send + Sync {
         Ok(vec![])
     }
 
+    /// Delete the pending (unused) invitations, in `org_id` or in every org,
+    /// that go to `email` or that `invited_by` sent (SEC-INVITES): a removed
+    /// or deactivated person, or one moved to a role that can't invite, keeps
+    /// no way back in. Emails are stored lower-cased. Returns how many went.
+    async fn revoke_pending_invitations(
+        &self,
+        _org_id: Option<&str>,
+        _email: Option<&str>,
+        _invited_by: Option<&str>,
+    ) -> Result<u64, sqlx::Error> {
+        Ok(0)
+    }
+
     // ─── Password Resets ────────────────────────────────────────────────
 
     async fn create_password_reset(&self, _r: &PasswordReset) -> Result<(), sqlx::Error> {
@@ -1387,6 +1423,16 @@ pub trait DatabaseStore: Send + Sync {
         _app_id: Option<&str>,
     ) -> Result<i64, sqlx::Error> {
         Ok(0)
+    }
+
+    /// The org's generations still `pending` or `processing` (with `app_id`,
+    /// one app's): the jobs deleting it would leave running (SEC-INMEM).
+    async fn list_active_generations_for_tenant(
+        &self,
+        _org_id: &str,
+        _app_id: Option<&str>,
+    ) -> Result<Vec<Generation>, sqlx::Error> {
+        Ok(vec![])
     }
 
     async fn get_request_logs_for_tenant(

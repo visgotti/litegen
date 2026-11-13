@@ -23,7 +23,8 @@ the pieces every 3D adapter needs and the places where vendors differ.
 //!
 //! Async: POST {api_base}/v1/{endpoint} → {task_id}; GET {api_base}/v1/tasks/{task_id}
 //! until status is terminal; the result lists per-format mesh URLs that EXPIRE
-//! ~5 min after success, so they are downloaded inside poll_status.
+//! ~5 min after success, so they are downloaded in the poll that sees success
+//! (poll_status_gated), once the delivery gate says this observer delivers.
 //!
 //! @see <https://docs.acme.example/3d/quick-start>        — submit/poll, auth
 //!   Verbatim: "Authorization: Bearer <token>"
@@ -78,8 +79,11 @@ pub struct AcmeModel3dProvider {
 impl AcmeModel3dProvider {
     /// The client for Acme's API, carrying the operator's `extra_headers`
     /// (result downloads use their own client and never carry them).
+    /// `providers::api_client` returns a shared, memoized client, one per
+    /// timeout and header set (`util/http_clients.rs`), so the poller's
+    /// instance for one row reuses the vendor connections.
     fn api_client(extra_headers: &std::collections::HashMap<String, String>) -> Client {
-        crate::providers::api_client(Client::builder().timeout(std::time::Duration::from_secs(300)), extra_headers)
+        crate::providers::api_client(std::time::Duration::from_secs(300), extra_headers)
     }
 
     pub fn new() -> Self {
@@ -137,7 +141,9 @@ impl AcmeModel3dProvider {
     /// URLs. Shape it like `fal.rs` `fetch_asset`:
     /// - `crate::util::ssrf::validate_public_url` first (behind a
     ///   `public_assets_only` switch that tests turn off for wiremock);
-    /// - a no-redirect client (`util::ssrf::no_redirect_client_with_timeout`);
+    /// - a client from `util::ssrf::public_only_download_client`: no
+    ///   redirects, public addresses only, and shared like the API client
+    ///   (fal's `asset_client`: 600 s in all, 60 s idle);
     /// - a Content-Length precheck, a streamed read against the cap, and the
     ///   status check.
     ///
@@ -201,8 +207,13 @@ impl Model3dProvider for AcmeModel3dProvider {
             (false, _, i) => i,
         };
 
-        // extra FIRST; everything we own is written after it.
-        let mut body = match &extras.extra { Some(Value::Object(m)) => Value::Object(m.clone()), _ => json!({}) };
+        // extra FIRST, through `providers::extra_fields`: never a field the
+        // endpoint spec maps, nor one litegen keeps for itself (vendor
+        // callbacks, storage, publishing). Everything we own is written after it.
+        let owned = |k: &str| ["prompt", "seed", spec.image_field, spec.format_field, spec.texture_field].contains(&k);
+        let mut body = Value::Object(
+            crate::providers::extra_fields(extras.extra.as_ref(), owned).map(|(k, v)| (k.clone(), v.clone())).collect(),
+        );
         if !base.prompt.trim().is_empty() { body["prompt"] = json!(base.prompt); }
         if !images.is_empty() {
             body[spec.image_field] = if spec.image_is_array { json!(images) } else { json!(images[0]) };
@@ -232,6 +243,18 @@ impl Model3dProvider for AcmeModel3dProvider {
     }
 
     async fn poll_status(&self, handle: &Model3dGenerationHandle) -> Result<Model3dGenerationPollResult, ProviderError> {
+        self.poll_status_gated(handle, &crate::providers::AlwaysFetch).await
+    }
+
+    /// The poll itself. Once Acme reports success, `gate` decides whether this
+    /// observer downloads the files: only one observer of a finished job (a
+    /// client's poll or the poller, on any replica) does. Ask it once, after
+    /// the vendor's success and before any download.
+    async fn poll_status_gated(
+        &self,
+        handle: &Model3dGenerationHandle,
+        gate: &dyn crate::providers::FetchGate,
+    ) -> Result<Model3dGenerationPollResult, ProviderError> {
         let ctx = handle.stage_context.clone().unwrap_or_else(|| json!({}));
         let status_url = ctx["status_url"].as_str().map(str::to_string)
             .unwrap_or_else(|| format!("{}/v1/tasks/{}", self.api_base(), handle.provider_job_id));
@@ -241,12 +264,13 @@ impl Model3dProvider for AcmeModel3dProvider {
 
         let failed = |error: String| Model3dGenerationPollResult {
             status: GenerationStatus::Failed, progress: 100, files: Vec::new(), error: Some(error), metadata: meta.clone(),
+            stage_context: None, next_stage: None,
         };
         match data["status"].as_str() {
-            Some("queued") => return Ok(Model3dGenerationPollResult { status: GenerationStatus::Pending, progress: 5, files: vec![], error: None, metadata: meta }),
+            Some("queued") => return Ok(Model3dGenerationPollResult { status: GenerationStatus::Pending, progress: 5, files: vec![], error: None, metadata: meta, stage_context: None, next_stage: None }),
             Some("running") => {
                 let p = data["progress"].as_u64().map(|p| p.min(99) as u8).unwrap_or(50);
-                return Ok(Model3dGenerationPollResult { status: GenerationStatus::Processing, progress: p, files: vec![], error: None, metadata: meta });
+                return Ok(Model3dGenerationPollResult { status: GenerationStatus::Processing, progress: p, files: vec![], error: None, metadata: meta, stage_context: None, next_stage: None });
             }
             Some("failed") | Some("cancelled") | Some("banned") => return Ok(failed(format!("Acme 3D failed: {}", data["error"]))),
             Some("success") => {}
@@ -254,6 +278,23 @@ impl Model3dProvider for AcmeModel3dProvider {
             // the reaper's maximum age.
             other => return Ok(failed(crate::providers::video::unknown_state_message("acme", other))),
         }
+
+        // The gate, once, before anything is downloaded. StandAside: another
+        // observer delivers, so download nothing and report the job still
+        // processing. A long wait for the right (the poller waiting for a
+        // delivery slot) may outlast the signed URLs: read the task again.
+        let data = match gate.ask().await {
+            crate::providers::Fetch::StandAside => {
+                let mut aside = Model3dGenerationPollResult { status: GenerationStatus::Completed, progress: 100, files: vec![], error: None, metadata: meta, stage_context: None, next_stage: None };
+                crate::proxy::model3d_deliver::stand_aside(&mut aside);
+                return Ok(aside);
+            }
+            crate::providers::Fetch::Go { waited } if waited >= crate::providers::REFRESH_LINKS_AFTER => {
+                let again: Value = todo!("the same GET of status_url");
+                if again["status"].as_str() == Some("success") { again } else { data }
+            }
+            crate::providers::Fetch::Go { .. } => data,
+        };
 
         // Every mesh container the vendor produced, downloaded NOW (URLs expire).
         let mut files = Vec::new();
@@ -276,6 +317,8 @@ impl Model3dProvider for AcmeModel3dProvider {
                     polycount: data["output"]["face_count"].as_u64().map(|n| n as u32), // only if the VENDOR reports it
                     width: None,
                     height: None,
+                    manifest: None,                                      // core measures it
+                    source_url: Some(url.to_string()),                   // what a keep-nothing job hands out
                 });
             }
         }
@@ -284,11 +327,11 @@ impl Model3dProvider for AcmeModel3dProvider {
         }
         if let Some(url) = data["output"]["thumbnail_url"].as_str() {
             match self.fetch_asset(url).await {                          // a bonus: never fails a good mesh
-                Ok((bytes, ct)) => files.push(Model3dFile { kind: Model3dAssetKind::Preview, format: format_of(url, &ct), content_type: ct, bytes, polycount: None, width: None, height: None }),
+                Ok((bytes, ct)) => files.push(Model3dFile { kind: Model3dAssetKind::Preview, format: format_of(url, &ct), content_type: ct, bytes, polycount: None, width: None, height: None, manifest: None, source_url: Some(url.to_string()) }),
                 Err(_) => tracing::warn!("acme 3d: skipping a preview that would not download"),
             }
         }
-        Ok(Model3dGenerationPollResult { status: GenerationStatus::Completed, progress: 100, files, error: None, metadata: meta })
+        Ok(Model3dGenerationPollResult { status: GenerationStatus::Completed, progress: 100, files, error: None, metadata: meta, stage_context: None, next_stage: None })
     }
 
     async fn estimate_cost(&self, model: &ModelSchema, _r: &Model3dGenerationRequest) -> Result<CostEstimate, ProviderError> {
@@ -368,6 +411,29 @@ async fn a_handle_rebuilt_from_the_row_polls_the_stored_status_url() {
     // Build Model3dGenerationHandle { provider_job_id, provider, model, stage_context } by hand,
     // the way poller.rs does from gen.metadata["stage_context"].
 }
+
+/// A delivery gate that always says another observer delivers.
+struct Refuse;
+
+#[async_trait]
+impl crate::providers::FetchGate for Refuse {
+    async fn ask(&self) -> crate::providers::Fetch {
+        crate::providers::Fetch::StandAside
+    }
+}
+
+#[tokio::test]
+async fn a_gate_that_says_stand_aside_downloads_nothing() {
+    // A finished task with its mesh URLs mounted: poll_status_gated(&handle, &Refuse)
+    // answers Processing, progress < 100, no files and no error, and the CDN
+    // paths received no request (as tripo.rs, meshy.rs and fal.rs test it).
+}
+
+#[tokio::test]
+async fn links_are_read_again_after_a_long_wait_for_the_delivery() {
+    // A gate answering Fetch::Go { waited } at or past REFRESH_LINKS_AFTER: the task
+    // is read a second time and its fresh URL downloaded, never the stale one (tripo.rs).
+}
 ```
 
 ## Catalog row
@@ -414,6 +480,10 @@ async fn a_handle_rebuilt_from_the_row_polls_the_stored_status_url() {
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [texture_quality, face_limit]
+    extra_params:
+      # From Mesh2Input: texture_quality "string", face_limit "integer" (no bounds stated).
+      texture_quality: { kind: string }
+      face_limit: { kind: int }
     tags: [3d, mesh]
 ```
 

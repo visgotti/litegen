@@ -26,9 +26,15 @@ use crate::types::*;
 ///
 /// @see <https://docs.leonardo.ai/v1.0/reference/uploadinitimage> (2026-10-30)
 /// @see <https://docs.leonardo.ai/v1.0/docs/how-to-upload-an-image-using-a-presigned-url.md> (2026-10-30)
+///
+/// The upload URL comes from Leonardo's answer, so with `public_only` it must
+/// be a public address before anything is sent there (an IP literal never
+/// reaches `upload_client`'s public-only resolver), and `upload_client` must be
+/// a public-only client that follows no redirect (SEC-LEONARDO).
 pub(crate) async fn upload_init_image(
     client: &Client,
     upload_client: &Client,
+    public_only: bool,
     api_base: &str,
     auth: &AuthSpec,
     creds: &ProviderCredentials,
@@ -82,6 +88,24 @@ pub(crate) async fn upload_init_image(
         provider_error: Some(data.clone()),
         retryable: true,
     })?;
+
+    if public_only {
+        crate::util::ssrf::check_public_url(s3_url).await.map_err(|why| match why {
+            // A resolver blip is not a verdict on the URL.
+            crate::util::ssrf::UrlCheckError::Lookup(e) => ProviderError::RequestFailed {
+                message: format!("Leonardo's upload URL host lookup failed: {e}"),
+                status_code: None,
+                provider_error: None,
+                retryable: true,
+            },
+            crate::util::ssrf::UrlCheckError::Refused(e) => ProviderError::RequestFailed {
+                message: format!("Leonardo's upload URL is not a public address: {e}"),
+                status_code: None,
+                provider_error: None,
+                retryable: false,
+            },
+        })?;
+    }
 
     // POST the file to S3 with the presigned form fields: storage, not
     // Leonardo's API, so no auth and none of the operator's extra_headers.
@@ -344,7 +368,9 @@ impl ImageProvider for LeonardoImageProvider {
         let mut init_image_id: Option<String> = None;
         for r in &materialized.refs {
             if let MaterializedRefForm::MultipartField { bytes, .. } = &r.form {
-                init_image_id = Some(upload_init_image(&self.client, &self.asset_client, self.api_base(), &self.auth, &creds, bytes).await?);
+                init_image_id = Some(
+                    upload_init_image(&self.client, &self.asset_client, self.public_assets_only, self.api_base(), &self.auth, &creds, bytes).await?,
+                );
                 break;
             }
         }
@@ -745,6 +771,47 @@ mod tests {
         let err = provider.generate(&schema, &base, &make_extras(), &one(b"GIF89a\x01\x00\x01\x00")).await.unwrap_err();
         assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
         assert_eq!(server.received_requests().await.unwrap().len(), before, "a GIF reached Leonardo");
+    }
+
+    /// SEC-LEONARDO: the upload URL comes from Leonardo's answer. An IP
+    /// literal never reaches the public-only resolver, so it is checked before
+    /// the upload: a reference never goes to an internal address, and nothing
+    /// is created.
+    #[tokio::test]
+    async fn a_reference_is_never_uploaded_to_an_internal_address() {
+        let server = refusing_server().await;
+        let s3 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/init-image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "uploadInitImage": { "id": "init-1", "url": format!("{}/upload", s3.uri()), "fields": "{\"key\":\"k\"}" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/upload")).respond_with(ResponseTemplate::new(204)).mount(&s3).await;
+        let jpeg = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".into(),
+                form: MaterializedRefForm::MultipartField {
+                    field_name: "file".into(),
+                    bytes: bytes::Bytes::from_static(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16]),
+                    content_type: "image/jpeg".into(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        };
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = true;
+        let schema = ref_schema("leonardo/diffusion-xl");
+        let err = provider.generate(&schema, &make_base("x", "leonardo/diffusion-xl"), &make_extras(), &jpeg).await.unwrap_err();
+        assert!(s3.received_requests().await.unwrap().is_empty(), "the reference went to an internal address");
+        assert!(
+            matches!(&err, ProviderError::RequestFailed { retryable: false, status_code: None, message, .. } if message.contains("upload URL")),
+            "{err:?}"
+        );
+        let received = server.received_requests().await.unwrap();
+        assert!(received.iter().all(|r| r.url.path() != "/generations"), "a job was created after a refused upload");
     }
 
     /// E9: a presign answer litegen can't read (`uploadInitImage.fields`)

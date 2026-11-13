@@ -23,13 +23,22 @@ class VideoGenerationRequest:
     """
     Attributes:
         model (str):
-        extra (Union[Unset, Any]):
+        extra (Union[Unset, Any]): Vendor fields with no canonical param, sent to the vendor as given:
+            only the keys in the model's `extra_allowlist` (`GET /v1/models/{id}`),
+            each of the type its `extra_params` entry gives, when it has one (a
+            wrong value is refused in either mode, with `param: "extra.<key>"`).
+            Strict mode refuses any other key (`extra_key_unsupported`); `strict:
+            false` drops it and names it in `X-Litegen-Dropped-Params`. Where a
+            job's result is sent or stored, and whether the vendor publishes it,
+            are litegen's: it polls every job and fires your key's webhook.
         metadata (Union['BaseGenerationRequestMetadataType0', None, Unset]): Your own labels for the job (PixelGenie
             L17): a map of string values,
             keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. Kept on
             the generation, echoed on every answer and webhook, and filters
             `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`.
-        n (Union[Unset, int]):
+        n (Union[Unset, int]): One image, video or mesh per request: more than 1 is refused
+            (`param_out_of_range`); send several requests for several. 0 is the
+            same as 1.
         negative_prompt (Union[None, Unset, str]):
         prompt (Union[Unset, str]): Whether a prompt is required is decided per model, by its
             `prompt.required` in `GET /v1/models/{id}` — never by the wire format.
@@ -38,17 +47,25 @@ class VideoGenerationRequest:
             answers with `prompt_required`.
         reference_images (Union[Unset, List['ReferenceImage']]):
         seed (Union[None, Unset, int]):
-        strict (Union[Unset, bool]):
+        strict (Union[Unset, bool]): `true` (the default) refuses a field the request has no such name for,
+            and a param the model does not take, with `param_unsupported`; `false`
+            drops both and names them in `X-Litegen-Dropped-Params`. A field inside
+            one of the request's objects is named by its path, such as
+            `reference_images[0].weight`. A bad value for a param the model does
+            take is refused either way. A top-level field the model passes through
+            (its `extra_allowlist` in `GET /v1/models/{id}`, such as OpenAI's
+            `user`) is sent on as if it were in `extra`, in both modes.
         aspect_ratio (Union[None, Unset, str]):
         audio (Union[None, Unset, bool]): `false` for a silent clip, where the model can leave audio out
             (`supports_audio_toggle`).
         camera (Union[None, Unset, VideoCamera]):
         direction (Union[None, Unset, str]): An `extend`: add before (`backward`) or after (`forward`) the source.
-        duration_seconds (Union[None, Unset, float]): Absent means the model's own `duration_seconds` default (resolved
-            by
-            `resolve_duration_seconds`), not a fixed 5s: models whose minimum is
-            higher (fal/ltx-2.3, bedrock nova-reel) rejected every request that
-            omitted it.
+        duration_seconds (Union[None, Unset, float]): Seconds of video, above 0, as the model's
+            `params.duration_seconds`
+            allows: within its range, and one of its `values` where it lists
+            them; a whole-second model gets the nearest whole second. Absent means
+            the model's own default. A model whose listing has no
+            `duration_seconds` takes none: refused when `strict`, dropped otherwise.
         fps (Union[None, Unset, int]):
         loop (Union[None, Unset, bool]): `true` for a clip whose last frame is its first (`supports_loop`).
         replace (Union[None, Unset, str]): A `retake`'s track: `video`, `audio` or `both`.

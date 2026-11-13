@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ModelInfo } from '@litegen/sdk';
 import ModelDetail from '../components/ModelDetail';
+import { formatPrice } from '../components/model-detail';
 
 export default function Models() {
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -153,7 +154,7 @@ export default function Models() {
                 <td>{m.name}</td>
                 <td>{m.provider}</td>
                 <td><span className={`badge ${m.media_type}`}>{m.media_type}</span></td>
-                <td>{m.pricing ? `$${m.pricing.base_cost_usd.toFixed(4)}` : '—'}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{m.pricing ? formatPrice(m.pricing.base_cost_usd) : '—'}</td>
                 <td>
                   <span className={`badge ${m.is_available ? 'healthy' : 'unhealthy'}`}>
                     {m.is_available ? 'available' : 'unavailable'}

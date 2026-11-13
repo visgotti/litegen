@@ -216,6 +216,13 @@ observability:
   metrics_path: "/metrics"        # a static path litegen doesn't serve itself (not under /v1, /health, /mcp, …)
   # metrics_require_auth: false   # true: the master key, or a key with read in the deployment's org
 
+# Where keys' webhooks may point (docs/management-api.md). In single-tenant
+# mode only the deployment's own keys (made with the master key, or owned by
+# an Owner or Admin of its org) may reach its own network; `everyone` lets
+# any key's webhook reach it. Hosted mode: public addresses only, always.
+# webhooks:
+#   internal_targets: admins      # admins | everyone
+
 # ─── CORS ────────────────────────────────────────────────────────────────────
 # Default is locked down (no origins allowed).
 # Set LITEGEN__CORS__ALLOWED_ORIGINS=https://your-dashboard.com,https://other.com
