@@ -11,12 +11,16 @@ class EffectiveCache:
     """The cache in force (`GET /v1/admin/settings`).
 
     Attributes:
+        charge_hits (bool): Whether a cache hit is charged the cached answer's price (default
+            true). False makes hits free, as LiteLLM does; either way the hit's log
+            row says `cache_hit`.
         enabled (bool):
         max_bytes (int): About how many bytes each replica's cache may hold.
         max_items (int):
         ttl_seconds (int):
     """
 
+    charge_hits: bool
     enabled: bool
     max_bytes: int
     max_items: int
@@ -24,6 +28,8 @@ class EffectiveCache:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        charge_hits = self.charge_hits
+
         enabled = self.enabled
 
         max_bytes = self.max_bytes
@@ -36,6 +42,7 @@ class EffectiveCache:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "charge_hits": charge_hits,
                 "enabled": enabled,
                 "max_bytes": max_bytes,
                 "max_items": max_items,
@@ -48,6 +55,8 @@ class EffectiveCache:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
+        charge_hits = d.pop("charge_hits")
+
         enabled = d.pop("enabled")
 
         max_bytes = d.pop("max_bytes")
@@ -57,6 +66,7 @@ class EffectiveCache:
         ttl_seconds = d.pop("ttl_seconds")
 
         effective_cache = cls(
+            charge_hits=charge_hits,
             enabled=enabled,
             max_bytes=max_bytes,
             max_items=max_items,

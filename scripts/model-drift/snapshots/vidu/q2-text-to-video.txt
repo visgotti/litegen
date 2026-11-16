@@ -1,1 +1,12 @@
-POST /ent/v2/text2video · viduq2 (not carried)
+POST /ent/v2/text2video · viduq2
+Body parameters
+model | string | Required | viduq2
+prompt | string | Required | 5000
+duration | integer | Optional | 5 1-10
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 16:9 9:16 3:4 4:3 1:1
+resolution | string | Optional | 1-10s 720p 540p 720p 1080p
+audio | boolean | Optional | 
+payload | string | Optional | 1,048,576
+off_peak | boolean | Optional | 48
+callback_url | string | Optional | callback_url status

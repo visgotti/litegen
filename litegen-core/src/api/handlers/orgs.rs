@@ -53,29 +53,135 @@ fn internal_error(message: &str) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "internal server error")
 }
 
+/// Review A2: whether `ctx` may move a member of `org_id` from `current` to
+/// `new`. The master key may; a person must outrank `current` there and give
+/// a role below their own (an Owner's role moves only by transfer-owner), so
+/// no one demotes a peer to reach them, or raises someone to their level.
+pub(crate) async fn may_change_role(state: &AppState, ctx: &KeyContext, org_id: &str, current: Role, new: Role) -> Result<bool, Response> {
+    if crate::api::middleware::is_platform_admin(ctx) {
+        return Ok(true);
+    }
+    let Some(caller) = ctx.user.as_ref() else { return Ok(false) };
+    match state.db.get_membership(org_id, &caller.user_id).await {
+        Ok(Some(mine)) => Ok(crate::auth::permissions::outranks(mine, current) && crate::auth::permissions::outranks(mine, new)),
+        Ok(None) => Ok(false),
+        Err(e) => Err(internal_error(&e.to_string())),
+    }
+}
+
+/// The outrank rule (review A2) beyond role changes: whether `ctx` may
+/// remove or deactivate a member of `org_id` whose role there is `theirs`.
+/// The master key may; a person must outrank them there, since removing
+/// someone and inviting them back lower is a demotion by another door.
+/// Whether acting on yourself is allowed (leaving) is the caller's to say.
+pub(crate) async fn outranks_member(state: &AppState, ctx: &KeyContext, org_id: &str, theirs: Role) -> Result<bool, Response> {
+    if crate::api::middleware::is_platform_admin(ctx) {
+        return Ok(true);
+    }
+    let Some(caller) = ctx.user.as_ref() else { return Ok(false) };
+    match state.db.get_membership(org_id, &caller.user_id).await {
+        Ok(Some(mine)) => Ok(crate::auth::permissions::outranks(mine, theirs)),
+        Ok(None) => Ok(false),
+        Err(e) => Err(internal_error(&e.to_string())),
+    }
+}
+
 /// Whether `role` may send invitations (`member:invite`, `invitation:send`).
 pub(crate) fn role_may_invite(role: Role) -> bool {
     role_has(role, Permission::MemberInvite) || role_has(role, Permission::InvitationSend)
 }
 
+/// What accepting `inv` answers when its sender may no longer send it.
+pub(crate) const INVITATION_SENDER_REVOKED: &str = "Whoever sent this invitation may no longer invite to this role. Ask for a new invitation.";
+
+/// Whether whoever sent `inv` may still send it (review round 7, finding 6),
+/// checked when it is accepted, as confirming a reset link checks its
+/// issuer: an active account that is a member of the invitation's org, with
+/// a role there that may invite and is above the invited one (the rule both
+/// invite routes apply when sending). So one that landed after its sender was
+/// demoted, removed or deactivated (in flight while their other invitations
+/// were revoked) isn't accepted. The master key's invitations name no sender
+/// and always qualify.
+pub(crate) async fn sender_may_still_invite(db: &dyn crate::db::DatabaseStore, inv: &Invitation) -> Result<bool, sqlx::Error> {
+    let Some(sender) = inv.invited_by.as_deref() else { return Ok(true) };
+    if !db.get_user_by_id(sender).await?.is_some_and(|u| u.is_active) {
+        return Ok(false);
+    }
+    Ok(db
+        .get_membership(&inv.org_id, sender)
+        .await?
+        .is_some_and(|theirs| role_may_invite(theirs) && crate::auth::permissions::outranks(theirs, inv.role)))
+}
+
 /// Revoke pending invitations, in `org_id` or every org, to `email` or sent
-/// by `invited_by` (SEC-INVITES): a person who leaves, is deactivated, or can
-/// no longer invite keeps no way back in through one. Run before the change
-/// it goes with, so a failure (`Err`, a 500) leaves that change undone and
-/// safe to retry.
+/// by `invited_by` (SEC-INVITES): a person who leaves, or can no longer
+/// invite, keeps no way back in through one. Each is audited with `reason`
+/// ([`audit_revoked_invitations`]). Run before the change it goes with, so a
+/// failure (`Err`, a 500) leaves that change undone and safe to retry. (A
+/// deactivation and a confirmed reset revoke in their own transactions.)
 pub(crate) async fn revoke_invitations(
     state: &AppState,
+    ctx: &KeyContext,
     org_id: Option<&str>,
     email: Option<&str>,
     invited_by: Option<&str>,
+    reason: &str,
 ) -> Result<(), Response> {
-    match state.db.revoke_pending_invitations(org_id, email, invited_by).await {
-        Ok(0) => Ok(()),
-        Ok(n) => {
-            tracing::info!(org_id = ?org_id, revoked = n, "pending invitations revoked");
-            Ok(())
+    let revoked = state
+        .db
+        .revoke_pending_invitations(org_id, email, invited_by)
+        .await
+        .map_err(|e| internal_error(&format!("revoking pending invitations: {e}")))?;
+    audit_revoked_invitations(state, Revoker::Principal(ctx), &revoked, Some(reason)).await;
+    Ok(())
+}
+
+/// Who revoked invitations, for their `invitation.revoke` entries.
+#[derive(Clone, Copy)]
+pub(crate) enum Revoker<'a> {
+    /// The request's principal.
+    Principal(&'a KeyContext),
+    /// A confirmed reset link, which no principal sends: the entries name
+    /// the account it reset, by its email.
+    ResetLink { account_email: &'a str },
+}
+
+/// Audit each of `revoked` as `invitation.revoke`, filed under its own org,
+/// with `reason` when the revoke came with a change (review round 6, finding
+/// 6): every revoke, by hand or with a removal, a role change, a
+/// deactivation or a reset, goes through here. A task of its own writes the
+/// entries, each on its own, and this awaits it (review round 7, cleanup):
+/// they are in before the answer goes out, and still written when the client
+/// hangs up first and the handler is dropped. One that fails (its org deleted
+/// meanwhile, say) is logged, never surfaced, and doesn't stop the others.
+pub(crate) async fn audit_revoked_invitations(state: &AppState, by: Revoker<'_>, revoked: &[Invitation], reason: Option<&str>) {
+    if revoked.is_empty() {
+        return;
+    }
+    let actor = match by {
+        Revoker::Principal(ctx) => crate::api::handlers::management::actor(ctx),
+        Revoker::ResetLink { account_email } => (None, account_email.to_string()),
+    };
+    let entries: Vec<crate::types::AuditLogEntry> = revoked
+        .iter()
+        .map(|inv| {
+            let mut after = json!({ "email": inv.email, "role": inv.role.as_str() });
+            if let Some(reason) = reason {
+                after["reason"] = json!(reason);
+            }
+            crate::api::handlers::management::audit_entry(actor.clone(), Some(inv.org_id.clone()), "invitation.revoke", "invitation", &inv.id, Some(after))
+        })
+        .collect();
+    let db = state.db.clone();
+    let written = tokio::spawn(async move {
+        for entry in &entries {
+            if let Err(e) = db.insert_audit_log(entry).await {
+                tracing::warn!(error = %e, invitation = %entry.target_id, "could not audit a revoked invitation");
+            }
         }
-        Err(e) => Err(internal_error(&format!("revoking pending invitations: {e}"))),
+    });
+    if let Err(e) = written.await {
+        tracing::warn!(error = %e, count = revoked.len(), "the task auditing revoked invitations failed");
     }
 }
 
@@ -93,30 +199,15 @@ pub(crate) fn log_org_audit(
     target_id: &str,
 ) {
     let db = state.db.clone();
-    let actor_key_id = ctx.key_id.map(|id| id.to_string());
-    let actor_label = ctx
-        .user
-        .as_ref()
-        .map(|u| u.email.clone())
-        .or_else(|| ctx.key_id.map(|id| id.to_string()))
-        .unwrap_or_else(|| "master-key".to_string());
-    let action = action.to_string();
-    let target_type = target_type.to_string();
-    let target_id = target_id.to_string();
-    let org_id = org_id.to_string();
+    let entry = crate::api::handlers::management::audit_entry(
+        crate::api::handlers::management::actor(ctx),
+        Some(org_id.to_string()),
+        action,
+        target_type,
+        target_id,
+        None,
+    );
     tokio::spawn(async move {
-        let entry = crate::types::AuditLogEntry {
-            id: format!("audit-{}", uuid::Uuid::new_v4()),
-            actor_key_id,
-            actor_label,
-            action,
-            target_type,
-            target_id,
-            before_json: None,
-            after_json: None,
-            created_at: chrono::Utc::now(),
-            org_id: Some(org_id),
-        };
         if let Err(e) = db.insert_audit_log(&entry).await {
             tracing::warn!(error = %e, "Failed to insert org audit log entry");
         }
@@ -353,16 +444,6 @@ pub async fn create_org(
         created_at: now,
         updated_at: now,
     };
-    // NOTE (Phase-1 accepted limitation): the org → member → app creation below
-    // is a non-atomic sequence of DB calls. A mid-sequence failure (e.g. crash
-    // after create_organization but before add_org_member) can orphan rows.
-    // A transactional `create_tenant` DB helper is a Phase-2 follow-up.
-    if let Err(e) = state.db.create_organization(&org).await {
-        return internal_error(&e.to_string());
-    }
-    if let Err(e) = state.db.add_org_member(&org.id, &user.user_id, Role::Owner).await {
-        return internal_error(&e.to_string());
-    }
     // Default application for the new org.
     let app = Application {
         id: uuid::Uuid::new_v4().to_string(),
@@ -373,7 +454,9 @@ pub async fn create_org(
         created_at: now,
         updated_at: now,
     };
-    if let Err(e) = state.db.create_application(&app).await {
+    // The org, its maker's Owner membership and the app, made together: a
+    // failure part way leaves none of them.
+    if let Err(e) = state.db.create_org_with_owner(&org, &app, crate::db::OrgOwner::Existing(&user.user_id)).await {
         return internal_error(&e.to_string());
     }
 
@@ -505,22 +588,31 @@ pub async fn delete_org(
     if let Err(resp) = require_member_perm(&state, &ctx, &id, Permission::OrgDelete).await {
         return resp;
     }
-    // Read before the rows go: its apps' files in litegen's own store go with
-    // it, and its running jobs are stopped (SEC-INMEM), on the credentials
-    // the delete also takes.
-    let kept = state.db.generations_with_kept_files("org", &id).await.unwrap_or_else(|e| {
-        tracing::warn!(org_id = %id, error = %e, "could not list a deleted org's files; they stay until the store's own retention");
-        Vec::new()
-    });
+    // Read before the rows go: its running jobs are stopped (SEC-INMEM), on
+    // the credentials the delete also takes.
     let running = crate::api::handlers::jobs_left_running(&state, &id, None).await;
-    match state.db.delete_organization(&id).await {
-        Ok(true) => {
-            crate::api::handlers::stop_jobs_left_running(&state, running).await;
-            crate::api::handlers::delete_files_in_litegens_store(&state, kept);
-            log_org_audit(&state, &ctx, &id, "org.delete", "organization", &id);
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(false) => err(StatusCode::NOT_FOUND, "org_not_found", "Organization not found"),
+    // On a task the request waits for: a caller (or a proxy) that hangs up
+    // while a large org is deleted can't roll the delete back, and what
+    // follows it still runs.
+    let deleted = {
+        let (state, id) = (state.clone(), id.clone());
+        crate::shutdown::spawn_tracked(async move {
+            let deleted = state.db.delete_organization(&id).await;
+            if let Ok(true) = deleted {
+                crate::api::handlers::stop_jobs_left_running(&state, running).await;
+                // The delete recorded the files its apps kept in litegen's own
+                // store (migration 031): deleted from now on, until they're gone.
+                // Files in an app's own bucket are the customer's and stay.
+                crate::proxy::tenant_files::start_deleting(state.db.clone(), state.router.model3d_store.clone(), "org", &id);
+                log_org_audit(&state, &ctx, &id, "org.delete", "organization", &id);
+            }
+            deleted
+        })
+    };
+    match deleted.await {
+        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(false)) => err(StatusCode::NOT_FOUND, "org_not_found", "Organization not found"),
+        Ok(Err(e)) => internal_error(&e.to_string()),
         Err(e) => internal_error(&e.to_string()),
     }
 }
@@ -564,9 +656,10 @@ pub async fn list_members(
     params(("id" = String, Path, description = "Organization ID")),
     request_body = AddMemberRequest,
     responses(
-        (status = 200, description = "Invitation created"),
-        (status = 400, description = "Cannot invite owner directly", body = crate::types::ErrorResponse),
-        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 200, description = "Invitation created", body = crate::api::handlers::users::InviteResponse),
+        (status = 400, description = "Bad request (`cannot_invite_owner`, `invalid_email`)", body = crate::types::ErrorResponse),
+        (status = 401, description = "Not authenticated, or `sign_in_ended`: your sign-in ended while this request ran (a reset, a deactivation or another password change committed), and no invitation was stored.", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden: the invited role must be below your own in the organization (an Admin invites Members and Viewers, an Owner Admins too).", body = crate::types::ErrorResponse),
     ),
     tag = "Organizations"
 )]
@@ -586,35 +679,158 @@ pub async fn invite_member(
             "Cannot invite an Owner directly. Use transfer-owner.",
         );
     }
+    // The invited role must be below the inviter's own here, as a role change
+    // needs (review round 3b, S4): removing a Member and inviting them back
+    // as an Admin promoted past the rule. The master key, any but Owner.
+    match outranks_member(&state, &ctx, &id, body.role).await {
+        Ok(true) => {}
+        Ok(false) => return forbidden("You may invite only to a role below your own"),
+        Err(resp) => return resp,
+    }
 
-    let email = body.email.trim().to_lowercase();
-    let token = generate_session_token();
+    let email = match crate::auth::email::account_email(&body.email) {
+        Ok(email) => email,
+        Err(why) => return err(StatusCode::BAD_REQUEST, "invalid_email", why),
+    };
     let inv = Invitation {
         id: uuid::Uuid::new_v4().to_string(),
-        email: email.clone(),
+        email,
         role: body.role,
-        token: token.clone(),
+        token: generate_session_token(),
         invited_by: ctx.user.as_ref().map(|u| u.user_id.clone()),
         org_id: id.clone(),
         expires_at: chrono::Utc::now() + chrono::Duration::days(7),
         used_at: None,
         created_at: chrono::Utc::now(),
     };
-    if let Err(e) = state.db.create_invitation(&inv).await {
-        return internal_error(&e.to_string());
+    // Stored only while the sender's sign-in is live (review round 6,
+    // finding 2): a reset or a deactivation that committed while this ran
+    // leaves nothing behind it.
+    let Some(from) = crate::api::middleware::sign_in_of(&ctx) else {
+        return crate::api::handlers::account::sign_in_ended();
+    };
+    match state.db.create_invitation_from(&inv, from).await {
+        Ok(true) => {}
+        Ok(false) => return crate::api::handlers::account::sign_in_ended(),
+        Err(e) => return internal_error(&e.to_string()),
     }
+    // As `POST /v1/users` records it.
+    crate::api::handlers::management::audit(
+        &state,
+        &ctx,
+        Some(&id),
+        "invitation.create",
+        "invitation",
+        &inv.id,
+        Some(json!({ "email": inv.email, "role": inv.role.as_str() })),
+    );
+    crate::api::handlers::users::invitation_created(&state, &inv)
+}
 
-    let mut payload = json!({
-        "id": inv.id,
-        "email": email,
-        "role": inv.role.as_str(),
-        "org_id": id,
-        "expires_at": inv.expires_at.to_rfc3339(),
-    });
-    if state.dev.expose_invite_tokens {
-        payload["_dev_token"] = json!(token);
+// ─── GET /v1/orgs/{id}/invitations ──────────────────────────────────────────
+
+/// An invitation not yet accepted or expired. Its token is shown only when
+/// it is made: to send a lost link again, revoke the invitation and invite
+/// anew.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PendingInvitation {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+    pub org_id: String,
+    /// The account that sent it; null when the master key did.
+    #[schema(required = true)]
+    pub invited_by: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+impl From<Invitation> for PendingInvitation {
+    fn from(i: Invitation) -> Self {
+        Self {
+            id: i.id,
+            email: i.email,
+            role: i.role.as_str().to_string(),
+            org_id: i.org_id,
+            invited_by: i.invited_by,
+            created_at: i.created_at.to_rfc3339(),
+            expires_at: i.expires_at.to_rfc3339(),
+        }
     }
-    (StatusCode::OK, Json(payload)).into_response()
+}
+
+/// GET /v1/orgs/{id}/invitations — List an org's pending invitations (requires member:invite).
+#[utoipa::path(
+    get,
+    path = "/v1/orgs/{id}/invitations",
+    params(("id" = String, Path, description = "Organization ID")),
+    responses(
+        (status = 200, description = "The org's invitations not yet accepted or expired, newest first, without their tokens", body = Vec<PendingInvitation>),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+    ),
+    tag = "Organizations"
+)]
+pub async fn list_invitations(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(resp) = require_member_perm(&state, &ctx, &id, Permission::MemberInvite).await {
+        return resp;
+    }
+    // Expiry on this process's clock, as accepting judges it.
+    let now = chrono::Utc::now();
+    match state.db.list_unused_invitations(&id).await {
+        Ok(invitations) => {
+            let pending: Vec<PendingInvitation> =
+                invitations.into_iter().filter(|i| i.expires_at > now).map(PendingInvitation::from).collect();
+            (StatusCode::OK, Json(pending)).into_response()
+        }
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ─── DELETE /v1/orgs/{id}/invitations/{invitation_id} ───────────────────────
+
+/// DELETE /v1/orgs/{id}/invitations/{invitation_id} — Revoke an invitation (requires invitation:revoke).
+#[utoipa::path(
+    delete,
+    path = "/v1/orgs/{id}/invitations/{invitation_id}",
+    params(
+        ("id" = String, Path, description = "Organization ID"),
+        ("invitation_id" = String, Path, description = "Invitation ID"),
+    ),
+    responses(
+        (status = 204, description = "Revoked: its token no longer accepts"),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 404, description = "No invitation with this id in this org.", body = crate::types::ErrorResponse),
+        (status = 409, description = "`invitation_accepted`: the invitation was already accepted; remove the member instead.", body = crate::types::ErrorResponse),
+    ),
+    tag = "Organizations"
+)]
+pub async fn revoke_invitation(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path((id, invitation_id)): Path<(String, String)>,
+) -> Response {
+    if let Err(resp) = require_member_perm(&state, &ctx, &id, Permission::InvitationRevoke).await {
+        return resp;
+    }
+    match state.db.revoke_invitation(&id, &invitation_id).await {
+        Ok(Some(inv)) => {
+            audit_revoked_invitations(&state, Revoker::Principal(&ctx), std::slice::from_ref(&inv), None).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        // Nothing revoked: the delete takes only an unaccepted one, so it is
+        // atomic against accepting (review A6). Accepted is final; tell it
+        // apart from one the org doesn't have.
+        Ok(None) => match state.db.invitation_accepted(&id, &invitation_id).await {
+            Ok(true) => err(StatusCode::CONFLICT, "invitation_accepted", "The invitation was already accepted; remove the member instead"),
+            Ok(false) => err(StatusCode::NOT_FOUND, "invitation_not_found", "No invitation with this id in this org"),
+            Err(e) => internal_error(&e.to_string()),
+        },
+        Err(e) => internal_error(&e.to_string()),
+    }
 }
 
 // ─── PATCH /v1/orgs/{id}/members/{user_id} ──────────────────────────────────
@@ -631,7 +847,7 @@ pub async fn invite_member(
     responses(
         (status = 200, description = "Updated"),
         (status = 400, description = "Cannot change owner via this endpoint", body = crate::types::ErrorResponse),
-        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden: you must outrank the member's current role, and may not grant a role at or above your own.", body = crate::types::ErrorResponse),
         (status = 404, description = "Member not found", body = crate::types::ErrorResponse),
     ),
     tag = "Organizations"
@@ -665,15 +881,45 @@ pub async fn patch_member(
             "Cannot change the Owner's role. Use transfer-owner.",
         );
     }
+    match may_change_role(&state, &ctx, &id, current, body.role).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return err(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "You must outrank the member's current role, and may not grant a role at or above your own",
+            );
+        }
+        Err(resp) => return resp,
+    }
     // Moved to a role that can't invite: the invitations they sent here go,
     // or one sent to their own second address would make them an Admin again.
     if role_may_invite(current) && !role_may_invite(body.role) {
-        if let Err(resp) = revoke_invitations(&state, Some(&id), None, Some(&user_id)).await {
+        if let Err(resp) = revoke_invitations(&state, &ctx, Some(&id), None, Some(&user_id), "inviter_role_changed").await {
             return resp;
         }
     }
-    match state.db.update_member_role(&id, &user_id, body.role).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+    // Single-tenant, the deployment's org: the account's own role moves with
+    // the membership, in one transaction, as `PATCH /v1/users/{id}` moves it
+    // (review of round 8): the Users page, `/v1/auth/me` and hooks report it.
+    let changed = if state.mode == crate::config::Mode::SingleTenant && id == crate::api::middleware::DEFAULT_ORG_ID {
+        state.db.update_user_with_revoked(&user_id, Some(body.role), None, None, Some(&id)).await.map(|_| ())
+    } else {
+        state.db.update_member_role(&id, &user_id, body.role).await
+    };
+    match changed {
+        Ok(()) => {
+            crate::api::handlers::management::audit(
+                &state,
+                &ctx,
+                Some(&id),
+                "org.member.update",
+                "membership",
+                &user_id,
+                Some(json!({ "role": body.role.as_str(), "previous_role": current.as_str() })),
+            );
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
         Err(e) => internal_error(&e.to_string()),
     }
 }
@@ -691,7 +937,7 @@ pub async fn patch_member(
     responses(
         (status = 204, description = "Removed"),
         (status = 400, description = "Cannot remove owner", body = crate::types::ErrorResponse),
-        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden: you must outrank the member to remove them, unless you remove yourself (leave).", body = crate::types::ErrorResponse),
         (status = 404, description = "Member not found", body = crate::types::ErrorResponse),
     ),
     tag = "Organizations"
@@ -704,7 +950,7 @@ pub async fn remove_member(
     if let Err(resp) = require_member_perm(&state, &ctx, &id, Permission::MemberRemove).await {
         return resp;
     }
-    match state.db.get_membership(&id, &user_id).await {
+    let theirs = match state.db.get_membership(&id, &user_id).await {
         Ok(Some(Role::Owner)) => {
             return err(
                 StatusCode::BAD_REQUEST,
@@ -712,9 +958,26 @@ pub async fn remove_member(
                 "Cannot remove the Owner. Transfer ownership first.",
             );
         }
-        Ok(Some(_)) => {}
+        Ok(Some(role)) => role,
         Ok(None) => return err(StatusCode::NOT_FOUND, "member_not_found", "Member not found"),
         Err(e) => return internal_error(&e.to_string()),
+    };
+    // The outrank rule (review A2): a person removes only a member they
+    // outrank here (the master key, anyone but the Owner). Leaving, removing
+    // yourself, stays allowed.
+    let leaving = ctx.user.as_ref().is_some_and(|u| u.user_id == user_id);
+    if !leaving {
+        match outranks_member(&state, &ctx, &id, theirs).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return err(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "You must outrank the member to remove them (removing yourself, to leave, is allowed)",
+                );
+            }
+            Err(resp) => return resp,
+        }
     }
     // Their pending invitations to this org, and the ones they sent here, go
     // first: either would let them back in (SEC-INVITES).
@@ -722,7 +985,7 @@ pub async fn remove_member(
         Ok(user) => user.map(|u| u.email.to_lowercase()),
         Err(e) => return internal_error(&e.to_string()),
     };
-    if let Err(resp) = revoke_invitations(&state, Some(&id), email.as_deref(), Some(&user_id)).await {
+    if let Err(resp) = revoke_invitations(&state, &ctx, Some(&id), email.as_deref(), Some(&user_id), "member_removed").await {
         return resp;
     }
     match state.db.remove_org_member(&id, &user_id).await {
@@ -975,21 +1238,27 @@ pub async fn delete_app(
     if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::AppDelete).await {
         return resp;
     }
-    // Read before the rows go: its files in litegen's own store go with it,
-    // and its running jobs are stopped (SEC-INMEM).
-    let kept = state.db.generations_with_kept_files("app", &app_id).await.unwrap_or_else(|e| {
-        tracing::warn!(app_id = %app_id, error = %e, "could not list a deleted app's files; they stay until the store's own retention");
-        Vec::new()
-    });
+    // Read before the rows go: its running jobs are stopped (SEC-INMEM).
     let running = crate::api::handlers::jobs_left_running(&state, &org_id, Some(&app_id)).await;
-    match state.db.delete_application(&app_id).await {
-        Ok(true) => {
-            crate::api::handlers::stop_jobs_left_running(&state, running).await;
-            crate::api::handlers::delete_files_in_litegens_store(&state, kept);
-            log_org_audit(&state, &ctx, &org_id, "org.app.delete", "application", &app_id);
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(false) => err(StatusCode::NOT_FOUND, "app_not_found", "Application not found"),
+    // On a task the request waits for, as an org's delete is.
+    let deleted = {
+        let (state, app_id) = (state.clone(), app_id.clone());
+        crate::shutdown::spawn_tracked(async move {
+            let deleted = state.db.delete_application(&app_id).await;
+            if let Ok(true) = deleted {
+                crate::api::handlers::stop_jobs_left_running(&state, running).await;
+                // The delete recorded the files it kept in litegen's own store
+                // (migration 031), as an org's delete does.
+                crate::proxy::tenant_files::start_deleting(state.db.clone(), state.router.model3d_store.clone(), "app", &app_id);
+                log_org_audit(&state, &ctx, &org_id, "org.app.delete", "application", &app_id);
+            }
+            deleted
+        })
+    };
+    match deleted.await {
+        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(false)) => err(StatusCode::NOT_FOUND, "app_not_found", "Application not found"),
+        Ok(Err(e)) => internal_error(&e.to_string()),
         Err(e) => internal_error(&e.to_string()),
     }
 }

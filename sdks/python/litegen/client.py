@@ -27,20 +27,35 @@ from .polling import (
     wait_for_video_completion,
 )
 from .types import (
+    ApiKeyDetail,
+    AuditLogPage,
     CancelledGeneration,
     CostEstimate,
+    GatewaySettings,
+    GatewaySettingsView,
     Generation,
     GenerationAssetList,
     GenerationPage,
     ImageSegmentationResponse,
+    InviteResponse,
     MediaType,
     Model3dConversion,
     Model3dConvertFormats,
     Model3dFormat,
     Model3dGenerateParams,
     Model3dGenerationResponse,
+    PasswordResetLink,
+    PatchProviderConfigRequest,
+    PendingInvitation,
+    ProviderConfigView,
     RateLimit,
+    RequestLogPage,
     ResponseMeta,
+    Role,
+    SpendLogPage,
+    UpdateApiKeyRequest,
+    WebhookDeliveryPage,
+    WebhookDeliveryState,
 )
 
 # How long a request may take by default, in seconds: 11.5 minutes. A
@@ -92,11 +107,14 @@ class LiteGenClient:
         self.stats = _StatsNamespace(self)
         self.logs = _LogsNamespace(self)
         self.keys = _KeysNamespace(self)
+        self.audit = _AuditNamespace(self)
         self.cache = _CacheNamespace(self)
         self.limits = _LimitsNamespace(self)
         self.file_access = _FileAccessNamespace(self)
         self.end_users = _EndUsersNamespace(self)
         self.spend = _SpendNamespace(self)
+        self.users = _UsersNamespace(self)
+        self.orgs = _OrgsNamespace(self)
         self.admin = _AdminNamespace(self)
         self.oauth = _OAuthNamespace(self)
 
@@ -122,12 +140,15 @@ class LiteGenClient:
         content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         follow_redirects: bool = False,
+        answer_on: tuple[int, ...] = (),
     ) -> tuple[Any, httpx.Headers]:
         """:meth:`_request`, plus the response headers.
 
         The job submits need them (lax mode reports the params it dropped in a
         header, see :func:`_parse_dropped_params`), and so does mesh conversion,
-        which also sends raw ``content`` instead of JSON.
+        which also sends raw ``content`` instead of JSON. ``answer_on`` names
+        error statuses whose body may be the route's documented answer (see
+        :func:`_is_answer`), returned instead of raised.
         """
         try:
             resp = self._http.request(
@@ -141,7 +162,7 @@ class LiteGenClient:
             )
         except httpx.TimeoutException as e:
             raise LiteGenTimeoutError(str(e)) from e
-        if resp.status_code >= 400:
+        if resp.status_code >= 400 and not (resp.status_code in answer_on and _is_answer(resp)):
             _raise_for_status(resp)
         ctype = resp.headers.get("content-type", "")
         if ctype.startswith("application/json"):
@@ -149,12 +170,26 @@ class LiteGenClient:
         return resp.content, resp.headers
 
 
+def _is_answer(resp: httpx.Response) -> bool:
+    """Whether an error status carries the route's documented answer rather
+    than an error: a JSON object that isn't litegen's ``{"error": …}``, such as
+    the report ``GET /health`` sends with its 503."""
+    if not resp.headers.get("content-type", "").startswith("application/json"):
+        return False
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and "error" not in body
+
+
 def _raise_for_status(resp: httpx.Response) -> None:
     detail: dict[str, Any] = {}
+    body: Any = None
     try:
-        payload = resp.json()
-        if isinstance(payload, dict):
-            detail = payload.get("error") or {}
+        body = resp.json()
+        if isinstance(body, dict):
+            detail = body.get("error") or {}
     except Exception:
         detail = {}
     message = detail.get("message") or resp.text or f"HTTP {resp.status_code}"
@@ -176,6 +211,7 @@ def _raise_for_status(resp: httpx.Response) -> None:
         retry_after=_retry_after_seconds(resp.headers.get("retry-after")),
         retryable=detail.get("retryable") if isinstance(detail.get("retryable"), bool) else None,
         headers=resp.headers,
+        body=body,
     )
 
 
@@ -937,8 +973,10 @@ class _HealthNamespace:
         side (``GET /health``): one entry per provider and ``modality``. It
         reports on the deployment's own keys, so it takes the master key, or in
         single-tenant mode the ``read`` scope in the deployment's org; other
-        credentials get a 403."""
-        return self._c._request("GET", "/health")
+        credentials get a 403. When a provider answered unhealthy, the server
+        answers 503 with the same report (``status`` ``"degraded"``), returned
+        here as the 200's is; any other error raises."""
+        return self._c._request_with_headers("GET", "/health", answer_on=(503,))[0]
 
     def live(self) -> Any:
         return self._c._request("GET", "/health/live")
@@ -966,9 +1004,12 @@ class _LogsNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def list(self, *, page: int = 1, per_page: int = 50, metadata: Mapping[str, str] | None = None) -> Any:
+    def list(
+        self, *, page: int = 1, per_page: int = 50, metadata: Mapping[str, str] | None = None
+    ) -> RequestLogPage:
         """Request logs, newest first; ``metadata`` keeps the requests whose
-        metadata holds every pair."""
+        metadata holds every pair. A cache hit has a row of its own, with
+        ``cache_hit`` true."""
         return self._c._request("GET", "/v1/logs", params={"page": page, "per_page": per_page, **_metadata_params(metadata)})
 
 
@@ -995,6 +1036,66 @@ class _KeysNamespace:
 
     def unblock(self, key_id: str) -> Any:
         return self._c._request("POST", f"/v1/keys/{_q(key_id)}/unblock")
+
+    def patch(self, key_id: str, **fields: Unpack[UpdateApiKeyRequest]) -> ApiKeyDetail:
+        """Edit a key (``PATCH /v1/keys/{id}``), as a JSON merge patch: a field
+        given is set, and a field left out stays as it is. ``None`` is sent as
+        ``null``, which clears ``token_quota``, ``rpm_limit``, ``webhook_url``
+        (``""`` clears it too) and ``expires_at``; ``name``, ``scopes`` and
+        ``is_active`` can't be cleared. A 400 names an unknown scope or is
+        ``invalid_webhook_url``; a 403 ``forbidden`` says the caller may not edit
+        this key or grant a scope it lists. Returns the key as it now is."""
+        return self._c._request("PATCH", f"/v1/keys/{_q(key_id)}", json=dict(fields))
+
+    def list_webhook_deliveries(self, key_id: str, *, page: int = 1, per_page: int = 50) -> WebhookDeliveryPage:
+        """The key's webhook delivery attempts, newest first
+        (``GET /v1/keys/{id}/webhook-deliveries``). Every attempt of one delivery
+        has the same ``delivery_id``, the ``X-Litegen-Delivery-Id`` its receiver
+        got, and shows the payload of the delivery's latest attempt."""
+        return self._c._request(
+            "GET", f"/v1/keys/{_q(key_id)}/webhook-deliveries", params={"page": page, "per_page": per_page}
+        )
+
+    def redeliver_webhook_delivery(self, key_id: str, delivery_id: str) -> WebhookDeliveryState:
+        """Send one of the key's webhook deliveries again
+        (``POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver``). A
+        delivery that ended, ``delivered`` or ``failed``, is due again: a fresh
+        series of attempts under the same ``delivery_id`` (a receiver that still
+        holds it treats it as a repeat), to the key's ``webhook_url`` of that
+        moment. Returns the delivery's state. A 409 ``delivery_pending`` while it
+        is still being sent; a 429 ``redeliver_too_soon`` within a minute of its
+        last redeliver (``retry_after`` says when to ask again); a 400
+        ``no_webhook_configured`` or ``invalid_webhook_url``; a 404 for an
+        unknown key or delivery. An ``admin``-scope key may, in the key's org;
+        among people, an Owner or Admin for any key, a Member for their own."""
+        return self._c._request("POST", f"/v1/keys/{_q(key_id)}/webhook-deliveries/{_q(delivery_id)}/redeliver")
+
+
+class _AuditNamespace:
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def list(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        org_id: str | None = None,
+        actor_key_id: str | None = None,
+        action: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+    ) -> AuditLogPage:
+        """One page of the audit log (``GET /v1/audit``, ``audit:read``),
+        optionally only one ``actor_key_id``'s entries, one ``action``
+        (``"key.create"``) or those between ``from_`` and ``to`` (ISO 8601,
+        both included). They are the entries of the org the caller acts in;
+        the master key reads another org's with ``org_id`` (anyone else may
+        name only their own, else a 403). Without it, the hosted master key
+        reads the entries filed under no org, which have no ``org_id``."""
+        params = _drop_none({"org_id": org_id, "actor_key_id": actor_key_id, "action": action, "from": from_, "to": to})
+        params.update(page=page, per_page=per_page)
+        return self._c._request("GET", "/v1/audit", params=params)
 
 
 class _CacheNamespace:
@@ -1246,10 +1347,81 @@ class _SpendNamespace:
         params["group_by"] = group_by
         return self._c._request("GET", "/v1/spend/report", params=params)
 
-    def logs(self, *, page: int = 1, per_page: int = 50, from_: str | None = None, **filters: Any) -> Any:
+    def logs(self, *, page: int = 1, per_page: int = 50, from_: str | None = None, **filters: Any) -> SpendLogPage:
         params = self._filters(from_, filters)
         params.update(page=page, per_page=per_page)
         return self._c._request("GET", "/v1/spend/logs", params=params)
+
+
+class _UsersNamespace:
+    """Accounts (``/v1/users``)."""
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def password_reset_link(self, user_id: str) -> PasswordResetLink:
+        """Issue a password reset link for an account
+        (``POST /v1/users/{id}/password-reset``), shown only in this answer:
+        litegen sends no email, so give the owner its ``reset_url`` (``None``
+        when the server has no ``server.public_base_url``: build
+        ``/reset-password/{token}`` on the dashboard's origin) or its
+        ``token``, which sets the password once within the hour. The master
+        key may, and so may a signed-in person who outranks the account in
+        every org it belongs to, never for their own account (change your own
+        password with the current one instead). For a deactivated account,
+        only someone who may reactivate it may issue a link, since confirming
+        the link reactivates it. An API key never may (403). A 403
+        ``forbidden_permission``, a 404 ``user_not_found``."""
+        return self._c._request("POST", f"/v1/users/{_q(user_id)}/password-reset")
+
+
+class _OrgMembersNamespace:
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def invite(self, org_id: str, *, email: str, role: Role) -> InviteResponse:
+        """Invite someone into the org as ``role`` (``POST /v1/orgs/{id}/members``,
+        the ``member:invite`` permission). litegen sends no email: give the
+        invitee the answer's ``invite_url``, the dashboard page that accepts it
+        (``None`` when the server has no ``server.public_base_url``: build
+        ``/invite/{token}`` on the dashboard's origin), or its ``token``. Either
+        accepts once, until ``expires_at``, and neither is shown again. A 400
+        is ``cannot_invite_owner`` (hand over with transfer-owner instead) or
+        ``invalid_email``."""
+        return self._c._request("POST", f"/v1/orgs/{_q(org_id)}/members", json={"email": email, "role": role})
+
+
+class _OrgInvitationsNamespace:
+    """An org's pending invitations (``/v1/orgs/{id}/invitations``). A token is
+    shown only when its invitation is made: to send a lost link again, revoke
+    the invitation and invite anew."""
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def list(self, org_id: str) -> list[PendingInvitation]:
+        """The org's invitations not yet accepted or expired, newest first,
+        without their tokens (the ``member:invite`` permission)."""
+        return self._c._request("GET", f"/v1/orgs/{_q(org_id)}/invitations")
+
+    def revoke(self, org_id: str, invitation_id: str) -> None:
+        """Revoke an invitation, so its token no longer accepts (the
+        ``invitation:revoke`` permission). A 404 ``invitation_not_found``: no
+        invitation with this id waits in this org."""
+        self._c._request("DELETE", f"/v1/orgs/{_q(org_id)}/invitations/{_q(invitation_id)}")
+
+
+class _OrgsNamespace:
+    """Organizations: inviting members and the invitations still pending.
+
+    These routes take the master key, which may act on any org, or a
+    signed-in person (a dashboard session, or an app signed in with OAuth)
+    whose role in the org allows it. An API key gets a 403 ``forbidden``
+    ("session required")."""
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self.members = _OrgMembersNamespace(client)
+        self.invitations = _OrgInvitationsNamespace(client)
 
 
 class _AdminModelsNamespace:
@@ -1294,8 +1466,23 @@ class _AdminProvidersNamespace:
 
     def configure(self, name: str, **config: Any) -> Any:
         """Set ``api_key``, ``api_keys``, ``key_id``, ``key_secret``, ``api_base``,
-        ``model_mapping``, ``extra_headers``, ``options``, ``region`` or ``enabled``."""
+        ``model_mapping``, ``extra_headers``, ``options``, ``region`` or ``enabled``.
+        This replaces the runtime config: a secret left out keeps its stored
+        value, and every other field left out falls back to env/YAML. To change
+        some fields and keep the rest, use :meth:`patch`."""
         return self._c._request("PUT", f"/v1/admin/providers/{_q(name)}", json=config)
+
+    def patch(self, name: str, **fields: Unpack[PatchProviderConfigRequest]) -> ProviderConfigView:
+        """Change some of a provider's runtime config and keep the rest
+        (``PATCH /v1/admin/providers/{name}``). A field given is set, ``None``
+        (sent as ``null``) clears it so it falls back to env/YAML, and a field
+        left out keeps its stored value. A secret (``api_key``, ``api_keys``,
+        ``key_id``, ``key_secret``) left out or ``None`` keeps its stored value,
+        and one sent as ``""`` removes it, so the env/YAML one applies again. A
+        map (``model_mapping``, ``extra_headers``) or ``options`` given replaces
+        the stored one whole. A 400 is an invalid config, a 404
+        ``provider_not_found`` an unknown provider."""
+        return self._c._request("PATCH", f"/v1/admin/providers/{_q(name)}", json=dict(fields))
 
     def reset(self, name: str) -> Any:
         """Drop the runtime config; the provider falls back to its env/YAML config."""
@@ -1320,11 +1507,14 @@ class _AdminSettingsNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def get(self) -> Any:
+    def get(self) -> GatewaySettingsView:
+        """The stored settings and what is in force, with the range each
+        numeric setting takes (``limits``)."""
         return self._c._request("GET", "/v1/admin/settings")
 
-    def update(self, **settings: Any) -> Any:
-        """Replace the gateway settings; an omitted field is cleared."""
+    def update(self, **settings: Unpack[GatewaySettings]) -> GatewaySettingsView:
+        """Replace the gateway settings; an omitted field is cleared, except
+        ``encrypt_provider_credentials``, which keeps its stored value."""
         return self._c._request("PUT", "/v1/admin/settings", json=settings)
 
 

@@ -1,0 +1,5 @@
+| 模型 | 接口名称 | 接口文档 | 接口功能 |
+| YT-Video-2.0 | SubmitImageToVideoGeneralJob | 提交图生视频通用能力任务 | 图生视频通用能力接口。 |
+|  | DescribeImageToVideoGeneralJob | 查询图生视频通用能力任务 |  |
+| YT-Video-HumanActor | SubmitHumanActorJob | 提交人像驱动任务 | 支持提交音频和图文来生成对应视频，满足动态交互、内容生产等场景需求。 |
+|  | DescribeHumanActorJob | 查询人像驱动任务 |  |

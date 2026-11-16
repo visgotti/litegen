@@ -293,6 +293,19 @@ impl VideoProvider for BedrockVideoProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
+    /// What Ray 2 cannot make, refused before anything is quoted, reserved
+    /// or sent; `generate` asks it first: "duration – (enum) … ("5s", "9s")",
+    /// and "Loop is not supported for keyframes" (a last frame).
+    fn preflight(&self, _model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if extras.r#loop == Some(true) && roles.contains(&"last_frame") {
+            return Err(ProviderError::InvalidRequest("bedrock Ray 2: a loop can't end on a last frame (\"Loop is not supported for keyframes\")".into()));
+        }
+        match extras.duration_seconds.round() as i64 {
+            5 | 9 => Ok(()),
+            other => Err(ProviderError::InvalidRequest(format!("bedrock Ray 2 makes 5 s or 9 s videos, not {other} s"))),
+        }
+    }
+
     /// Submit `POST /async-invoke`, signed for us-west-2 (Ray 2's one Region)
     /// whatever region the credential names.
     async fn generate(
@@ -305,6 +318,9 @@ impl VideoProvider for BedrockVideoProvider {
         let native = Self::resolve_model(&model.id)
             .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "bedrock".into() })?;
         let creds = self.creds()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let s3_uri = self.s3_output_uri(&creds).ok_or_else(|| {
             ProviderError::InvalidRequest(
                 "bedrock video writes its output to your S3 bucket: set `s3_output_uri` (s3://bucket/prefix in us-west-2) on the credential or in the provider's options".into(),
@@ -327,15 +343,8 @@ impl VideoProvider for BedrockVideoProvider {
             };
         }
         let looping = extras.r#loop;
-        if looping == Some(true) && keyframes.contains_key("frame1") {
-            return Err(ProviderError::InvalidRequest("bedrock Ray 2: a loop can't end on a last frame (\"Loop is not supported for keyframes\")".into()));
-        }
-        // "duration – (enum) … ("5s", "9s")".
-        let duration = match extras.duration_seconds.round() as i64 {
-            5 => "5s",
-            9 => "9s",
-            other => return Err(ProviderError::InvalidRequest(format!("bedrock Ray 2 makes 5 s or 9 s videos, not {other} s"))),
-        };
+        // "duration – (enum) … ("5s", "9s")": `preflight` refused any other.
+        let duration = if extras.duration_seconds.round() as i64 == 9 { "9s" } else { "5s" };
         let resolution = extras.resolution.clone().or_else(|| match model.params.get("resolution") {
             Some(crate::capabilities::schema::ParamSpec::String(s)) => s.default.clone(),
             _ => None,

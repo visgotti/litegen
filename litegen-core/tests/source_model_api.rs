@@ -152,6 +152,47 @@ async fn a_base64_source_in_another_container_reaches_a_glb_only_model_as_glb() 
     assert!(src["generation_id"].is_null(), "{src}");
 }
 
+/// A source litegen reads is read under the server's `mesh.draco` settings,
+/// as the converter and delivery read theirs. A base64 source is read the way
+/// a URL's bytes and a stored generation's mesh are. The source is
+/// `mock/draco-3d`'s vendor GLB: the skinned fixture as glTF-Transform's
+/// `draco` writes it, one Draco primitive whose header declares 768 faces.
+/// With Draco off it's refused before anything is billed: 422
+/// `source_format_unsupported`, naming the setting. Under a lowered limit the
+/// refusal names the limit. Under the default config the same source is
+/// animated.
+#[tokio::test]
+async fn a_draco_source_is_read_under_the_servers_draco_settings() {
+    use litegen::db::DatabaseStore;
+    type Tweak = fn(&mut litegen::config::AppConfig);
+    let draco = base64::engine::general_purpose::STANDARD.encode(include_bytes!("../src/providers/model3d/mock_data/skinned.draco.glb"));
+    let body = json!({
+        "model": "mock/animate-3d",
+        "source_model": { "type": "base64", "value": draco, "format": "glb" },
+        "animations": [{ "name": "walk", "preset": "walk" }],
+    });
+    let cases: [(Tweak, &[&str]); 2] = [
+        (|c| c.mesh.draco.enabled = false, &["is Draco-compressed (KHR_draco_mesh_compression)", "mesh.draco.enabled", "LITEGEN__MESH__DRACO__ENABLED"]),
+        (|c| c.mesh.draco.max_faces = 767, &["declares 768 faces, past this reader's limit of 767"]),
+    ];
+    for (tweak, says) in cases {
+        let assets = tempfile::tempdir().unwrap();
+        let (app, db) = harness::app_with(assets.path(), tweak).await;
+        let (status, resp) = post(&app, body.clone()).await;
+        assert_eq!((status, resp["error"]["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("source_format_unsupported")), "{says:?}: {resp}");
+        assert_eq!(resp["error"]["param"], "source_model", "{resp}");
+        let message = resp["error"]["message"].as_str().unwrap_or_default();
+        assert!(says.iter().all(|s| message.contains(s)), "{says:?}: {message}");
+        assert_eq!(db.get_request_logs(1, 10).await.unwrap().0.len(), 0, "{says:?}: nothing ran, nothing billed");
+        assert_eq!(db.count_generations(None).await.unwrap(), 0, "{says:?}");
+    }
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let (status, sub) = post(&app, body).await;
+    assert_eq!(status, StatusCode::OK, "Draco on, the default: {sub}");
+    let done = harness::poll_until_terminal(&app, sub["id"].as_str().unwrap()).await;
+    assert_eq!(done["status"], "completed", "{done}");
+}
+
 // ─── reference_images by generation id (3D doc §2 rule 2) ────────────────────
 
 async fn post_to(app: &axum::Router, path: &str, body: Value) -> (StatusCode, Value) {

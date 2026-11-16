@@ -136,4 +136,61 @@ models:
         }).unwrap();
         assert_eq!(served["derivable_values"], serde_json::json!(["glb"]));
     }
+
+    /// Keeping nothing, litegen converts nothing, so a request is promised
+    /// only what the model's one vendor job returns, asked as its adapter
+    /// asks: each shipped 3D row that makes more than one container itself,
+    /// request shape by request shape.
+    #[test]
+    fn keeping_nothing_promises_only_what_one_vendor_job_returns() {
+        use crate::types::Model3dFormatSource;
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = CapabilityRegistry::from_dir(&dir).unwrap();
+        let glb_source = Some(Model3dFormatSource::Glb);
+        let cases: &[(&str, &[&str], Option<Model3dFormatSource>, bool)] = &[
+            // Tripo makes one container per job: its fbx when one is promised, else glb.
+            ("tripo/rig", &["glb"], None, true),
+            ("tripo/rig", &["fbx"], None, true),
+            ("tripo/rig", &["glb", "fbx"], None, false),
+            // Its retarget is always asked for glb.
+            ("tripo/animate", &["glb"], None, true),
+            ("tripo/animate", &["fbx"], None, false),
+            // Meshy's rig and animation return a glb and an fbx at once; with
+            // `format_source: glb` litegen takes the glb alone.
+            ("meshy/rig", &["glb", "fbx"], None, true),
+            ("meshy/rig", &["fbx"], None, true),
+            ("meshy/rig", &["glb"], glb_source, true),
+            ("meshy/rig", &["fbx"], glb_source, false),
+            ("meshy/rig", &["glb", "fbx"], glb_source, false),
+            ("meshy/animate", &["glb", "fbx"], None, true),
+            ("meshy/animate", &["fbx"], glb_source, false),
+            ("fal/meshy-rig", &["glb", "fbx"], None, true),
+            ("fal/meshy-rig", &["fbx"], glb_source, false),
+            // Rodin makes the one container it is asked for: its own fbx or
+            // usdz, else glb, from which litegen would convert obj or stl.
+            ("fal/hyper3d-rodin", &["glb"], None, true),
+            ("fal/hyper3d-rodin", &["fbx"], None, true),
+            ("fal/hyper3d-rodin", &["usdz"], None, true),
+            ("fal/hyper3d-rodin", &["obj"], None, false),
+            ("fal/hyper3d-rodin", &["stl"], None, false),
+            ("fal/hyper3d-rodin", &["glb", "fbx"], None, false),
+            ("fal/hyper3d-rodin", &["fbx", "usdz"], None, false),
+            ("fal/hyper3d-rodin", &["fbx"], glb_source, false),
+            // A glb-only vendor: its glb, and nothing it would have to convert.
+            ("fal/trellis", &["glb"], None, true),
+            ("fal/trellis", &["obj"], None, false),
+        ];
+        let wrong: Vec<String> = cases
+            .iter()
+            .filter_map(|&(id, formats, source, kept_nothing_of)| {
+                let m = catalog.get(id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+                let requested: Vec<String> = formats.iter().map(|f| f.to_string()).collect();
+                let refusal = m.keep_nothing_refusal(&requested, source);
+                (refusal.is_none() != kept_nothing_of).then(|| format!("{id} {formats:?} {source:?}: {refusal:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
 }

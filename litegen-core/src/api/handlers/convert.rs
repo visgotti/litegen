@@ -215,19 +215,21 @@ pub async fn list_model3d_convert_formats() -> Json<Model3dConvertFormats> {
     tag = "Utilities"
 )]
 pub async fn convert_model3d(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(pairs): Query<Vec<(String, String)>>,
     body: Body,
 ) -> Response {
-    convert(&pairs, body).await
+    convert(&pairs, body, state.router.config.mesh.draco.options()).await
 }
 
-async fn convert(pairs: &[(String, String)], body: Body) -> Response {
-    convert_in(conversion_slots(), pairs, body).await
+/// Convert `body` as `pairs` ask, reading a Draco primitive as `draco` says
+/// (the server's `mesh.draco` settings).
+async fn convert(pairs: &[(String, String)], body: Body, draco: mesh::DracoOptions) -> Response {
+    convert_in(conversion_slots(), pairs, body, draco).await
 }
 
 /// [`convert`], taking its slot from `slots`.
-async fn convert_in(slots: Arc<Semaphore>, pairs: &[(String, String)], body: Body) -> Response {
+async fn convert_in(slots: Arc<Semaphore>, pairs: &[(String, String)], body: Body, draco: mesh::DracoOptions) -> Response {
     // Cheap checks first, so a bad query never costs a slot or an upload.
     let query = match parse_query(pairs) {
         Ok(q) => q,
@@ -272,7 +274,7 @@ async fn convert_in(slots: Arc<Semaphore>, pairs: &[(String, String)], body: Bod
     // reference (OBJ's .mtl, Collada's images) are embedded or reported as
     // losses instead of silently missing; as a zip, they travel inside it.
     let result = tokio::task::spawn_blocking(move || {
-        let converted = convert_bytes(&upload.bytes, &query);
+        let converted = convert_bytes(&upload.bytes, &query, draco);
         // The upload and its share of the budget go now, not with the reply.
         drop(upload);
         (converted, permit)
@@ -413,14 +415,14 @@ fn slot_held_body(file: Vec<u8>, permit: OwnedSemaphorePermit, limit: std::time:
 /// `ktx2_textures=keep` a glb or gltf output keeps its KTX2 images, and so
 /// requires `KHR_texture_basisu` (WebP is still re-encoded). With
 /// [`Packaging::Zip`] the scene is written as a package, and the package's one
-/// file is its zip.
-fn convert_bytes(bytes: &[u8], query: &ConvertQuery) -> Result<(mesh::SceneWrite, Vec<String>), MeshError> {
+/// file is its zip. A Draco primitive is read as `draco` says.
+fn convert_bytes(bytes: &[u8], query: &ConvertQuery, draco: mesh::DracoOptions) -> Result<(mesh::SceneWrite, Vec<String>), MeshError> {
     let ConvertQuery { from, to, read_as, write_as, fbx_colors, fbx_light_units, usd_light_units, dae_morphs, usdz_root, usd_clips, package, ktx2_textures } = *query;
     let read = mesh::read_scene_with(
         bytes,
         from,
         &mesh::NoSidecars,
-        mesh::ReadOptions { fbx_color_space: fbx_colors, fbx_light_units, usd_light_units },
+        mesh::ReadOptions { fbx_color_space: fbx_colors, fbx_light_units, usd_light_units, draco },
     )?;
     let warnings = read.warnings;
     let mut scene = read.scene;
@@ -848,14 +850,14 @@ mod tests {
         let slots = conversion_slots();
         let free = slots.available_permits();
 
-        let resp = convert(&stl_to_obj(), Body::from(TRIANGLE_STL)).await;
+        let resp = convert(&stl_to_obj(), Body::from(TRIANGLE_STL), mesh::DracoOptions::default()).await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(slots.available_permits(), free - 1, "a file not yet sent still holds its slot");
         let obj = within_5s(axum::body::to_bytes(resp.into_body(), usize::MAX)).await.unwrap();
         assert!(String::from_utf8_lossy(&obj).contains("\nf "), "the file arrives whole");
         assert!(settles(|| slots.available_permits() == free).await, "a sent file frees its slot");
 
-        let resp = convert(&stl_to_obj(), Body::from(TRIANGLE_STL)).await;
+        let resp = convert(&stl_to_obj(), Body::from(TRIANGLE_STL), mesh::DracoOptions::default()).await;
         assert_eq!(slots.available_permits(), free - 1);
         drop(resp);
         assert!(settles(|| slots.available_permits() == free).await, "a client that hangs up frees its slot");
@@ -901,10 +903,10 @@ mod tests {
         });
         let stalled = {
             let (slots, query) = (slots.clone(), query());
-            tokio::spawn(async move { convert_in(slots, &query, Body::from_stream(first.chain(futures::stream::pending()))).await })
+            tokio::spawn(async move { convert_in(slots, &query, Body::from_stream(first.chain(futures::stream::pending())), mesh::DracoOptions::default()).await })
         };
         polled_rx.await.unwrap();
-        let resp = within_5s(convert_in(slots.clone(), &query(), Body::from(glb))).await;
+        let resp = within_5s(convert_in(slots.clone(), &query(), Body::from(glb), mesh::DracoOptions::default())).await;
         stalled.abort();
         assert_eq!(resp.status(), StatusCode::OK, "a stalled upload held the only conversion slot");
     }
@@ -923,7 +925,7 @@ mod tests {
         };
 
         let slots = Arc::new(Semaphore::new(1));
-        let resp = convert_in(slots.clone(), &zip_query(), Body::from(glb.clone())).await;
+        let resp = convert_in(slots.clone(), &zip_query(), Body::from(glb.clone()), mesh::DracoOptions::default()).await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()[header::CONTENT_TYPE], "application/zip");
         assert_eq!(slots.available_permits(), 0, "a zip not yet sent holds its slot");
@@ -932,7 +934,7 @@ mod tests {
         assert!(mesh::zip::Archive::parse(&zip).is_ok(), "the zip arrives whole");
         assert!(settles(|| slots.available_permits() == 1).await, "a sent zip frees its slot");
 
-        let resp = convert_in(slots.clone(), &zip_query(), Body::from(glb)).await;
+        let resp = convert_in(slots.clone(), &zip_query(), Body::from(glb), mesh::DracoOptions::default()).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let len: usize = resp.headers()[header::CONTENT_LENGTH].to_str().unwrap().parse().unwrap();
         // Nobody reads. With the clock paused, sleeping lets the deadline pass.
@@ -1110,7 +1112,7 @@ mod tests {
             package: Packaging::File,
             ktx2_textures: Ktx2Textures::Png,
         };
-        let (written, _) = convert_bytes(&glb, &query).expect("converts");
+        let (written, _) = convert_bytes(&glb, &query, mesh::DracoOptions::default()).expect("converts");
         let lost: Vec<&mesh::Loss> = written.losses.iter().filter(|l| l.kind == mesh::LossKind::ImageFormats).collect();
         assert_eq!(lost.len(), 1, "{:?}", written.losses);
         assert_eq!(lost[0].what, format!("texture {name} (KTX2)"));
@@ -1140,7 +1142,7 @@ mod tests {
                 package: Packaging::File,
                 ktx2_textures,
             };
-            convert_bytes(glb, &query).expect("converts")
+            convert_bytes(glb, &query, mesh::DracoOptions::default()).expect("converts")
         };
         let images = |written: &mesh::SceneWrite, to: MeshFormat| {
             let scene = mesh::read_scene(&written.package.files[0].bytes, to, &mesh::NoSidecars).unwrap().scene;

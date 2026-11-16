@@ -5,7 +5,7 @@ use argon2::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum PasswordError {
-    #[error("password must be at least 12 characters")]
+    #[error("password must be at least {} characters", MIN_PASSWORD_LEN)]
     TooShort,
     #[error("argon2 hash error: {0}")]
     Hash(String),
@@ -13,7 +13,15 @@ pub enum PasswordError {
     Verify(String),
 }
 
+/// The shortest password signup, invitations, password changes and resets
+/// accept; served as `GET /v1/auth/config`'s `password_min_length`.
 pub const MIN_PASSWORD_LEN: usize = 12;
+
+/// The 400 `password_too_short` message, built from [`MIN_PASSWORD_LEN`] so
+/// the two can't drift.
+pub fn too_short_message() -> String {
+    format!("Password must be at least {MIN_PASSWORD_LEN} characters")
+}
 
 fn params() -> Params {
     Params::new(65536, 3, 1, None).expect("argon2 params")

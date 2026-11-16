@@ -45,9 +45,10 @@ Items 1, 2, 3, 4, 5, 8, 9, 10, 11 and 12 are done and hold no files (item 4 clos
 tree 6fbad32; item 10 closed 2026-11-08, tree fe679b6; item 3 closed 2026-11-09, tree
 e8270b9; item 8 closed 2026-11-09, tree 7e02650).
 Item 2 leaves one follow-up, which any session can take: the rest of Task 4's Draco limits
-(B41). That's a faces-per-point pre-check (B39), a RED test for the decoded-bytes ceiling,
-the ceiling's final numbers in draco.rs's module doc, and the fix round's scoped
-re-review. Its plan's status block says what's in and what's open.
+(B41). That's a RED test for the decoded-bytes ceiling, the ceiling's final numbers in
+draco.rs's module doc, and the fix round's scoped re-review. The faces-per-point
+pre-check (B39) was done on 2026-11-16, with every Draco limit made a server setting.
+Its plan's status block says what's in and what's open.
 
 **Item 3 is done (litegen-fc, 2026-11-09).** Every production path transcodes KTX2 to PNG
 by default, and the opt-in `ktx2_textures=keep` keeps it in glb and gltf. Two parts of

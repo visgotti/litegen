@@ -6,12 +6,14 @@
 
 # Video generation · Output
 | Model ID | Format | Resolution | Frame rate | Duration |
-| dreamina-seedance-2-0-mini-260615 | .mp4 | 480p (8-bit) (8-bit) 720p (8-bit) (8-bit) | 24 fps | 4-15 seconds |
+| dreamina-seedance-2-0-mini-260615 | .mp4 | 480p (8-bit) 720p (8-bit) | 24 fps | 4-15 seconds |
 | seedance-1-0-pro-fast-251015 | .mp4 | 480p 720p 1080p | 24 fps | 2-12 seconds |
 | seedance-1-0-pro-250528 | .mp4 | 480p 720p 1080p | 24 fps | 2-12 seconds |
 
 # Image generation · Capabilities
-| Model ID | Layer decomposition | Single-image generation | Batch-image generation |
-| seedream-5-0-260128 Also supports seedream-5-0-lite-260128 | No | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image | * From text * From one reference image * From multiple reference images |
-| seedream-4-5-251128 | No | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image | * From text * From one reference image * From multiple reference images |
-| seedream-4-0-250828 | No | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image | * From text * From one reference image * From multiple reference images |
+| Model ID | Interactive editing | Layer decomposition | Single-image generation | Batch-image generation |
+| dola-seedream-5-0-flash-260915 | Yes | 1 base image + up to 16 layers | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image * Native RGBA images are supported only for single-reference image-to-image. | No |
+| dola-seedream-5-0-pro-260628 | Yes | 1 base image + up to 16 layers | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image * Native RGBA images are supported only for single-reference image-to-image. | No |
+| seedream-5-0-260128 Also supports seedream-5-0-lite-260128 | No | No | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image * Web search supported. | * Text-to-multiple images * Single-reference image-to-multiple images * Multi-reference image-to-multiple images |
+| seedream-4-5-251128 | No | No | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image | * Text-to-multiple images * Single-reference image-to-multiple images * Multi-reference image-to-multiple images |
+| seedream-4-0-250828 | No | No | * Text-to-image * Single-reference image-to-image * Multi-reference image-to-image | * Text-to-multiple images * Single-reference image-to-multiple images * Multi-reference image-to-multiple images |

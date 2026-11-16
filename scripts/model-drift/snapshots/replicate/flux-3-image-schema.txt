@@ -1,0 +1,99 @@
+# black-forest-labs/flux-3-image
+served by POST /v1/models/black-forest-labs/flux-3-image/predictions (versionless): true
+disabled for predictions: false
+
+# price
+$0.041 per output image [image_output_count] when target resolution equals 768sq
+$0.048 per output image [image_output_count] when target resolution equals 1k
+$0.07 per output image [image_output_count] when target resolution equals 1.5k
+$0.10 per output image [image_output_count] when target resolution equals 2k
+$0.607 per output image [image_output_count] when target resolution equals 4k
+
+# input schema of the served version
+{
+  "POST /predictions (application/json)": {
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "input": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "21:9",
+              "2:1",
+              "16:9",
+              "3:2",
+              "7:5",
+              "4:3",
+              "5:4",
+              "1:1",
+              "4:5",
+              "3:4",
+              "5:7",
+              "2:3",
+              "9:16",
+              "1:2",
+              "9:21"
+            ],
+            "type": "string"
+          },
+          "grounding": {
+            "default": true,
+            "type": "boolean"
+          },
+          "images": {
+            "default": [],
+            "items": {
+              "format": "uri",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "output_format": {
+            "default": "webp",
+            "enum": [
+              "webp",
+              "jpg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "output_quality": {
+            "default": 80,
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "resolution": {
+            "default": "1k",
+            "enum": [
+              "768sq",
+              "1k",
+              "1.5k",
+              "2k",
+              "4k"
+            ],
+            "type": "string"
+          },
+          "safety_tolerance": {
+            "default": 2,
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "object"
+  }
+}

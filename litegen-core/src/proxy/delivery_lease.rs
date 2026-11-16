@@ -1,7 +1,8 @@
 //! Who delivers a finished 3D job, or keeps a finished video: a slot of this
-//! process's delivery pool, then a lease on the generation's row that every
-//! process respects, so the client's poll and the poller never deliver the
-//! same job twice. Server state (the database); the delivery itself is
+//! process's delivery pool (none for a job that only has its links checked),
+//! then a lease on the generation's row that every process respects, so the
+//! client's poll and the poller never deliver the same job twice. Server
+//! state (the database); the delivery itself is
 //! model3d_deliver.rs (moved from there,
 //! docs/superpowers/specs/2026-11-07-engine-boundary-design.md D3), and
 //! keeping a video is `proxy::router::rehost_video`.
@@ -45,14 +46,16 @@ pub fn video_delivery_slots() -> std::sync::Arc<tokio::sync::Semaphore> {
 }
 
 /// Which observer is claiming a delivery: the name its lease is recorded
-/// under, and whether it waits for a slot.
+/// under, and how long it waits for a slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Observer {
     /// The client's `GET /v1/models3d/{id}`. It waits [`CLIENT_SLOT_WAIT`] at
     /// most for a slot, then stands aside: a client polls again, and the
     /// poller delivers a job no client could.
     Client,
-    /// The background poller, which waits its turn.
+    /// The background poller. It waits [`POLLER_SLOT_WAIT`] at most for a
+    /// slot, then stands aside this tick: the job stays in flight, and the
+    /// next tick asks again.
     Poller,
 }
 
@@ -61,6 +64,13 @@ pub enum Observer {
 /// only briefly busy still answers the poll that saw the job finish.
 pub const CLIENT_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long the poller waits for a delivery slot before it leaves the job
+/// for its next tick: as long as a vendor has to answer a status check
+/// (`poller::STATUS_ANSWER_BUDGET`). A row waiting for a delivery slot holds
+/// one of the tick's poll slots, so without a limit the finished rows behind
+/// a few slow deliveries could hold all of them, for as long as those ran.
+pub const POLLER_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl Observer {
     fn name(self) -> &'static str {
         match self {
@@ -68,10 +78,19 @@ impl Observer {
             Observer::Poller => "poller",
         }
     }
+
+    /// How long this observer waits for a delivery slot.
+    fn slot_wait(self) -> std::time::Duration {
+        match self {
+            Observer::Client => CLIENT_SLOT_WAIT,
+            Observer::Poller => POLLER_SLOT_WAIT,
+        }
+    }
 }
 
-/// The right to deliver one finished job: one of this process's
-/// [`delivery_slots`] and the row's delivery lease.
+/// The right to deliver one finished job: the row's delivery lease and,
+/// unless the job only has its links checked ([`DeliveryGate::links_only`]),
+/// one of this process's [`delivery_slots`].
 ///
 /// Hold it until the observation's outcome is written, then drop it.
 /// Dropping it frees the slot and, in the background, releases the lease:
@@ -87,7 +106,9 @@ pub struct DeliveryClaim {
     /// so two observers in one process exclude each other too. `None` when no
     /// lease was taken (the store could not be asked).
     holder: Option<String>,
-    _slot: tokio::sync::OwnedSemaphorePermit,
+    /// The delivery slot it holds; `None` for a check of links, which holds
+    /// no bytes.
+    _slot: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl Drop for DeliveryClaim {
@@ -138,9 +159,10 @@ impl DeliveryClaim {
 }
 
 /// Claim the delivery of generation `id`'s finished job for `observer`.
-/// `None` when another observer has it, or (for the client) when every
-/// delivery slot stays busy past [`CLIENT_SLOT_WAIT`]: report [`stand_aside`](super::model3d_deliver::stand_aside)
-/// instead of delivering.
+/// `None` when another observer has it, or when every delivery slot stays
+/// busy past the observer's wait ([`CLIENT_SLOT_WAIT`], [`POLLER_SLOT_WAIT`]):
+/// report [`stand_aside`](super::model3d_deliver::stand_aside) instead of
+/// delivering.
 ///
 /// A store that cannot be asked does not stop a delivery: the terminal write
 /// is guarded either way, so the worst case is the duplicate work the lease
@@ -150,7 +172,7 @@ pub async fn claim_delivery(
     id: &str,
     observer: Observer,
 ) -> Option<DeliveryClaim> {
-    claim_from(&delivery_slots(), CLIENT_SLOT_WAIT, db, id, observer).await
+    claim_from(&delivery_slots(), observer.slot_wait(), db, id, observer).await
 }
 
 /// Claim the keeping of generation `id`'s finished video for `observer`,
@@ -161,10 +183,10 @@ pub async fn claim_video_delivery(
     id: &str,
     observer: Observer,
 ) -> Option<DeliveryClaim> {
-    claim_from(&video_delivery_slots(), CLIENT_SLOT_WAIT, db, id, observer).await
+    claim_from(&video_delivery_slots(), observer.slot_wait(), db, id, observer).await
 }
 
-/// [`claim_delivery`] from `slots`, a client waiting at most `wait` for one.
+/// [`claim_delivery`] from `slots`, waiting at most `wait` for one.
 async fn claim_from(
     slots: &std::sync::Arc<tokio::sync::Semaphore>,
     wait: std::time::Duration,
@@ -172,10 +194,18 @@ async fn claim_from(
     id: &str,
     observer: Observer,
 ) -> Option<DeliveryClaim> {
-    let slot = match observer {
-        Observer::Client => tokio::time::timeout(wait, slots.clone().acquire_owned()).await.ok()?.ok()?,
-        Observer::Poller => slots.clone().acquire_owned().await.ok()?,
-    };
+    let slot = tokio::time::timeout(wait, slots.clone().acquire_owned()).await.ok()?.ok()?;
+    lease(db, id, observer, Some(slot)).await
+}
+
+/// The delivery's lease for `observer`, the claim holding `slot` if it took
+/// one; `None` when another observer holds the lease.
+async fn lease(
+    db: &std::sync::Arc<dyn crate::db::DatabaseStore>,
+    id: &str,
+    observer: Observer,
+    slot: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Option<DeliveryClaim> {
     let holder = format!("{}:{}", observer.name(), uuid::Uuid::new_v4());
     match db.lease_generation_work(id, DELIVERY_WORK, &holder, DELIVERY_LEASE).await {
         Ok(true) => Some(DeliveryClaim { db: db.clone(), id: id.to_string(), holder: Some(holder), _slot: slot }),
@@ -209,20 +239,33 @@ pub struct DeliveryGate {
     observer: Observer,
     slots: std::sync::Arc<tokio::sync::Semaphore>,
     wait: std::time::Duration,
+    /// The job keeps nothing (`keep_outputs: false`): see [`Self::links_only`].
+    links_only: bool,
     state: tokio::sync::Mutex<GateState>,
 }
 
 impl DeliveryGate {
+    /// A gate for a job that keeps nothing when `keeps_nothing`: it takes the
+    /// delivery's lease as any gate does, so one observer still writes the
+    /// outcome, but answers [`Fetch::LinksOnly`](crate::providers::Fetch::LinksOnly),
+    /// so the adapter checks each file's link instead of downloading it. It
+    /// takes no delivery slot: the slots bound the bytes and bandwidth of
+    /// real deliveries, and a check of links holds no bytes.
+    pub fn links_only(mut self, keeps_nothing: bool) -> Self {
+        self.links_only = keeps_nothing;
+        self
+    }
+
     /// The gate for generation `id`'s delivery by `observer`, from this
     /// process's [`delivery_slots`].
     pub fn new(db: &std::sync::Arc<dyn crate::db::DatabaseStore>, id: &str, observer: Observer) -> Self {
-        Self::with_slots(delivery_slots(), CLIENT_SLOT_WAIT, db, id, observer)
+        Self::with_slots(delivery_slots(), observer.slot_wait(), db, id, observer)
     }
 
     /// The gate for keeping generation `id`'s finished video, from the
     /// [`video_delivery_slots`].
     pub fn for_video(db: &std::sync::Arc<dyn crate::db::DatabaseStore>, id: &str, observer: Observer) -> Self {
-        Self::with_slots(video_delivery_slots(), CLIENT_SLOT_WAIT, db, id, observer)
+        Self::with_slots(video_delivery_slots(), observer.slot_wait(), db, id, observer)
     }
 
     fn with_slots(
@@ -232,7 +275,7 @@ impl DeliveryGate {
         id: &str,
         observer: Observer,
     ) -> Self {
-        Self { db: db.clone(), id: id.to_string(), observer, slots, wait, state: tokio::sync::Mutex::new(GateState::NotAsked) }
+        Self { db: db.clone(), id: id.to_string(), observer, slots, wait, links_only: false, state: tokio::sync::Mutex::new(GateState::NotAsked) }
     }
 
     /// What the gate decided, with the claim when it took one.
@@ -245,17 +288,26 @@ impl DeliveryGate {
 impl crate::providers::FetchGate for DeliveryGate {
     async fn ask(&self) -> crate::providers::Fetch {
         use crate::providers::Fetch;
+        // This observer delivers: a job that keeps nothing has its links
+        // checked, one that keeps its files has them downloaded.
+        let deliver = |waited| if self.links_only { Fetch::LinksOnly { waited } } else { Fetch::Go { waited } };
         let mut state = self.state.lock().await;
         match &*state {
-            GateState::Claimed(_) => return Fetch::Go { waited: std::time::Duration::ZERO },
+            GateState::Claimed(_) => return deliver(std::time::Duration::ZERO),
             GateState::Refused => return Fetch::StandAside,
             GateState::NotAsked => {}
         }
         let started = tokio::time::Instant::now();
-        match claim_from(&self.slots, self.wait, &self.db, &self.id, self.observer).await {
+        let claim = if self.links_only {
+            // A check of links holds no bytes: the lease alone, no slot.
+            lease(&self.db, &self.id, self.observer, None).await
+        } else {
+            claim_from(&self.slots, self.wait, &self.db, &self.id, self.observer).await
+        };
+        match claim {
             Some(claim) => {
                 *state = GateState::Claimed(claim);
-                Fetch::Go { waited: started.elapsed() }
+                deliver(started.elapsed())
             }
             None => {
                 *state = GateState::Refused;
@@ -302,6 +354,32 @@ mod tests {
         assert_eq!(client.ask().await, Fetch::StandAside, "every slot busy past the client's wait");
     }
 
+    /// A job that keeps nothing hands out the vendor's own links, so its gate
+    /// tells the adapter to check them instead of downloading the files. It
+    /// claims the delivery all the same, so one observer writes the outcome.
+    #[tokio::test]
+    async fn a_keep_nothing_gate_answers_links_only_and_still_claims() {
+        use crate::providers::{Fetch, FetchGate};
+        let db: std::sync::Arc<dyn crate::db::DatabaseStore> =
+            std::sync::Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        for id in ["g-links", "g-keeps"] {
+            db.insert_generation(id, None, "tripo/rig", "tripo", "model3d", Some("j"), 0.0, None, None).await.unwrap();
+        }
+        let slots = || std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let wait = std::time::Duration::from_millis(100);
+
+        let gate = DeliveryGate::with_slots(slots(), wait, &db, "g-links", Observer::Client).links_only(true);
+        let first = gate.ask().await;
+        assert!(matches!(first, Fetch::LinksOnly { .. }), "keeping nothing, the links are checked: {first:?}");
+        assert!(matches!(gate.ask().await, Fetch::LinksOnly { .. }), "asked again: the same answer");
+        let other = DeliveryGate::with_slots(slots(), wait, &db, "g-links", Observer::Poller).links_only(true);
+        assert_eq!(other.ask().await, Fetch::StandAside, "the links-only gate took the delivery's lease");
+        assert!(matches!(gate.into_outcome(), GateState::Claimed(_)), "the claim is handed back");
+
+        let keeps = DeliveryGate::with_slots(slots(), wait, &db, "g-keeps", Observer::Poller).links_only(false);
+        assert!(matches!(keeps.ask().await, Fetch::Go { .. }), "a job that keeps its files downloads them");
+    }
+
     /// A client's poll that finds every delivery slot busy waits a moment for
     /// one rather than answering `processing` at once, and stands aside only
     /// when they stay busy. A slot pool of its own: the process-wide one is
@@ -327,6 +405,57 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(claim_from(&slots, short, &db, "g-busy", Observer::Client).await.is_none(), "slots busy past the wait: stand aside");
         assert!(started.elapsed() >= short);
+    }
+
+    /// Follow-ups 2026-11-15: the poller waits for a busy delivery slot at
+    /// most its own wait too, then stands aside this tick, taking no lease:
+    /// the row stays in flight and the next tick asks again. Waiting without
+    /// a limit, finished rows behind a few slow deliveries held the tick's
+    /// poll slots, up to all 8 of them, for as long as those deliveries ran.
+    #[tokio::test]
+    async fn the_poller_stands_aside_when_every_delivery_slot_stays_busy_past_its_wait() {
+        let db: std::sync::Arc<dyn crate::db::DatabaseStore> =
+            std::sync::Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        db.insert_generation("g-poller-busy", None, "mock/mesh-3d", "mock", "model3d", Some("j"), 0.0, None, None).await.unwrap();
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let _held = slots.clone().acquire_owned().await.unwrap();
+
+        let short = std::time::Duration::from_millis(100);
+        let claim = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            claim_from(&slots, short, &db, "g-poller-busy", Observer::Poller),
+        )
+        .await;
+        assert!(claim.is_ok(), "the poller still waited for a delivery slot after 10 s");
+        assert!(claim.is_ok_and(|c| c.is_none()), "slots busy past the poller's wait: it stands aside");
+        assert!(
+            db.lease_generation_work("g-poller-busy", DELIVERY_WORK, "client:another", DELIVERY_LEASE).await.unwrap(),
+            "a poller that stood aside holds the delivery's lease"
+        );
+    }
+
+    /// Follow-ups 2026-11-15 (k3d-links): a job that keeps nothing has its
+    /// links checked, which holds no bytes, so its gate takes the delivery's
+    /// lease and no slot. It never waits behind the real deliveries, and
+    /// holds up none of them. The lease still lets one observer deliver.
+    #[tokio::test]
+    async fn a_keep_nothing_gate_takes_no_delivery_slot() {
+        use crate::providers::{Fetch, FetchGate};
+        let db: std::sync::Arc<dyn crate::db::DatabaseStore> =
+            std::sync::Arc::new(crate::db::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        db.insert_generation("g-links-busy", None, "tripo/rig", "tripo", "model3d", Some("j"), 0.0, None, None).await.unwrap();
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let wait = std::time::Duration::from_millis(100);
+        let held = slots.clone().acquire_owned().await.unwrap();
+
+        let gate = DeliveryGate::with_slots(slots.clone(), wait, &db, "g-links-busy", Observer::Client).links_only(true);
+        let answer = gate.ask().await;
+        assert!(matches!(answer, Fetch::LinksOnly { .. }), "a links-only check waited for a busy delivery slot: {answer:?}");
+        drop(held);
+        assert_eq!(slots.available_permits(), 1, "the links-only claim holds a delivery slot");
+        let other = DeliveryGate::with_slots(slots.clone(), wait, &db, "g-links-busy", Observer::Poller).links_only(true);
+        assert_eq!(other.ask().await, Fetch::StandAside, "two observers checked one job's links");
+        assert!(matches!(gate.into_outcome(), GateState::Claimed(_)), "the claim is handed back");
     }
 
     /// Payloads review #1: a keep renews its delivery lease as it starts.

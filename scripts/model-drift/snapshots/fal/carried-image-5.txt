@@ -1,0 +1,1269 @@
+## blackforestlabs/flux-3/edit-image — active image-to-image (spec written for fal-ai/flux-3-image/edit)
+{
+  "POST /fal-ai/flux-3-image/edit (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "3:2",
+          "7:5",
+          "4:3",
+          "5:4",
+          "1:1",
+          "4:5",
+          "3:4",
+          "5:7",
+          "2:3",
+          "9:16",
+          "1:2"
+        ],
+        "type": "string"
+      },
+      "enable_prompt_expansion": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image_urls": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10,
+        "minItems": 1,
+        "type": "array"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "resolution": {
+        "default": "1k",
+        "enum": [
+          "768sq",
+          "1k",
+          "1.5k",
+          "2k",
+          "4k"
+        ],
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 4,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      },
+      "version": {
+        "const": "latest",
+        "default": "latest",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "image_urls"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/klein/base/edit-image/lora — active image-to-image (spec written for fal-ai/flux-3-image-klein-cpu/base/edit-image/lora)
+{
+  "POST /fal-ai/flux-3-image-klein-cpu/base/edit-image/lora (application/json)": {
+    "properties": {
+      "bounding_boxes": {
+        "anyOf": [
+          {
+            "items": {
+              "properties": {
+                "box": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "x_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "x_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "x_min",
+                        "y_min",
+                        "x_max",
+                        "y_max"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "description": {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "maxLength": 64,
+                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source_box": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "x_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "x_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "x_min",
+                        "y_min",
+                        "x_max",
+                        "y_max"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source_image_index": {
+                  "anyOf": [
+                    {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "target_box": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "x_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "x_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "x_min",
+                        "y_min",
+                        "x_max",
+                        "y_max"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "description"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "enable_prompt_expansion": {
+        "default": true,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 3.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "image_urls": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10,
+        "minItems": 1,
+        "type": "array"
+      },
+      "loras": {
+        "default": [],
+        "items": {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "scale": {
+              "default": 1,
+              "maximum": 4,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "maxItems": 3,
+        "type": "array"
+      },
+      "negative_prompt": {
+        "default": "",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 50,
+        "maximum": 50,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt",
+      "image_urls"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/klein/base/text-to-image/lora — active text-to-image (spec written for fal-ai/flux-3-image-klein-cpu/base/text-to-image/lora)
+{
+  "POST /fal-ai/flux-3-image-klein-cpu/base/text-to-image/lora (application/json)": {
+    "properties": {
+      "bounding_boxes": {
+        "anyOf": [
+          {
+            "items": {
+              "properties": {
+                "box": {
+                  "properties": {
+                    "x_max": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "x_min": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "y_max": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "y_min": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "x_min",
+                    "y_min",
+                    "x_max",
+                    "y_max"
+                  ],
+                  "type": "object"
+                },
+                "description": {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "maxLength": 64,
+                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "description",
+                "box"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "enable_prompt_expansion": {
+        "default": true,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 3.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "loras": {
+        "default": [],
+        "items": {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "scale": {
+              "default": 1,
+              "maximum": 4,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "maxItems": 3,
+        "type": "array"
+      },
+      "negative_prompt": {
+        "default": "",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 50,
+        "maximum": 50,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/klein/edit-image — active image-to-image (spec written for fal-ai/flux-3-image-klein-cpu/edit-image)
+{
+  "POST /fal-ai/flux-3-image-klein-cpu/edit-image (application/json)": {
+    "properties": {
+      "bounding_boxes": {
+        "anyOf": [
+          {
+            "items": {
+              "properties": {
+                "box": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "x_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "x_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "x_min",
+                        "y_min",
+                        "x_max",
+                        "y_max"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "description": {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "maxLength": 64,
+                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source_box": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "x_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "x_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "x_min",
+                        "y_min",
+                        "x_max",
+                        "y_max"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source_image_index": {
+                  "anyOf": [
+                    {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "target_box": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "x_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "x_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_max": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "y_min": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "x_min",
+                        "y_min",
+                        "x_max",
+                        "y_max"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "description"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "enable_prompt_expansion": {
+        "default": true,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "image_urls": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10,
+        "minItems": 1,
+        "type": "array"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt",
+      "image_urls"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/klein/text-to-image — active text-to-image (spec written for fal-ai/flux-3-image-klein-cpu/text-to-image)
+{
+  "POST /fal-ai/flux-3-image-klein-cpu/text-to-image (application/json)": {
+    "properties": {
+      "bounding_boxes": {
+        "anyOf": [
+          {
+            "items": {
+              "properties": {
+                "box": {
+                  "properties": {
+                    "x_max": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "x_min": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "y_max": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "y_min": {
+                      "maximum": 1,
+                      "minimum": 0,
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "x_min",
+                    "y_min",
+                    "x_max",
+                    "y_max"
+                  ],
+                  "type": "object"
+                },
+                "description": {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "maxLength": 64,
+                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "description",
+                "box"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "enable_prompt_expansion": {
+        "default": true,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/text-to-image — active text-to-image (spec written for fal-ai/flux-3-image)
+{
+  "POST /fal-ai/flux-3-image (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "3:2",
+          "7:5",
+          "4:3",
+          "5:4",
+          "1:1",
+          "4:5",
+          "3:4",
+          "5:7",
+          "2:3",
+          "9:16",
+          "1:2"
+        ],
+        "type": "string"
+      },
+      "enable_prompt_expansion": {
+        "default": false,
+        "type": "boolean"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "resolution": {
+        "default": "1k",
+        "enum": [
+          "768sq",
+          "1k",
+          "1.5k",
+          "2k",
+          "4k"
+        ],
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 4,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      },
+      "version": {
+        "const": "latest",
+        "default": "latest",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux-2/klein/9b/base — active text-to-image (spec written for fal-ai/flux-2-klein/9b/base)
+{
+  "POST /fal-ai/flux-2-klein/9b/base (application/json)": {
+    "properties": {
+      "acceleration": {
+        "default": "regular",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
+        "type": "string"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "negative_prompt": {
+        "default": "",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux-2/klein/9b/base/edit — active image-to-image (spec written for fal-ai/flux-2-klein/9b/base/edit)
+{
+  "POST /fal-ai/flux-2-klein/9b/base/edit (application/json)": {
+    "properties": {
+      "acceleration": {
+        "default": "regular",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
+        "type": "string"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "image_urls": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "negative_prompt": {
+        "default": "",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt",
+      "image_urls"
+    ],
+    "type": "object"
+  }
+}

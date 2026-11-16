@@ -1,0 +1,71 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值 | 支持能力 | 提示词上限 | 分辨率 |
+| Kling-Image-v3 | kling-image-v3 | 文生图 / 图生图（单图参考） | 2500 字符 | 1K / 2K |
+| Kling-Image-o1 | kling-image-o1 | 文生图 / 图生图（多图参考） | 2500 字符 | 1K / 2K |
+| Kling-Image-v3-omni | kling-image-v3-omni | 文生图 / 图生图（多图参考）/ 系列组图 | 2500 字符 | 1K / 2K / 4K |
+
+## 图片生成（Kling-Image-v3） › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/kling-image/generation
+
+## 图片生成（Kling-Image-v3） › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型 ID。取值：kling-image-v3 |
+| prompt | 是 | string | 正向文本提示词，长度 ≤ 2500 字符。未传 image 时按此文本进行文生图。 |
+| negative_prompt | 否 | string | 负向文本提示词，长度 ≤ 2500 字符。仅文生图支持；图生图（image 不为空）场景下不支持负向提示词。 |
+| image | 否 | string | 参考图片（单图）。传入后即为图生图。 支持图片 URL（请确保可被访问）或 Base64 编码；Base64 方式无须添加 data:image/png;base64, 前缀，直接传 Base64 字符串本身。 |
+| element_list | 否 | array | 主体参考列表，基于主体库中主体的 ID 配置，格式："element_list": [{"element_id": 主体 ID}]。 参考主体数量与参考图片数量之和不得超过 10。 |
+| aspect_ratio | 否 | string | 生成图片的画面纵横比（宽:高）。 可选值：16:9、9:16、1:1、4:3、3:4、3:2、2:3、21:9。默认值 16:9。 |
+| resolution | 否 | string | 生成图片的清晰度。 可选值：1k（1K 标清）、2k（2K 高清）。默认值 1k。 |
+| n | 否 | integer | 生成图片数量。取值范围 [1, 9]，默认 1。 |
+| watermark_info | 否 | object | 是否同时生成含水印的结果，格式："watermark_info": {"enabled": boolean}。 true 为生成含水印结果，false 为不生成；暂不支持自定义水印。 |
+
+## 图片生成（Kling-Image-v3） › 4. 输出参数
+| 参数名 | 类型 | 描述 |
+| code | string | 错误码。 |
+| message | string | 错误信息。 |
+| request_id | string | 请求 ID，系统生成，用于跟踪请求、排查问题。 |
+| data.task_id | string | 任务 ID。 |
+| data.task_status | string | 任务状态，枚举值：submitted（已提交）、processing（处理中）、succeed（成功）、failed（失败）。 |
+| data.created_at | integer | 任务创建时间，Unix 时间戳，单位 ms。 |
+| data.updated_at | integer | 任务更新时间，Unix 时间戳，单位 ms。 |
+
+## Omni 图片生成（Kling-Image-o1 / Kling-Image-v3-omni） › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/kling-image/generation
+
+## Omni 图片生成（Kling-Image-o1 / Kling-Image-v3-omni） › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型 ID。取值：kling-image-o1、kling-image-v3-omni |
+| prompt | 是 | string | 文本提示词，可包含正向描述与负向描述，长度 ≤ 2500 字符。 多图参考场景下，可通过 <<<image_1>>> 的格式在提示词中引用某张参考图，如：将<<<image_1>>>中的人物融合到<<<image_2>>>的场景中。未传 image_list 时按此文本进行文生图。 |
+| image_list | 否 | array[string] | 参考图片列表（多图），最多 10 张。传入后即为多图参考图生图。 支持图片 URL（请确保可被访问）或 Base64 编码；Base64 方式无须添加 data:image/png;base64, 前缀，直接传 Base64 字符串本身。 |
+| element_list | 否 | array | 主体参考列表，基于主体库中主体的 ID 配置，格式："element_list": [{"element_id": 主体 ID}]。 参考主体数量与参考图片数量之和不得超过 10。 |
+| aspect_ratio | 否 | string | 生成图片的画面纵横比（宽:高）。 可选值：16:9、9:16、1:1、4:3、3:4、3:2、2:3、21:9、auto（根据传入内容智能判断画面比例）。默认值 auto。 注：文生图场景（未传 image_list）不支持 auto。 |
+| resolution | 否 | string | 生成图片的清晰度。 可选值：1k（1K 标清）、2k（2K 高清）、4k（4K 超高清）。默认值 1k。 4K 仅 kling-image-v3-omni 支持；kling-image-o1 支持 1K / 2K。 |
+| n | 否 | integer | 生成图片数量。取值范围 [1, 9]，默认 1。 result_type 为 series 时本参数无效。 |
+| result_type | 否 | string | 生成结果单图 / 组图切换开关。 可选值：single（单图，默认）、series（组图）。系列组图仅 kling-image-v3-omni 支持。 |
+| series_amount | 否 | integer | 组图模式的图片数量，仅 result_type 为 series 时生效。 可选值：2 ~ 9、auto（根据传入内容智能选择数量）。默认值 4。 |
+| watermark_info | 否 | object | 是否同时生成含水印的结果，格式："watermark_info": {"enabled": boolean}。 true 为生成含水印结果，false 为不生成；暂不支持自定义水印。 |
+
+## 查询任务 › 1. 接口描述
+GET https://tokenhub.tencentmaas.com/v1/wand/kling-image/tasks/{task_id}
+
+## 查询任务 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| task_id | 是 | string | 任务 ID（路径参数），即提交任务时返回的 task_id。 |
+
+## 查询任务 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| code | integer | 错误码。 |
+| message | string | 错误信息。 |
+| request_id | string | 请求 ID，系统生成，用于跟踪请求、排查问题。 |
+| tokenhub_usage | object | 用量消耗。 |
+| tokenhub_usage.total_tokens | integer | 本次任务消耗的 token 数，用于计费/对账。 |
+| data.task_id | string | 任务 ID。 |
+| data.task_status | string | 任务状态，枚举值：submitted（已提交）、processing（处理中）、succeed（成功）、failed（失败）。 |
+| data.task_status_msg | string | 任务状态信息，任务失败时展示失败原因。 |
+| data.created_at | integer | 任务创建时间，Unix 时间戳，单位 ms。 |
+| data.updated_at | integer | 任务更新时间，Unix 时间戳，单位 ms。 |
+| data.task_result.images[].index | integer | 图片编号，0 ~ 9。 |
+| data.task_result.images[].url | string | 生成图片的 URL。 |
+| data.task_result.images[].watermark_url | string | 含水印图片的下载 URL（watermark_info.enabled 为 true 时返回）。 |
+| data.task_result.series_images[].index | integer | 组图序号（组图任务返回）。 |
+| data.task_result.series_images[].url | string | 组图图片的 URL（组图任务返回）。 |

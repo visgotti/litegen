@@ -488,8 +488,10 @@ pub fn validate_video(
 /// `first_frame`, `last_frame` or `init` image, so the ratio is refused when
 /// strict and dropped and named otherwise, where the adapter used to leave it
 /// out unreported. `without_references` lifts the rule when a `reference`
-/// image rides along. Runs after `check_refs`, so a role-less image counts
-/// under its `default_role`.
+/// image rides along, and the strict refusal suggests one only where it may
+/// go with the frame. Runs after `check_refs`, so a role-less image counts
+/// under its `default_role`, and a reference never sent with a frame
+/// (`not_with`) has already been refused.
 fn check_frame_shape(
     schema: &ModelSchema,
     req: &mut VideoGenerationRequest,
@@ -508,7 +510,20 @@ fn check_frame_shape(
         return Ok(());
     }
     if strict {
-        let unless = if shape == FramesSetShape::Always { "" } else { " unless a reference image goes with it" };
+        // A reference may go with the frame when the row takes one and no
+        // `not_with`, on either side, keeps it from a frame role sent here.
+        let roles = schema.ref_inputs.as_ref().map(|r| &r.roles);
+        let names = |a: &str, b: &str| roles.and_then(|r| r.get(a)).is_some_and(|s| s.not_with.iter().any(|n| n == b));
+        let with_frame = shape == FramesSetShape::WithoutReferences
+            && roles.is_some_and(|r| r.contains_key("reference"))
+            && req
+                .base
+                .reference_images
+                .iter()
+                .filter_map(|r| r.role.as_deref())
+                .filter(|role| matches!(*role, "first_frame" | "last_frame" | "init"))
+                .all(|frame| !names("reference", frame) && !names(frame, "reference"));
+        let unless = if with_frame { " unless a reference image goes with it" } else { "" };
         return Err(ValidationError::new(
             "param_unsupported",
             format!("'{}' takes the frame image's shape: aspect_ratio applies only without a first_frame, last_frame or init image{unless}", schema.id),
@@ -1090,10 +1105,34 @@ fn check_metadata(metadata: &Option<serde_json::Value>) -> Result<(), Validation
     Ok(())
 }
 
+/// Whether `r` is the request's init image: its role, or for an image sent
+/// without one the row's `default_role`, is `init`, as the materializer
+/// resolves it and the generation's edit (`apply_image_edit`) reads it.
+fn is_init(schema: &ModelSchema, r: &ReferenceImage) -> bool {
+    r.role.as_deref().or_else(|| schema.ref_inputs.as_ref().and_then(|i| i.default_role.as_deref())) == Some("init")
+}
+
+/// The size of the init image when the request carries it (base64, as a
+/// `data:` URI or not), from its header; `None` for one only the generation
+/// reads (a URL, a stored generation, a multipart blob), or can't read.
+fn inline_init_size(schema: &ModelSchema, refs: &[ReferenceImage]) -> Option<(u32, u32)> {
+    use base64::Engine;
+    let init = refs.iter().find(|r| is_init(schema, r))?;
+    if init.kind != RefImageKind::Base64 {
+        return None;
+    }
+    let raw = crate::proxy::materializer::strip_data_prefix(&init.value);
+    // Up to 25 MiB decoded: off the async workers (P15), as the materializer does.
+    let bytes = crate::util::blocking::cpu_heavy(raw.len(), || base64::engine::general_purpose::STANDARD.decode(raw)).ok()?;
+    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+}
+
 /// A partial edit's shape (3D doc §4): `region` where the model takes one,
 /// `mask_grow_px` where it takes a mask or a region, and an init image for
-/// either to apply to. Whether the region fits the init image needs the image
-/// itself, and is checked before the billed call (`proxy::image_edit`).
+/// either to apply to. A region with no area, or one off an init image sent
+/// in the request, is refused here, which the quote runs too; one off an
+/// init the generation fetches or reads is refused before the billed call
+/// (`proxy::image_edit`).
 fn check_image_edit(
     schema: &ModelSchema,
     req: &mut ImageGenerationRequest,
@@ -1127,9 +1166,8 @@ fn check_image_edit(
             ));
         }
     }
-    let role = |r: &ReferenceImage, name: &str| r.role.as_deref() == Some(name);
-    let has_mask = req.base.reference_images.iter().any(|r| role(r, "mask"));
-    let has_init = req.base.reference_images.iter().any(|r| role(r, "init") || r.role.is_none());
+    let has_mask = req.base.reference_images.iter().any(|r| r.role.as_deref() == Some("mask"));
+    let has_init = req.base.reference_images.iter().any(|r| is_init(schema, r));
     if (req.region.is_some() || has_mask) && !has_init {
         return Err(ValidationError::new(
             "init_required",
@@ -1137,19 +1175,49 @@ fn check_image_edit(
             Some("reference_images"),
         ));
     }
+    // round 3: the quote refuses the region the generation would
+    // (`proxy::image_edit::prepare`), in its words where the init is here.
+    if let Some(r) = req.region {
+        let inside = |w: u32, h: u32| r.w > 0 && r.h > 0 && r.x.checked_add(r.w).is_some_and(|e| e <= w) && r.y.checked_add(r.h).is_some_and(|e| e <= h);
+        match inline_init_size(schema, &req.base.reference_images) {
+            Some((w, h)) if !inside(w, h) => {
+                let e = crate::proxy::image_edit::EditError::RegionOutOfBounds { region: r, init: (w, h) };
+                return Err(ValidationError::new(e.code(), e.message(), Some(e.param())));
+            }
+            None if !inside(u32::MAX, u32::MAX) => {
+                return Err(ValidationError::new(
+                    "region_out_of_bounds",
+                    format!("region {}x{} at {},{} is not inside any image (and must be at least 1x1)", r.w, r.h, r.x, r.y),
+                    Some("region"),
+                ));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
 /// `expand` (3D doc §4, P2): a model that grows canvases, an init image to
 /// grow, something added, within the vendor's per-side limit, symmetric for
 /// a vendor that only centres, and neither a mask nor a region beside it.
+/// A row that grows a canvas and nothing else needs one (its spec's
+/// `required`), in either mode.
 fn check_expand(
     schema: &ModelSchema,
     req: &mut ImageGenerationRequest,
     strict: bool,
     dropped: &mut Vec<String>,
 ) -> Result<(), ValidationError> {
-    let Some(e) = req.expand else { return Ok(()) };
+    let Some(e) = req.expand else {
+        if matches!(schema.params.get("expand"), Some(ParamSpec::Expand(spec)) if spec.required) {
+            return Err(ValidationError::new(
+                "param_required",
+                format!("'{}' grows the init image's canvas: send expand with at least one side above 0", schema.id),
+                Some("expand"),
+            ));
+        }
+        return Ok(());
+    };
     let Some(ParamSpec::Expand(spec)) = schema.params.get("expand") else {
         if strict {
             return Err(ValidationError::new("param_unsupported", format!("expand not supported by '{}'", schema.id), Some("expand")));
@@ -1159,7 +1227,7 @@ fn check_expand(
         return Ok(());
     };
     let refs = &req.base.reference_images;
-    if !refs.iter().any(|r| r.role.as_deref() == Some("init") || r.role.is_none()) {
+    if !refs.iter().any(|r| is_init(schema, r)) {
         return Err(ValidationError::new("init_required", "expand grows an init image's canvas; send one with role init", Some("reference_images")));
     }
     if refs.iter().any(|r| r.role.as_deref() == Some("mask")) || req.region.is_some() {
@@ -1204,7 +1272,7 @@ fn check_layout(
     if items.is_empty() || items.len() > spec.max_items {
         return bad("param_out_of_range", format!("{} layout boxes; '{}' takes 1 to {}", items.len(), schema.id, spec.max_items));
     }
-    if req.base.reference_images.iter().any(|r| r.role.as_deref() == Some("init") || r.role.is_none()) {
+    if req.base.reference_images.iter().any(|r| is_init(schema, r)) {
         return bad("param_conflict", "layout composes a new image; it takes no init image".into());
     }
     for (i, item) in items.iter().enumerate() {
@@ -1254,7 +1322,7 @@ fn check_mask_prompt(
     }
     check_string(text, spec, "mask_prompt")?;
     let refs = &req.base.reference_images;
-    if !refs.iter().any(|r| r.role.as_deref() == Some("init") || r.role.is_none()) {
+    if !refs.iter().any(|r| is_init(schema, r)) {
         return Err(ValidationError::new("init_required", "mask_prompt names an area of an init image; send one with role init", Some("reference_images")));
     }
     if refs.iter().any(|r| r.role.as_deref() == Some("mask")) || req.region.is_some() {
@@ -1799,14 +1867,29 @@ fn check_video_request(schema: &ModelSchema, req: &VideoGenerationRequest) -> Re
     // under its `default_role`, and each is refused here, before anything is
     // quoted or reserved, not by the adapter after.
     let starts_from_a_frame = refs.iter().any(|r| matches!(r.role.as_deref(), Some("first_frame" | "init")));
+    let roles = schema.ref_inputs.as_ref().map(|r| &r.roles);
+    // The image this row starts a clip from, as the two refusals below name
+    // it: `init` on the older rows that take no `first_frame`.
+    let start = if roles.is_some_and(|r| r.contains_key("first_frame")) { "a first_frame" } else { "an init" };
     // FU-LASTFRAME: a last frame this model's vendor ends a clip on only
     // after a first frame (its `last_frame` role's `needs_first_frame`).
     // Before the prompt check: adding a prompt would not make it work.
-    let last_needs_first = schema.ref_inputs.as_ref().and_then(|r| r.roles.get("last_frame")).is_some_and(|s| s.needs_first_frame);
+    let last_needs_first = roles.and_then(|r| r.get("last_frame")).is_some_and(|s| s.needs_first_frame);
     if last_needs_first && !starts_from_a_frame && refs.iter().any(|r| r.role.as_deref() == Some("last_frame")) {
         return Err(ValidationError::new(
             "ref_role_required",
-            format!("'{}' ends a clip on a last_frame only after a first_frame; send a first_frame image too", schema.id),
+            format!("'{}' ends a clip on a last_frame only after {start}; send {start} image too", schema.id),
+            Some("reference_images"),
+        ));
+    }
+    // catalog-rules: reference images this model's vendor takes only on
+    // image-to-video (its `reference` role's `needs_first_frame`: Runway's
+    // Kling O3), ahead of the prompt check too.
+    let reference_needs_first = roles.and_then(|r| r.get("reference")).is_some_and(|s| s.needs_first_frame);
+    if reference_needs_first && !starts_from_a_frame && refs.iter().any(|r| r.role.as_deref() == Some("reference")) {
+        return Err(ValidationError::new(
+            "ref_role_required",
+            format!("'{}' takes reference images only on image-to-video; send {start} image too", schema.id),
             Some("reference_images"),
         ));
     }
@@ -2014,6 +2097,20 @@ fn check_refs(
     let mut counts: HashMap<String, u32> = HashMap::new();
     for r in &keep {
         *counts.entry(r.role.clone().unwrap()).or_insert(0) += 1;
+    }
+    // vidu-mix: a role its vendor never takes beside another (its
+    // `not_with`, such as Vidu's references beside a frame). Refused in
+    // either mode, since neither image is the one to drop, and ahead of the
+    // counts and the last-frame rule: no other image would fix it.
+    for r in &keep {
+        let role = r.role.as_deref().unwrap_or_default();
+        if let Some(other) = ri.roles.get(role).and_then(|s| s.not_with.iter().find(|o| counts.contains_key(o.as_str()))) {
+            return Err(ValidationError::new(
+                "ref_role_conflict",
+                format!("'{}' takes {role} or {other} images, not both in one request", schema.id),
+                Some("reference_images"),
+            ));
+        }
     }
     for (role, spec) in &ri.roles {
         let c = counts.get(role).copied().unwrap_or(0);
@@ -2527,6 +2624,54 @@ async fn parse_request_and_context(
     }
 }
 
+/// The request body `json` (its unknown fields taken out) as its type `T`,
+/// or a 400 `malformed_request` that names the field serde could not read,
+/// by its path on the wire (`n`, `reference_images[0].time_s`): in `param`,
+/// and at the head of serde's message. serde's own error names no field, so
+/// on a failure the body is read again (`again`, only then: the first read
+/// consumed `json`) with its path tracked. Path tracking sees no deeper than
+/// a `#[serde(flatten)]`, so a field of [`BaseGenerationRequest`], which every
+/// generation request flattens (`flattens_base`), comes out at the root: that
+/// part is then read on its own, from a read of its own, so no more than one
+/// copy of the body is held at a time. A body that isn't JSON never gets
+/// here: its parse error keeps its line and column.
+async fn read_request<T, Again, Read>(json: Value, flattens_base: bool, again: Again) -> Result<T, ValidationRejection>
+where
+    T: serde::de::DeserializeOwned,
+    Again: Fn() -> Read,
+    Read: std::future::Future<Output = Option<Value>>,
+{
+    fn path_of<U>(read: Result<U, serde_path_to_error::Error<serde_json::Error>>) -> Option<String> {
+        read.err().map(|e| e.path().to_string()).filter(|p| p != ".")
+    }
+    let e = match serde_json::from_value(json) {
+        Ok(req) => return Ok(req),
+        Err(e) => e,
+    };
+    let mut path = match again().await {
+        Some(json) => path_of(serde_path_to_error::deserialize::<_, T>(json)),
+        None => None,
+    };
+    if path.is_none() && flattens_base {
+        if let Some(json) = again().await {
+            path = path_of(serde_path_to_error::deserialize::<_, BaseGenerationRequest>(json));
+        }
+    }
+    let message = match &path {
+        Some(p) => format!("{p}: {e}"),
+        None => e.to_string(),
+    };
+    Err(ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &message, path.as_deref(), "")))
+}
+
+/// A generation request's body as its extractor read it, once more: what
+/// [`read_request`] reads again to name a field.
+async fn read_again(headers: &HeaderMap, body: &axum::body::Bytes, request: &str) -> Option<Value> {
+    let (mut json, _) = parse_request_and_context(headers, body.clone()).await.ok()?;
+    take_unknown_fields(request, &mut json);
+    Some(json)
+}
+
 impl FromRequest<Arc<AppState>> for ValidatedImage {
     type Rejection = ValidationRejection;
     async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
@@ -2536,9 +2681,7 @@ impl FromRequest<Arc<AppState>> for ValidatedImage {
         let headers = parts.headers;
         let (mut json, ctx) = parse_request_and_context(&headers, body.bytes.clone()).await?;
         let (top, nested) = take_unknown_fields(IMAGE_REQUEST, &mut json);
-        let mut req: ImageGenerationRequest = serde_json::from_value(json).map_err(|e| {
-            ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
-        })?;
+        let mut req: ImageGenerationRequest = read_request(json, true, || read_again(&headers, &body.bytes, IMAGE_REQUEST)).await?;
         let schema = state.registry.resolve(&req.base.model)
             .ok_or_else(|| unserved_model(state, &req.base.model))?;
         let schema = Arc::new(schema);
@@ -2552,6 +2695,15 @@ impl FromRequest<Arc<AppState>> for ValidatedImage {
         let mut dropped = check_unknown_fields(&schema, IMAGE_REQUEST, top, nested, &mut req.base.extra, strict).map_err(refuse)?;
         let out = validate_image(&schema, req).map_err(refuse)?;
         dropped.extend(out.dropped);
+        // round 3: what the model's adapter (or every deployment of its
+        // route) refuses for a vendor rule the catalog can't say is refused
+        // here, in its words and as its submit would be, before the quote or
+        // the generation reserves anything (see ValidatedVideo).
+        let roles = image_roles(&schema, &out.request);
+        let extras = image_extras(&schema, &out.request);
+        if let Err(crate::providers::ProviderError::InvalidRequest(message)) = state.router.image_preflight(&schema, &out.request.base, &extras, &roles).await {
+            return Err(adapter_refusal(&message, &schema.id));
+        }
         Ok(ValidatedImage { schema, request: out.request, dropped, ctx, _permit: permit, _body: body })
     }
 }
@@ -2570,9 +2722,7 @@ impl FromRequest<Arc<AppState>> for ValidatedVideo {
         let headers = parts.headers;
         let (mut json, ctx) = parse_request_and_context(&headers, body.bytes.clone()).await?;
         let (top, nested) = take_unknown_fields(VIDEO_REQUEST, &mut json);
-        let mut req: VideoGenerationRequest = serde_json::from_value(json).map_err(|e| {
-            ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
-        })?;
+        let mut req: VideoGenerationRequest = read_request(json, true, || read_again(&headers, &body.bytes, VIDEO_REQUEST)).await?;
         let schema = state.registry.resolve(&req.base.model)
             .ok_or_else(|| unserved_model(state, &req.base.model))?;
         let schema = Arc::new(schema);
@@ -2583,7 +2733,100 @@ impl FromRequest<Arc<AppState>> for ValidatedVideo {
         let mut dropped = check_unknown_fields(&schema, VIDEO_REQUEST, top, nested, &mut req.base.extra, strict).map_err(refuse)?;
         let out = validate_video(&schema, req).map_err(refuse)?;
         dropped.extend(out.dropped);
+        // round 3: what the model's adapter (or every deployment of its
+        // route) refuses for a vendor rule the catalog can't say is refused
+        // here, in its words and as its submit would be (400
+        // `request_unsupported`), before the quote or the generation
+        // reserves anything.
+        let roles: Vec<&str> = out.request.base.reference_images.iter().filter_map(|r| r.role.as_deref()).collect();
+        let extras = video_extras(&schema, &out.request);
+        if let Err(crate::providers::ProviderError::InvalidRequest(message)) = state.router.video_preflight(&schema, &out.request.base, &extras, &roles).await {
+            return Err(adapter_refusal(&message, &schema.id));
+        }
         Ok(ValidatedVideo { schema, request: out.request, dropped, ctx, _permit: permit, _body: body })
+    }
+}
+
+/// An adapter's preflight refusal (round 3): 400 `request_unsupported` in
+/// its words, not retryable, as its submit would have answered.
+fn adapter_refusal(message: &str, model: &str) -> ValidationRejection {
+    let mut refusal = err_body("request_unsupported", message, None, model);
+    refusal["error"]["retryable"] = false.into();
+    ValidationRejection(StatusCode::BAD_REQUEST, refusal)
+}
+
+/// The `ImageExtras` a validated image request makes, as the generation
+/// hands them to its adapter, without `edit` (made from the images' bytes,
+/// later): the preflight the quote runs and the generation build them here
+/// alike. `views` is the request's, else the model's default set (3D doc
+/// §3E), else every view it makes.
+pub fn image_extras(schema: &ModelSchema, req: &ImageGenerationRequest) -> crate::providers::ImageExtras {
+    crate::providers::ImageExtras {
+        vendor_job: Default::default(),
+        size: req.size.clone(),
+        aspect_ratio: req.aspect_ratio.clone(),
+        resolution: req.resolution.clone(),
+        quality: req.quality.clone(),
+        style: req.style.clone(),
+        steps: req.steps,
+        guidance_scale: req.guidance_scale,
+        strength: req.strength,
+        response_format: req.response_format.clone(),
+        views: match (&req.views, schema.params.get("views")) {
+            (Some(v), _) => v.clone(),
+            (None, Some(ParamSpec::StringArray(spec))) if !spec.default.is_empty() => spec.default.clone(),
+            (None, Some(ParamSpec::StringArray(spec))) => spec.enum_values.clone(),
+            _ => Vec::new(),
+        },
+        edit: None,
+        expand: req.expand,
+        layout: req.layout.clone(),
+        mask_prompt: req.mask_prompt.clone(),
+        preserve_unmasked: req.preserve_unmasked,
+        feather_px: req.feather_px,
+        palette: req.palette.clone(),
+        directions: req.directions,
+        extra: req.base.extra.clone(),
+        output_format: req.output_format.clone(),
+        background: req.background.clone(),
+    }
+}
+
+/// The roles of the images a validated image request hands its adapter, as
+/// its preflight reads them: each image's (resolved through `default_role`
+/// by now), and the mask litegen draws from a `region` on a row that takes
+/// the region as a mask. A row that takes it as a box gets a drawn mask only
+/// when the region isn't the vendor's own window, which needs the init
+/// image's size, so that one isn't counted.
+pub fn image_roles<'a>(schema: &ModelSchema, req: &'a ImageGenerationRequest) -> Vec<&'a str> {
+    let mut roles: Vec<&str> = req.base.reference_images.iter().filter_map(|r| r.role.as_deref()).collect();
+    let drawn = match schema.params.get("region") {
+        Some(ParamSpec::Region(r)) => r.input != crate::capabilities::RegionInput::Box,
+        _ => false,
+    };
+    if req.region.is_some() && drawn && !roles.contains(&"mask") {
+        roles.push("mask");
+    }
+    roles
+}
+
+/// The `VideoExtras` a validated video request makes, as the generation
+/// hands them to its adapter, without its `source` (read later): the
+/// preflight the quote runs and the generation build them here alike.
+pub fn video_extras(schema: &ModelSchema, req: &VideoGenerationRequest) -> crate::providers::VideoExtras {
+    crate::providers::VideoExtras {
+        source: None,
+        direction: req.direction.clone(),
+        time_range: req.time_range,
+        replace: req.replace.clone(),
+        duration_seconds: resolve_duration_seconds(schema, req.duration_seconds),
+        aspect_ratio: req.aspect_ratio.clone(),
+        resolution: req.resolution.clone(),
+        fps: req.fps,
+        extra: req.base.extra.clone(),
+        camera: req.camera.clone(),
+        audio: req.audio,
+        r#loop: req.r#loop,
     }
 }
 
@@ -2604,9 +2847,7 @@ impl FromRequest<Arc<AppState>> for ValidatedModel3d {
         let headers = parts.headers;
         let (mut json, ctx) = parse_request_and_context(&headers, body.bytes.clone()).await?;
         let (top, nested) = take_unknown_fields(MODEL3D_REQUEST, &mut json);
-        let mut req: Model3dGenerationRequest = serde_json::from_value(json).map_err(|e| {
-            ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
-        })?;
+        let mut req: Model3dGenerationRequest = read_request(json, true, || read_again(&headers, &body.bytes, MODEL3D_REQUEST)).await?;
         let schema = state.registry.resolve(&req.base.model)
             .ok_or_else(|| unserved_model(state, &req.base.model))?;
         let schema = Arc::new(schema);
@@ -2643,7 +2884,12 @@ impl FromRequest<Arc<AppState>> for ValidatedSegmentation {
         let malformed = |e: serde_json::Error| ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""));
         let mut json: Value = serde_json::from_slice(&body.bytes).map_err(malformed)?;
         let (top, nested) = take_unknown_fields(SEGMENTATION_REQUEST, &mut json);
-        let req: ImageSegmentationRequest = serde_json::from_value(json).map_err(malformed)?;
+        let again = || async {
+            let mut json: Value = serde_json::from_slice(&body.bytes).ok()?;
+            take_unknown_fields(SEGMENTATION_REQUEST, &mut json);
+            Some(json)
+        };
+        let req: ImageSegmentationRequest = read_request(json, false, again).await?;
         let schema = state.registry.resolve(&req.model)
             .ok_or_else(|| unserved_model(state, &req.model))?;
         let schema = Arc::new(schema);

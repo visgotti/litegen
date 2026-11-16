@@ -14,6 +14,8 @@ pub struct CacheSettings {
     pub max_items: u64,
     /// About how many bytes the local tier may hold (P7).
     pub max_bytes: u64,
+    /// Whether a hit is charged the cached answer's price.
+    pub charge_hits: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +54,7 @@ pub fn effective(config: &AppConfig, gateway: &GatewaySettings) -> EffectiveSett
             ttl: Duration::from_secs(gateway.cache_ttl_seconds.unwrap_or(config.cache.default_ttl_seconds)),
             max_items: gateway.cache_max_items.unwrap_or(config.cache.max_items),
             max_bytes: gateway.cache_max_bytes.unwrap_or(config.cache.max_bytes),
+            charge_hits: gateway.cache_charge_hits.unwrap_or(config.cache.charge_hits),
         },
         retries: RetrySettings {
             max_retries: gateway.retry_max_retries.unwrap_or(config.retries.max_retries),
@@ -69,7 +72,7 @@ pub fn effective(config: &AppConfig, gateway: &GatewaySettings) -> EffectiveSett
 
 impl From<CacheSettings> for EffectiveCache {
     fn from(c: CacheSettings) -> Self {
-        Self { enabled: c.enabled, ttl_seconds: c.ttl.as_secs(), max_items: c.max_items, max_bytes: c.max_bytes }
+        Self { enabled: c.enabled, ttl_seconds: c.ttl.as_secs(), max_items: c.max_items, max_bytes: c.max_bytes, charge_hits: c.charge_hits }
     }
 }
 
@@ -103,7 +106,7 @@ mod tests {
         config.circuit_breaker.threshold = 3;
 
         let yaml_only = effective(&config, &GatewaySettings::default());
-        assert_eq!(yaml_only.cache, CacheSettings { enabled: true, ttl: Duration::from_secs(600), max_items: 10_000, max_bytes: 268_435_456 });
+        assert_eq!(yaml_only.cache, CacheSettings { enabled: true, ttl: Duration::from_secs(600), max_items: 10_000, max_bytes: 268_435_456, charge_hits: true });
         assert_eq!(yaml_only.retries, RetrySettings { max_retries: 2, backoff: Duration::from_millis(250), max_backoff: Duration::from_secs(10) });
         assert_eq!(yaml_only.vendor_timeout, Duration::from_secs(60));
         assert_eq!(yaml_only.breaker, BreakerSettings { threshold: 3, open_for: Duration::from_secs(30) });
@@ -119,7 +122,7 @@ mod tests {
             ..Default::default()
         };
         let both = effective(&config, &gateway);
-        assert_eq!(both.cache, CacheSettings { enabled: false, ttl: Duration::from_secs(600), max_items: 50, max_bytes: 2_097_152 });
+        assert_eq!(both.cache, CacheSettings { enabled: false, ttl: Duration::from_secs(600), max_items: 50, max_bytes: 2_097_152, charge_hits: true });
         assert_eq!(both.retries, RetrySettings { max_retries: 4, backoff: Duration::from_millis(250), max_backoff: Duration::from_secs(2) });
         assert_eq!(both.vendor_timeout, Duration::from_secs(30));
         assert_eq!(both.breaker, BreakerSettings { threshold: 3, open_for: Duration::from_secs(5) });

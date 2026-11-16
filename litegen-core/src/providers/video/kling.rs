@@ -338,6 +338,41 @@ impl VideoProvider for KlingVideoProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What Kling cannot make, refused before anything is quoted, reserved
+    /// or sent (it would bill, or reject, a request litegen can tell is
+    /// wrong); `generate` asks it first.
+    /// @see <https://kling.ai/document-api/guides/capability-map/video.md> (2026-11-03) — "First/Last Frame …
+    ///   Kling 2.6: Supported: Only supports 1080P silent videos | Kling 2.5 Turbo: Supported: Only
+    ///   supports 1080P"; "| Kling 2.6 | … | 5s, 10s |", "| Kling 2.5 Turbo | … | 5s, 10s |"
+    /// @see <https://kling.ai/document-api/api/video/2-6/text-to-video.md> (2026-11-03) — "When generating
+    ///   videos with native audio, only 1080P resolution is supported."
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(native) = path_model(&model.id) else { return Ok(()) };
+        // As `kling_frames` reads them: any image but a last frame starts the clip.
+        let (first, tail) = (roles.iter().any(|r| *r != "last_frame"), roles.contains(&"last_frame"));
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        if tail && !first {
+            return refuse("a last_frame needs a first_frame (last-frame-only video is not supported)".into());
+        }
+        let at_1080 = extras.resolution.as_deref() == Some("1080p");
+        let audio_on = extras.audio == Some(true);
+        if matches!(native, "kling-2.5-turbo" | "kling-2.6") {
+            if tail && !at_1080 {
+                return refuse("first and last frames need resolution 1080p".into());
+            }
+            if ![5.0, 10.0].contains(&extras.duration_seconds) {
+                return refuse(format!("{} s is not a length it makes (5 or 10 s)", extras.duration_seconds));
+            }
+        }
+        if native == "kling-2.6" && audio_on && (!at_1080 || tail) {
+            return refuse("native audio needs resolution 1080p, and no last frame".into());
+        }
+        if extras.duration_seconds.fract() != 0.0 {
+            return refuse(format!("{} s is not a whole number of seconds", extras.duration_seconds));
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -347,36 +382,12 @@ impl VideoProvider for KlingVideoProvider {
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let creds = self.creds()?;
         let native = path_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "kling".into() })?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
 
         // The frames: a first frame means image-to-video; otherwise text-to-video.
         let (first, tail) = kling_frames(materialized, false);
-        // What Kling cannot make is refused before any call (it would bill,
-        // or reject, a request litegen could tell was wrong).
-        // @see <https://kling.ai/document-api/guides/capability-map/video.md> (2026-11-03) — "First/Last Frame …
-        //   Kling 2.6: Supported: Only supports 1080P silent videos | Kling 2.5 Turbo: Supported: Only
-        //   supports 1080P"; "| Kling 2.6 | … | 5s, 10s |", "| Kling 2.5 Turbo | … | 5s, 10s |"
-        // @see <https://kling.ai/document-api/api/video/2-6/text-to-video.md> (2026-11-03) — "When generating
-        //   videos with native audio, only 1080P resolution is supported."
-        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
-        if tail.is_some() && first.is_none() {
-            return refuse("a last_frame needs a first_frame (last-frame-only video is not supported)".into());
-        }
-        let at_1080 = extras.resolution.as_deref() == Some("1080p");
-        let audio_on = extras.audio == Some(true);
-        if matches!(native, "kling-2.5-turbo" | "kling-2.6") {
-            if tail.is_some() && !at_1080 {
-                return refuse("first and last frames need resolution 1080p".into());
-            }
-            if ![5.0, 10.0].contains(&extras.duration_seconds) {
-                return refuse(format!("{} s is not a length it makes (5 or 10 s)", extras.duration_seconds));
-            }
-        }
-        if native == "kling-2.6" && audio_on && (!at_1080 || tail.is_some()) {
-            return refuse("native audio needs resolution 1080p, and no last frame".into());
-        }
-        if extras.duration_seconds.fract() != 0.0 {
-            return refuse(format!("{} s is not a whole number of seconds", extras.duration_seconds));
-        }
 
         // `settings`: "`settings.duration` | int", "`settings.resolution` …
         // `720p`, `1080p`[, `4k`]", "`settings.aspect_ratio`" (text-to-video

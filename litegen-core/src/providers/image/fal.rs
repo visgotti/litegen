@@ -33,7 +33,7 @@ const OWNED_FIELDS: &[&str] = &[
 
 /// Fal.ai image generation provider.
 ///
-/// Routes to model-specific Fal endpoints for Flux, SDXL, SD3.5, Recraft, etc.
+/// Routes to model-specific Fal endpoints for Flux, SDXL, Recraft, etc.
 /// Sync API: `POST https://fal.run/{endpoint}` → `{images: [{url, ...}]}`
 ///
 /// @see <https://fal.ai/docs/documentation/model-apis/inference/synchronous> — Verbatim: "`run`
@@ -161,7 +161,10 @@ impl FalProvider {
             "flux-pro-fill" => "fal-ai/flux-pro/v1/fill",
             "flux-pro-erase" => "fal-ai/flux-pro/v1/erase",
             "sdxl" | "sdxl-lightning" => "fal-ai/fast-sdxl",
-            "sd35-medium" | "sd3.5-medium" => "fal-ai/stable-diffusion-v35-medium",
+            // No SD 3.5 Medium or AuraFlow arm: fal removed
+            // fal-ai/stable-diffusion-v35-medium and fal-ai/aura-flow from its
+            // registry, queue OpenAPI and model pages, and both rows were retired
+            // 2026-11-16 (`the_retired_auraflow_and_sd35_medium_ids_resolve_to_no_endpoint`).
             // fal renamed `fal-ai/recraft-v3`: its model page 308-redirects to
             // this id and the model registry no longer lists the old one. The
             // input schema is identical, so only the path moves.
@@ -196,7 +199,6 @@ impl FalProvider {
             "recraft-vectorize" => "fal-ai/recraft/vectorize",
             "recraft-upscale-crisp" => "fal-ai/recraft/upscale/crisp",
             "recraft-upscale-creative" => "fal-ai/recraft/upscale/creative",
-            "auraflow" | "aura-flow" => "fal-ai/aura-flow",
             // Background removal (PixelGenie L8).
             // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/bria/background/remove>
             "bria-rmbg-2" => "fal-ai/bria/background/remove",
@@ -387,12 +389,12 @@ impl FalProvider {
     /// `extra` cannot change it. Bria's optional `prompt` is billed $0.03
     /// instead of $0.018 and is never sent.
     async fn image_op(&self, endpoint: &str, extras: &ImageExtras, materialized: &MaterializedRequest, sync_mode: bool) -> Result<GenerationOutput, ProviderError> {
+        // The init image (the preflight refused a request without one).
         let image_url = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
             MaterializedRefForm::Url(u) => Some(u.clone()),
             MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
             MaterializedRefForm::MultipartField { .. } => None,
         });
-        let image_url = image_url.ok_or_else(|| ProviderError::InvalidRequest(format!("{endpoint} needs an init image")))?;
         let mut body = json!({ "image_url": image_url });
         if sync_mode {
             body["sync_mode"] = Value::Bool(true);
@@ -426,21 +428,15 @@ impl FalProvider {
     /// The endpoint takes no prompt. `extra` adds `mode` and `auto_crop` but
     /// can't change a side; then the asked container.
     /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2-pro/outpaint> (2026-11-04)
-    fn outpaint_body(model: &str, extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<Value, ProviderError> {
-        let image_url = materialized
-            .refs
-            .iter()
-            .find(|r| r.role == "init")
-            .and_then(|r| match &r.form {
-                MaterializedRefForm::Url(u) => Some(u.clone()),
-                MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
-                MaterializedRefForm::MultipartField { .. } => None,
-            })
-            .ok_or_else(|| ProviderError::InvalidRequest(format!("{model}: outpainting needs an init image")))?;
-        let e = extras
-            .expand
-            .filter(|e| e.left + e.top + e.right + e.bottom > 0)
-            .ok_or_else(|| ProviderError::InvalidRequest(format!("{model}: say how many pixels to add to at least one side (`expand`)")))?;
+    fn outpaint_body(extras: &ImageExtras, materialized: &MaterializedRequest) -> Value {
+        // The init image and the sides (the preflight refused a request
+        // without either).
+        let image_url = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
+            MaterializedRefForm::Url(u) => Some(u.clone()),
+            MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+            MaterializedRefForm::MultipartField { .. } => None,
+        });
+        let e = extras.expand.unwrap_or_default();
         let mut body = json!({
             "image_url": image_url,
             "expand_left": e.left,
@@ -456,7 +452,38 @@ impl FalProvider {
         if let Some(f) = extras.output_format.as_deref() {
             body["output_format"] = Value::String(f.to_string());
         }
-        Ok(body)
+        body
+    }
+
+    /// Whether `endpoint` takes one init image and nothing else, answering
+    /// one `image`: background removal (`sync_mode` on), and Recraft's
+    /// vectorize and upscalers.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/vectorize> (2026-11-04)
+    fn image_op_endpoint(model: &ModelSchema, endpoint: &str) -> bool {
+        model.capabilities.background_removal
+            || matches!(endpoint, "fal-ai/recraft/vectorize" | "fal-ai/recraft/upscale/crisp" | "fal-ai/recraft/upscale/creative")
+    }
+
+    /// The endpoint a request goes to, by its images' roles, and whether it
+    /// takes them as a list (`image_urls`): the model's edit twin when it
+    /// carries images, Kontext's and Recraft V3's own path for one image or
+    /// `/multi` for more. One copy: the preflight the quote runs and the
+    /// submit both ask it.
+    fn image_endpoint(&self, model: &ModelSchema, roles: &[&str]) -> Option<(&str, bool)> {
+        let endpoint = self.resolve_endpoint(&model.id)?;
+        // fal names the model by its endpoint: a mapping replaces the path.
+        let endpoint = crate::providers::wire_model(self.config.as_ref(), &model.id, endpoint);
+        let image_list = Self::edit_twin(endpoint).is_some();
+        let endpoint = match Self::edit_twin(endpoint) {
+            Some(twin) if !roles.is_empty() => twin,
+            _ => endpoint,
+        };
+        let images = roles.iter().filter(|role| **role != "mask").count();
+        Some(match Self::image_paths(endpoint) {
+            Some((one, _)) if images == 1 => (one, false),
+            Some((_, Some(many))) if images > 1 => (many, true),
+            _ => (endpoint, image_list || Self::lists_images(endpoint)),
+        })
     }
 
     /// The first image of fal's `{images: [{url, content_type}]}` answer,
@@ -530,6 +557,40 @@ impl ImageProvider for FalProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
+    /// What fal's endpoints can't take, refused before anything is quoted,
+    /// reserved or sent; `generate` asks it first, with a mask litegen drew
+    /// from a region among the images:
+    /// - background removal, Recraft's vectorize and upscalers: an init image;
+    /// - FLUX.2 [pro] outpaint: an init image, and `expand` with a side above 0;
+    /// - a FLUX 3 tier fal names, where the endpoint takes one;
+    /// - fill and erase: `mask_url`, a mask or a region drawn as one.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(endpoint) = self.resolve_endpoint(&model.id) else { return Ok(()) };
+        let endpoint = crate::providers::wire_model(self.config.as_ref(), &model.id, endpoint);
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(why));
+        let init = roles.contains(&"init");
+        if Self::image_op_endpoint(model, endpoint) {
+            return if init { Ok(()) } else { refuse(format!("{endpoint} needs an init image")) };
+        }
+        if model.params.contains_key("expand") {
+            if !init {
+                return refuse(format!("{}: outpainting needs an init image", model.id));
+            }
+            if !extras.expand.is_some_and(|e| e.left + e.top + e.right + e.bottom > 0) {
+                return refuse(format!("{}: say how many pixels to add to at least one side (`expand`)", model.id));
+            }
+            return Ok(());
+        }
+        let image_list = self.image_endpoint(model, roles).is_some_and(|(_, list)| list);
+        if let Some(tier) = extras.resolution.as_deref().filter(|t| image_list && Self::flux_3_tier(t).is_none()) {
+            return refuse(format!("{}: fal has no FLUX 3 tier {tier}", model.id));
+        }
+        if model.capabilities.inpainting && !roles.contains(&"mask") {
+            return refuse(format!("{}: send a mask, or a region to edit", model.id));
+        }
+        Ok(())
+    }
+
     /// Run a model synchronously via `POST {fal.run}/{endpoint}`.
     ///
     /// @see <https://fal.ai/docs/documentation/model-apis/inference/synchronous> — synchronous run;
@@ -548,35 +609,24 @@ impl ImageProvider for FalProvider {
         let endpoint = self.resolve_endpoint(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
         // fal names the model by its endpoint: a mapping replaces the path.
         let endpoint = crate::providers::wire_model(self.config.as_ref(), &model.id, endpoint);
-        if model.capabilities.background_removal {
-            return self.image_op(endpoint, extras, materialized, true).await;
-        }
-        // Recraft's vectorize and upscalers: one image in, one `image` out.
-        // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/vectorize> (2026-11-04)
-        if matches!(endpoint, "fal-ai/recraft/vectorize" | "fal-ai/recraft/upscale/crisp" | "fal-ai/recraft/upscale/creative") {
-            return self.image_op(endpoint, extras, materialized, false).await;
+        // The quote asked the same before anything was reserved; here a mask
+        // litegen drew from a region is among the images too.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
+        if Self::image_op_endpoint(model, endpoint) {
+            return self.image_op(endpoint, extras, materialized, model.capabilities.background_removal).await;
         }
         // Outpainting takes no prompt: its own body, then the same `images`
         // answer.
         if model.params.contains_key("expand") {
-            let body = Self::outpaint_body(&model.id, extras, materialized)?;
+            let body = Self::outpaint_body(extras, materialized);
             let answer = self.run(endpoint, &body).await?;
             return self.first_image(model, answer).await;
         }
-        // A request with images goes to the model's edit twin, its images as one
-        // `image_urls` list.
-        let image_list = Self::edit_twin(endpoint).is_some();
-        let endpoint = match Self::edit_twin(endpoint) {
-            Some(twin) if !materialized.refs.is_empty() => twin,
-            _ => endpoint,
-        };
-        // Kontext and Recraft V3: one image goes to its own path as
-        // `image_url`, two or more (Kontext) to `/multi` as `image_urls`.
-        let images = materialized.refs.iter().filter(|r| r.role != "mask").count();
-        let (endpoint, image_list) = match Self::image_paths(endpoint) {
-            Some((one, _)) if images == 1 => (one, false),
-            Some((_, Some(many))) if images > 1 => (many, true),
-            _ => (endpoint, image_list || Self::lists_images(endpoint)),
+        // A request with images goes to the model's edit twin, as one
+        // `image_urls` list, or (Kontext, Recraft V3) to its own path.
+        let Some((endpoint, image_list)) = self.image_endpoint(model, &roles) else {
+            return Err(ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() });
         };
 
         // Build request body. A row that takes no prompt (erase) sends none:
@@ -648,11 +698,8 @@ impl ImageProvider for FalProvider {
         }
         // FLUX 3 Image's own tier spelling (Klein's rows declare none: it
         // takes `image_size`).
-        if image_list {
-            if let Some(tier) = extras.resolution.as_deref() {
-                let t = Self::flux_3_tier(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: fal has no FLUX 3 tier {tier}", model.id)))?;
-                body["resolution"] = Value::String(t.to_string());
-            }
+        if let Some(t) = extras.resolution.as_deref().filter(|_| image_list).and_then(Self::flux_3_tier) {
+            body["resolution"] = Value::String(t.to_string());
         }
 
         // Reference images (URL format for Fal): one `image_url`, or the edit
@@ -679,12 +726,9 @@ impl ImageProvider for FalProvider {
         } else if let Some(last) = urls.pop() {
             body["image_url"] = Value::String(last);
         }
+        // Fill and erase need theirs (the preflight refused a request without).
         if let Some(mask) = mask_url {
             body["mask_url"] = Value::String(mask);
-        } else if model.capabilities.inpainting {
-            // Fill and erase require `mask_url`: a mask, or a region the core
-            // drew as one.
-            return Err(ProviderError::InvalidRequest(format!("{}: send a mask, or a region to edit", model.id)));
         }
 
         // `extra` adds the endpoint's own knobs; it cannot replace a field
@@ -827,6 +871,17 @@ mod tests {
         }
         assert!(FalProvider::new().resolve_endpoint("fal/not-a-model").is_none());
         assert!(segment_endpoint("fal/flux-dev").is_none());
+    }
+
+    /// fal removed AuraFlow and SD 3.5 Medium from its registry, queue OpenAPI
+    /// and model pages (drift run 2026-11-16), and their rows left the catalog.
+    /// No arm is left to send them, so `generate` refuses either id before any
+    /// call (`ModelNotSupported`) instead of calling an endpoint fal no longer runs.
+    #[test]
+    fn the_retired_auraflow_and_sd35_medium_ids_resolve_to_no_endpoint() {
+        for id in ["fal/auraflow", "fal/aura-flow", "fal/sd35-medium", "fal/sd3.5-medium"] {
+            assert!(FalProvider::new().resolve_endpoint(id).is_none(), "{id} still resolves to an endpoint");
+        }
     }
 
     // ─── Background removal (PixelGenie L8) ────────────────────────────────────

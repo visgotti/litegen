@@ -2,7 +2,7 @@
 
 Every vendor litegen calls is configured the same way, in `litegen.yaml`
 (`providers.<name>`), in `LITEGEN__PROVIDERS__<NAME>__<FIELD>` environment
-variables, or at runtime through `PUT /v1/admin/providers/{name}`
+variables, or at runtime through `PUT` or `PATCH /v1/admin/providers/{name}`
 ([management-api.md](management-api.md)). A field set at runtime wins over
 the file; a field left unset falls back to it. In-flight jobs keep the
 config they started with.
@@ -42,7 +42,9 @@ Signing vendors (Bedrock, Hunyuan) take `key_id`, `key_secret` and
 `region` instead. Kling takes an API key since 2026-11-03 (its access/secret
 key pair works only on its legacy API design). An organization's own key (BYO, set on the dashboard's
 Providers page) replaces these per request; everything else on this page
-still comes from the operator's config.
+still comes from the operator's config. A key saved through the admin API
+stays until a `PATCH` sends it as `""` (the file's key applies again) or the
+runtime config is deleted; a `PUT` or `PATCH` that leaves it out keeps it.
 
 ## `api_base`
 
@@ -66,6 +68,17 @@ didn't configure:
 Result files (images, videos, meshes) are downloaded from wherever the
 vendor stores them, without the key.
 
+The user info of an `api_base` (`https://user:pass@proxy.example/v1`, a
+proxy's basic auth) is a credential. litegen calls the whole URL, but the
+provider view (`GET /v1/admin/providers`) and the audit log show
+`https://[redacted]@proxy.example/v1`. A `PUT` or `PATCH` that sends that
+value back unchanged, as the dashboard does with every save, keeps the URL
+in force. To change the URL, send it whole, user info included: any other
+URL with `[redacted]` for its user info is refused (400
+`invalid_provider_config`). A URL in `options` is shown, kept and refused
+the same way. The user info is stored in plain text unless
+`encrypt_provider_credentials` is on ([Credentials at rest](#credentials-at-rest)).
+
 ## `extra_headers`
 
 Headers added to every request litegen sends to the vendor's API: a gateway's
@@ -84,6 +97,27 @@ own auth (`cf-aig-authorization`, `Helicone-Auth`), an
   `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`,
   `Upgrade`, `TE`, `Trailer`, `Proxy-Authorization`, `Proxy-Connection`. The
   error names the provider and the header.
+- The admin API never shows their values. The provider view lists their
+  names (`extra_header_names`), and the audit log keeps the names, never the
+  values: a change's `provider.configure` entry shows `[redacted]` for each
+  one. Entries written before 2026-11-14 kept the values. Migration 027
+  redacts them, and the runbook says which tokens to rotate
+  ([RUNBOOK.md](RUNBOOK.md#provider-header-tokens-in-old-audit-entries)).
+- A value set through the admin API is stored in plain text in
+  `provider_configs.settings_json` while the gateway setting
+  `encrypt_provider_credentials` is off, the default, and encrypted with the
+  provider's keys once it is on ([Credentials at rest](#credentials-at-rest)).
+  Headers set in `litegen.yaml` or in variables aren't stored in the
+  database.
+- A `PUT` replaces the settings whole: `extra_headers` replaces the stored
+  map, and a `PUT` without it drops the runtime headers (the file's apply
+  again). Only the keys, left out, keep their stored value.
+- A `PATCH` changes only the fields it sends, so a save of a few fields, as
+  the dashboard's Configure form makes, keeps the headers. `extra_headers`
+  sent replaces the stored map whole, `null` drops it (the file's apply
+  again), and a `PATCH` without it keeps it. A key left out or `null` keeps
+  its stored value; one sent as `""` removes it, and the file's key applies
+  again.
 
 ## `model_mapping`
 
@@ -116,6 +150,63 @@ Vendor-specific settings, read only by the adapter they belong to:
 | fal | `sync_api_base` | The host images run on (default: fal's sync host, or `api_base` when that is a proxy). |
 | fal | `platform_api_base` | fal's Platform API, which the health check reads. |
 | bedrock (video) | `s3_output_uri` | The S3 prefix Nova Reel writes its videos to. |
+| bedrock (video) | `s3_api_base` | The S3 host litegen reads the finished videos from (default: the bucket's own AWS host): an S3-compatible proxy. |
+
+The provider view and the audit log show each URL in `options` with
+`[redacted]` for its user info, as for `api_base`, and a save that sends it
+back as shown keeps the URL in force.
+
+## Credentials at rest
+
+A runtime provider config (one saved through the admin API or the
+dashboard) is stored in `provider_configs`. Its keys (`api_key`,
+`api_keys`, `key_id`, `key_secret`) are always encrypted with
+`LITEGEN__SECRETS_KEY` (AES-256-GCM); without the key, a key can't be saved.
+Its other credentials, each `extra_headers` value and the user info of
+`api_base` and of the URLs in `options`, follow the gateway setting
+`encrypt_provider_credentials` (`PUT /v1/admin/settings`):
+
+- **Off**, the default: they are stored in plain text in `settings_json`,
+  and the row is exactly what versions before 2026-11-15 write and read.
+- **On** (it needs `LITEGEN__SECRETS_KEY`, else the save is a 400
+  `secrets_key_missing`): they are encrypted with the keys, and
+  `settings_json` keeps `[redacted]` in their place. A header's name stays
+  readable. A version before 2026-11-15 can't read such a row: it would send
+  `[redacted]` to the vendor or gateway.
+
+Each save of the gateway settings stores every runtime provider config again
+as the setting says, on the replica that takes the save. Turning it on
+encrypts what was stored in plain text. Turning it off (a save that sets it
+to `false` or `null`) stores each row again as older versions read it.
+Unlike the other gateway settings, a save that leaves it out keeps it as
+stored, so a client written before it existed can't turn it off. A
+row keeps its `updated_at`. When the setting switches, or a row is stored
+again, the save logs one line and writes one audit entry,
+`provider.encrypt_credentials` or `provider.decrypt_credentials`, with the
+number of configs stored again and their names. A save reads the setting
+again after its pass, and passes again if another save switched it
+meanwhile. A provider save on another replica reads the setting again after
+its own write. So a save that races the switch still ends as the setting
+that stands says.
+
+A start never stores a row again; it follows the stored setting, and says
+what to do, never naming a value:
+
+- With the key set and the setting off: a notice to turn it on once every
+  replica runs this version (a single replica can turn it on at once), as
+  a warning that names the configs keeping credentials in plain text, if any.
+- Configs that keep encrypted credentials while the setting is off: a
+  warning naming them, since an older version can't read them. A save of the
+  gateway settings stores them as older versions read them.
+- Configs that keep credentials in plain text while the setting is on (saved
+  by an older version, or by a replica without the key): a warning naming
+  them. A save of the gateway settings encrypts them.
+- Without the key: a warning naming the configs that keep credentials in
+  plain text, and one more if the setting is on, since that replica can't
+  read encrypted credentials.
+
+Turning it on, and back off before a rollback, are steps in the runbook
+([RUNBOOK.md](RUNBOOK.md#provider-credentials-at-rest)).
 
 ## What litegen does with a vendor's answers
 

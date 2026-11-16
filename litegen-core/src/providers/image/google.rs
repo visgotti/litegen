@@ -170,6 +170,18 @@ impl ImageProvider for GoogleProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
+    /// What Gemini's image models can't take, refused before anything is
+    /// quoted, reserved or sent; `generate` asks it first: a tier Google
+    /// names (`imageConfig.imageSize`). An id with no arm is the submit's
+    /// `ModelNotSupported`, not this.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, _roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(gemini_model) = Self::resolve_model(&model.id) else { return Ok(()) };
+        match extras.resolution.as_deref().filter(|t| !Self::is_imagen_model(gemini_model) && image_size(t).is_none()) {
+            Some(tier) => Err(ProviderError::InvalidRequest(format!("{}: Google has no image size {tier}", model.id))),
+            None => Ok(()),
+        }
+    }
+
     /// Generate an image. Imagen models route through `POST
     /// {api_base}/models/{model}:predict` (`instances`/`parameters` body,
     /// `predictions[].bytesBase64Encoded` response); Gemini native image models
@@ -194,6 +206,9 @@ impl ImageProvider for GoogleProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let gemini_model = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "google".into() })?;
         let url = self.api_url(gemini_model, crate::providers::wire_model(self.config.as_ref(), &model.id, gemini_model));
         let is_imagen = Self::is_imagen_model(gemini_model);
@@ -299,8 +314,7 @@ impl ImageProvider for GoogleProvider {
             // The tier is `imageConfig.imageSize`, beside `aspectRatio`: the REST
             // `ImageConfig` has exactly those two members.
             // @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — `ImageConfig` (2026-11-03)
-            if let Some(tier) = extras.resolution.as_deref() {
-                let size = image_size(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: Google has no image size {tier}", model.id)))?;
+            if let Some(size) = extras.resolution.as_deref().and_then(image_size) {
                 if !gen_config["imageConfig"].is_object() {
                     gen_config["imageConfig"] = json!({});
                 }

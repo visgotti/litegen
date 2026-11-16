@@ -1194,6 +1194,124 @@ mod tests {
         assert_eq!(fast_count.load(Ordering::SeqCst), 0, "nor sent to the next");
     }
 
+    // ─── A caller's wait on a route (routed-prefer, 2026-11-15) ──────────────
+    // tests/late_images_api.rs covers the mock vendor end to end; these use
+    // vendors no shipped adapter is.
+
+    /// Takes job `job` and asks about it until litegen stops waiting, with
+    /// the image on its third look; with no `job`, it times out before the
+    /// vendor takes one. `resumable`: whether it can be asked about the job
+    /// again later.
+    struct PollsForItsJob {
+        job: Option<&'static str>,
+        resumable: bool,
+    }
+
+    #[async_trait]
+    impl ImageProvider for PollsForItsJob {
+        fn name(&self) -> &str {
+            "polls"
+        }
+        fn configure(&mut self, _config: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool {
+            true
+        }
+        async fn generate(&self, _m: &ModelSchema, _b: &BaseGenerationRequest, extras: &ImageExtras, _r: &MaterializedRequest) -> Result<GenerationOutput, ProviderError> {
+            let Some(job) = self.job else {
+                return Err(ProviderError::Timeout { timeout_ms: 0 });
+            };
+            extras.vendor_job.record(job);
+            let mut budget = crate::providers::PollBudget::new(std::time::Duration::from_secs(30), std::time::Duration::from_millis(5));
+            let mut looks = 0;
+            while budget.next().await {
+                looks += 1;
+                if looks == 3 {
+                    return Ok(GenerationOutput { data: vec![0u8; 4], content_type: "image/png".to_string(), metadata: HashMap::new(), more: Vec::new() });
+                }
+            }
+            Err(ProviderError::Timeout { timeout_ms: 0 })
+        }
+        fn resumable(&self, _model: &ModelSchema) -> bool {
+            self.resumable
+        }
+        async fn estimate_cost(&self, model: &ModelSchema, _request: &ImageGenerationRequest) -> Result<CostEstimate, ProviderError> {
+            Ok(build_cost_estimate(model.pricing.base_cost_usd, 0.0, CostSource::Estimated, None))
+        }
+        async fn health_check(&self) -> HealthCheckResult {
+            HealthCheckResult { healthy: true, message: String::new(), latency_ms: None }
+        }
+    }
+
+    /// A router whose `mock/image-gen` route sends it to `polls` alone, for
+    /// 30 s, with a breaker that opens on the first failure.
+    async fn routed_to_polls(polls: PollsForItsJob) -> ProxyRouter {
+        use crate::config::CircuitBreakerConfig;
+        let config = Arc::new(AppConfig {
+            model_routes: vec![ModelRouteConfig {
+                model: "mock/image-gen".to_string(),
+                deployments: vec![DeploymentConfig { provider: "polls".into(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 }],
+                strategy: Some("fallback".to_string()),
+                cache: None,
+            }],
+            circuit_breaker: CircuitBreakerConfig { threshold: 1, open_for_seconds: 60 },
+            ..AppConfig::default()
+        });
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_image_provider_named("polls", Arc::new(polls)).await;
+        ProxyRouter::new(registry, Arc::new(GenerationCache::new(&CacheGlobalConfig::default())), config, Arc::new(LocalStore))
+    }
+
+    /// The call, from a caller who waits for nothing (`Prefer: respond-async`).
+    async fn waiting_for_nothing(router: &ProxyRouter) -> Result<ImageGenerationResponse, crate::proxy::router::ProxyError> {
+        crate::providers::with_wait(std::time::Duration::ZERO, generate(router)).await
+    }
+
+    #[tokio::test]
+    async fn a_timeout_before_the_vendor_took_the_job_counts_against_the_deployment_whatever_the_callers_wait() {
+        let router = routed_to_polls(PollsForItsJob { job: None, resumable: true }).await;
+        let err = waiting_for_nothing(&router).await.expect_err("timed out");
+        assert!(matches!(&err, crate::proxy::router::ProxyError::VendorTimeout { vendor_job_id: None, .. }), "{err:?}");
+        assert!(router.circuit_breaker.is_open("polls").await, "no job runs on: the vendor didn't take it");
+    }
+
+    #[tokio::test]
+    async fn a_callers_wait_does_not_cut_short_a_deployment_that_could_not_deliver_its_job_later() {
+        let router = routed_to_polls(PollsForItsJob { job: Some("polls-job-1"), resumable: false }).await;
+        let r = waiting_for_nothing(&router).await;
+        assert!(r.is_ok(), "litegen could not ask about the job again, so it waits for it: {:?}", r.err());
+    }
+
+    // ─── A caller's wait on the direct path (misc-server, 2026-11-15) ────────
+
+    /// A router with no route for `mock/image-gen`, whose `mock` is `polls`:
+    /// the direct path.
+    async fn direct_to_polls(polls: PollsForItsJob) -> ProxyRouter {
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_image_provider_named("mock", Arc::new(polls)).await;
+        ProxyRouter::new(registry, Arc::new(GenerationCache::new(&CacheGlobalConfig::default())), Arc::new(AppConfig::default()), Arc::new(LocalStore))
+    }
+
+    /// The handler asks for a short wait only when the provider can deliver
+    /// the job later, but it asks before the router looks up the model's
+    /// route: a route removed in between leaves the call on the direct path,
+    /// whose provider may not be able to. Cut short there, the job runs on at
+    /// the vendor and nothing delivers it.
+    #[tokio::test]
+    async fn a_callers_wait_does_not_cut_short_a_direct_call_that_could_not_deliver_its_job_later() {
+        let router = direct_to_polls(PollsForItsJob { job: Some("polls-job-1"), resumable: false }).await;
+        let r = waiting_for_nothing(&router).await;
+        assert!(r.is_ok(), "litegen could not ask about the job again, so it waits for it: {:?}", r.err());
+    }
+
+    /// The direct path still ends the call at the caller's wait when the job
+    /// can be delivered later (`Prefer: respond-async`, docs/async-images.md).
+    #[tokio::test]
+    async fn a_callers_wait_ends_a_direct_call_whose_job_can_be_delivered_later() {
+        let router = direct_to_polls(PollsForItsJob { job: Some("polls-job-1"), resumable: true }).await;
+        let err = waiting_for_nothing(&router).await.expect_err("the caller waits for nothing");
+        assert!(matches!(&err, crate::proxy::router::ProxyError::VendorTimeout { vendor_job_id: Some(j), .. } if j == "polls-job-1"), "{err:?}");
+    }
+
     /// A config with the cache on: whether answers are cached is the
     /// gateway's settings' call (`docs/gateway-settings.md`).
     fn cache_on() -> AppConfig {

@@ -1,1 +1,13 @@
-POST /ent/v2/reference2video · viduq4-preview (not carried)
+POST /ent/v2/reference2video · viduq4-preview
+Body parameters
+model | string | Required | viduq4-preview
+prompt | string | Required | 20000 1 2
+images | array | Required | viduq4-preview 1 15 20
+sounds | array | Optional | 0 3 3-12s 50 20
+audio | boolean | Optional | true false true true false
+duration | integer | Optional | 5 3-16
+aspect_ratio | string | Optional | 16:9 1:1 9:16 16:9 3:4 4:3
+resolution | string | Optional | 720p 540p 720p 1080p 2K 4K
+seed | integer | Optional | 0 0
+payload | string | Optional | 1048576
+callback_url | string | Optional |

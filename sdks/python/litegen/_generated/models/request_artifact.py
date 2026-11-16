@@ -17,7 +17,17 @@ class RequestArtifact:
     Attributes:
         created_at (datetime.datetime):
         media_type (str):
-        output_kind (str): "b64" | "url" | "error"
+        output_kind (str): What `output_value` holds:
+            - `b64`: the image, base64 (at most 2 MiB; `output_truncated` says
+              when it was cut);
+            - `url`: a link to the output, when the request had one (a job's
+              output is on its generation);
+            - `generation`: a cache hit's: the id of the generation whose answer
+              it was served, which holds the image (no copy here);
+            - `not_kept`: nothing: the request kept nothing (`keep_outputs: false`);
+            - `deleted`: nothing: the output's files were deleted (retention); the
+              prompt and params stay;
+            - `error`: nothing: the request failed (`error_message`).
         output_truncated (bool):
         request_id (str):
         app_id (Union[None, Unset, str]):

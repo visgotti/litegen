@@ -21,7 +21,7 @@ Vendors deliver output in four different shapes, and the shape decides what
 
 | Shape | Vendors | Catalog consequence |
 |---|---|---|
-| Bundle: many formats from one job | Meshy (`model_urls`: glb, obj, fbx, stl, usdz, plus 3mf on request; `target_formats` narrows the set) | `max_items` can be > 1; ask for exactly what was requested |
+| Bundle: many formats from one job | Meshy (`model_urls`: glb, obj, fbx, stl, usdz, plus 3mf on request; `target_formats` narrows the set) | `max_items` can be > 1; ask for exactly what was requested. List the containers one job returns together in `returned_together` (Meshy's rig and animate: `[glb, fbx]`), or a generation that keeps nothing can be promised only one |
 | One-of: one container per job | Hyper3D Rodin (`geometry_file_format`, a scalar), Tencent Hunyuan3D | `max_items: 1`. litegen derives the rest from whichever container it gets; Rodin serves `[glb, fbx]` with its own fbx plus a derived glb |
 | GLB-only, no choice | Stability (SF3D, SPAR3D), most fal and Replicate slugs | `enum_values: [glb]`, `max_items: 1`; send no format field |
 | Convert as a second, billed job | Tripo (glb native; other formats need a separate convert task) | Declare only glb natively. Its `quad: true` silently forces FBX. |

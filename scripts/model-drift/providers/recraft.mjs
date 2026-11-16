@@ -118,7 +118,10 @@ export default {
     'recraft/recraftv3_vector': 'recraftv3_vector',
     'recraft/recraftv2': 'recraftv2',
     'recraft/recraftv4_1': 'recraftv4_1',
+    // Deprecated 2026-11-16: Recraft "Replaced V4.1 Flash" with V4.1 Flash V2,
+    // so this id reads `missing upstream` until the row is removed.
     'recraft/recraftv4_1_flash': 'recraftv4_1_flash',
+    'recraft/recraftv4_1_flash_v2': 'recraftv4_1_flash_v2',
     'recraft/recraftv4_1_pro': 'recraftv4_1_pro',
     'recraft/recraftv4_1_vector': 'recraftv4_1_vector',
     'recraft/recraftv4_1_pro_vector': 'recraftv4_1_pro_vector',

@@ -228,13 +228,46 @@ impl ImageProvider for HunyuanImageProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
+    /// What Hunyuan image can't take, refused before anything is quoted,
+    /// reserved or sent; `generate` asks it first:
+    /// - with a reference image, four sizes: "如果上传 ContentImage 参考图，分辨率仅支持：
+    ///   768:768、768:1024、1024:768、1024:1024";
+    /// - a fixed seed only takes effect with Revise (prompt expansion) off:
+    ///   "扩写开启时固定种子不生效，将保持随机", and with a reference image it stays on:
+    ///   "如果上传了参考图，扩写关闭不生效，将保持开启". So a seed goes with Revise 0, and
+    ///   one that cannot take effect is refused.
+    /// @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/hunyuan/v20230901/models.go (2026-11-03)
+    fn preflight(&self, _model: &ModelSchema, base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(why));
+        if let Some(size) = extras.size.as_deref() {
+            // The validator takes `WxH` or `WXH` (`parse_size`).
+            let resolution = size.replace(['x', 'X'], ":");
+            if !roles.is_empty() && !["768:768", "768:1024", "1024:768", "1024:1024"].contains(&resolution.as_str()) {
+                return refuse(format!("hunyuan-image: with a reference image the size is 768x768, 768x1024, 1024x768 or 1024x1024, not {size}"));
+            }
+        }
+        if base.seed.is_some_and(|s| s >= 1) {
+            if !roles.is_empty() {
+                return refuse("hunyuan-image: a seed has no effect with a reference image (Tencent keeps prompt expansion on)".into());
+            }
+            let revise = extras.extra.as_ref().and_then(|e| e.get("Revise")).and_then(Value::as_i64);
+            if revise.is_some_and(|r| r != 0) {
+                return refuse("hunyuan-image: a seed takes effect only with Revise 0 (prompt expansion off)".into());
+            }
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
-        _model: &ModelSchema,
+        model: &ModelSchema,
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let creds = self.creds()?;
         let region = self.region(&creds);
         let mut submit = json!({ "Prompt": base.prompt });
@@ -244,35 +277,13 @@ impl ImageProvider for HunyuanImageProvider {
         if let Some(size) = extras.size.as_deref() {
             // Resolution takes `W:H`. The validator accepts a size spelled
             // `WxH` or `WXH` (`parse_size`), so convert either separator.
-            let resolution = size.replace(['x', 'X'], ":");
-            // "如果上传 ContentImage 参考图，分辨率仅支持：768:768、768:1024、1024:768、
-            // 1024:1024" — with a reference image only these four apply.
-            if !materialized.refs.is_empty() && !["768:768", "768:1024", "1024:768", "1024:1024"].contains(&resolution.as_str()) {
-                return Err(ProviderError::InvalidRequest(format!(
-                    "hunyuan-image: with a reference image the size is 768x768, 768x1024, 1024x768 or 1024x1024, not {size}"
-                )));
-            }
-            submit["Resolution"] = Value::String(resolution);
+            submit["Resolution"] = Value::String(size.replace(['x', 'X'], ":"));
         }
-        // `Seed`: unset is random and a positive seed is fixed, so 0 is left out.
-        // "扩写开启时固定种子不生效，将保持随机" — a fixed seed has no effect while
-        // Revise (prompt expansion, on unless sent as 0) is on, and "如果上传了参考图，
-        // 扩写关闭不生效，将保持开启" — with a reference image it stays on. So a seed
-        // goes with Revise 0, and one that cannot take effect is refused.
-        // @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/hunyuan/v20230901/models.go (2026-11-03)
+        // `Seed`: unset is random and a positive seed is fixed, so 0 is left
+        // out; it goes with Revise 0 (below), and the preflight refused one
+        // that can't take effect.
         let seed = base.seed.filter(|s| *s >= 1);
         if let Some(seed) = seed {
-            if !materialized.refs.is_empty() {
-                return Err(ProviderError::InvalidRequest(
-                    "hunyuan-image: a seed has no effect with a reference image (Tencent keeps prompt expansion on)".into(),
-                ));
-            }
-            let revise = extras.extra.as_ref().and_then(|e| e.get("Revise")).and_then(Value::as_i64);
-            if revise.is_some_and(|r| r != 0) {
-                return Err(ProviderError::InvalidRequest(
-                    "hunyuan-image: a seed takes effect only with Revise 0 (prompt expansion off)".into(),
-                ));
-            }
             submit["Seed"] = Value::Number(seed.into());
         }
         // Optional reference/control image: nested ContentImage{ImageBase64|ImageUrl}.

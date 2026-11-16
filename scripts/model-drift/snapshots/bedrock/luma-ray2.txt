@@ -1,0 +1,7 @@
++ **Model launch date:** Jan 23, 2025
++ **EOL no sooner than:** Jan 23, 2026
++ **Legacy period:** at least 6 months
++ **Model EOL date:** N/A
++ **Model lifecycle:** Active
+
+| bedrock-runtime | luma.ray-v2:0 | https://bedrock-runtime.us-west-2.amazonaws.com | Not supported | Not supported |

@@ -146,9 +146,11 @@ models:
         redux: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [raw, safety_tolerance, image_prompt_strength, enhance_prompt]
     extra_params:
-      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
+      # From the comment above. safety_tolerance is a string:
+      # "enum": ["1", "2", "3", "4", "5", "6"], "default": "2".
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1-ultra (2026-11-16)
       raw: { kind: bool }
-      safety_tolerance: { kind: string }
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5", "6"], default: "2" }
       image_prompt_strength: { kind: float, min: 0, max: 1, default: 0.1 }
       enhance_prompt: { kind: bool }
     tags: [text-to-image]
@@ -195,8 +197,10 @@ models:
         init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [safety_tolerance, enhance_prompt]
     extra_params:
-      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
-      safety_tolerance: { kind: string }
+      # From the comment above. safety_tolerance is a string:
+      # "enum": ["1", "2", "3", "4", "5", "6"], "default": "2".
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1/redux (2026-11-16)
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5", "6"], default: "2" }
       enhance_prompt: { kind: bool }
     tags: [image-to-image]
 
@@ -214,10 +218,12 @@ models:
     # "$0.05 per megapixels" (fal) of ultra's output, which BFL sizes only as
     # "Generate up to 4MP resolution images" and names no size per ratio. The
     # 2752 × 1536 output size is litegen's own assumption, taken from the
-    # dimensions of the sample images on BFL's page (…-2752x1536.jpg):
-    # 4.227072 MP × $0.05 = $0.2113536.
-    # @see https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/redux/llms.txt (2026-11-09)
-    # @see https://docs.bfl.ml/flux_models/flux_1_1_pro_ultra_raw.md (2026-11-09)
+    # dimensions of the sample images on BFL's page (…-2752x1536.jpg, its Raw
+    # examples; its Ultra examples are …-1536x2688.png, 4.128768 MP):
+    # 4.227072 MP × $0.05 = $0.2113536. Still so on 2026-11-16: neither page
+    # states ultra's output size.
+    # @see https://fal.ai/models/fal-ai/flux-pro/v1.1-ultra/redux/llms.txt (2026-11-16)
+    # @see https://docs.bfl.ml/flux_models/flux_1_1_pro_ultra_raw.md (2026-11-16)
     pricing: { base_cost_usd: 0.2113536 }
     capabilities: { image_to_image: true }
     prompt: { required: false }
@@ -236,9 +242,11 @@ models:
         init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [raw, image_prompt_strength, safety_tolerance, enhance_prompt]
     extra_params:
-      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
+      # From the comment above. safety_tolerance is a string:
+      # "enum": ["1", "2", "3", "4", "5", "6"], "default": "2".
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1-ultra/redux (2026-11-16)
       raw: { kind: bool }
-      safety_tolerance: { kind: string }
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5", "6"], default: "2" }
       image_prompt_strength: { kind: float, min: 0, max: 1, default: 0.1 }
       enhance_prompt: { kind: bool }
     tags: [image-to-image]
@@ -278,8 +286,10 @@ models:
         mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
     extra_allowlist: [safety_tolerance, enhance_prompt]
     extra_params:
-      # From the comment above; fal's FLUX.1 [pro] endpoints take safety_tolerance as a string.
-      safety_tolerance: { kind: string }
+      # From the comment above. safety_tolerance is a string:
+      # "enum": ["1", "2", "3", "4", "5", "6"], "default": "2".
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1/fill (2026-11-16)
+      safety_tolerance: { kind: string, enum_values: ["1", "2", "3", "4", "5", "6"], default: "2" }
       enhance_prompt: { kind: bool }
     tags: [image-to-image, inpainting]
 
@@ -405,7 +415,7 @@ models:
     # sync_mode: it returns a data URI instead of the URL the adapter fetches.
     extra_allowlist: [acceleration, enable_prompt_expansion]
     extra_params:
-      # From fal's OpenAPI (drift snapshot fal/carried-image.txt, fal-ai/flux-2).
+      # From fal's OpenAPI (fal-ai/flux-2 in the fal/carried-image-*.txt drift snapshots).
       acceleration: { kind: string, enum_values: ["none", "regular", "high"], default: "regular" }
       enable_prompt_expansion: { kind: bool }
     tags: [text-to-image, image-to-image]
@@ -699,6 +709,9 @@ models:
       expand:
         kind: expand
         max_px: 2048
+        # Required: the endpoint grows a canvas and nothing else, and fal.rs refuses a request without one ("say
+        # how many pixels to add to at least one side (`expand`)").
+        required: true
         label: Expand
         description: Pixels to add to each side (fal's expand_left, expand_top, expand_right, expand_bottom).
       output_format: { kind: string, enum_values: [jpeg, png], default: jpeg }
@@ -848,8 +861,10 @@ models:
         init: { required: false, min_count: 0, max_count: 4 }
     extra_allowlist: [acceleration]
     extra_params:
-      # From the klein comment above (names it; values unstated).
-      acceleration: { kind: string }
+      # "enum": ["none", "regular", "high"], "default": "regular", on both endpoints.
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/4b/base (2026-11-16)
+      # @see https://fal.ai/models/fal-ai/flux-2/klein/4b/base/edit/llms.txt (2026-11-16)
+      acceleration: { kind: string, enum_values: ["none", "regular", "high"], default: "regular" }
     tags: [text-to-image, image-to-image]
 
   - id: fal/flux-2-klein-9b-base
@@ -894,8 +909,10 @@ models:
         init: { required: false, min_count: 0, max_count: 4 }
     extra_allowlist: [acceleration]
     extra_params:
-      # From the klein comment above (names it; values unstated).
-      acceleration: { kind: string }
+      # "enum": ["none", "regular", "high"], "default": "regular", on both endpoints.
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2/klein/9b/base (2026-11-16)
+      # @see https://fal.ai/models/fal-ai/flux-2/klein/9b/base/edit/llms.txt (2026-11-16)
+      acceleration: { kind: string, enum_values: ["none", "regular", "high"], default: "regular" }
     tags: [text-to-image, image-to-image]
 
   - id: fal/flux-schnell
@@ -966,31 +983,11 @@ models:
     extra_allowlist: []
     tags: [text-to-image]
 
-  - id: fal/sd35-medium
-    provider: fal
-    media_type: image
-    display_name: SD 3.5 Medium (Fal)
-    docs_url: https://fal.ai/models/fal-ai/stable-diffusion-v35-medium/api
-    # "$0.02 per megapixels": $0.02 for the default 1 MP request, then by
-    # the asked size's megapixels (re-read 2026-09-11).
-    # @see https://fal.ai/models/fal-ai/stable-diffusion-v35-medium/llms.txt
-    pricing:
-      base_cost_usd: 0.02
-      variable_pricing:
-        - { per_megapixel_usd: 0.02 }
-    capabilities: { text_to_image: true }
-    prompt: { required: true, max_length: 5000 }
-    params:
-      # PixelGenie L9: output_format jpeg | png, default jpeg.
-      output_format: { kind: string, enum_values: [png, jpeg], default: jpeg }
-      negative_prompt: { kind: string, max_length: 5000 }
-      seed: { kind: seed, min: 0, max: 4294967294 }
-      # num_inference_steps 1-50, default 40; guidance_scale 0-20, default 4.5
-      # (https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/stable-diffusion-v35-medium, 2026-10-30)
-      steps: { kind: int, min: 1, max: 50, default: 40 }
-      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 4.5 }
-    extra_allowlist: []
-    tags: [text-to-image]
+  # SD 3.5 Medium (fal/sd35-medium) was retired 2026-11-16: fal removed
+  # fal-ai/stable-diffusion-v35-medium from its registry, queue OpenAPI and
+  # model page, which all answer 404 (no_retired_model_ids_are_advertised in
+  # tests/catalog_conformance.rs). The same model is still served as
+  # stability/sd3.5-medium and replicate/sd3.5-medium.
 
   - id: fal/recraft-v3
     provider: fal
@@ -1030,7 +1027,8 @@ models:
     # style_id: a Recraft style made from reference images.
     extra_allowlist: [style_id]
     extra_params:
-      # From fal's OpenAPI (drift snapshot fal/carried-image.txt: a uuid4 string).
+      # From fal's OpenAPI (fal-ai/recraft/v3/text-to-image and /image-to-image in the
+      # fal/carried-image-*.txt drift snapshots: a uuid4 string).
       style_id: { kind: string }
     tags: [text-to-image, image-to-image, styled]
 
@@ -1063,7 +1061,8 @@ models:
     # style_id: a Recraft style made from reference images.
     extra_allowlist: [style_id]
     extra_params:
-      # From fal's OpenAPI (drift snapshot fal/carried-image.txt: a uuid4 string).
+      # From fal's OpenAPI (fal-ai/recraft-20b in the fal/carried-image-*.txt drift
+      # snapshots: a uuid4 string).
       style_id: { kind: string }
     tags: [text-to-image, styled]
 
@@ -1532,31 +1531,10 @@ models:
     extra_allowlist: []
     tags: [image-to-image, upscale]
 
-  - id: fal/auraflow
-    provider: fal
-    media_type: image
-    display_name: AuraFlow (Fal)
-    docs_url: https://fal.ai/models/fal-ai/aura-flow/api
-    # fal's registry marks the endpoint deprecated ("status": "deprecated",
-    # updated 2026-10-27) and its page says "This endpoint is deprecated";
-    # no shutdown date and no successor are given. It is still served.
-    # @see https://api.fal.ai/v1/models?endpoint_id=fal-ai/aura-flow (2026-10-30)
-    deprecated_at: 2026-10-27
-    # fal publishes only a compute-second rate ("$0 per compute seconds",
-    # llms.txt read 2026-10-30); $0.02 is litegen's estimate.
-    # @see https://fal.ai/models/fal-ai/aura-flow/llms.txt
-    pricing: { base_cost_usd: 0.02 }
-    capabilities: { text_to_image: true }
-    prompt: { required: true, max_length: 5000 }
-    params:
-      seed: { kind: seed, min: 0, max: 4294967294 }
-      # num_inference_steps is 20-50, default 50 (https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow)
-      steps: { kind: int, min: 20, max: 50, default: 50 }
-      # AuraFlowInput.guidance_scale: "minimum": 0, "maximum": 20, "default": 3.5.
-      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow (2026-11-09)
-      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 3.5 }
-    extra_allowlist: []
-    tags: [text-to-image]
+  # AuraFlow (fal/auraflow) was retired 2026-11-16: fal marked fal-ai/aura-flow
+  # deprecated on 2026-10-27, then removed it from its registry, queue OpenAPI
+  # and model page, which all answer 404; fal named no successor
+  # (no_retired_model_ids_are_advertised in tests/catalog_conformance.rs).
 
   - id: fal/video
     provider: fal
@@ -1782,12 +1760,15 @@ models:
     # continues at 50% off: $0.085 per second at 720p and $0.145 per second at
     # 1080p. … Regular rates of $0.17 per second at 720p and $0.29 per second
     # at 1080p resume on November 23, 2026 at 00:00 UTC." (text-to-video and
-    # image-to-video pages; the keyframes page still carries the earlier
-    # "75% off" text, "from October 15 to November 7", with no later schedule.)
-    # The row bills the list price. The default request (5 s, 720p) is $0.85.
-    # @see https://fal.ai/models/blackforestlabs/flux-3-max/text-to-video/llms.txt (2026-11-09)
-    # @see https://fal.ai/models/blackforestlabs/flux-3-max/image-to-video/llms.txt (2026-11-09)
-    # @see https://fal.ai/models/blackforestlabs/flux-3-max/keyframes-to-video/llms.txt (2026-11-09)
+    # image-to-video pages; the keyframes page gives the same rates and dates:
+    # "From November 8, 2026 at 00:00 UTC through November 22, 2026, the 50%
+    # promotion brings the rate to $0.085 per second at 720p and $0.145 per
+    # second at 1080p", then the same "Regular rates …" sentence.)
+    # The row bills the list price. The default request (5 s, 720p) is 5 ×
+    # $0.17 = $0.85.
+    # @see https://fal.ai/models/blackforestlabs/flux-3-max/text-to-video/llms.txt (2026-11-16)
+    # @see https://fal.ai/models/blackforestlabs/flux-3-max/image-to-video/llms.txt (2026-11-16)
+    # @see https://fal.ai/models/blackforestlabs/flux-3-max/keyframes-to-video/llms.txt (2026-11-16)
     pricing:
       base_cost_usd: 0.85
       variable_pricing:
@@ -1879,7 +1860,7 @@ models:
         init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [model, operating_resolution, refine_foreground]
     extra_params:
-      # From fal's OpenAPI (drift snapshot fal/carried-image-2.txt, fal-ai/birefnet/v2).
+      # From fal's OpenAPI (fal-ai/birefnet/v2 in the fal/carried-image-*.txt drift snapshots).
       model: { kind: string, enum_values: ["General Use (Light)", "General Use (Light 2K)", "General Use (Heavy)", "Matting", "Portrait", "General Use (Dynamic)"], default: "General Use (Light)" }
       operating_resolution: { kind: string, enum_values: ["1024x1024", "2048x2048", "2304x2304"], default: "1024x1024" }
       refine_foreground: { kind: bool, default: true }
@@ -2297,6 +2278,11 @@ models:
     # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging
     #   (MeshyRiggingInput / MeshyRiggingOutput, read 2026-11-09): model_url
     #   (GLB), height_meters (default 1.7), enable_animation (default false).
+    #   Seen 2026-11-16, two optional fields litegen sends neither of:
+    #   skeleton_template ("Leave unset for Meshy's default skeleton
+    #   (meshyrig)", the rig joint_naming's table reads) and include_fingers
+    #   (default false).
+    # @see https://fal.ai/models/fal-ai/meshy/rigging/llms.txt (2026-11-16)
     # @see https://docs.meshy.ai/en/api/rigging (2026-11-09), the limits fal
     #   forwards: "100 MB as a data URI"; "The model can have at most 380,000
     #   triangles (a quad counts as 2), and a model with more returns `400`."
@@ -2344,6 +2330,10 @@ models:
         kind: string_array
         enum_values: [glb, fbx]
         max_items: 1
+        # One request returns both: MeshyRiggingOutput's
+        # `rigged_character_glb` and `rigged_character_fbx`
+        # (fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging).
+        returned_together: [glb, fbx]
         default: [glb]
         label: Output formats
         description: Meshy returns glb and fbx; litegen derives the rest.
@@ -2450,7 +2440,8 @@ models:
   # whose `loras` is optional ("Default: []"), and litegen sends none. "Same
   # inputs as the text-to-image endpoint": image_size 256 to 4096 a side
   # (multiple_of 16), seed, output_format jpeg | png | webp (default png),
-  # edits from at most 10 image_urls.
+  # edits from at most 10 image_urls. Unlike Klein, both endpoints also take
+  # guidance_scale, num_inference_steps and negative_prompt (2026-11-16).
   # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/text-to-image/lora (2026-11-04)
   # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/edit-image/lora (2026-11-04)
   - id: fal/flux-3-image-klein-base
@@ -2463,9 +2454,13 @@ models:
     # image by size: up to 1024x1024 counts as 1 megapixel, 2048x2048 as 1.56":
     # $0.035 up to 1 MP (the default square_hd is 1024²), and 1.56 × $0.035 =
     # $0.0546 above it. fal gives no price past 2048², so the row stops at
-    # 4,194,304 pixels.
-    # @see https://fal.ai/models/blackforestlabs/flux-3/klein/base/text-to-image/lora/llms.txt (2026-11-04)
-    # @see https://fal.ai/models/blackforestlabs/flux-3/klein/base/edit-image/lora/llms.txt (2026-11-04)
+    # 4,194,304 pixels. Both sentences still stand on 2026-11-16, and neither
+    # prices a size between 1 MP and 2048², so the $0.0546 band is inferred (the
+    # plain per-megapixel reading makes 2048² about $0.147). An edit with no
+    # size takes its reference's size ("scaled to at most 4 megapixels"), which
+    # the row bills as 1 MP.
+    # @see https://fal.ai/models/blackforestlabs/flux-3/klein/base/text-to-image/lora/llms.txt (2026-11-16)
+    # @see https://fal.ai/models/blackforestlabs/flux-3/klein/base/edit-image/lora/llms.txt (2026-11-16)
     pricing:
       base_cost_usd: 0.035
       variable_pricing:
@@ -2484,6 +2479,15 @@ models:
         max_pixels: 4194304
       seed: { kind: seed, min: 0, max: 4294967295 }
       output_format: { kind: string, enum_values: [png, jpeg, webp], default: png }
+      # Classifier-free guidance, on both endpoints: guidance_scale "minimum": 0,
+      # "maximum": 20, "default": 3.5 ("How closely the model should stick to your
+      # prompt (classifier-free guidance)."); num_inference_steps "minimum": 4,
+      # "maximum": 50, "default": 50; negative_prompt "default": "".
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/text-to-image/lora (2026-11-16)
+      # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/edit-image/lora (2026-11-16)
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 3.5 }
+      steps: { kind: int, min: 4, max: 50, default: 50 }
+      negative_prompt: { kind: string }
     ref_inputs:
       max_total: 10
       default_role: init

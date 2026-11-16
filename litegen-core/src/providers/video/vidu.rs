@@ -144,6 +144,79 @@ impl ViduProvider {
             Err(format!("vidu2.0 makes no {secs} s {res} clip on {endpoint} (4 s at 360p/720p/1080p, 8 s at 720p; references 4 s at 360p/720p)"))
         }
     }
+
+    /// The resolution the clip is made at: the one asked, else the row's
+    /// default, never a default Vidu picks by model and duration.
+    fn resolution<'a>(model: &'a ModelSchema, extras: &'a VideoExtras) -> Option<&'a str> {
+        extras.resolution.as_deref().or(model.string_default("resolution"))
+    }
+
+    /// The endpoint the request's images choose, by their roles, refusing
+    /// what Vidu would refuse there. One copy: the `preflight` the quote runs
+    /// and the submit both ask it, so a request is refused at both or at
+    /// neither, in the same words.
+    fn endpoint(model: &ModelSchema, extras: &VideoExtras, roles: &[&str]) -> Result<&'static str, ProviderError> {
+        let native = Self::resolve_model(&model.id);
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(why));
+        let has_reference = roles.contains(&"reference");
+        let has_last = roles.iter().any(|r| Self::is_last_frame(r));
+        let has_first = roles.iter().any(|r| matches!(*r, "first_frame" | "init"));
+        // Frames or references, not both: reference2video's `images` are
+        // references (its body has no first or last frame), and img2video and
+        // start-end2video take no reference, so a mix would go there with the
+        // frame as one more reference. The rows' `not_with` refuses it first.
+        // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md> (2026-11-09)
+        if has_reference && (has_first || has_last) {
+            return refuse(format!("{} takes first/last frames or reference images, not both", model.id));
+        }
+        // img2video uses its one image as the FIRST frame: "The model will use
+        // the image provided via this parameter as the first frame", so a last
+        // frame alone is refused rather than sent as a start.
+        // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md> (2026-11-09)
+        if has_last && !has_first {
+            return refuse(format!("{} needs a first_frame to go with a last_frame", model.id));
+        }
+        // On reference2video Vidu documents viduq3-turbo only as
+        // "Subjects-Reference to Video" (`subjects` "Required"); the `images`
+        // form names `viduq3` alone ("Accepted values: `viduq3`").
+        // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md> (2026-11-09)
+        if has_reference && native == "viduq3-turbo" {
+            return refuse(format!(
+                "{} takes no reference images: Vidu documents only a subjects form for it on reference2video",
+                model.id
+            ));
+        }
+        let endpoint = if has_reference {
+            "reference2video"
+        } else if roles.len() >= 2 && has_last {
+            "start-end2video"
+        } else if !roles.is_empty() {
+            "img2video"
+        } else if model.capabilities.text_to_video {
+            "text2video"
+        } else {
+            // text2video only accepts the models the catalog marks
+            // `text_to_video`: each Q3/Q2/Q1 text2video operation names its
+            // own ("Accepted values: `viduq3-turbo`", "optional value:
+            // `viduq3-pro`", "Accepted values: `viduq2`", "Accepted values:
+            // `viduq1`"); the validator refuses such a request first.
+            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-09)
+            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video.md> (2026-11-09)
+            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-09)
+            return refuse(format!("{} has no text-to-video mode; attach a first_frame or reference image", model.id));
+        };
+        if extras.duration_seconds > 0.0 {
+            // Whole seconds: every Vidu row's duration is `kind: int` (C5).
+            Self::vidu2_makes(native, endpoint, extras.duration_seconds as i64, Self::resolution(model, extras))
+                .map_err(ProviderError::InvalidRequest)?;
+        }
+        // PixelGenie L10: audio on, only where the endpoint's body has the
+        // switch (rule 10); off is simply not sent there.
+        if extras.audio == Some(true) && !Self::takes_audio(native, endpoint) {
+            return refuse(format!("{} has no audio switch on {endpoint}: ask without audio, or use a mode that has one", model.id));
+        }
+        Ok(endpoint)
+    }
 }
 
 impl Default for ViduProvider {
@@ -172,6 +245,12 @@ impl VideoProvider for ViduProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What Vidu would refuse on the endpoint the images choose: see
+    /// [`ViduProvider::endpoint`], which the submit asks too.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        Self::endpoint(model, extras, roles).map(drop)
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -182,76 +261,28 @@ impl VideoProvider for ViduProvider {
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);
 
-        // Choose the endpoint + image set by ref roles.
-        let has_reference = materialized.refs.iter().any(|r| r.role == "reference");
-        let has_last = materialized.refs.iter().any(|r| Self::is_last_frame(&r.role));
-        // img2video uses its one image as the FIRST frame: "The model will use
-        // the image provided via this parameter as the first frame", so a last
-        // frame alone is refused rather than sent as a start.
-        // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/image-to-video.md> (2026-11-09)
-        if has_last && !has_reference && !materialized.refs.iter().any(|r| r.role == "first_frame" || r.role == "init") {
-            return Err(ProviderError::InvalidRequest(format!("{} needs a first_frame to go with a last_frame", model.id)));
-        }
-        // On reference2video Vidu documents viduq3-turbo only as
-        // "Subjects-Reference to Video" (`subjects` "Required"); the `images`
-        // form below names `viduq3` alone ("Accepted values: `viduq3`").
-        // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/reference-to-video.md> (2026-11-09)
-        if has_reference && native == "viduq3-turbo" {
-            return Err(ProviderError::InvalidRequest(format!(
-                "{} takes no reference images: Vidu documents only a subjects form for it on reference2video",
-                model.id
-            )));
-        }
+        // The endpoint the images' roles choose, refused as the quote refused it.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        let endpoint = Self::endpoint(model, extras, &roles)?;
         // start-end2video reads `images` positionally (start frame, then end
         // frame), so order last-frame refs after the rest instead of trusting
         // the order the caller listed them in. The sort is stable.
         let mut refs: Vec<_> = materialized.refs.iter().collect();
         refs.sort_by_key(|r| Self::is_last_frame(&r.role));
         let images: Vec<String> = refs.iter().filter_map(|r| Self::ref_image(&r.form)).collect();
-
-        let endpoint = if has_reference {
-            "reference2video"
-        } else if images.len() >= 2 && has_last {
-            "start-end2video"
-        } else if !images.is_empty() {
-            "img2video"
-        } else if model.capabilities.text_to_video {
-            "text2video"
-        } else {
-            // text2video only accepts the models the catalog marks
-            // `text_to_video`: each Q3/Q2/Q1 text2video operation names its
-            // own ("Accepted values: `viduq3-turbo`", "optional value:
-            // `viduq3-pro`", "Accepted values: `viduq2`", "Accepted values:
-            // `viduq1`"), and nothing before the adapter checks capability
-            // flags — refuse instead of sending a request Vidu rejects.
-            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-11-09)
-            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/text-to-video.md> (2026-11-09)
-            // @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-11-09)
-            return Err(ProviderError::InvalidRequest(format!(
-                "{} has no text-to-video mode; attach a first_frame or reference image",
-                model.id
-            )));
-        };
         let url = format!("{}/ent/v2/{endpoint}", self.api_base());
 
         let mut body = json!({ "model": crate::providers::wire_model(self.config.as_ref(), &model.id, native), "prompt": base.prompt });
         if !images.is_empty() {
             body["images"] = Value::Array(images.into_iter().map(Value::String).collect());
         }
-        // The row's default when none is named: the clip runs at what it was
-        // priced at, never at a default Vidu picks by model and duration.
-        let row_default = match model.params.get("resolution") {
-            Some(crate::capabilities::ParamSpec::String(s)) => s.default.clone(),
-            _ => None,
-        };
-        let resolution = extras.resolution.as_deref().or(row_default.as_deref());
         if extras.duration_seconds > 0.0 {
             // Whole seconds: every Vidu row's duration is `kind: int` (C5).
-            let duration = extras.duration_seconds as i64;
-            Self::vidu2_makes(native, endpoint, duration, resolution).map_err(ProviderError::InvalidRequest)?;
-            body["duration"] = Value::Number(duration.into());
+            body["duration"] = Value::Number((extras.duration_seconds as i64).into());
         }
-        if let Some(res) = resolution {
+        // The row's default when none is named: the clip runs at what it was
+        // priced at.
+        if let Some(res) = Self::resolution(model, extras) {
             body["resolution"] = Value::String(res.to_string());
         }
         // Only text2video and reference2video take an aspect ratio; img2video
@@ -276,15 +307,10 @@ impl VideoProvider for ViduProvider {
             }
         }
         // PixelGenie L10: audio on or off (Vidu's own `audio`), only where the
-        // endpoint's body has the switch (rule 10).
-        if let Some(audio) = extras.audio {
-            if Self::takes_audio(native, endpoint) {
-                body["audio"] = Value::Bool(audio);
-            } else if audio {
-                return Err(ProviderError::InvalidRequest(format!(
-                    "{} has no audio switch on {endpoint}: ask without audio, or use a mode that has one", model.id
-                )));
-            }
+        // endpoint's body has the switch (rule 10; `endpoint` refused audio
+        // on where it has none).
+        if let Some(audio) = extras.audio.filter(|_| Self::takes_audio(native, endpoint)) {
+            body["audio"] = Value::Bool(audio);
         }
 
         let builder = crate::providers::auth::apply(
@@ -842,6 +868,31 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+    }
+
+    /// Vidu takes first/last frames (img2video, start-end2video) or reference
+    /// images (reference2video), never both in one request: reference2video's
+    /// `images` are references and its body has no frame, so a mix went there
+    /// with the frame sent as one more reference, and the clip did not start
+    /// on it. The validator refuses the mix (the `reference` role's
+    /// `not_with`); the adapter refuses it too, before any call.
+    /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md> (2026-11-09)
+    #[tokio::test]
+    async fn a_frame_with_a_reference_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "reference2video").await;
+        let p = make_provider(&server.uri());
+        for (id, roles) in [
+            ("vidu/viduq1", &["first_frame", "reference"][..]),
+            ("vidu/viduq1", &["reference", "last_frame"][..]),
+            ("vidu/viduq2-pro", &["first_frame", "last_frame", "reference"][..]),
+            ("vidu/viduq4-preview", &["reference", "first_frame"][..]),
+        ] {
+            let refs = MaterializedRequest { refs: roles.iter().map(|r| url_ref(r, "https://img.test/a.png")).collect(), cleanup: Cleanup::empty() };
+            let res = p.generate(&ref_schema(id), &make_base("x", id), &make_extras(), &refs).await;
+            assert!(matches!(res, Err(ProviderError::InvalidRequest(_))), "{id} {roles:?}: {res:?}");
+        }
         assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
     }
 

@@ -247,6 +247,60 @@ pub fn role_has(role: Role, perm: Permission) -> bool {
     permissions_for(role).contains(&perm)
 }
 
+/// Whether `a` stands above `b`: Owner, then Admin, Member, Viewer. A person
+/// changes only roles below their own, and to roles below their own, and
+/// issues reset links only for accounts below them (review A1, A2).
+pub fn outranks(a: Role, b: Role) -> bool {
+    fn standing(role: Role) -> u8 {
+        match role {
+            Role::Owner => 3,
+            Role::Admin => 2,
+            Role::Member => 1,
+            Role::Viewer => 0,
+        }
+    }
+    standing(a) > standing(b)
+}
+
+/// Whether the person who issued a reset link may still issue it now, as
+/// `POST /v1/users/{id}/password-reset` decided at issue (review round 4,
+/// findings 4 and 5); confirming checks it inside its transaction. The
+/// issuer must be active and, in every org the account belongs to, hold
+/// `member:write` with a role above the account's. For a deactivated account
+/// (confirming reactivates it), the issuer must also be allowed to reactivate
+/// it: in hosted mode no person is (the master key's links carry no issuer),
+/// and in single-tenant mode one holding `user:write:any` in `default_org`
+/// above the account's role there, if it has one. Roles are `(org, role)`.
+pub fn issuer_may_still_issue(
+    issuer_active: bool,
+    issuer_roles: &[(String, Role)],
+    account_roles: &[(String, Role)],
+    account_active: bool,
+    mode: crate::config::Mode,
+    default_org: &str,
+) -> bool {
+    let role_in = |roles: &[(String, Role)], org: &str| roles.iter().find(|(o, _)| o == org).map(|(_, r)| *r);
+    if !issuer_active || account_roles.is_empty() {
+        return false;
+    }
+    let outranks_everywhere = account_roles.iter().all(|(org, theirs)| {
+        role_in(issuer_roles, org).is_some_and(|mine| role_has(mine, Permission::MemberWrite) && outranks(mine, *theirs))
+    });
+    if !outranks_everywhere {
+        return false;
+    }
+    if account_active {
+        return true;
+    }
+    match mode {
+        crate::config::Mode::Hosted => false,
+        crate::config::Mode::SingleTenant => match role_in(issuer_roles, default_org) {
+            Some(mine) if role_has(mine, Permission::UserWriteAny) => role_in(account_roles, default_org).is_none_or(|theirs| outranks(mine, theirs)),
+            _ => false,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,6 +9,7 @@ import {
   describePrompt,
   describeSpec,
   exampleBody,
+  formatCost,
   formatPrice,
   generationEndpoint,
   refRoleRows,
@@ -265,5 +266,26 @@ describe('formatPrice', () => {
 
   it('keeps no binary noise as digits', () => {
     expect(formatPrice(0.1 * 3)).toBe('$0.30 / request');
+  });
+});
+
+describe('formatCost', () => {
+  // A quote or a charge as the server gave it: fal flux-2-klein at 256x256
+  // is $0.00033, which three fixed decimals showed as "$0.000".
+  it('prints a sub-cent amount with every digit it has', () => {
+    expect(formatCost(0.00033)).toBe('$0.00033');
+    expect(formatCost(0.005)).toBe('$0.005');
+  });
+
+  it('prints at least two decimals', () => {
+    expect(formatCost(5)).toBe('$5.00');
+    expect(formatCost(0.1)).toBe('$0.10');
+    expect(formatCost(0)).toBe('$0.00');
+  });
+
+  it('keeps no binary noise of a sum or product as digits', () => {
+    // Compare's preview multiplies a quote by N and adds the models up.
+    expect(formatCost(0.00033 * 3)).toBe('$0.00099');
+    expect(formatCost(0.1 + 0.2)).toBe('$0.30');
   });
 });

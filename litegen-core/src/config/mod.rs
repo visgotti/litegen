@@ -32,7 +32,13 @@ impl Mode {
 /// Development-only feature flags. Off by default.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DevFlags {
+    /// Deprecated: also adds `_dev_token`, the same value as `token`, to the
+    /// answer that makes an invitation, which carries the token without it
+    /// since 2026-11-15.
     #[serde(default)] pub expose_invite_tokens: bool,
+    /// Development only: the self-service reset request
+    /// (`POST /v1/auth/password-reset/request`) answers with its token as
+    /// `_dev_token`. `LITEGEN__DEV__EXPOSE_RESET_TOKENS` sets it too.
     #[serde(default)] pub expose_reset_tokens: bool,
 }
 
@@ -109,9 +115,16 @@ pub struct AppConfig {
     /// Authentication configuration (password-auth toggle, etc.).
     #[serde(default)]
     pub auth: AuthConfig,
-    /// Generation call hooks (`docs/hooks.md`): Python, Node or Bun files run
-    /// around the generation routes, in this order.
+    /// The one address the first single-tenant signup may use
+    /// (`LITEGEN__OWNER_EMAIL`), read once at start like every setting; see
+    /// [`AppConfig::owner_email`]. Start-up refuses one that isn't an address
+    /// while that signup is still to come (`auth::email::owner_email_problem`).
     #[serde(default)]
+    pub owner_email: Option<String>,
+    /// Generation call hooks (`docs/hooks.md`): Python, Node or Bun files run
+    /// around the generation routes, in this order. Read entry by entry, so
+    /// an entry's error names it.
+    #[serde(default, deserialize_with = "crate::hooks::config::hook_entries")]
     pub hooks: Vec<crate::hooks::HookConfig>,
     /// Who may open stored outputs (`docs/storage-access.md`): the defaults
     /// under the gateway setting and each app's own.
@@ -130,6 +143,13 @@ pub struct AppConfig {
     /// Where keys' webhooks may point (`docs/management-api.md`).
     #[serde(default)]
     pub webhooks: WebhooksConfig,
+    /// How long the request log is kept (`docs/RUNBOOK.md`).
+    #[serde(default)]
+    pub logs: LogsConfig,
+    /// How litegen reads the 3D files it converts: the Draco decoder's switch
+    /// and limits (`docs/gateway-settings.md`).
+    #[serde(default)]
+    pub mesh: MeshConfig,
     /// Redis, shared by replicas (`docs/scaling.md`). Set by `LITEGEN_REDIS_URL`
     /// or `LITEGEN_REDIS_HOST` and their companions, never by `litegen.yaml`;
     /// `None` is one replica, as before.
@@ -231,6 +251,7 @@ impl Default for AppConfig {
             mode: Mode::default(),
             secrets_key: None,
             dev: DevFlags::default(),
+            owner_email: None,
             auth: AuthConfig::default(),
             hooks: Vec::new(),
             storage_access: StorageAccessConfig::default(),
@@ -238,6 +259,8 @@ impl Default for AppConfig {
             retries: RetriesConfig::default(),
             mcp: McpConfig::default(),
             webhooks: WebhooksConfig::default(),
+            logs: LogsConfig::default(),
+            mesh: MeshConfig::default(),
             redis: None,
             startup_warnings: Vec::new(),
             config_file: None,
@@ -268,6 +291,12 @@ fn host_is_loopback(host: &str) -> bool {
 }
 
 impl AppConfig {
+    /// `owner_email` as signup compares it: trimmed, and `None` when unset or
+    /// empty (a compose file passes an unset variable as `""`).
+    pub fn owner_email(&self) -> Option<&str> {
+        self.owner_email.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
     /// Settings this config sets that litegen no longer uses, one line each;
     /// the loader adds them to `startup_warnings`.
     pub fn retired_setting_warnings(&self) -> Vec<String> {
@@ -347,6 +376,79 @@ impl AppConfig {
         } else {
             StartupSecurityCheck::Ok
         }
+    }
+
+    /// The dev token flags that are on: setting, variable, what it does.
+    fn dev_token_flags_on(&self) -> Vec<(&'static str, &'static str, &'static str)> {
+        let mut on = Vec::new();
+        if self.dev.expose_reset_tokens {
+            on.push((
+                "dev.expose_reset_tokens",
+                "LITEGEN__DEV__EXPOSE_RESET_TOKENS",
+                "answers an unauthenticated reset request with the reset token, so anyone who knows an account's email can take it over",
+            ));
+        }
+        if self.dev.expose_invite_tokens {
+            on.push((
+                "dev.expose_invite_tokens",
+                "LITEGEN__DEV__EXPOSE_INVITE_TOKENS",
+                "adds `_dev_token` to the answer that makes an invitation (deprecated: that answer carries the token without it)",
+            ));
+        }
+        on
+    }
+
+    /// Why the public could reach this deployment, if it could: hosted mode,
+    /// a bind other than loopback, or a public URL that isn't loopback (a
+    /// proxy on the same host forwards public traffic to 127.0.0.1, so a
+    /// loopback bind alone proves nothing).
+    fn public_reach(&self) -> Option<String> {
+        if self.mode == Mode::Hosted {
+            return Some("it runs in hosted mode".to_string());
+        }
+        if !host_is_loopback(&self.server.host) {
+            return Some(format!("it binds {}, not a loopback address", self.server.host));
+        }
+        let public_url = self.server.public_base_url.as_deref().map(str::trim).filter(|u| !u.is_empty())?;
+        match reqwest::Url::parse(public_url).ok().and_then(|u| u.host_str().map(str::to_string)) {
+            Some(host) if host_is_loopback(&host) => None,
+            _ => Some(format!("server.public_base_url ({public_url}) is not a loopback address")),
+        }
+    }
+
+    /// The dev token flags that are on where the public could reach them,
+    /// one line each for a FATAL refusal at start (review A7): they are for
+    /// local tests only.
+    pub fn dev_token_flag_refusals(&self) -> Vec<String> {
+        let Some(reach) = self.public_reach() else { return Vec::new() };
+        self.dev_token_flags_on()
+            .into_iter()
+            .map(|(setting, variable, what)| {
+                format!("{setting} ({variable}) {what}. It is for local tests only, and the public could reach this server: {reach}")
+            })
+            .collect()
+    }
+
+    /// A warning for each dev token flag that is on.
+    pub fn dev_token_flag_warnings(&self) -> Vec<String> {
+        self.dev_token_flags_on()
+            .into_iter()
+            .map(|(setting, variable, what)| format!("SECURITY: {setting} ({variable}) is on: it {what}. It is for local tests only"))
+            .collect()
+    }
+
+    /// A warning when a single-tenant deployment with no account yet can be
+    /// reached from outside with no owner email set (review A5): its first
+    /// signup claims the Owner, and nothing proves the address.
+    pub fn open_first_signup_warning(&self, no_account_yet: bool) -> Option<String> {
+        if self.mode != Mode::SingleTenant || !no_account_yet || self.owner_email().is_some() {
+            return None;
+        }
+        let reach = self.public_reach()?;
+        Some(format!(
+            "SECURITY: no account exists yet and LITEGEN__OWNER_EMAIL is not set, so whoever signs up first becomes the Owner, \
+             and the public could reach this server: {reach}. Set LITEGEN__OWNER_EMAIL before exposing a fresh deployment, or sign up first."
+        ))
     }
 }
 
@@ -614,6 +716,11 @@ pub struct CacheGlobalConfig {
     /// first evicts.
     #[serde(default = "default_cache_max_bytes", deserialize_with = "cache_max_bytes")]
     pub max_bytes: u64,
+    /// Whether a cache hit is charged the cached answer's price (default
+    /// true). False makes hits free, as LiteLLM does; either way the hit's
+    /// log row says `cache_hit`.
+    #[serde(default = "default_true")]
+    pub charge_hits: bool,
 }
 
 /// A whole number within `lo..=hi`, or an error naming `field`: config that
@@ -670,6 +777,77 @@ pub struct WebhooksConfig {
     /// mode no tenant's webhook ever may.
     #[serde(default)]
     pub internal_targets: InternalTargets,
+    /// Days the webhook log is kept: the hourly retention sweep deletes an
+    /// outbox delivery this long after it ended, and an attempt row this long
+    /// after it was made. 0 (the default) keeps them for good, as before the
+    /// purge, so an upgrade deletes nothing until this is set; at most 36500.
+    /// A pending delivery is never deleted.
+    #[serde(default, deserialize_with = "log_retention_days")]
+    pub log_retention_days: u32,
+}
+
+fn log_retention_days<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let v = i64::deserialize(d)?;
+    if !crate::access::retention_in_range(v) {
+        return Err(serde::de::Error::custom(format!(
+            "webhooks.log_retention_days must be between 0 and {} days, not {v}",
+            crate::access::MAX_RETENTION_DAYS,
+        )));
+    }
+    Ok(v as u32)
+}
+
+/// `logs` in `litegen.yaml` (`LITEGEN__LOGS__RETENTION_DAYS`,
+/// `LITEGEN__LOGS__ARTIFACT_RETENTION_DAYS`): how long the request log is
+/// kept. The hourly retention sweep deletes what is older, on the database's
+/// clock (`proxy::retention::purge_request_log`). Both 0 unless set, which
+/// keeps everything, as before.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "LogsInput")]
+pub struct LogsConfig {
+    /// Days a request's log row is kept, with its spend tags and its
+    /// artifact: 0 keeps them for good; at most 36500. `/v1/logs`,
+    /// `/v1/stats` and `/v1/spend/*` read only the rows kept.
+    pub retention_days: u32,
+    /// Days a request's artifact (its prompt, params and output, up to 2 MiB:
+    /// `GET /v1/logs/{id}/artifact`) is kept, when that should be shorter
+    /// than its log row: 0 keeps it as long as the row; at most 36500, and no
+    /// more than `retention_days` when that is set.
+    pub artifact_retention_days: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogsInput {
+    #[serde(default)]
+    retention_days: Option<i64>,
+    #[serde(default)]
+    artifact_retention_days: Option<i64>,
+}
+
+impl TryFrom<LogsInput> for LogsConfig {
+    type Error = String;
+    fn try_from(l: LogsInput) -> Result<Self, String> {
+        let days = |key: &str, v: Option<i64>| {
+            let v = v.unwrap_or(0);
+            if crate::access::retention_in_range(v) {
+                Ok(v as u32)
+            } else {
+                Err(format!("{key} must be between 0 and {} days, not {v}", crate::access::MAX_RETENTION_DAYS))
+            }
+        };
+        let c = LogsConfig {
+            retention_days: days("logs.retention_days", l.retention_days)?,
+            artifact_retention_days: days("logs.artifact_retention_days", l.artifact_retention_days)?,
+        };
+        if c.retention_days > 0 && c.artifact_retention_days > c.retention_days {
+            return Err(format!(
+                "logs.artifact_retention_days ({}) must be no more than logs.retention_days ({}): an artifact is kept no longer than its log row",
+                c.artifact_retention_days, c.retention_days,
+            ));
+        }
+        Ok(c)
+    }
 }
 
 /// `webhooks.internal_targets`.
@@ -741,6 +919,123 @@ impl TryFrom<RetriesInput> for RetriesConfig {
     }
 }
 
+/// `mesh` in `litegen.yaml`: how litegen reads the 3D files it converts, on
+/// the convert endpoint (`POST /v1/utils/models3d/convert`), in a 3D
+/// generation's delivery and in a 3D operation's source mesh alike.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MeshConfig {
+    /// Draco-compressed glTF primitives.
+    pub draco: DracoConfig,
+}
+
+/// `mesh.draco` (`LITEGEN__MESH__DRACO__…`): whether a Draco-compressed glTF
+/// primitive (`KHR_draco_mesh_compression`) is decoded, and the most one
+/// primitive may hold. The stream's header states its counts before any data,
+/// so the counts and their ratio are checked before anything decodes. A
+/// primitive past one is refused, naming the limit: 422 `mesh_unsupported` on
+/// the convert endpoint, 422 `source_format_unsupported` for an operation's
+/// source mesh (before anything is billed), a failed delivery for a
+/// generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "DracoInput")]
+pub struct DracoConfig {
+    /// Decode Draco primitives (default true). Off, a file with one is
+    /// refused, naming this setting.
+    pub enabled: bool,
+    /// Points one primitive may declare or decode: 1 to 4,000,000 (the
+    /// scene's vertex cap, the default).
+    pub max_points: u32,
+    /// Faces one primitive may declare or decode: 1 to 4,000,000 (a third of
+    /// the scene's index cap, the default).
+    pub max_faces: u32,
+    /// Decoded attribute data one primitive may hold, in MB of 1,000,000
+    /// bytes: 1 to 192 (default 24).
+    pub max_decoded_mb: u32,
+    /// Faces a point one primitive's header may declare: 1 to 64 (default
+    /// 5; a closed mesh has about 2, a double-sided one that shares its
+    /// vertices about 4, and each face a point more may cost a decode about
+    /// 0.5 GB more). Hosted deployments that accept uploads from untrusted
+    /// users can lower it to 3 (about 2 GB worst case, extrapolated) at the
+    /// cost of double-sided meshes.
+    pub max_faces_per_point: u32,
+}
+
+/// What a Draco refusal names while `mesh.draco.enabled` is false.
+pub const DRACO_SWITCH: &str = "the server setting mesh.draco.enabled (LITEGEN__MESH__DRACO__ENABLED)";
+
+/// The most `mesh.draco` takes. Points and faces stop at the scene's own caps,
+/// past which the scene refuses first; decoded data at 192 MB, the document's
+/// own budget of 48,000,000 decoded values read as 4-byte floats; faces a point
+/// at 64, 32 times a closed mesh's.
+const DRACO_MAX_POINTS: i64 = crate::mesh::glb::MAX_MERGED_VERTICES as i64;
+const DRACO_MAX_FACES: i64 = (crate::mesh::glb::MAX_MERGED_INDICES / 3) as i64;
+const DRACO_MAX_DECODED_MB: i64 = 192;
+const DRACO_MAX_FACES_PER_POINT: i64 = 64;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DracoInput {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_points: Option<i64>,
+    #[serde(default)]
+    max_faces: Option<i64>,
+    #[serde(default)]
+    max_decoded_mb: Option<i64>,
+    #[serde(default)]
+    max_faces_per_point: Option<i64>,
+}
+
+impl TryFrom<DracoInput> for DracoConfig {
+    type Error = String;
+    fn try_from(d: DracoInput) -> Result<Self, String> {
+        let defaults = DracoConfig::default();
+        let limit = |key: &str, v: Option<i64>, default: u32, max: i64| match v {
+            None => Ok(default),
+            Some(v) if (1..=max).contains(&v) => Ok(v as u32),
+            Some(v) => Err(format!("mesh.draco.{key} must be between 1 and {max}, not {v}")),
+        };
+        Ok(DracoConfig {
+            enabled: d.enabled.unwrap_or(defaults.enabled),
+            max_points: limit("max_points", d.max_points, defaults.max_points, DRACO_MAX_POINTS)?,
+            max_faces: limit("max_faces", d.max_faces, defaults.max_faces, DRACO_MAX_FACES)?,
+            max_decoded_mb: limit("max_decoded_mb", d.max_decoded_mb, defaults.max_decoded_mb, DRACO_MAX_DECODED_MB)?,
+            max_faces_per_point: limit("max_faces_per_point", d.max_faces_per_point, defaults.max_faces_per_point, DRACO_MAX_FACES_PER_POINT)?,
+        })
+    }
+}
+
+impl Default for DracoConfig {
+    /// The mesh library's own defaults, which every read had before these
+    /// were settings, and 5 faces a point.
+    fn default() -> Self {
+        let d = crate::mesh::DracoOptions::default();
+        Self {
+            enabled: d.enabled,
+            max_points: d.max_points as u32,
+            max_faces: d.max_faces as u32,
+            max_decoded_mb: (d.max_decoded_bytes / 1_000_000) as u32,
+            max_faces_per_point: d.max_faces_per_point as u32,
+        }
+    }
+}
+
+impl DracoConfig {
+    /// The options the mesh library reads a Draco primitive with.
+    pub fn options(&self) -> crate::mesh::DracoOptions {
+        crate::mesh::DracoOptions {
+            enabled: self.enabled,
+            disabled_by: DRACO_SWITCH,
+            max_points: self.max_points as usize,
+            max_faces: self.max_faces as usize,
+            max_decoded_bytes: self.max_decoded_mb as usize * 1_000_000,
+            max_faces_per_point: self.max_faces_per_point as usize,
+        }
+    }
+}
+
 impl Default for CacheGlobalConfig {
     fn default() -> Self {
         Self {
@@ -748,6 +1043,7 @@ impl Default for CacheGlobalConfig {
             default_ttl_seconds: 3600,
             max_items: 10_000,
             max_bytes: default_cache_max_bytes(),
+            charge_hits: true,
         }
     }
 }
@@ -1395,6 +1691,58 @@ mod tests {
         assert!(AuthConfig::default().allow_password);
     }
 
+    /// Review A7: the dev token flags hand out account takeovers (a reset
+    /// token for any email, unauthenticated), so they run only for local
+    /// tests: refused in hosted mode, on a bind other than loopback, and
+    /// behind a public URL that isn't loopback (a proxy on the same host
+    /// forwards public traffic to 127.0.0.1). Whenever one is on, it is named.
+    #[test]
+    fn the_dev_token_flags_refuse_anywhere_the_public_could_reach() {
+        let local = || {
+            let mut cfg = AppConfig::default();
+            cfg.server.host = "127.0.0.1".into();
+            cfg.dev.expose_reset_tokens = true;
+            cfg
+        };
+        assert!(local().dev_token_flag_refusals().is_empty(), "single-tenant, loopback, no public URL");
+        let warnings = local().dev_token_flag_warnings();
+        assert!(warnings.len() == 1 && warnings[0].contains("dev.expose_reset_tokens"), "{warnings:?}");
+        assert!(AppConfig::default().dev_token_flag_warnings().is_empty(), "off: nothing to say");
+
+        let hosted = AppConfig { mode: Mode::Hosted, ..local() };
+        let public_bind = AppConfig { server: ServerConfig { host: "0.0.0.0".into(), ..local().server }, ..local() };
+        let behind_proxy = AppConfig { server: ServerConfig { public_base_url: Some("https://app.example.com/api".into()), ..local().server }, ..local() };
+        for (why, cfg) in [("hosted", hosted), ("a public bind", public_bind), ("a public URL", behind_proxy)] {
+            let refusals = cfg.dev_token_flag_refusals();
+            assert!(refusals.len() == 1 && refusals[0].contains("dev.expose_reset_tokens") && refusals[0].contains("LITEGEN__DEV__EXPOSE_RESET_TOKENS"), "{why}: {refusals:?}");
+        }
+        let loopback_url = AppConfig { server: ServerConfig { public_base_url: Some("http://127.0.0.1:5274/api".into()), ..local().server }, ..local() };
+        assert!(loopback_url.dev_token_flag_refusals().is_empty(), "a loopback public URL (the e2e's vite proxy)");
+        let invite = AppConfig { mode: Mode::Hosted, dev: DevFlags { expose_invite_tokens: true, expose_reset_tokens: false }, ..local() };
+        assert!(invite.dev_token_flag_refusals().iter().any(|r| r.contains("dev.expose_invite_tokens")), "the invite flag too");
+    }
+
+    /// Review A5: a single-tenant deployment with no account yet lets the
+    /// first signup claim its Owner, so one reachable from outside with no
+    /// owner email set is named at start.
+    #[test]
+    fn an_open_first_signup_reachable_from_outside_is_named() {
+        let exposed = || {
+            let mut cfg = AppConfig::default();
+            cfg.server.host = "0.0.0.0".into();
+            cfg
+        };
+        let warning = exposed().open_first_signup_warning(true).expect("named");
+        assert!(warning.contains("LITEGEN__OWNER_EMAIL"), "{warning}");
+        let behind_proxy = AppConfig { server: ServerConfig { host: "127.0.0.1".into(), public_base_url: Some("https://app.example.com/api".into()), ..exposed().server }, ..exposed() };
+        assert!(behind_proxy.open_first_signup_warning(true).is_some(), "behind a public URL");
+        assert_eq!(exposed().open_first_signup_warning(false), None, "an account exists");
+        assert_eq!(AppConfig { owner_email: Some("owner@example.com".into()), ..exposed() }.open_first_signup_warning(true), None, "the owner email is set");
+        assert_eq!(AppConfig { mode: Mode::Hosted, ..exposed() }.open_first_signup_warning(true), None, "hosted signup is open by design");
+        let local = AppConfig { server: ServerConfig { host: "127.0.0.1".into(), ..exposed().server }, ..exposed() };
+        assert_eq!(local.open_first_signup_warning(true), None, "loopback only");
+    }
+
     #[test]
     fn default_config_is_flagged_as_unauthenticated_network_exposure() {
         // Default = SingleTenant + no master_key + 0.0.0.0 bind. In that combo
@@ -1515,6 +1863,161 @@ mod tests {
         assert!(!cfg.storage_access.keep_outputs);
         assert_eq!(cfg.storage_access.retention_days, 36_500);
         assert_eq!(cfg.storage_access.signed_links, SignedLinks::Litegen);
+    }
+
+    /// `webhooks.log_retention_days`: the days a finished webhook delivery
+    /// and each attempt are kept. Unset it is 0, which keeps them for good,
+    /// as every version did before the purge: an upgrade deletes nothing
+    /// until the operator sets a number, at most 36500.
+    #[test]
+    fn webhooks_keep_their_log_for_good_unless_set() {
+        assert_eq!(AppConfig::default().webhooks.log_retention_days, 0);
+        assert_eq!(load_yaml("cost_markup_percent: 0\n").unwrap().webhooks.log_retention_days, 0);
+        assert_eq!(load_yaml("webhooks:\n  internal_targets: admins\n").unwrap().webhooks.log_retention_days, 0);
+        assert_eq!(load_yaml("webhooks:\n  log_retention_days: 30\n").unwrap().webhooks.log_retention_days, 30);
+        assert_eq!(load_yaml("webhooks:\n  log_retention_days: 0\n").unwrap().webhooks.log_retention_days, 0);
+        assert_eq!(load_yaml("webhooks:\n  log_retention_days: 36500\n").unwrap().webhooks.log_retention_days, 36_500);
+        let e = load_yaml("webhooks:\n  log_retention_days: 36501\n").unwrap_err().to_string();
+        assert!(e.contains("log_retention_days") && e.contains("36500"), "{e}");
+    }
+
+    /// `logs`: how long the request log is kept. Both 0 unless set, which
+    /// keeps everything, as before; either may be set alone, each from 0 to
+    /// 36500 days, in the file or as `LITEGEN__LOGS__…`.
+    #[test]
+    fn the_request_log_is_kept_for_good_unless_logs_set_a_retention() {
+        let days = |c: &AppConfig| (c.logs.retention_days, c.logs.artifact_retention_days);
+        assert_eq!(days(&AppConfig::default()), (0, 0));
+        assert_eq!(days(&load_yaml("cost_markup_percent: 0\n").unwrap()), (0, 0));
+        for (yaml, want) in [
+            ("logs:\n  retention_days: 90\n  artifact_retention_days: 7\n", (90, 7)),
+            ("logs:\n  retention_days: 30\n", (30, 0)),
+            ("logs:\n  artifact_retention_days: 14\n", (0, 14)),
+            ("logs:\n  retention_days: 0\n  artifact_retention_days: 0\n", (0, 0)),
+            ("logs:\n  retention_days: 36500\n  artifact_retention_days: 36500\n", (36_500, 36_500)),
+            ("logs:\n  artifact_retention_days: 36500\n", (0, 36_500)),
+            ("logs:\n  retention_days: 7\n  artifact_retention_days: 7\n", (7, 7)),
+        ] {
+            assert_eq!(days(&load_yaml(yaml).unwrap_or_else(|e| panic!("{yaml}: {e}"))), want, "{yaml}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let env: HashMap<String, String> = [("LITEGEN__LOGS__RETENTION_DAYS", "30"), ("LITEGEN__LOGS__ARTIFACT_RETENTION_DAYS", "7")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let c = load_config_from(dir.path(), None, &env).unwrap_or_else(|e| panic!("LITEGEN__LOGS__*: {e}"));
+        assert_eq!(days(&c), (30, 7));
+    }
+
+    /// `logs` is refused at load, naming the key: a value outside 0 to 36500,
+    /// an artifact kept longer than its log row (both keys named), and a key
+    /// it doesn't have. In the file and from the environment alike.
+    #[test]
+    fn logs_refuse_a_retention_out_of_range_or_an_artifact_outliving_its_log_row() {
+        for (yaml, key) in [
+            ("logs:\n  retention_days: 36501\n", "logs.retention_days"),
+            ("logs:\n  retention_days: -1\n", "logs.retention_days"),
+            ("logs:\n  artifact_retention_days: 36501\n", "logs.artifact_retention_days"),
+            ("logs:\n  artifact_retention_days: -1\n", "logs.artifact_retention_days"),
+        ] {
+            let e = load_yaml(yaml).unwrap_err().to_string();
+            assert!(e.contains(key) && e.contains("36500"), "{yaml}: {e}");
+        }
+        let e = load_yaml("logs:\n  retention_days: 7\n  artifact_retention_days: 30\n").unwrap_err().to_string();
+        assert!(e.contains("logs.artifact_retention_days") && e.contains("logs.retention_days"), "{e}");
+        let e = load_yaml("logs:\n  retention: 30\n").unwrap_err().to_string();
+        assert!(e.contains("retention"), "{e}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let env = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<String, String>>();
+        let e = load_config_from(dir.path(), None, &env(&[("LITEGEN__LOGS__RETENTION_DAYS", "7"), ("LITEGEN__LOGS__ARTIFACT_RETENTION_DAYS", "30")]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("logs.artifact_retention_days") && e.contains("logs.retention_days"), "{e}");
+        let e = load_config_from(dir.path(), None, &env(&[("LITEGEN__LOGS__RETENTION_DAYS", "36501")])).unwrap_err().to_string();
+        assert!(e.contains("logs.retention_days") && e.contains("36500"), "{e}");
+    }
+
+    /// `mesh.draco`: Draco on, at the limits every read had before they were
+    /// settings (4,000,000 points and faces, 24 MB of decoded attributes),
+    /// and 5 faces a point. Its options are the mesh library's own
+    /// defaults, with this setting named for a refusal while it is off.
+    #[test]
+    fn mesh_draco_is_on_at_todays_limits_unless_set() {
+        for c in [AppConfig::default(), load_yaml("cost_markup_percent: 0\n").unwrap(), load_yaml("mesh:\n  draco: {}\n").unwrap()] {
+            assert_eq!(c.mesh.draco, DracoConfig { enabled: true, max_points: 4_000_000, max_faces: 4_000_000, max_decoded_mb: 24, max_faces_per_point: 5 });
+            assert_eq!(c.mesh.draco.options(), crate::mesh::DracoOptions { disabled_by: DRACO_SWITCH, ..Default::default() });
+        }
+        assert!(DRACO_SWITCH.contains("mesh.draco.enabled") && DRACO_SWITCH.contains("LITEGEN__MESH__DRACO__ENABLED"));
+    }
+
+    /// Each `mesh.draco` setting loads from the file and from its
+    /// `LITEGEN__MESH__DRACO__…` variable (a variable beats the file), both
+    /// ends of each range load, and the options carry them to the mesh
+    /// library, `max_decoded_mb` in MB of 1,000,000 bytes.
+    #[test]
+    fn mesh_draco_settings_load_from_the_file_and_the_environment() {
+        let c = load_yaml("mesh:\n  draco:\n    enabled: false\n    max_points: 100000\n    max_faces: 200000\n    max_decoded_mb: 8\n    max_faces_per_point: 4\n").unwrap();
+        assert_eq!(c.mesh.draco, DracoConfig { enabled: false, max_points: 100_000, max_faces: 200_000, max_decoded_mb: 8, max_faces_per_point: 4 });
+        assert_eq!(
+            c.mesh.draco.options(),
+            crate::mesh::DracoOptions { enabled: false, disabled_by: DRACO_SWITCH, max_points: 100_000, max_faces: 200_000, max_decoded_bytes: 8_000_000, max_faces_per_point: 4 }
+        );
+        for (yaml, want) in [
+            ("mesh:\n  draco:\n    max_points: 1\n    max_faces: 1\n    max_decoded_mb: 1\n    max_faces_per_point: 1\n", (1, 1, 1, 1)),
+            ("mesh:\n  draco:\n    max_points: 4000000\n    max_faces: 4000000\n    max_decoded_mb: 192\n    max_faces_per_point: 64\n", (4_000_000, 4_000_000, 192, 64)),
+        ] {
+            let d = load_yaml(yaml).unwrap_or_else(|e| panic!("{yaml}: {e}")).mesh.draco;
+            assert_eq!((d.max_points, d.max_faces, d.max_decoded_mb, d.max_faces_per_point), want, "{yaml}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("litegen.yaml"), "mesh:\n  draco:\n    max_points: 5\n").unwrap();
+        let env: HashMap<String, String> = [
+            ("LITEGEN__MESH__DRACO__ENABLED", "off"),
+            ("LITEGEN__MESH__DRACO__MAX_POINTS", "1000"),
+            ("LITEGEN__MESH__DRACO__MAX_FACES", "3000"),
+            ("LITEGEN__MESH__DRACO__MAX_DECODED_MB", "12"),
+            ("LITEGEN__MESH__DRACO__MAX_FACES_PER_POINT", "6"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let c = load_config_from(dir.path(), None, &env).unwrap_or_else(|e| panic!("LITEGEN__MESH__DRACO__*: {e}"));
+        assert_eq!(c.mesh.draco, DracoConfig { enabled: false, max_points: 1000, max_faces: 3000, max_decoded_mb: 12, max_faces_per_point: 6 });
+        let file_only = load_config_from(dir.path(), None, &HashMap::new()).unwrap_or_else(|e| panic!("the file alone: {e}"));
+        assert_eq!(file_only.mesh.draco, DracoConfig { max_points: 5, ..DracoConfig::default() });
+    }
+
+    /// `mesh.draco` is refused at load, naming the setting and its range: a
+    /// limit of 0, a negative one, one past its ceiling (the scene's caps for
+    /// points and faces, 192 MB, 64 faces a point), and a key it doesn't
+    /// have. From the file and the environment alike.
+    #[test]
+    fn mesh_draco_refuses_values_out_of_range_and_unknown_keys() {
+        for (yaml, says) in [
+            ("mesh:\n  draco:\n    max_points: 0\n", "mesh.draco.max_points must be between 1 and 4000000, not 0"),
+            ("mesh:\n  draco:\n    max_points: -1\n", "mesh.draco.max_points must be between 1 and 4000000, not -1"),
+            ("mesh:\n  draco:\n    max_points: 4000001\n", "mesh.draco.max_points must be between 1 and 4000000, not 4000001"),
+            ("mesh:\n  draco:\n    max_faces: 0\n", "mesh.draco.max_faces must be between 1 and 4000000, not 0"),
+            ("mesh:\n  draco:\n    max_faces: 4000001\n", "mesh.draco.max_faces must be between 1 and 4000000, not 4000001"),
+            ("mesh:\n  draco:\n    max_decoded_mb: 0\n", "mesh.draco.max_decoded_mb must be between 1 and 192, not 0"),
+            ("mesh:\n  draco:\n    max_decoded_mb: 193\n", "mesh.draco.max_decoded_mb must be between 1 and 192, not 193"),
+            ("mesh:\n  draco:\n    max_faces_per_point: 0\n", "mesh.draco.max_faces_per_point must be between 1 and 64, not 0"),
+            ("mesh:\n  draco:\n    max_faces_per_point: 65\n", "mesh.draco.max_faces_per_point must be between 1 and 64, not 65"),
+        ] {
+            let e = load_yaml(yaml).map(|c| c.mesh.draco).unwrap_err().to_string();
+            assert!(e.contains(says), "{yaml}: {e}");
+        }
+        for (yaml, key) in [("mesh:\n  draco:\n    max_vertices: 10\n", "max_vertices"), ("mesh:\n  meshopt: {}\n", "meshopt")] {
+            let e = load_yaml(yaml).map(|c| c.mesh).unwrap_err().to_string();
+            assert!(e.contains(key), "{yaml}: {e}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let env = |k: &str, v: &str| [(k.to_string(), v.to_string())].into_iter().collect::<HashMap<String, String>>();
+        let e = load_config_from(dir.path(), None, &env("LITEGEN__MESH__DRACO__MAX_FACES_PER_POINT", "0")).map(|c| c.mesh.draco).unwrap_err().to_string();
+        assert!(e.contains("mesh.draco.max_faces_per_point must be between 1 and 64, not 0"), "{e}");
+        let e = load_config_from(dir.path(), None, &env("LITEGEN__MESH__DRACO__ENABLED", "maybe")).map(|c| c.mesh.draco).unwrap_err().to_string();
+        assert!(e.contains("enabled") || e.contains("maybe"), "{e}");
     }
 
     #[test]

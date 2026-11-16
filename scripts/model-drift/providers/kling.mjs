@@ -194,6 +194,10 @@ export default {
     videoPage('i2v-3-0-turbo', 'video/3-0-turbo/image-to-video', 'image-to-video'),
     videoPage('t2v-4-0', 'video/4-0/text-to-video', 'text-to-video'),
     videoPage('i2v-4-0', 'video/4-0/image-to-video', 'image-to-video'),
+    // Kling 4.0 Flash (new 2026-11-16, not carried): its pages showed up in `pages`, so it
+    // surfaces as `new` until it is carried or acknowledged.
+    videoPage('t2v-4-0-flash', 'video/4-0-flash/text-to-video', 'text-to-video'),
+    videoPage('i2v-4-0-flash', 'video/4-0-flash/image-to-video', 'image-to-video'),
     capabilityMap('capability-video', 'video', ['Models', 'Text to Video', 'Image to Video']),
     capabilityMap('capability-image', 'image', ['Models', 'Text to Image', 'Image to Image']),
     {

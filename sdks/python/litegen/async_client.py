@@ -19,6 +19,7 @@ from .client import (
     _idempotency,
     _prefer_async,
     _drop_none,
+    _is_answer,
     _metadata_params,
     _parse_dropped_params,
     _q,
@@ -35,18 +36,33 @@ from .polling import (
     async_wait_for_video_completion,
 )
 from .types import (
+    ApiKeyDetail,
+    AuditLogPage,
     CancelledGeneration,
     CostEstimate,
+    GatewaySettings,
+    GatewaySettingsView,
     Generation,
     GenerationAssetList,
     GenerationPage,
     ImageSegmentationResponse,
+    InviteResponse,
     MediaType,
     Model3dConversion,
     Model3dConvertFormats,
     Model3dFormat,
     Model3dGenerateParams,
     Model3dGenerationResponse,
+    PasswordResetLink,
+    PatchProviderConfigRequest,
+    PendingInvitation,
+    ProviderConfigView,
+    RequestLogPage,
+    Role,
+    SpendLogPage,
+    UpdateApiKeyRequest,
+    WebhookDeliveryPage,
+    WebhookDeliveryState,
 )
 
 
@@ -97,11 +113,14 @@ class AsyncLiteGenClient:
         self.stats = _AsyncStats(self)
         self.logs = _AsyncLogs(self)
         self.keys = _AsyncKeys(self)
+        self.audit = _AsyncAudit(self)
         self.cache = _AsyncCache(self)
         self.limits = _AsyncLimits(self)
         self.file_access = _AsyncFileAccess(self)
         self.end_users = _AsyncEndUsers(self)
         self.spend = _AsyncSpend(self)
+        self.users = _AsyncUsers(self)
+        self.orgs = _AsyncOrgs(self)
         self.admin = _AsyncAdmin(self)
         self.oauth = _AsyncOAuth(self)
 
@@ -127,10 +146,13 @@ class AsyncLiteGenClient:
         content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         follow_redirects: bool = False,
+        answer_on: tuple[int, ...] = (),
     ) -> tuple[Any, httpx.Headers]:
         """:meth:`_request`, plus the response headers (the job submits read the
         dropped-params header, see :func:`litegen.client._parse_dropped_params`;
-        mesh conversion sends raw ``content`` and reads its losses header)."""
+        mesh conversion sends raw ``content`` and reads its losses header).
+        ``answer_on``: error statuses whose body may be the route's documented
+        answer (:func:`litegen.client._is_answer`), returned instead of raised."""
         try:
             resp = await self._http.request(
                 method,
@@ -143,7 +165,7 @@ class AsyncLiteGenClient:
             )
         except httpx.TimeoutException as e:
             raise LiteGenTimeoutError(str(e)) from e
-        if resp.status_code >= 400:
+        if resp.status_code >= 400 and not (resp.status_code in answer_on and _is_answer(resp)):
             _raise_for_status(resp)
         ctype = resp.headers.get("content-type", "")
         if ctype.startswith("application/json"):
@@ -654,8 +676,9 @@ class _AsyncHealth:
     async def check(self) -> Any:
         """Each provider set up with the gateway's own keys, one entry per
         provider and ``modality``; the deployment's own, so other credentials
-        get a 403. See :meth:`litegen.client._HealthNamespace.check`."""
-        return await self._c._request("GET", "/health")
+        get a 403. A 503's ``"degraded"`` report is returned as a 200's is. See
+        :meth:`litegen.client._HealthNamespace.check`."""
+        return (await self._c._request_with_headers("GET", "/health", answer_on=(503,)))[0]
 
     async def live(self) -> Any:
         return await self._c._request("GET", "/health/live")
@@ -680,9 +703,12 @@ class _AsyncLogs:
     def __init__(self, c: AsyncLiteGenClient) -> None:
         self._c = c
 
-    async def list(self, *, page: int = 1, per_page: int = 50, metadata: Mapping[str, str] | None = None) -> Any:
+    async def list(
+        self, *, page: int = 1, per_page: int = 50, metadata: Mapping[str, str] | None = None
+    ) -> RequestLogPage:
         """Request logs, newest first; ``metadata`` keeps the requests whose
-        metadata holds every pair."""
+        metadata holds every pair. A cache hit has a row of its own, with
+        ``cache_hit`` true."""
         return await self._c._request(
             "GET", "/v1/logs", params={"page": page, "per_page": per_page, **_metadata_params(metadata)}
         )
@@ -711,6 +737,50 @@ class _AsyncKeys:
 
     async def unblock(self, key_id: str) -> Any:
         return await self._c._request("POST", f"/v1/keys/{_q(key_id)}/unblock")
+
+    async def patch(self, key_id: str, **fields: Unpack[UpdateApiKeyRequest]) -> ApiKeyDetail:
+        """Edit a key as a JSON merge patch: ``None`` clears ``token_quota``,
+        ``rpm_limit``, ``webhook_url`` and ``expires_at``, and a field left out
+        stays as it is. See :meth:`litegen.client._KeysNamespace.patch`."""
+        return await self._c._request("PATCH", f"/v1/keys/{_q(key_id)}", json=dict(fields))
+
+    async def list_webhook_deliveries(self, key_id: str, *, page: int = 1, per_page: int = 50) -> WebhookDeliveryPage:
+        """The key's webhook delivery attempts, newest first, each with its
+        delivery's ``delivery_id``."""
+        return await self._c._request(
+            "GET", f"/v1/keys/{_q(key_id)}/webhook-deliveries", params={"page": page, "per_page": per_page}
+        )
+
+    async def redeliver_webhook_delivery(self, key_id: str, delivery_id: str) -> WebhookDeliveryState:
+        """Send a delivery that ended again, under the same ``delivery_id``; 409
+        ``delivery_pending`` while it is still being sent, 429
+        ``redeliver_too_soon`` within a minute of the last redeliver. See
+        :meth:`litegen.client._KeysNamespace.redeliver_webhook_delivery`."""
+        return await self._c._request(
+            "POST", f"/v1/keys/{_q(key_id)}/webhook-deliveries/{_q(delivery_id)}/redeliver"
+        )
+
+
+class _AsyncAudit:
+    def __init__(self, c: AsyncLiteGenClient) -> None:
+        self._c = c
+
+    async def list(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        org_id: str | None = None,
+        actor_key_id: str | None = None,
+        action: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+    ) -> AuditLogPage:
+        """One page of the audit log; the master key names another org with
+        ``org_id``. See :meth:`litegen.client._AuditNamespace.list`."""
+        params = _drop_none({"org_id": org_id, "actor_key_id": actor_key_id, "action": action, "from": from_, "to": to})
+        params.update(page=page, per_page=per_page)
+        return await self._c._request("GET", "/v1/audit", params=params)
 
 
 class _AsyncCache:
@@ -951,10 +1021,66 @@ class _AsyncSpend:
         params["group_by"] = group_by
         return await self._c._request("GET", "/v1/spend/report", params=params)
 
-    async def logs(self, *, page: int = 1, per_page: int = 50, from_: str | None = None, **filters: Any) -> Any:
+    async def logs(
+        self, *, page: int = 1, per_page: int = 50, from_: str | None = None, **filters: Any
+    ) -> SpendLogPage:
         params = self._filters(from_, filters)
         params.update(page=page, per_page=per_page)
         return await self._c._request("GET", "/v1/spend/logs", params=params)
+
+
+class _AsyncUsers:
+    """Accounts (``/v1/users``)."""
+
+    def __init__(self, client: AsyncLiteGenClient) -> None:
+        self._c = client
+
+    async def password_reset_link(self, user_id: str) -> PasswordResetLink:
+        """Issue a password reset link for an account, shown only in this
+        answer (``reset_url``, or ``token``). See
+        :meth:`litegen.client._UsersNamespace.password_reset_link`."""
+        return await self._c._request("POST", f"/v1/users/{_q(user_id)}/password-reset")
+
+
+class _AsyncOrgMembers:
+    def __init__(self, client: AsyncLiteGenClient) -> None:
+        self._c = client
+
+    async def invite(self, org_id: str, *, email: str, role: Role) -> InviteResponse:
+        """Invite someone into the org as ``role``; give them the answer's
+        ``invite_url`` or ``token``, shown only here. See
+        :meth:`litegen.client._OrgMembersNamespace.invite`."""
+        return await self._c._request(
+            "POST", f"/v1/orgs/{_q(org_id)}/members", json={"email": email, "role": role}
+        )
+
+
+class _AsyncOrgInvitations:
+    """An org's pending invitations (``/v1/orgs/{id}/invitations``). See
+    :class:`litegen.client._OrgInvitationsNamespace`."""
+
+    def __init__(self, client: AsyncLiteGenClient) -> None:
+        self._c = client
+
+    async def list(self, org_id: str) -> list[PendingInvitation]:
+        """The org's invitations not yet accepted or expired, newest first,
+        without their tokens."""
+        return await self._c._request("GET", f"/v1/orgs/{_q(org_id)}/invitations")
+
+    async def revoke(self, org_id: str, invitation_id: str) -> None:
+        """Revoke an invitation, so its token no longer accepts; a 404
+        ``invitation_not_found`` when none with this id waits in this org."""
+        await self._c._request("DELETE", f"/v1/orgs/{_q(org_id)}/invitations/{_q(invitation_id)}")
+
+
+class _AsyncOrgs:
+    """Organizations: inviting members and the invitations still pending. The
+    master key or a signed-in person, never an API key (403): see
+    :class:`litegen.client._OrgsNamespace`."""
+
+    def __init__(self, client: AsyncLiteGenClient) -> None:
+        self.members = _AsyncOrgMembers(client)
+        self.invitations = _AsyncOrgInvitations(client)
 
 
 class _AsyncAdminModels:
@@ -998,8 +1124,17 @@ class _AsyncAdminProviders:
 
     async def configure(self, name: str, **config: Any) -> Any:
         """Set ``api_key``, ``api_keys``, ``key_id``, ``key_secret``, ``api_base``,
-        ``model_mapping``, ``extra_headers``, ``options``, ``region`` or ``enabled``."""
+        ``model_mapping``, ``extra_headers``, ``options``, ``region`` or ``enabled``,
+        replacing the runtime config. To change some fields and keep the rest,
+        use :meth:`patch`."""
         return await self._c._request("PUT", f"/v1/admin/providers/{_q(name)}", json=config)
+
+    async def patch(self, name: str, **fields: Unpack[PatchProviderConfigRequest]) -> ProviderConfigView:
+        """Change some of a provider's runtime config and keep the rest: a field
+        given is set, ``None`` clears it (a secret: ``""`` removes it), a field
+        left out keeps its stored value. See
+        :meth:`litegen.client._AdminProvidersNamespace.patch`."""
+        return await self._c._request("PATCH", f"/v1/admin/providers/{_q(name)}", json=dict(fields))
 
     async def reset(self, name: str) -> Any:
         """Drop the runtime config; the provider falls back to its env/YAML config."""
@@ -1024,11 +1159,14 @@ class _AsyncAdminSettings:
     def __init__(self, client: AsyncLiteGenClient) -> None:
         self._c = client
 
-    async def get(self) -> Any:
+    async def get(self) -> GatewaySettingsView:
+        """The stored settings and what is in force, with each numeric
+        setting's range (``limits``)."""
         return await self._c._request("GET", "/v1/admin/settings")
 
-    async def update(self, **settings: Any) -> Any:
-        """Replace the gateway settings; an omitted field is cleared."""
+    async def update(self, **settings: Unpack[GatewaySettings]) -> GatewaySettingsView:
+        """Replace the gateway settings; an omitted field is cleared, except
+        ``encrypt_provider_credentials``, which keeps its stored value."""
         return await self._c._request("PUT", "/v1/admin/settings", json=settings)
 
 

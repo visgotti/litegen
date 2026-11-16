@@ -7,6 +7,7 @@ use axum::http::{header, request::Parts, HeaderMap, HeaderName, HeaderValue, Met
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Map, Value};
 
+use super::RouteGroup;
 use crate::api::middleware::body::BodyBudget;
 
 /// The validator's own limit on a generation body, which `GET /v1/models`
@@ -46,18 +47,21 @@ struct Part {
     data: Bytes,
 }
 
-/// Which generation routes a hook may read the body of: every POST but the
-/// converter, whose upload streams through unread.
-pub(crate) fn readable(method: &Method, path: &str) -> bool {
-    method == Method::POST && path != "/v1/utils/models3d/convert"
+/// Whether a hook reads the body of a request to a route in `group` (the
+/// group the router gives the hook layers): a POST's, unless the group's
+/// bodies stream through unread, as `convert`'s upload and `files`' file do.
+/// A GET has none.
+pub(crate) fn readable(method: &Method, group: RouteGroup) -> bool {
+    method == Method::POST && !matches!(group, RouteGroup::Convert | RouteGroup::Files)
 }
 
 /// Buffer the request (within the validator's limit, through `budget` and
 /// its deadline) and build the view hooks see. A body read here carries its
-/// charge on, so the routes behind do not charge it again.
-pub(crate) async fn hook_view(req: Request, budget: &BodyBudget) -> Result<(HookedRequest, Value), Response> {
+/// charge on, so the routes behind do not charge it again. `group` is the
+/// route's group: it decides whether the body is read ([`readable`]).
+pub(crate) async fn hook_view(req: Request, group: RouteGroup, budget: &BodyBudget) -> Result<(HookedRequest, Value), Response> {
     let (mut parts, body) = req.into_parts();
-    let (content, body_view, files) = if readable(&parts.method, parts.uri.path()) {
+    let (content, body_view, files) = if readable(&parts.method, group) {
         let read = budget.read(body, MAX_BODY_BYTES).await.map_err(IntoResponse::into_response)?;
         parts.extensions.insert(read.charged());
         let bytes = read.bytes;
@@ -344,9 +348,10 @@ mod tests {
             b.push(b'}');
             Request::post("/v1/images/generations").header("content-type", "application/json").body(Body::from(b)).unwrap()
         };
-        let (_, view) = hook_view(body_of(max), &ample()).await.unwrap_or_else(|r| panic!("refused a body of the served size: {}", r.status()));
+        let (_, view) =
+            hook_view(body_of(max), RouteGroup::Generations, &ample()).await.unwrap_or_else(|r| panic!("refused a body of the served size: {}", r.status()));
         assert_eq!(view["body"]["prompt"], "a red fox");
-        let refused = hook_view(body_of(max + 1), &ample()).await.err().map(|r| r.status());
+        let refused = hook_view(body_of(max + 1), RouteGroup::Generations, &ample()).await.err().map(|r| r.status());
         assert_eq!(refused, Some(axum::http::StatusCode::PAYLOAD_TOO_LARGE));
     }
 
@@ -354,7 +359,7 @@ mod tests {
     async fn an_unchanged_answer_rebuilds_the_identical_request() {
         let original = awkward_request();
         let (want_method, want_uri, want_headers) = (original.method().clone(), original.uri().clone(), header_lines(original.headers()));
-        let (hooked, _) = hook_view(original, &ample()).await.unwrap();
+        let (hooked, _) = hook_view(original, RouteGroup::Generations, &ample()).await.unwrap();
         let rebuilt = apply_answer(hooked, None).unwrap();
         assert_eq!(rebuilt.method(), want_method);
         assert_eq!(rebuilt.uri(), &want_uri);
@@ -365,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_view_joins_repeated_headers_and_leaves_out_values_that_arent_utf8() {
-        let (_, view) = hook_view(awkward_request(), &ample()).await.unwrap();
+        let (_, view) = hook_view(awkward_request(), RouteGroup::Generations, &ample()).await.unwrap();
         assert_eq!(view["headers"]["x-dup"], "1, 2");
         assert_eq!(view["headers"]["cookie"], "a=1; b=2");
         assert!(view["headers"].get("x-raw").is_none(), "{view}");
@@ -375,7 +380,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_changed_body_keeps_every_header_the_hook_left_alone_byte_for_byte() {
-        let (hooked, mut view) = hook_view(awkward_request(), &ample()).await.unwrap();
+        let (hooked, mut view) = hook_view(awkward_request(), RouteGroup::Generations, &ample()).await.unwrap();
         view["body"]["prompt"] = json!("a fox (hooked)");
         view["headers"]["authorization"] = json!("Bearer k");
         let rebuilt = apply_answer(hooked, Some(view)).unwrap();
@@ -389,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_header_the_hook_removed_is_gone_and_hop_by_hop_headers_never_pass() {
-        let (hooked, mut view) = hook_view(awkward_request(), &ample()).await.unwrap();
+        let (hooked, mut view) = hook_view(awkward_request(), RouteGroup::Generations, &ample()).await.unwrap();
         view["headers"].as_object_mut().unwrap().remove("cookie");
         view["headers"]["connection"] = json!("close");
         let rebuilt = apply_answer(hooked, Some(view)).unwrap();
@@ -406,14 +411,14 @@ mod tests {
                 .body(Body::from("0123456789"))
                 .unwrap()
         };
-        let (hooked, mut view) = hook_view(converter(), &ample()).await.unwrap();
+        let (hooked, mut view) = hook_view(converter(), RouteGroup::Convert, &ample()).await.unwrap();
         view["headers"]["content-length"] = json!("99");
         view["headers"]["x-note"] = json!("seen");
         let rebuilt = apply_answer(hooked, Some(view)).unwrap();
         assert_eq!(rebuilt.headers().get("content-length").unwrap(), "10", "the stream's framing is its own");
         assert_eq!(rebuilt.headers().get("x-note").unwrap(), "seen", "other changes still apply");
 
-        let (hooked, mut view) = hook_view(converter(), &ample()).await.unwrap();
+        let (hooked, mut view) = hook_view(converter(), RouteGroup::Convert, &ample()).await.unwrap();
         view["headers"].as_object_mut().unwrap().remove("content-length");
         let rebuilt = apply_answer(hooked, Some(view)).unwrap();
         assert_eq!(rebuilt.headers().get("content-length").unwrap(), "10");

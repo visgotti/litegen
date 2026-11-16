@@ -17,6 +17,25 @@ use crate::types::GenerationStatus;
 /// prematurely.
 const MAX_ACTIVE_AGE_SECS: i64 = 2 * 60 * 60; // 2 hours
 
+/// How long a new row of an org may go without its vendor account recorded
+/// before the poller reads it as a row from before litegen recorded one: the
+/// submit merges `vendor_account` into the row just after inserting it, so a
+/// tick can claim the row in between (`resolve_job_credential`).
+const ACCOUNT_RECORD_GRACE_SECS: i64 = 60;
+
+/// How often the poller warns of a row it skips for want of a key of the
+/// account its job ran on: it skips the row every tick, for up to
+/// MAX_ACTIVE_AGE_SECS, and warns at its first skip, then at the first poll
+/// past each multiple of this in the row's age (on the database's clock), so
+/// about once every 10 minutes. The other polls log the skip at debug. The
+/// row records the mark it last warned at (`note_poll_skip_warning`), not
+/// the process: no mark is missed or warned twice however the ticks fall,
+/// replicas share it, and a restart repeats none.
+const SKIP_WARNING_EVERY_SECS: i64 = 10 * 60;
+
+/// How often the poller ticks ([`spawn_poller`]).
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What a terminal transition notifies with: the key's webhook, its URLs
 /// handed out in the app's access mode when `presenting` is given.
 pub(crate) struct Notify<'a> {
@@ -175,7 +194,7 @@ pub async fn poll_once_until(
     presenting: Option<&crate::access::present::Presenting>,
     stop: impl std::future::Future<Output = ()>,
 ) {
-    poll_tick(claimant, POLL_CLAIM_HOLD, db, registry, secrets_key, mode, model3d_store, presenting, stop).await
+    poll_tick(claimant, POLL_CLAIM_HOLD, STATUS_ANSWER_BUDGET, db, registry, secrets_key, mode, model3d_store, presenting, stop).await
 }
 
 /// [`poll_once_as`] with claims that hold for `hold` (tests shorten it).
@@ -191,14 +210,29 @@ pub(crate) async fn poll_once_with_hold(
     model3d_store: &Arc<dyn crate::proxy::storage::ImageStorage>,
     presenting: Option<&crate::access::present::Presenting>,
 ) {
-    poll_tick(claimant, hold, db, registry, secrets_key, mode, model3d_store, presenting, std::future::pending()).await
+    poll_tick(claimant, hold, STATUS_ANSWER_BUDGET, db, registry, secrets_key, mode, model3d_store, presenting, std::future::pending()).await
 }
 
-/// One tick: claim rows for `hold`, then poll them until `stop`.
+/// One tick of [`poll_once`] that gives a vendor `budget` to answer each
+/// status check (tests shorten it).
+#[cfg(test)]
+pub(crate) async fn poll_once_with_answer_budget(
+    budget: std::time::Duration,
+    db: &Arc<dyn DatabaseStore>,
+    registry: &Arc<ProviderRegistry>,
+    model3d_store: &Arc<dyn crate::proxy::storage::ImageStorage>,
+) {
+    let claimant = crate::shared::replica_id();
+    poll_tick(claimant, POLL_CLAIM_HOLD, budget, db, registry, None, crate::config::Mode::SingleTenant, model3d_store, None, std::future::pending()).await
+}
+
+/// One tick: claim rows for `hold`, then poll them until `stop`, giving a
+/// vendor `answer_budget` to answer each status check.
 #[allow(clippy::too_many_arguments)]
 async fn poll_tick(
     claimant: &str,
     hold: chrono::Duration,
+    answer_budget: std::time::Duration,
     db: &Arc<dyn DatabaseStore>,
     registry: &Arc<ProviderRegistry>,
     secrets_key: Option<[u8; 32]>,
@@ -218,6 +252,10 @@ async fn poll_tick(
             return;
         }
     };
+    // The rows take turns by provider, each provider's in claim order, so a
+    // vendor that hangs can't have its rows take every slot, an answer
+    // budget at a time, while another vendor's rows wait behind them.
+    let rows = take_turns_by(rows, |gen| gen.provider.as_str());
 
     // One hardened (no-redirect) webhook client per tick, cloned into each
     // dispatch task — `reqwest::Client` clones share a connection pool, so this
@@ -237,7 +275,8 @@ async fn poll_tick(
         }
     };
     // A tick can outlast its claims' hold: rows wait for a slot, and one row
-    // can take as long as its vendor's timeout or a large download. So the
+    // can take as long as a large download (a vendor has `answer_budget` to
+    // answer each status check, STATUS_ANSWER_BUDGET). So the
     // rows being polled are renewed every third of the hold while the tick
     // runs, and another replica never polls a row this one still is. A row
     // that starts after that long is re-claimed first (below).
@@ -250,7 +289,8 @@ async fn poll_tick(
 
     // Rows are polled side by side, so one that is slow to answer (a vendor
     // that hangs, a large 3D delivery) does not hold every row behind it
-    // until the next tick. 3D deliveries are bounded on their own
+    // until the next tick, and a vendor that hangs gives its rows' slots up
+    // at the answer budget. 3D deliveries are bounded on their own
     // (`delivery_lease::delivery_slots`). A row starts only while the stop
     // has not fired: `take_until` asks it before handing out each row.
     let wh_client = &wh_client;
@@ -274,8 +314,13 @@ async fn poll_tick(
                 }
             }
             in_progress_now().insert(id.clone());
-            let over_age = (now() - gen.created_at).num_seconds() > MAX_ACTIVE_AGE_SECS;
-            let polled = std::panic::AssertUnwindSafe(poll_row(db, registry, secrets_key, mode, model3d_store, wh_client, presenting, gen, over_age));
+            let age_secs = (now() - gen.created_at).num_seconds();
+            let over_age = age_secs > MAX_ACTIVE_AGE_SECS;
+            let just_made = age_secs < ACCOUNT_RECORD_GRACE_SECS;
+            // The multiple of SKIP_WARNING_EVERY_SECS the row's age has
+            // passed, for its skip warning.
+            let skip_mark = age_secs.max(0) / SKIP_WARNING_EVERY_SECS;
+            let polled = std::panic::AssertUnwindSafe(poll_row(db, registry, secrets_key, mode, model3d_store, wh_client, presenting, gen, over_age, answer_budget, just_made, skip_mark));
             // A panic polling one row (an adapter, a rehost, a delivery) is
             // that row's alone: the other rows, and the next ticks, go on.
             if let Err(payload) = futures::FutureExt::catch_unwind(polled).await {
@@ -314,6 +359,100 @@ async fn poll_tick(
 /// Rows one tick polls at once.
 const POLL_CONCURRENCY: usize = 8;
 
+/// `items` taking turns by `key`: the first item of each key (in the order
+/// the keys first appear), then the second of each, and so on, each key's
+/// items in their order. Items of one key stay as they are.
+fn take_turns_by<T>(items: Vec<T>, key: impl Fn(&T) -> &str) -> Vec<T> {
+    let total = items.len();
+    // One queue per key, in the order the keys first appear.
+    let mut queues: Vec<std::collections::VecDeque<T>> = Vec::new();
+    for item in items {
+        match queues.iter_mut().find(|q| q.front().is_some_and(|first| key(first) == key(&item))) {
+            Some(queue) => queue.push_back(item),
+            None => queues.push(std::collections::VecDeque::from([item])),
+        }
+    }
+    let mut turns = Vec::with_capacity(total);
+    while turns.len() < total {
+        for queue in &mut queues {
+            turns.extend(queue.pop_front());
+        }
+    }
+    turns
+}
+
+/// How long the poller waits for a vendor to answer one status check of a
+/// row's job. A vendor that takes longer is asked again next tick, and the
+/// row's slot goes to the next row meanwhile. A finished job's download is
+/// not counted ([`AnswerBudget`]).
+pub(crate) const STATUS_ANSWER_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One vendor call about a row's job, and how long the vendor has to answer
+/// it ([`STATUS_ANSWER_BUDGET`]). It is also the call's gate: hand it to the
+/// adapter in place of the gate it wraps, which answers for it.
+///
+/// The budget stops counting once the adapter asks the gate: the vendor has
+/// answered that the job finished, and what follows is the download of its
+/// files (or the check of their links), which has limits of its own (the
+/// delivery slots, the download clients' timeouts). Whether the gate was
+/// asked is all that counts, never what it answered. A late image's adapter
+/// has no gate: it stops counting once the adapter starts downloading the
+/// finished image (`providers::image::fetch_result`, through
+/// `providers::noting_result_download`).
+pub(crate) struct AnswerBudget<'g> {
+    budget: Option<std::time::Duration>,
+    gate: &'g dyn crate::providers::FetchGate,
+    asked: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<'g> AnswerBudget<'g> {
+    /// The budget of a call that is handed `gate` (through this).
+    pub(crate) fn gated(budget: Option<std::time::Duration>, gate: &'g dyn crate::providers::FetchGate) -> Self {
+        Self { budget, gate, asked: Arc::new(std::sync::atomic::AtomicBool::new(false)) }
+    }
+
+    /// The budget of a call with no gate to ask: it counts to the call's
+    /// end, or until the call starts downloading a finished job's result.
+    pub(crate) fn whole(budget: Option<std::time::Duration>) -> AnswerBudget<'static> {
+        AnswerBudget::gated(budget, &crate::providers::AlwaysFetch)
+    }
+
+    /// `call`'s answer, or a retryable timeout once the budget has passed
+    /// with the gate unasked and no result's download started (`call` is
+    /// dropped, which cancels a request in flight). Once either has
+    /// happened, `call` runs to its end. With no budget, `call` takes as
+    /// long as it takes.
+    pub(crate) async fn answer<T>(
+        &self,
+        call: impl std::future::Future<Output = Result<T, crate::providers::ProviderError>>,
+    ) -> Result<T, crate::providers::ProviderError> {
+        let Some(budget) = self.budget else { return call.await };
+        let mut call = std::pin::pin!(crate::providers::noting_result_download(self.asked.clone(), call));
+        tokio::select! {
+            // An answer that is in wins over a budget that ran out with it.
+            biased;
+            out = &mut call => out,
+            () = tokio::time::sleep(budget) => {
+                if self.asked.load(std::sync::atomic::Ordering::SeqCst) {
+                    call.await
+                } else {
+                    Err(crate::providers::ProviderError::Timeout { timeout_ms: budget.as_millis() as u64 })
+                }
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<'g> crate::providers::FetchGate for AnswerBudget<'g> {
+    async fn ask(&self) -> crate::providers::Fetch {
+        // Noted before the gate answers: its wait for a delivery slot is
+        // not the vendor's either.
+        self.asked.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.gate.ask().await
+    }
+}
+
 /// One row's poll: its vendor's status, and on a terminal one the guarded
 /// write, the log update and the webhook.
 // The tick's shared handles plus the row, from its one call site.
@@ -331,15 +470,61 @@ async fn poll_row(
     // Rows that can never advance are reaped once they are, so they stop
     // taking a share of every tick's claim (see reap_generation).
     over_age: bool,
+    // How long a vendor has to answer each status check (STATUS_ANSWER_BUDGET).
+    answer_budget: std::time::Duration,
+    // Whether the row is younger than ACCOUNT_RECORD_GRACE_SECS on the
+    // database's clock.
+    just_made: bool,
+    // The multiple of SKIP_WARNING_EVERY_SECS the row's age has passed.
+    skip_mark: i64,
 ) {
     // A reap notifies as every other terminal transition does.
     let notify = &Notify { wh_client, mode, presenting };
 
-    // Resolve this generation's per-app BYO credential, if the app stored one.
-    // Any failure (no secrets key, lookup error, decrypt/parse error) falls back
-    // to `None` (→ the platform default global instance). The poller must never
-    // crash on a single bad credential, so all errors are logged and swallowed.
-    let app_creds = resolve_gen_credential(db, secrets_key, &gen).await;
+    // A new row of an org may not carry its vendor account yet: the submit
+    // records it just after the insert. Read as a row from before litegen
+    // recorded one, it would be polled on a guessed key, so it waits for the
+    // next tick. A row that can only run on the gateway's key (no org, or no
+    // secrets key to read an org's key with) has nothing to guess and is
+    // polled at once. (The database gives a row with no org the default
+    // org, so here the secrets key is what usually decides.)
+    if just_made && gen.org_id.is_some() && secrets_key.is_some() && recorded_vendor_account(&gen).is_none() {
+        info!(generation_id = %gen.id, "poller: a new generation's vendor account isn't recorded yet, skipping it this tick");
+        return;
+    }
+
+    // The key of the vendor account this job ran on (`resolve_job_credential`):
+    // `None` is the gateway's own instance. With no key of that account to
+    // use now, the job is not asked about on another account's, which would
+    // answer 404 and fail a job the vendor ran: it is skipped this tick, and
+    // past the maximum age reaped with the reason.
+    // Skipped every tick, such a row warns at its first skip and at the first
+    // poll past each SKIP_WARNING_EVERY_SECS mark of its age, with what failed,
+    // and logs at debug between them; its reap always warns. The row records
+    // the mark it warned at, so each mark warns once whichever replica polls.
+    let mut loud = over_age;
+    let mut resolved = resolve_job_credential_logging(db, secrets_key, &gen, loud).await;
+    // A database that can't record the mark warns: never a skip unsaid.
+    if !loud && matches!(resolved, JobCredential::Unavailable(_)) && db.note_poll_skip_warning(&gen.id, skip_mark).await.unwrap_or(true) {
+        // This poll warns: the key is asked for again, out loud, so the
+        // warning says what failed (a lookup, a decrypt, a parse).
+        loud = true;
+        resolved = resolve_job_credential_logging(db, secrets_key, &gen, loud).await;
+    }
+    let app_creds = match resolved.into_request_credentials() {
+        Ok(creds) => creds,
+        Err(why) => {
+            if over_age {
+                warn!(generation_id = %gen.id, provider = %gen.provider, reason = %why, "poller: no key of the account this job ran on past max age, reaping");
+                reap_generation(db, &gen.id, &why, notify).await;
+            } else if loud {
+                warn!(generation_id = %gen.id, provider = %gen.provider, reason = %why, "poller: no key of the account this job ran on, skipping it until there is one (this warns at the first skip and at each 10 minutes of the job's age)");
+            } else {
+                tracing::debug!(generation_id = %gen.id, provider = %gen.provider, reason = %why, "poller: no key of the account this job ran on, skipping it this tick");
+            }
+            return;
+        }
+    };
 
     // A finished 3D job's delivery claim, or a finished video's, held until
     // the outcome is written.
@@ -387,7 +572,7 @@ async fn poll_row(
             // observer keeps it; the others stand aside and write `processing`.
             let keep = crate::access::row_keeps_outputs(gen.metadata.as_ref());
             let mut poll = match crate::proxy::router::poll_video_claimed(
-                &provider, &handle, keep, db, &gen.id, crate::proxy::delivery_lease::Observer::Poller,
+                &provider, &handle, keep, db, &gen.id, crate::proxy::delivery_lease::Observer::Poller, Some(answer_budget),
             ).await {
                 Ok((p, claim)) => {
                     delivery_claim = claim;
@@ -505,11 +690,19 @@ async fn poll_row(
                     .as_ref()
                     .and_then(|m| m.get("stage_context").cloned()),
             };
+            // What the delivery must do, read off the row: the poller cannot
+            // see the router's job map.
+            let delivery = crate::proxy::model3d_deliver::DeliveryPlan::from_row(&gen);
             // An adapter that downloads a finished job's files asks the gate
             // first, so the poller downloads only what it delivers, and holds
-            // no files while it waits for a slot.
-            let gate = crate::proxy::delivery_lease::DeliveryGate::new(db, &gen.id, crate::proxy::delivery_lease::Observer::Poller);
-            let mut poll = match provider.poll_status_gated(&handle, &gate).await {
+            // no files while it waits for a slot. A job that keeps nothing
+            // hands out the vendor's links, so its adapter only checks them.
+            let gate = crate::proxy::delivery_lease::DeliveryGate::new(db, &gen.id, crate::proxy::delivery_lease::Observer::Poller)
+                .links_only(delivery.keep_nothing);
+            // The vendor has STATUS_ANSWER_BUDGET to answer, until the
+            // adapter asks the gate (AnswerBudget).
+            let check = AnswerBudget::gated(Some(answer_budget), &gate);
+            let mut poll = match check.answer(provider.poll_status_gated(&handle, &check)).await {
                 Ok(p) => p,
                 Err(e) => {
                     handle_poll_error(db, &gen, &e, over_age, notify).await;
@@ -517,8 +710,17 @@ async fn poll_row(
                 }
             };
             // A vendor flow's next billed stage, or its new continuation
-            // state — the same bookkeeping the client's poll applies.
-            crate::proxy::model3d_stages::advance(db, &provider, &gen.id, &mut handle, &mut poll, "poller").await;
+            // state — the same bookkeeping the client's poll applies. A
+            // start the vendor is slow to answer leaves this poll at the
+            // budget, and goes on, on a task of its own, to be recorded.
+            let advanced = AnswerBudget::whole(Some(answer_budget)).answer(async {
+                crate::proxy::model3d_stages::advance(db, &provider, &gen.id, &mut handle, &mut poll, "poller").await;
+                Ok::<(), crate::providers::ProviderError>(())
+            }).await;
+            if let Err(e) = advanced {
+                handle_poll_error(db, &gen, &e, over_age, notify).await;
+                return;
+            }
 
             // A finished job is delivered by one observer: the poller only
             // if it claims the delivery. It waits for a slot; a lease
@@ -547,12 +749,14 @@ async fn poll_row(
             // `poll` already carries must be moved to litegen-owned storage
             // before the next poll cycle rather than deferred.
             // Normalise, measure and fill in the promised containers BEFORE
-            // rehost — the step the client's poll runs too. The plan is read
-            // off the row: the poller cannot see the router's job map.
-            let delivery = crate::proxy::model3d_deliver::DeliveryPlan::from_row(&gen);
+            // rehost — the step the client's poll runs too, by the plan read
+            // off the row above.
             let requested = delivery.requested_formats.clone();
             let keep = !delivery.keep_nothing;
-            crate::proxy::model3d_deliver::deliver_poll(&mut poll, delivery, &gen.id).await;
+            // The server's `mesh.draco` settings, from the router's config,
+            // as the client's poll reads them.
+            let draco = presenting.map_or_else(|| crate::config::DracoConfig::default().options(), |p| p.router.config.mesh.draco.options());
+            crate::proxy::model3d_deliver::deliver_poll(&mut poll, delivery, &gen.id, draco).await;
             // Keeping nothing: the vendor's own files are the answer, or there is none.
             let handed_out = if !keep && poll.status == GenerationStatus::Completed {
                 match crate::proxy::router::keep_nothing_model3d_assets(&poll.files) {
@@ -732,7 +936,10 @@ async fn poll_row(
                 .and_then(|m| m.pointer("/image_job/resume"))
                 .filter(|v| !v.is_null())
                 .cloned();
-            match provider.poll_job(&gen.model, &job, resume.as_ref()).await {
+            // The vendor hands the image over in the same call: it has
+            // STATUS_ANSWER_BUDGET to say whether the image is done, and the
+            // image's download, once it starts, is not counted (AnswerBudget).
+            match AnswerBudget::whole(Some(answer_budget)).answer(provider.poll_job(&gen.model, &job, resume.as_ref())).await {
                 Ok(crate::providers::ImageJobPoll::Running) => Some(PollOutcome {
                     status: GenerationStatus::Processing,
                     progress: 50,
@@ -841,6 +1048,15 @@ async fn poll_row(
         // either here would duplicate them.
         info!(generation_id = %gen.id, "poller: row already terminal, leaving it to the observer that wrote it");
         return;
+    }
+    // This tick read the row, so a row gone now went with its org or app,
+    // deleted while the job was delivered: what the delivery stored is
+    // recorded for deletion (migration 031).
+    if write == crate::db::GenerationWrite::Missing && is_terminal {
+        crate::proxy::tenant_files::record_files_of_a_vanished_generation(
+            &**db, &gen.id, gen.org_id.as_deref(), gen.app_id.as_deref(), outcome.result_url.as_deref(), outcome.assets.as_ref(),
+        )
+        .await;
     }
 
     // The submit handler logged this request `pending` under the same id;
@@ -962,11 +1178,32 @@ async fn keep_late_image(
 /// Both callers dispatch only when their guarded UPDATE actually wrote the row,
 /// which is what makes "at most once" hold.
 ///
-/// Hands the delivery to this process's dispatcher
+/// It reads the job's key first: a key with no `webhook_url` gets nothing,
+/// and its job costs that one read (no outbox claim). Otherwise it hands the
+/// delivery to this process's dispatcher
 /// ([`deliveries`](crate::proxy::webhook::deliveries)) and returns at once: a
 /// webhook endpoint's latency must not stall a poll tick or an HTTP response.
-/// It runs within its org's share of the dispatcher, and a graceful stop
-/// waits for it within the grace.
+/// It runs within its org's share of the dispatcher.
+///
+/// The delivery is durable (the webhook outbox, migration 029): the guarded
+/// terminal write that came before this call already recorded it in
+/// `webhook_outbox`, in the same statement, by a trigger on `generations`.
+/// The trigger fires where this is called: a move from `pending` or
+/// `processing` to `completed`, `failed` or `cancelled`, of a job whose key
+/// has a `webhook_url` then, other than a sync image result (an image with
+/// no vendor job id, completed by its own request, which calls no webhook).
+/// See the migration's header (029, and 032, which replaced the trigger: a
+/// key whose `webhook_url` is `""` has none, and a new delivery is due after
+/// its first-attempt grace). Here, after the caller settled the job, this
+/// replica claims that delivery and sends its first attempt at once
+/// ([`Outbox::send_first`]); a retry, or a delivery a replica recorded and
+/// never sent (it died), goes out from the outbox's dispatcher on any
+/// replica once due, and a stop leaves it due rather than waiting for it. Where none was recorded (a store that keeps no outbox, or
+/// a database restored without the trigger, which then warns) the webhook
+/// goes out from memory, as before 029: its retries wait in this process,
+/// and a graceful stop waits for them within the grace.
+///
+/// [`Outbox::send_first`]: crate::proxy::webhook::Outbox::send_first
 pub(crate) async fn dispatch_terminal_webhook(
     db: &Arc<dyn DatabaseStore>,
     wh_client: &reqwest::Client,
@@ -975,6 +1212,21 @@ pub(crate) async fn dispatch_terminal_webhook(
     presenting: Option<crate::access::present::Presenting>,
 ) {
     let Some(key_id) = gen.key_id else { return };
+    // Only a key with a webhook gets one: the terminal moment of every other
+    // key's job costs this one read, and no outbox claim (review 2026-11-15
+    // round 2, finding 7).
+    let key = match db.get_api_key(&key_id).await {
+        Ok(Some(key)) if key.webhook_url.as_deref().is_some_and(|u| !u.is_empty()) => key,
+        Ok(Some(_)) => return,
+        Ok(None) => {
+            warn!(generation_id = %gen.id, key_id = %key_id, "key not found for webhook");
+            return;
+        }
+        Err(e) => {
+            warn!(generation_id = %gen.id, error = %e, "failed to lookup key for webhook; a delivery its terminal write recorded is sent once its grace is over");
+            return;
+        }
+    };
     // Who may reach the deployment's network: the deployment's setting, or
     // its default when there is no state to read it from.
     let internal = presenting.as_ref().map(|p| p.router.config.webhooks.internal_targets).unwrap_or_default();
@@ -985,6 +1237,17 @@ pub(crate) async fn dispatch_terminal_webhook(
     let delivery_of = gen.id.clone();
 
     crate::proxy::webhook::deliveries().spawn(&org, &delivery_of, async move {
+        // The outbox's delivery, which the terminal write recorded: its first
+        // attempt goes out now, from this task. Only where none was recorded
+        // does the webhook go out from memory, below.
+        let mut unrecorded = false;
+        if db2.keeps_webhook_outbox() {
+            let sending = crate::proxy::webhook::SendContext::new(mode, presenting.clone(), wh_client.clone());
+            match crate::proxy::webhook::outbox().send_first(&db2, &sending, &gen_id).await {
+                crate::proxy::webhook::FirstAttempt::Unrecorded => unrecorded = true,
+                crate::proxy::webhook::FirstAttempt::Sent | crate::proxy::webhook::FirstAttempt::LeftToTheOutbox => return,
+            }
+        }
         // The payload is the row as its terminal write and settlement left it,
         // re-read: the caller's `metadata` and every other part of the row are
         // what `GET /v1/generations/{id}` answers, and a refunded job reads
@@ -999,52 +1262,39 @@ pub(crate) async fn dispatch_terminal_webhook(
             use crate::access::present::{FileOwner, Viewer};
             presenting.presenter(&FileOwner::of(&gen), Viewer::Owner).await.present_row(&mut gen).await;
         }
-        match db2.get_api_key(&key_id).await {
-            Ok(Some(key)) if key.webhook_url.is_some() => {
-                let url = key.webhook_url.clone().unwrap();
-                // SSRF re-validation: re-check the URL at dispatch time, for
-                // the key's owner now, so a key whose webhook_url predates
-                // the create/patch validation, a demoted or departed owner's
-                // key, or a host that now resolves to an internal address
-                // can't be used as an SSRF vector. Only a key of the
-                // deployment's may reach its network (SEC-STWEBHOOK); every
-                // other key goes out on a public-only client.
-                let inside = crate::proxy::webhook::may_reach_inside(&*db2, mode, internal, key.owner_user_id.as_deref()).await.unwrap_or_else(|e| {
-                    warn!(generation_id = %gen_id, error = %e, "could not look up a webhook key's owner; holding it to public addresses");
-                    false
-                });
-                let wh_client = if inside {
-                    wh_client
-                } else {
-                    if let Err(reason) = crate::util::ssrf::validate_public_url(&url).await {
-                        warn!(generation_id = %gen_id, reason = %reason, "skipping webhook dispatch: disallowed url");
-                        return;
-                    }
-                    crate::util::ssrf::public_only_client()
-                };
-                let secret = key.key_hash.clone();
-                let key_id_str = key_id.to_string();
-                // SSRF hardening: dispatch with the no-redirect client so a
-                // public webhook host can't 3xx-redirect the POST into an
-                // internal target.
-                if let Err(e) = dispatch_webhook_logged(
-                    &wh_client,
-                    &url,
-                    Some(&secret),
-                    &gen,
-                    db2,
-                    &key_id_str,
-                ).await {
-                    warn!(generation_id = %gen_id, error = %e, "webhook dispatch failed");
-                }
+        if unrecorded {
+            warn!(
+                generation_id = %gen_id,
+                "no outbox delivery was recorded for a terminal webhook (the database lacks migration 029's trigger \
+                 webhook_outbox_on_terminal); sending it from memory, as before 029, where a crash or a stop loses it"
+            );
+        }
+        let url = key.webhook_url.clone().unwrap_or_default();
+        // SSRF re-validation: re-check the URL at dispatch time, for the
+        // key's owner now, so a key whose webhook_url predates the
+        // create/patch validation, a demoted or departed owner's key, or a
+        // host that now resolves to an internal address can't be used as an
+        // SSRF vector. Only a key of the deployment's may reach its network
+        // (SEC-STWEBHOOK); every other key goes out on a public-only client.
+        let inside = crate::proxy::webhook::may_reach_inside(&*db2, mode, internal, key.owner_user_id.as_deref()).await.unwrap_or_else(|e| {
+            warn!(generation_id = %gen_id, error = %e, "could not look up a webhook key's owner; holding it to public addresses");
+            false
+        });
+        let wh_client = if inside {
+            wh_client
+        } else {
+            if let Err(reason) = crate::util::ssrf::validate_public_url(&url).await {
+                warn!(generation_id = %gen_id, reason = %reason, "skipping webhook dispatch: disallowed url");
+                return;
             }
-            Ok(Some(_)) => {}  // no webhook_url
-            Ok(None) => {
-                warn!(generation_id = %gen_id, key_id = %key_id, "key not found for webhook");
-            }
-            Err(e) => {
-                warn!(generation_id = %gen_id, error = %e, "failed to lookup key for webhook");
-            }
+            crate::util::ssrf::public_only_client()
+        };
+        let secret = key.key_hash.clone();
+        let key_id_str = key_id.to_string();
+        // SSRF hardening: dispatch with the no-redirect client so a public
+        // webhook host can't 3xx-redirect the POST into an internal target.
+        if let Err(e) = dispatch_webhook_logged(&wh_client, &url, Some(&secret), &gen, db2, &key_id_str).await {
+            warn!(generation_id = %gen_id, error = %e, "webhook dispatch failed");
         }
     });
 }
@@ -1103,54 +1353,150 @@ async fn refund_generation(db: &Arc<dyn DatabaseStore>, id: &str) -> f64 {
     gen.cost_usd
 }
 
-/// Resolve a single generation's stored per-org BYO credential, decrypted.
+/// The key a generation's vendor job is reached with: that of the vendor
+/// account the job ran on. A vendor knows a job only on the account that made
+/// it; asked on another key it answers 401 or 404, and the poller would fail
+/// and refund a job the vendor ran, and billed.
+pub(crate) enum JobCredential {
+    /// The gateway's own key for the provider.
+    Platform,
+    /// The org's own stored key for the provider.
+    Org(crate::providers::ProviderCredentials),
+    /// No key the job may be reached with now. Never stands in for the
+    /// gateway's key: the reason is what a reaped row says.
+    Unavailable(String),
+}
+
+impl JobCredential {
+    /// What the registry's `*_provider_for_request` takes: `None` for the
+    /// gateway's own instance, else the org's key; `Err` with the reason
+    /// when there is no key the job may be reached with.
+    pub(crate) fn into_request_credentials(self) -> Result<Option<crate::providers::ProviderCredentials>, String> {
+        match self {
+            JobCredential::Platform => Ok(None),
+            JobCredential::Org(creds) => Ok(Some(creds)),
+            JobCredential::Unavailable(why) => Err(why),
+        }
+    }
+}
+
+/// Choose the key `gen`'s vendor job is reached with ([`JobCredential`]), by
+/// the account its row records it ran on (`metadata.vendor_account`, written
+/// at submit):
 ///
-/// Returns `None` (→ platform default) when the generation has no org, no secrets
-/// key is configured, the org stored no credential, or anything fails to look up /
-/// decrypt / parse. Errors are logged but never propagated — the poller must keep
-/// running across a bad credential on one row.
-pub(crate) async fn resolve_gen_credential(
+/// - `"platform"`: the gateway's key, even after the org stores one of its own.
+/// - `"org:{id}"` of the row's own org: that org's stored key for the row's
+///   provider. A key removed since, or one that can't be read (no secrets
+///   key, or a failed lookup, decrypt or parse), is `Unavailable`.
+/// - nothing recorded (rows from before the submit recorded it): the org's
+///   key if it stores one, else the gateway's. One that can't be read is
+///   `Unavailable`. (The poller first gives a brand-new row
+///   ACCOUNT_RECORD_GRACE_SECS to get its record: see `poll_row`.)
+/// - any other account, another org's included: `Unavailable`.
+///
+/// `Unavailable` never falls back to the gateway's key, which knows no such
+/// job: the poller skips the row, and a cancel leaves the vendor job running.
+pub(crate) async fn resolve_job_credential(
     db: &Arc<dyn DatabaseStore>,
     secrets_key: Option<[u8; 32]>,
     gen: &crate::types::Generation,
-) -> Option<crate::providers::ProviderCredentials> {
-    let org_id = gen.org_id.as_deref()?;
-    let key = secrets_key?;
-    match db.get_org_provider_credential(org_id, &gen.provider).await {
-        Ok(Some((ct, nonce))) => match crate::auth::secrets::decrypt(&key, &ct, &nonce) {
-            Ok(plaintext) => match serde_json::from_slice::<serde_json::Value>(&plaintext) {
-                Ok(val) => Some(crate::providers::ProviderCredentials::from_json(&val)),
-                Err(e) => {
-                    warn!(
-                        generation_id = %gen.id,
-                        provider = %gen.provider,
-                        error = %e,
-                        "poller: stored provider credential is corrupt, using platform default"
-                    );
-                    None
-                }
-            },
-            Err(e) => {
-                warn!(
-                    generation_id = %gen.id,
-                    provider = %gen.provider,
-                    error = %e,
-                    "poller: failed to decrypt provider credential, using platform default"
-                );
-                None
+) -> JobCredential {
+    resolve_job_credential_logging(db, secrets_key, gen, true).await
+}
+
+/// [`resolve_job_credential`], warning of a key that can't be read (no
+/// secrets key, or a failed lookup, decrypt or parse) only when `loud`, and
+/// logging it at debug otherwise: the poller asks about a skipped row every
+/// tick, and warns of it at its first skip and at each SKIP_WARNING_EVERY_SECS
+/// mark of its age (`poll_row`).
+async fn resolve_job_credential_logging(
+    db: &Arc<dyn DatabaseStore>,
+    secrets_key: Option<[u8; 32]>,
+    gen: &crate::types::Generation,
+    loud: bool,
+) -> JobCredential {
+    let unreadable = || {
+        JobCredential::Unavailable(format!(
+            "timed out: the org's own key for {} could not be read, so litegen could not ask the vendor about this job",
+            gen.provider
+        ))
+    };
+    match recorded_vendor_account(gen) {
+        Some("platform") => JobCredential::Platform,
+        // Nothing recorded: the org's key if it stores one, else the gateway's.
+        None => {
+            let (Some(org_id), Some(key)) = (gen.org_id.as_deref(), secrets_key) else {
+                return JobCredential::Platform;
+            };
+            match stored_org_credential(db, key, org_id, gen, loud).await {
+                Ok(Some(creds)) => JobCredential::Org(creds),
+                Ok(None) => JobCredential::Platform,
+                Err(()) => unreadable(),
             }
-        },
-        Ok(None) => None,
-        Err(e) => {
-            warn!(
-                generation_id = %gen.id,
-                provider = %gen.provider,
-                error = %e,
-                "poller: provider credential lookup failed, using platform default"
-            );
-            None
+        }
+        // The org's own account: the org's key, or none at all. Any other
+        // account (another org's, or one litegen doesn't know) gets no key.
+        Some(account) => {
+            let Some(org_id) = gen.org_id.as_deref().filter(|org| account.strip_prefix("org:") == Some(*org)) else {
+                return JobCredential::Unavailable(
+                    "this job ran on a vendor account that is neither its org's nor the gateway's, so litegen could not ask the vendor about it".into(),
+                );
+            };
+            let Some(key) = secrets_key else {
+                if loud {
+                    warn!(generation_id = %gen.id, provider = %gen.provider, "poller: no secrets key is configured to read the org's provider credential");
+                } else {
+                    tracing::debug!(generation_id = %gen.id, provider = %gen.provider, "poller: no secrets key is configured to read the org's provider credential");
+                }
+                return unreadable();
+            };
+            match stored_org_credential(db, key, org_id, gen, loud).await {
+                Ok(Some(creds)) => JobCredential::Org(creds),
+                Ok(None) => JobCredential::Unavailable(format!(
+                    "the org's own key for {} was removed, so litegen could not ask the vendor about this job",
+                    gen.provider
+                )),
+                Err(()) => unreadable(),
+            }
         }
     }
+}
+
+/// The vendor account `gen`'s row records its job ran on
+/// (`metadata.vendor_account`), if the submit has recorded one.
+fn recorded_vendor_account(gen: &crate::types::Generation) -> Option<&str> {
+    gen.metadata.as_ref().and_then(|m| m.get("vendor_account")).and_then(|v| v.as_str())
+}
+
+/// `org_id`'s own stored key for `gen.provider`, decrypted: `Ok(None)` when
+/// the org stores none, `Err` when the lookup, the decrypt or the parse
+/// failed (each logged here).
+async fn stored_org_credential(
+    db: &Arc<dyn DatabaseStore>,
+    key: [u8; 32],
+    org_id: &str,
+    gen: &crate::types::Generation,
+    // Warn of a failure, else log it at debug (`resolve_job_credential_logging`).
+    loud: bool,
+) -> Result<Option<crate::providers::ProviderCredentials>, ()> {
+    let failed = |what: &str, error: &dyn std::fmt::Display| {
+        if loud {
+            warn!(generation_id = %gen.id, provider = %gen.provider, error = %error, "poller: the org's provider credential {what}");
+        } else {
+            tracing::debug!(generation_id = %gen.id, provider = %gen.provider, error = %error, "poller: the org's provider credential {what}");
+        }
+    };
+    let (ct, nonce) = match db.get_org_provider_credential(org_id, &gen.provider).await {
+        Ok(Some(sealed)) => sealed,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            failed("could not be looked up", &e);
+            return Err(());
+        }
+    };
+    let plaintext = crate::auth::secrets::decrypt(&key, &ct, &nonce).map_err(|e| failed("could not be decrypted", &e))?;
+    let val = serde_json::from_slice::<serde_json::Value>(&plaintext).map_err(|e| failed("is corrupt", &e))?;
+    Ok(Some(crate::providers::ProviderCredentials::from_json(&val)))
 }
 
 /// Spawn a background task that polls every 5 seconds. The returned
@@ -1173,7 +1519,7 @@ pub fn spawn_poller(
     tokio::spawn(async move {
         // One stop, asked both between ticks and before each row of a tick.
         let stop = shutdown.boxed().shared();
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut interval = tokio::time::interval(POLL_INTERVAL);
         // A tick that completes 3D jobs (downloads, conversion, uploads) can
         // run far past 5 s; the default `Burst` would then fire every missed
         // tick back to back, re-polling each active row's vendor in a burst.
@@ -1301,6 +1647,8 @@ mod poller_tests {
         let org = crate::api::middleware::DEFAULT_ORG_ID;
         db.upsert_org_provider_credential(org, "openai", &ct, &nonce, None).await.unwrap();
         db.insert_generation("litegen-vid-byo", None, "openai/sora-2", "openai", "video", Some("job-1"), 0.0, Some(org), None).await.unwrap();
+        // The account the submit records for a job on the org's key.
+        db.merge_generation_metadata_if_active("litegen-vid-byo", &serde_json::json!({ "vendor_account": format!("org:{org}") })).await.unwrap();
         let store = test_3d_store();
         poll_once(&db, &registry, Some(key), crate::config::Mode::SingleTenant, &store).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1308,6 +1656,383 @@ mod poller_tests {
         assert_eq!(*seen.lock().unwrap(), vec!["Bearer org-key"; 2], "both ticks polled on the org's key");
         let n = accepted.load(Ordering::SeqCst);
         assert_eq!(n, 1, "two ticks on one org's key opened {n} connections: each built its own HTTP client");
+    }
+
+    // ─── N2: a job is asked about on the vendor account it ran on ─────────────
+
+    /// A stand-in OpenAI that knows video job `job-1` only under `owner`'s
+    /// key, as a vendor knows a job only on the account that made it: that
+    /// key gets `in_progress`, any other a 404. `seen` holds the
+    /// `authorization` header of every poll it got.
+    async fn vendor_knowing_the_job_under(owner: &str) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let owner = format!("Bearer {owner}");
+        let app = axum::Router::new().route(
+            "/v1/videos/{id}",
+            axum::routing::get({
+                let seen = seen.clone();
+                move |headers: axum::http::HeaderMap| {
+                    let (seen, owner) = (seen.clone(), owner.clone());
+                    async move {
+                        let asked_with = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                        seen.lock().unwrap().push(asked_with.clone());
+                        if asked_with == owner {
+                            (axum::http::StatusCode::OK, axum::Json(serde_json::json!({ "status": "in_progress", "progress": 10 })))
+                        } else {
+                            (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": { "message": "no such video" } })))
+                        }
+                    }
+                }
+            }),
+        );
+        let (base, _accepted) = crate::util::counting_vendor(app).await;
+        (base, seen)
+    }
+
+    /// A registry whose `openai` runs on the gateway's key, `PLATFORM`, at `base`.
+    async fn openai_on_the_platform_key(base: &str) -> Arc<ProviderRegistry> {
+        let registry = Arc::new(ProviderRegistry::new());
+        let platform = ProviderInstanceConfig {
+            api_key: "PLATFORM".into(),
+            credentials: crate::providers::ProviderCredentials { api_key: Some("PLATFORM".into()), ..Default::default() },
+            api_base: Some(format!("{base}/v1")),
+            ..Default::default()
+        };
+        assert!(registry.configure_provider("openai", platform).await);
+        registry
+    }
+
+    /// `org` stores its own OpenAI key `key`, sealed with the secrets key `sealed_with`.
+    async fn store_org_openai_key(db: &Arc<dyn DatabaseStore>, org: &str, key: &str, sealed_with: [u8; 32]) {
+        let plain = serde_json::json!({ "api_keys": [{ "key": key }] }).to_string();
+        let (ct, nonce) = crate::auth::secrets::encrypt(&sealed_with, plain.as_bytes()).unwrap();
+        db.upsert_org_provider_credential(org, "openai", &ct, &nonce, None).await.unwrap();
+    }
+
+    /// A Sora job of `org` (vendor job `job-1`, billed 0.4) that ran on
+    /// `vendor_account`, as the submit records it; `None` for a row from
+    /// before litegen recorded it.
+    async fn sora_row(db: &Arc<dyn DatabaseStore>, id: &str, org: &str, vendor_account: Option<&str>) {
+        db.insert_generation(id, None, "openai/sora-2", "openai", "video", Some("job-1"), 0.4, Some(org), None).await.unwrap();
+        if let Some(account) = vendor_account {
+            db.merge_generation_metadata_if_active(id, &serde_json::json!({ "vendor_account": account })).await.unwrap();
+        }
+    }
+
+    /// N2 (b): a job that ran on the gateway's key is polled on it after its
+    /// org stores a key of its own. Polled on the org's key, the vendor
+    /// answered 404 and the job was failed and refunded, although the
+    /// gateway's account ran it and paid for it.
+    #[tokio::test]
+    async fn a_job_that_ran_on_the_platform_key_is_polled_on_it_after_its_org_stores_a_key() {
+        let (base, seen) = vendor_knowing_the_job_under("PLATFORM").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let (key, org) = ([7u8; 32], crate::api::middleware::DEFAULT_ORG_ID);
+        sora_row(&db, "litegen-vid-on-platform", org, Some("platform")).await;
+        store_org_openai_key(&db, org, "org-key", key).await;
+        poll_once(&db, &registry, Some(key), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        assert_eq!(*seen.lock().unwrap(), ["Bearer PLATFORM"], "polled on another key than the one the job ran on");
+        let row = db.get_generation("litegen-vid-on-platform").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Processing, 0.4), "{:?}", row.error_message);
+    }
+
+    /// N2 (a): a job that ran on its org's key is never polled on the
+    /// gateway's, which knows no such job: while the org's key can't be read
+    /// (here it was sealed with another secrets key), the job is skipped,
+    /// still active and still billed.
+    #[tokio::test]
+    async fn a_job_on_its_orgs_key_is_skipped_while_that_key_cannot_be_read() {
+        let (base, seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        sora_row(&db, "litegen-vid-unreadable", org, Some(&format!("org:{org}"))).await;
+        store_org_openai_key(&db, org, "org-key", [9u8; 32]).await;
+        poll_once(&db, &registry, Some([7u8; 32]), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.is_empty(), "the vendor was asked about the job on {asked:?}");
+        let row = db.get_generation("litegen-vid-unreadable").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Pending, 0.4), "{:?}", row.error_message);
+    }
+
+    /// A row from before litegen recorded the account keeps today's choice,
+    /// the org's key when it stores one, but one that can't be read no longer
+    /// sends the poll to the gateway's key: the job is skipped this tick.
+    #[tokio::test]
+    async fn a_job_with_no_recorded_account_is_skipped_while_its_orgs_key_cannot_be_read() {
+        let (base, seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        sora_row(&db, "litegen-vid-legacy-unreadable", org, None).await;
+        // Past its first minute, so its account would have been recorded by now.
+        backdate(&concrete, "litegen-vid-legacy-unreadable", "-2 minutes").await;
+        store_org_openai_key(&db, org, "org-key", [9u8; 32]).await;
+        poll_once(&db, &registry, Some([7u8; 32]), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.is_empty(), "the vendor was asked about the job on {asked:?}");
+        let row = db.get_generation("litegen-vid-legacy-unreadable").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Pending, 0.4), "{:?}", row.error_message);
+    }
+
+    /// N2 (a): an org that removed its key leaves its running jobs with no
+    /// key to be asked about on, and the gateway's knows no such job: they
+    /// are skipped, still active and still billed.
+    #[tokio::test]
+    async fn a_job_on_its_orgs_key_is_not_polled_on_the_platform_key_once_the_org_removed_it() {
+        let (base, seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        sora_row(&db, "litegen-vid-key-removed", org, Some(&format!("org:{org}"))).await;
+        poll_once(&db, &registry, Some([7u8; 32]), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.is_empty(), "the vendor was asked about the job on {asked:?}");
+        let row = db.get_generation("litegen-vid-key-removed").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Pending, 0.4), "{:?}", row.error_message);
+    }
+
+    /// The poller keeps trying such a job each tick: once its org stores the
+    /// key again, the job is polled on it.
+    #[tokio::test]
+    async fn a_job_on_its_orgs_key_is_polled_again_once_the_org_adds_its_key_back() {
+        let (base, seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let (key, org) = ([7u8; 32], crate::api::middleware::DEFAULT_ORG_ID);
+        sora_row(&db, "litegen-vid-key-back", org, Some(&format!("org:{org}"))).await;
+        poll_once(&db, &registry, Some(key), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        store_org_openai_key(&db, org, "org-key", key).await;
+        poll_once(&db, &registry, Some(key), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        assert_eq!(*seen.lock().unwrap(), ["Bearer org-key"], "asked about on another key than the one the job ran on");
+        let row = db.get_generation("litegen-vid-key-back").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Processing, 0.4), "{:?}", row.error_message);
+    }
+
+    /// Backdate row `id` well past the poller's maximum active age.
+    async fn past_max_age(db: &SqliteDatabase, id: &str) {
+        backdate(db, id, "-6 hours").await;
+    }
+
+    /// Backdate row `id` by `by`, an SQLite date modifier such as `-2 minutes`.
+    async fn backdate(db: &SqliteDatabase, id: &str, by: &str) {
+        sqlx::query("UPDATE generations SET created_at = datetime('now', ?) WHERE id = ?")
+            .bind(by)
+            .bind(id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+
+    /// ...and past the maximum age such a job is failed, as a stuck one is
+    /// (refunded, its webhook sent), with a reason that says why litegen
+    /// couldn't ask the vendor: still never on the gateway's key.
+    #[tokio::test]
+    async fn a_job_on_its_orgs_key_is_reaped_past_max_age_saying_the_org_removed_its_key() {
+        let (base, seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        sora_row(&db, "litegen-vid-key-removed-old", org, Some(&format!("org:{org}"))).await;
+        past_max_age(&concrete, "litegen-vid-key-removed-old").await;
+        poll_once(&db, &registry, Some([7u8; 32]), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.is_empty(), "the vendor was asked about the job on {asked:?}");
+        let row = db.get_generation("litegen-vid-key-removed-old").await.unwrap().unwrap();
+        assert_eq!(row.status, GenerationStatus::Failed, "past the maximum age the job is reaped");
+        let why = row.error_message.unwrap_or_default();
+        assert!(why.contains("the org's own key for openai was removed"), "{why}");
+    }
+
+    /// The same past the maximum age for a key that still can't be read.
+    #[tokio::test]
+    async fn a_job_on_its_orgs_key_is_reaped_past_max_age_while_that_key_cannot_be_read() {
+        let (base, seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        sora_row(&db, "litegen-vid-unreadable-old", org, Some(&format!("org:{org}"))).await;
+        store_org_openai_key(&db, org, "org-key", [9u8; 32]).await;
+        past_max_age(&concrete, "litegen-vid-unreadable-old").await;
+        poll_once(&db, &registry, Some([7u8; 32]), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.is_empty(), "the vendor was asked about the job on {asked:?}");
+        let row = db.get_generation("litegen-vid-unreadable-old").await.unwrap().unwrap();
+        assert_eq!(row.status, GenerationStatus::Failed, "past the maximum age the job is reaped");
+        let why = row.error_message.unwrap_or_default();
+        assert!(why.contains("the org's own key for openai could not be read"), "{why}");
+    }
+
+    /// The poller asks only on the key of the row's own org or the gateway's:
+    /// a row that records another org's account (no submit writes one; a row
+    /// gone wrong) is polled on no key at all, never on that other org's.
+    #[tokio::test]
+    async fn a_job_recorded_on_another_orgs_account_is_polled_on_no_key() {
+        let (base, seen) = vendor_knowing_the_job_under("elsewhere-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let (key, org, elsewhere) = ([7u8; 32], crate::api::middleware::DEFAULT_ORG_ID, "org-elsewhere");
+        let now = chrono::Utc::now();
+        db.create_organization(&crate::types::Organization {
+            id: elsewhere.into(),
+            name: "Elsewhere".into(),
+            slug: elsewhere.into(),
+            plan: "free".into(),
+            status: "active".into(),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+        store_org_openai_key(&db, org, "org-key", key).await;
+        store_org_openai_key(&db, elsewhere, "elsewhere-key", key).await;
+        sora_row(&db, "litegen-vid-elsewhere", org, Some(&format!("org:{elsewhere}"))).await;
+        poll_once(&db, &registry, Some(key), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.is_empty(), "the vendor was asked about the job on {asked:?}");
+        let row = db.get_generation("litegen-vid-elsewhere").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Pending, 0.4), "{:?}", row.error_message);
+    }
+
+    /// A brand-new row of an org may not carry its account yet: the submit
+    /// records it just after the insert, and the poller takes the rows polled
+    /// least first. Read as a row with nothing recorded, it would be polled on
+    /// a guessed key (here the org's, for a job the gateway's key ran: a 404,
+    /// and the job failed and refunded). It waits for the next tick instead.
+    #[tokio::test]
+    async fn a_new_job_of_an_org_whose_account_is_not_recorded_yet_is_not_polled_this_tick() {
+        let (base, seen) = vendor_knowing_the_job_under("PLATFORM").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let (key, org) = ([7u8; 32], crate::api::middleware::DEFAULT_ORG_ID);
+        store_org_openai_key(&db, org, "org-key", key).await;
+        sora_row(&db, "litegen-vid-just-made", org, None).await;
+        poll_once(&db, &registry, Some(key), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.is_empty(), "the vendor was asked about the job on {asked:?}");
+        let row = db.get_generation("litegen-vid-just-made").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Pending, 0.4), "{:?}", row.error_message);
+    }
+
+    /// A row from before litegen recorded the account, of an org that stores
+    /// no key, is polled on the gateway's key as it always was, once it is
+    /// past its first minute. Guards today's choice for such rows: were a
+    /// missing record read as the org's account, or a new row's wait applied
+    /// at any age, every older job of an org without a key would go unpolled
+    /// until reaped.
+    #[tokio::test]
+    async fn a_job_with_no_recorded_account_past_its_first_minute_is_polled_on_the_platform_key() {
+        let (base, seen) = vendor_knowing_the_job_under("PLATFORM").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        sora_row(&db, "litegen-vid-legacy-platform", org, None).await;
+        backdate(&concrete, "litegen-vid-legacy-platform", "-2 minutes").await;
+        poll_once(&db, &registry, Some([7u8; 32]), crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        assert_eq!(*seen.lock().unwrap(), ["Bearer PLATFORM"]);
+        let row = db.get_generation("litegen-vid-legacy-platform").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Processing, 0.4), "{:?}", row.error_message);
+    }
+
+    /// What a test's own thread logs, kept for it to read.
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    /// The warnings `run` logs on this thread, one per line.
+    async fn warnings_of(run: impl std::future::Future<Output = ()>) -> Vec<String> {
+        // So no callsite is off because another test's thread reached it
+        // first (FU-SPANFLAKE).
+        crate::util::test_logs::hold_process_subscriber();
+        let logs = Logs::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            run.await;
+        }
+        let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+        text.lines().filter(|l| l.contains(" WARN ")).map(str::to_string).collect()
+    }
+
+    /// The warnings one tick logs about the generation `id`, polled when its
+    /// age is `age_secs`.
+    async fn warnings_at_age(db: &Arc<dyn DatabaseStore>, concrete: &SqliteDatabase, registry: &Arc<ProviderRegistry>, id: &str, age_secs: i64) -> Vec<String> {
+        backdate(concrete, id, &format!("-{age_secs} seconds")).await;
+        let warnings = warnings_of(poll_once(db, registry, Some([7u8; 32]), crate::config::Mode::SingleTenant, &test_3d_store())).await;
+        warnings.into_iter().filter(|l| l.contains(id)).collect()
+    }
+
+    /// Follow-ups 2026-11-15: a job skipped for want of a key of the account
+    /// it ran on is skipped every tick (5 s) for up to 2 hours, and warns
+    /// once at each 10-minute mark of its age, not at every tick (1440
+    /// warnings a job); between them it logs at debug. Round 3: it warned in
+    /// whichever tick fell in the first 5 s after a mark, so ticks that
+    /// drifted (a long tick, more rows than one claim takes) missed a mark or
+    /// warned twice in it. Now the row records the mark it last warned at:
+    /// its first skip warns, then the first poll past each mark, however the
+    /// polls fall. Its reap still warns.
+    #[tokio::test]
+    async fn a_skipped_job_warns_once_at_each_ten_minute_mark_however_its_polls_fall() {
+        let (base, _seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        let id = "litegen-vid-skip-marks";
+        sora_row(&db, id, org, Some(&format!("org:{org}"))).await;
+        // (the job's age at each poll, in seconds; the warnings that poll logs)
+        let polls = [(2, 1), (300, 0), (598, 0), (606, 1), (609, 0), (1201, 1), (1203, 0)];
+        let mut seen = Vec::new();
+        for (age, _) in polls {
+            seen.push((age, warnings_at_age(&db, &concrete, &registry, id, age).await.len()));
+        }
+        assert_eq!(seen, polls, "(age, warnings) of each poll");
+    }
+
+    /// The same for a job whose org's key can't be read: what failed (the
+    /// lookup, the decrypt, the parse, or no secrets key) is warned of with
+    /// the skip, at each 10-minute mark, and logged at debug between them.
+    #[tokio::test]
+    async fn a_job_whose_orgs_key_cannot_be_read_warns_what_failed_at_each_ten_minute_mark() {
+        let (base, _seen) = vendor_knowing_the_job_under("org-key").await;
+        let registry = openai_on_the_platform_key(&base).await;
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let org = crate::api::middleware::DEFAULT_ORG_ID;
+        let id = "litegen-vid-unread-marks";
+        sora_row(&db, id, org, Some(&format!("org:{org}"))).await;
+        // Sealed with another secrets key than the poller's: it can't be read.
+        store_org_openai_key(&db, org, "org-key", [9u8; 32]).await;
+        for (age, warns) in [(601, true), (720, false), (1202, true)] {
+            let warnings = warnings_at_age(&db, &concrete, &registry, id, age).await;
+            if warns {
+                assert!(warnings.iter().any(|l| l.contains("could not be decrypted")), "what failed, at {age} s: {warnings:#?}");
+                assert!(warnings.iter().any(|l| l.contains("skipping it")), "the skip, at {age} s: {warnings:#?}");
+            } else {
+                assert_eq!(warnings, Vec::<String>::new(), "between two marks, at {age} s");
+            }
+        }
     }
 
     #[tokio::test]
@@ -1981,6 +2706,7 @@ mod poller_tests {
                     height: Some(256),
                     manifest: None,
                     source_url: None,
+                    size_bytes: None,
                 }],
                 error: None,
                 metadata: Default::default(),
@@ -2116,6 +2842,7 @@ mod poller_tests {
                         height: None,
                         manifest: None,
                         source_url: None,
+                        size_bytes: None,
                     }],
                     error: None,
                     metadata: Default::default(),
@@ -2808,6 +3535,7 @@ mod poller_tests {
                     height: None,
                     manifest: None,
                     source_url: None,
+                    size_bytes: None,
                 }],
                 error: None,
                 metadata: Default::default(),
@@ -2967,6 +3695,40 @@ mod poller_tests {
         assert!(!row.status.is_terminal(), "{:?}", row.status);
     }
 
+    /// The poller completes a finished job that keeps nothing with the
+    /// vendor's own link and the file's size, and downloads nothing: the gate
+    /// it builds from the row's plan says links only, so Tripo's adapter
+    /// checks the link with a one-byte GET.
+    #[tokio::test]
+    async fn the_poller_checks_the_links_of_a_job_that_keeps_nothing_and_downloads_nothing() {
+        use crate::providers::model3d::tripo::TripoModel3dProvider;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let (server, tripo) = TripoModel3dProvider::finished_rig_for_tests().await;
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_model3d(Arc::new(tripo)).await;
+        db.insert_generation("g-tripo-kn", None, "tripo/rig", "mock", "model3d", Some("rig-1"), 0.0, None, None).await.unwrap();
+        db.merge_generation_metadata_if_active(
+            "g-tripo-kn",
+            &serde_json::json!({ "keep_outputs": false, "delivery": { "requested_formats": ["glb"], "keep_nothing": true } }),
+        )
+        .await
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ImageStorage> = Arc::new(LocalModel3dStorage::new(dir.path(), "https://assets.test".into()));
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+        let row = db.get_generation("g-tripo-kn").await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
+        let link = format!("{}/files/rigged.glb", server.uri());
+        assert_eq!(row.result_url.as_deref(), Some(link.as_str()), "Tripo's own link");
+        let meta = row.metadata.expect("metadata");
+        let size = crate::providers::model3d::glb::generate_cube_glb("a rig").len() as u64;
+        assert_eq!((&meta["assets"][0]["size_bytes"], &meta["assets"][0]["kept"]), (&serde_json::json!(size), &serde_json::json!(false)), "{meta}");
+        let ranges = TripoModel3dProvider::rig_ranges_for_tests(&server).await;
+        assert_eq!(ranges, [Some("bytes=0-0".to_string())], "one one-byte GET, and no download");
+        assert!(walk_files(dir.path()).is_empty(), "nothing written");
+    }
+
     /// The client's poll and the poller both see the job finish. One of them
     /// converts and stores it; the other stands aside, and the row completes.
     #[tokio::test]
@@ -3074,6 +3836,568 @@ mod poller_tests {
         assert_eq!(quick.expect("the quick row finished while the slow one was still polling"), crate::types::GenerationStatus::Completed);
         let slow = db.get_generation("g-slow").await.unwrap().unwrap();
         assert_eq!(slow.status, crate::types::GenerationStatus::Completed, "and the slow row still finishes");
+    }
+
+    // ─── a vendor has a budget to answer each status check (p12-stall) ────
+
+    /// The status answer budget the tests below give a vendor: short, so one
+    /// that never answers is given up on quickly.
+    const TEST_ANSWER_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
+
+    /// One tick with [`TEST_ANSWER_BUDGET`]; whether it ended within 10 s.
+    /// Without the budget, a vendor that never answers holds a tick forever
+    /// (a real one, for as long as its client waits: up to 600 s).
+    async fn tick_ends(db: &Arc<dyn DatabaseStore>, registry: &Arc<ProviderRegistry>, store: &Arc<dyn ImageStorage>) -> bool {
+        let tick = poll_once_with_answer_budget(TEST_ANSWER_BUDGET, db, registry, store);
+        tokio::time::timeout(std::time::Duration::from_secs(10), tick).await.is_ok()
+    }
+
+    /// A video vendor that never answers a status check, and the sender that
+    /// keeps it so: once that is dropped, its checks answer.
+    fn hung_video_vendor() -> (FaultyVideoProvider, tokio::sync::watch::Sender<bool>) {
+        let (keeps_it_hung, gate) = tokio::sync::watch::channel(false);
+        (FaultyVideoProvider { gate: Some(gate), ..FaultyVideoProvider::answering(10) }, keeps_it_hung)
+    }
+
+    /// p12-stall: eight jobs of a vendor that never answers take every slot
+    /// of a tick. Each has the status answer budget, then its slot goes to
+    /// the next row, so another vendor's job behind them finishes in the same
+    /// tick, not once the hung vendor's client gives up (up to 600 s later).
+    #[tokio::test]
+    async fn a_hung_vendor_holds_the_ticks_slots_only_for_the_answer_budget() {
+        let sqlite = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = sqlite.clone();
+        let (hung, _keeps_it_hung) = hung_video_vendor();
+        let registry = registry_of(hung).await;
+        registry.register_mock_model3d(Arc::new(DoneModel3dProvider)).await;
+        for i in 0..POLL_CONCURRENCY {
+            insert_video_row(&db, &format!("g-hung-{i}"), &format!("job-hung-{i}")).await;
+        }
+        // Older than the other vendor's job, so the hung ones take every slot first.
+        sqlx::query("UPDATE generations SET created_at = datetime('now', '-1 minutes')").execute(sqlite.pool()).await.unwrap();
+        db.insert_generation("g-other-vendor", None, "mock/mesh-3d", "mock", "model3d", Some("done-job"), 0.0, None, None).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick still waited on the hung vendor after 10 s");
+        let other = db.get_generation("g-other-vendor").await.unwrap().unwrap();
+        assert_eq!(other.status, crate::types::GenerationStatus::Completed, "{:?}", other.error_message);
+    }
+
+    /// Follow-ups 2026-11-15: a tick's rows take turns by provider, each
+    /// provider's in the order they were claimed; one provider's rows (the
+    /// usual tick) don't move at all.
+    #[test]
+    fn rows_take_turns_by_provider_in_claim_order() {
+        let rows = vec![("a", 1), ("a", 2), ("a", 3), ("b", 1), ("a", 4), ("c", 1), ("b", 2)];
+        assert_eq!(
+            take_turns_by(rows, |r| r.0),
+            vec![("a", 1), ("b", 1), ("c", 1), ("a", 2), ("b", 2), ("a", 3), ("a", 4)]
+        );
+        let one = vec![("a", 3), ("a", 1), ("a", 2)];
+        assert_eq!(take_turns_by(one.clone(), |r| r.0), one, "one provider's rows moved");
+    }
+
+    /// Follow-ups 2026-11-15: a tick's rows take turns by provider. Rows of a
+    /// hung vendor claimed ahead of another vendor's job took every slot,
+    /// eight at a time, while that job waited: an answer budget (30 s) for
+    /// each eight of them ahead of it, up to about 6.5 minutes a tick.
+    #[tokio::test]
+    async fn another_vendors_job_does_not_wait_behind_a_hung_vendors_rows() {
+        let sqlite = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = sqlite.clone();
+        let (hung, keeps_it_hung) = hung_video_vendor();
+        let registry = registry_of(hung).await;
+        registry.register_image_provider_named("other", Arc::new(SlowImageProvider { answers_after: std::time::Duration::ZERO })).await;
+        for i in 0..2 * POLL_CONCURRENCY {
+            insert_video_row(&db, &format!("g-hung-{i}"), &format!("job-hung-{i}")).await;
+        }
+        // Older than the other vendor's job: claimed ahead of it.
+        sqlx::query("UPDATE generations SET created_at = datetime('now', '-1 minutes')").execute(sqlite.pool()).await.unwrap();
+        db.insert_generation("g-other-vendor", None, "other/image", "other", "image", Some("job-other"), 0.0, None, None).await.unwrap();
+
+        // The hung vendor's checks keep their slots for as long as this
+        // tick's budget lets them: a minute.
+        let tick = {
+            let (db, registry, store) = (db.clone(), registry.clone(), test_3d_store());
+            tokio::spawn(async move { poll_once_with_answer_budget(std::time::Duration::from_secs(60), &db, &registry, &store).await })
+        };
+        let other_done = async {
+            loop {
+                let row = db.get_generation("g-other-vendor").await.unwrap().unwrap();
+                if row.status.is_terminal() {
+                    return row;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        let other = tokio::time::timeout(std::time::Duration::from_secs(10), other_done).await;
+        drop(keeps_it_hung);
+        tick.await.unwrap();
+        let other = other.expect("the other vendor's job waited behind the hung vendor's rows");
+        assert_eq!(other.status, crate::types::GenerationStatus::Completed, "{:?}", other.error_message);
+    }
+
+    /// p12-stall: a check over the budget is no verdict of the vendor's. The
+    /// job stays in flight, billed and with no error, and is asked about
+    /// again next tick; past MAX_ACTIVE_AGE it is reaped, as any job that
+    /// cannot be polled is.
+    #[tokio::test]
+    async fn a_check_over_the_answer_budget_leaves_the_job_in_flight_for_the_next_tick() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let (hung, _keeps_it_hung) = hung_video_vendor();
+        let polls = hung.polls.clone();
+        let registry = registry_of(hung).await;
+        db.insert_generation("g-hung", None, "mock/video-gen", "mock", "video", Some("job-hung"), 0.25, None, None).await.unwrap();
+        let store = test_3d_store();
+
+        for tick in 1..=2 {
+            assert!(tick_ends(&db, &registry, &store).await, "tick {tick} still waited on the hung vendor after 10 s");
+        }
+        let row = db.get_generation("g-hung").await.unwrap().unwrap();
+        assert!(!row.status.is_terminal(), "{:?}: {:?}", row.status, row.error_message);
+        assert_eq!((row.cost_usd, row.error_message), (0.25, None), "refunded, or marked with an error");
+        assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 2, "not asked about again on the next tick");
+    }
+
+    /// p12-stall: a video that keeps nothing is asked about without a
+    /// delivery gate; its check has the budget too.
+    #[tokio::test]
+    async fn a_hung_check_of_a_video_that_keeps_nothing_ends_at_the_answer_budget() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let (hung, _keeps_it_hung) = hung_video_vendor();
+        let registry = registry_of(hung).await;
+        insert_video_row(&db, "g-hung-kn", "job-hung-kn").await;
+        db.merge_generation_metadata_if_active("g-hung-kn", &serde_json::json!({ "keep_outputs": false })).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick still waited on the hung vendor after 10 s");
+        assert!(!db.get_generation("g-hung-kn").await.unwrap().unwrap().status.is_terminal());
+    }
+
+    /// p12-stall: and so does a 3D vendor's.
+    #[tokio::test]
+    async fn a_hung_3d_check_ends_at_the_answer_budget() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = Arc::new(ProviderRegistry::new());
+        // Never released: the check of `slow-job` never answers.
+        registry.register_mock_model3d(Arc::new(GatedModel3dProvider { release: Arc::new(tokio::sync::Notify::new()) })).await;
+        db.insert_generation("g-hung-3d", None, "mock/mesh-3d", "mock", "model3d", Some("slow-job"), 0.0, None, None).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick still waited on the hung vendor after 10 s");
+        assert!(!db.get_generation("g-hung-3d").await.unwrap().unwrap().status.is_terminal());
+    }
+
+    /// A vendor flow whose billed stage `two` is slow to start: the start
+    /// waits for `release`. Otherwise [`StagedModel3dProvider`].
+    struct HeldStartModel3dProvider {
+        staged: StagedModel3dProvider,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model3dProvider for HeldStartModel3dProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            m: &crate::capabilities::ModelSchema,
+            b: &crate::types::BaseGenerationRequest,
+            e: &crate::providers::Model3dExtras,
+            mat: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::Model3dGenerationHandle, crate::providers::ProviderError> {
+            self.staged.generate(m, b, e, mat).await
+        }
+        async fn poll_status(
+            &self,
+            h: &crate::providers::Model3dGenerationHandle,
+        ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+            self.staged.poll_status(h).await
+        }
+        async fn start_stage(
+            &self,
+            h: &crate::providers::Model3dGenerationHandle,
+            stage: &str,
+        ) -> Result<serde_json::Value, crate::providers::ProviderError> {
+            self.release.notified().await;
+            self.staged.start_stage(h, stage).await
+        }
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::Model3dGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unimplemented!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unimplemented!()
+        }
+    }
+
+    /// p12-stall: a billed stage start the vendor is slow to answer leaves
+    /// the poll at the budget too. It goes on at the vendor, on a task of its
+    /// own (`model3d_stages::advance`), and is recorded on the row when it
+    /// lands, so it is never sent twice.
+    #[tokio::test]
+    async fn a_slow_stage_start_frees_the_slot_at_the_answer_budget_and_is_still_recorded() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let release = Arc::new(tokio::sync::Notify::new());
+        let provider = Arc::new(HeldStartModel3dProvider { staged: staged_provider(), release: release.clone() });
+        let (registry, _router, id) = staged_job(&db, provider.clone()).await;
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick still waited on the stage's start after 10 s");
+        release.notify_one();
+        let recorded = async {
+            loop {
+                let row = db.get_generation(&id).await.unwrap().unwrap();
+                if row.metadata.as_ref().and_then(|m| m.pointer("/stage_context/stage")).and_then(|s| s.as_str()) == Some("two") {
+                    return row;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        let row = tokio::time::timeout(std::time::Duration::from_secs(10), recorded).await.expect("the stage's start was never recorded on the row");
+        assert!(!row.status.is_terminal(), "{:?}: {:?}", row.status, row.error_message);
+        assert_eq!(provider.staged.starts.load(std::sync::atomic::Ordering::SeqCst), 1, "the stage was not started once");
+    }
+
+    /// An image vendor whose job checks never answer.
+    struct HungImageProvider;
+
+    #[async_trait::async_trait]
+    impl crate::providers::ImageProvider for HungImageProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::ImageExtras,
+            _mat: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::GenerationOutput, crate::providers::ProviderError> {
+            unimplemented!("poller tests never call generate")
+        }
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::ImageGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unimplemented!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unimplemented!()
+        }
+        async fn poll_job(
+            &self,
+            _model: &str,
+            _job: &str,
+            _resume: Option<&serde_json::Value>,
+        ) -> Result<crate::providers::ImageJobPoll, crate::providers::ProviderError> {
+            std::future::pending().await
+        }
+    }
+
+    /// p12-stall: a late image's check has the budget too
+    /// (docs/async-images.md). Its vendor hands the image over in the same
+    /// call; the budget is for the vendor's answer, and stops counting once
+    /// the image's download starts (see the test after the next).
+    #[tokio::test]
+    async fn a_hung_check_of_a_late_image_ends_at_the_answer_budget() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_image(Arc::new(HungImageProvider)).await;
+        db.insert_generation("g-hung-image", None, "mock/priced-image", "mock", "image", Some("job-hung"), 0.0, None, None).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick still waited on the hung vendor after 10 s");
+        assert!(!db.get_generation("g-hung-image").await.unwrap().unwrap().status.is_terminal());
+    }
+
+    /// An image vendor whose check answers after `answers_after` that the job
+    /// is done, with its image already in hand (no download to note).
+    struct SlowImageProvider {
+        answers_after: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::ImageProvider for SlowImageProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::ImageExtras,
+            _mat: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::GenerationOutput, crate::providers::ProviderError> {
+            unimplemented!("poller tests never call generate")
+        }
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::ImageGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unimplemented!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unimplemented!()
+        }
+        async fn poll_job(
+            &self,
+            _model: &str,
+            _job: &str,
+            _resume: Option<&serde_json::Value>,
+        ) -> Result<crate::providers::ImageJobPoll, crate::providers::ProviderError> {
+            tokio::time::sleep(self.answers_after).await;
+            Ok(crate::providers::ImageJobPoll::Done(crate::providers::GenerationOutput {
+                data: crate::providers::image::mock::MockProvider::placeholder_png(),
+                content_type: "image/png".into(),
+                metadata: Default::default(),
+                more: Vec::new(),
+            }))
+        }
+    }
+
+    /// Review 2026-11-15 #5: with the download no longer counted, a late
+    /// image's check has a status check's budget, not one of its own (the
+    /// 120 s copied from the image download clients). A vendor slow to say
+    /// whether the image is done is asked again next tick, as any other.
+    #[tokio::test]
+    async fn a_late_image_whose_vendor_is_slow_to_answer_is_cut_at_the_status_budget() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_image(Arc::new(SlowImageProvider { answers_after: 3 * TEST_ANSWER_BUDGET })).await;
+        db.insert_generation("g-late-slow", None, "mock/priced-image", "mock", "image", Some("job-late-slow"), 0.0, None, None).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick did not end within 10 s");
+        let row = db.get_generation("g-late-slow").await.unwrap().unwrap();
+        assert!(!row.status.is_terminal(), "an answer slower than a status check's budget was waited for: {:?}", row.status);
+    }
+
+    /// An image vendor whose job is done, its image at `url`: its check
+    /// answers at once, then downloads the image through the shared download
+    /// of a finished job's result (`image::fetch_result`), as every image
+    /// adapter that can resume does.
+    struct DownloadingImageProvider {
+        url: String,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::ImageProvider for DownloadingImageProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::ImageExtras,
+            _mat: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::GenerationOutput, crate::providers::ProviderError> {
+            unimplemented!("poller tests never call generate")
+        }
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::ImageGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unimplemented!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unimplemented!()
+        }
+        async fn poll_job(
+            &self,
+            _model: &str,
+            _job: &str,
+            _resume: Option<&serde_json::Value>,
+        ) -> Result<crate::providers::ImageJobPoll, crate::providers::ProviderError> {
+            // The tests' image host is on loopback: no public-address check.
+            let data = crate::providers::image::fetch_result(&reqwest::Client::new(), &self.url, false, "test image").await?;
+            Ok(crate::providers::ImageJobPoll::Done(crate::providers::GenerationOutput {
+                data,
+                content_type: "image/png".into(),
+                metadata: Default::default(),
+                more: Vec::new(),
+            }))
+        }
+    }
+
+    /// Review 2026-11-15 #1: a late image's check is its vendor's answer and
+    /// then the image's download. The download is no part of the answer:
+    /// once it starts, the check runs to its end, which the download client's
+    /// own limit bounds. Cut at the budget, a slow but valid download started
+    /// over every tick until the job was reaped and refunded, though its
+    /// vendor billed it.
+    #[tokio::test]
+    async fn a_late_image_whose_download_outlasts_the_status_budget_completes() {
+        let host = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_bytes(crate::providers::image::mock::MockProvider::placeholder_png())
+                    .set_delay(3 * TEST_ANSWER_BUDGET),
+            )
+            .mount(&host)
+            .await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_image(Arc::new(DownloadingImageProvider { url: format!("{}/image.png", host.uri()) })).await;
+        db.insert_generation("g-late-download", None, "mock/priced-image", "mock", "image", Some("job-late-download"), 0.0, None, None).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick did not end within 10 s");
+        let row = db.get_generation("g-late-download").await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
+    }
+
+    /// A 3D vendor whose job is done (as [`DoneModel3dProvider`]) and that
+    /// downloads the mesh in its poll, as Tripo, Meshy and fal do: once the
+    /// gate says go, the download takes `download`.
+    struct SlowDownloadModel3dProvider {
+        download: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl Model3dProvider for SlowDownloadModel3dProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::Model3dExtras,
+            _mat: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::Model3dGenerationHandle, crate::providers::ProviderError> {
+            unimplemented!()
+        }
+        async fn poll_status(
+            &self,
+            h: &crate::providers::Model3dGenerationHandle,
+        ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+            self.poll_status_gated(h, &crate::providers::AlwaysFetch).await
+        }
+        async fn poll_status_gated(
+            &self,
+            h: &crate::providers::Model3dGenerationHandle,
+            gate: &dyn crate::providers::FetchGate,
+        ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+            let mut done = DoneModel3dProvider.poll_status(h).await?;
+            if gate.ask().await == crate::providers::Fetch::StandAside {
+                crate::proxy::model3d_deliver::stand_aside(&mut done);
+            } else {
+                tokio::time::sleep(self.download).await;
+            }
+            Ok(done)
+        }
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::Model3dGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unimplemented!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unimplemented!()
+        }
+    }
+
+    /// p12-stall: the budget is for the vendor's answer, not for a finished
+    /// job's download. Once the adapter asks its delivery gate, the poll runs
+    /// to its end, however long the download takes (downloads have limits of
+    /// their own).
+    #[tokio::test]
+    async fn a_3d_download_that_outlasts_the_answer_budget_still_completes() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_model3d(Arc::new(SlowDownloadModel3dProvider { download: 10 * TEST_ANSWER_BUDGET })).await;
+        db.insert_generation("g-slow-3d-download", None, "mock/mesh-3d", "mock", "model3d", Some("done-job"), 0.0, None, None).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick did not end within 10 s");
+        let row = db.get_generation("g-slow-3d-download").await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
+    }
+
+    /// A video vendor whose job is done (as [`MockVideoProvider`]) and that
+    /// downloads the video in its poll, as Veo, Bedrock and Sora do: once the
+    /// gate says go, the download takes `download`.
+    struct SlowDownloadVideoProvider {
+        download: std::time::Duration,
+        done: MockVideoProvider,
+    }
+
+    #[async_trait::async_trait]
+    impl VideoProvider for SlowDownloadVideoProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+
+        async fn generate(
+            &self,
+            _m: &ModelSchema,
+            _b: &BaseGenerationRequest,
+            _e: &VideoExtras,
+            _mat: &MaterializedRequest,
+        ) -> Result<VideoGenerationHandle, ProviderError> {
+            unimplemented!("poller tests never call generate")
+        }
+
+        async fn poll_status(&self, h: &VideoGenerationHandle) -> Result<VideoGenerationPollResult, ProviderError> {
+            self.poll_status_gated(h, &crate::providers::AlwaysFetch).await
+        }
+
+        async fn poll_status_gated(
+            &self,
+            h: &VideoGenerationHandle,
+            gate: &dyn crate::providers::FetchGate,
+        ) -> Result<VideoGenerationPollResult, ProviderError> {
+            if gate.ask().await == crate::providers::Fetch::StandAside {
+                return Ok(crate::providers::video::standing_aside());
+            }
+            tokio::time::sleep(self.download).await;
+            self.done.poll_status(h).await
+        }
+
+        async fn estimate_cost(&self, _m: &ModelSchema, _r: &VideoGenerationRequest) -> Result<CostEstimate, ProviderError> {
+            unimplemented!("poller tests never estimate cost")
+        }
+
+        async fn health_check(&self) -> HealthCheckResult {
+            unimplemented!("poller tests never health-check")
+        }
+    }
+
+    async fn slow_video_download_registry() -> Arc<ProviderRegistry> {
+        let registry = Arc::new(ProviderRegistry::new());
+        let vendor = SlowDownloadVideoProvider { download: 10 * TEST_ANSWER_BUDGET, done: MockVideoProvider::new() };
+        registry.register_mock_video(Arc::new(vendor)).await;
+        registry
+    }
+
+    /// p12-stall: the same for a video it keeps, handed over as bytes.
+    #[tokio::test]
+    async fn a_video_download_that_outlasts_the_answer_budget_still_completes() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = slow_video_download_registry().await;
+        insert_video_row(&db, "g-slow-video-download", "job-slow-video").await;
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick did not end within 10 s");
+        let row = db.get_generation("g-slow-video-download").await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
+    }
+
+    /// p12-stall: and for a video that keeps nothing, whose adapter asks a
+    /// gate that always says go.
+    #[tokio::test]
+    async fn a_video_that_keeps_nothing_completes_when_its_download_outlasts_the_answer_budget() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = slow_video_download_registry().await;
+        insert_video_row(&db, "g-slow-video-kn", "job-slow-video-kn").await;
+        db.merge_generation_metadata_if_active("g-slow-video-kn", &serde_json::json!({ "keep_outputs": false })).await.unwrap();
+
+        assert!(tick_ends(&db, &registry, &test_3d_store()).await, "the tick did not end within 10 s");
+        let row = db.get_generation("g-slow-video-kn").await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
+        assert_eq!(row.result_url.as_deref(), Some("https://example.com/mock-video.mp4"), "the vendor's link");
     }
 
     // ─── replicas claim the rows they poll (horizontal scaling) ───────────
@@ -3517,6 +4841,44 @@ mod poller_tests {
         crate::access::present::Presenting { router: router.clone(), db: db.clone(), secrets_key: None, mode: crate::config::Mode::SingleTenant }
     }
 
+    /// The poller delivers with the server's `mesh.draco` settings, read from
+    /// its router's config: with Draco off, `mock/draco-3d`'s vendor GLB
+    /// can't be read, so its delivery fails, and the row's error names the
+    /// setting.
+    #[tokio::test]
+    async fn the_poller_delivers_with_the_servers_draco_settings() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = make_3d_registry().await;
+        let store = test_3d_store();
+        let mut config = crate::config::AppConfig::default();
+        config.mesh.draco.enabled = false;
+        let router = Arc::new(crate::proxy::router::ProxyRouter::new(
+            registry.clone(),
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(config),
+            Arc::new(crate::proxy::storage::LocalStore),
+        ));
+        let presenting = presenting_of(&router, &db);
+        let job_id = submit_mock_3d("mock/draco-3d", "a skinned leg").await;
+        let id = "litegen-3d-draco-off";
+        db.insert_generation(id, None, "mock/draco-3d", "mock", "model3d", Some(&job_id), 0.0, None, None).await.unwrap();
+        // The mock ramps over three polls, so drive several ticks.
+        for _ in 0..5 {
+            poll_once_presenting(&db, &registry, None, crate::config::Mode::SingleTenant, &store, Some(&presenting)).await;
+            let row = db.get_generation(id).await.unwrap().unwrap();
+            if matches!(row.status, GenerationStatus::Completed | GenerationStatus::Failed) {
+                break;
+            }
+        }
+        let row = db.get_generation(id).await.unwrap().unwrap();
+        assert_eq!(row.status, GenerationStatus::Failed, "{:?}", row.error_message);
+        let error = row.error_message.unwrap_or_default();
+        assert!(
+            error.contains("Draco-compressed (KHR_draco_mesh_compression)") && error.contains("mesh.draco.enabled") && error.contains("LITEGEN__MESH__DRACO__ENABLED"),
+            "{error}"
+        );
+    }
+
     /// `mock/video-gen` submitted through `router`, with its row written as
     /// the submit handler writes it. Returns the generation id.
     async fn submit_video_through(router: &crate::proxy::router::ProxyRouter, db: &Arc<dyn DatabaseStore>) -> String {
@@ -3631,6 +4993,85 @@ mod poller_tests {
         let (sent, total) = db.list_webhook_deliveries(&key.id.to_string(), 1, 50).await.unwrap();
         assert_eq!(total, 1, "the drain returned before the webhook was answered (still running: {left:?})");
         assert!(sent[0].success, "{:?}", sent[0]);
+    }
+
+    // ─── terminal webhooks go out as their outbox delivery (migration 029) ──
+
+    /// A key with a webhook at `url`, and a mock video job of it, `id`,
+    /// whose first poll completes it.
+    async fn hooked_video(db: &Arc<dyn DatabaseStore>, id: &str, url: &str) {
+        let hash = format!("outbox-hash-{}", uuid::Uuid::new_v4().simple());
+        let key = db.create_api_key("outbox-key", &hash, "lg-ob", None, None, "generate,read", Some(url)).await.unwrap();
+        db.insert_generation(id, Some(&key.id), "mock/video-gen", "mock", "video", Some("mock-video-job-1"), 0.0, None, None).await.unwrap();
+    }
+
+    /// Waits (10 s at most) until `server` has had a request.
+    async fn until_a_request(server: &wiremock::MockServer) -> Vec<wiremock::Request> {
+        let wait = async {
+            loop {
+                let got = server.received_requests().await.unwrap_or_default();
+                if !got.is_empty() {
+                    return got;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait).await.expect("no webhook arrived within 10 s")
+    }
+
+    /// The webhook of a job the poller ends goes out at once, as before,
+    /// as its outbox delivery: under the id the terminal write recorded, and
+    /// the delivery ends `delivered`.
+    #[tokio::test]
+    async fn a_terminal_webhook_goes_out_at_once_as_its_outbox_delivery() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        hooked_video(&db, "litegen-vid-wh-outbox", &format!("{}/wh", server.uri())).await;
+
+        poll_once(&db, &make_registry().await, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+
+        let received = until_a_request(&server).await;
+        let delivery = db.webhook_outbox_of("litegen-vid-wh-outbox").await.unwrap().expect("the terminal write recorded it");
+        let sent_as = received[0].headers.get("x-litegen-delivery-id").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        assert_eq!(sent_as, delivery.id, "sent as the outbox's delivery");
+        let wait = async {
+            while db.webhook_outbox_of("litegen-vid-wh-outbox").await.unwrap().is_some_and(|d| d.status == "pending") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait).await.expect("the delivery stayed pending");
+        let done = db.webhook_outbox_of("litegen-vid-wh-outbox").await.unwrap().unwrap();
+        assert_eq!((done.status.as_str(), done.attempts), ("delivered", 1), "{done:?}");
+    }
+
+    /// A database restored without migration 029's trigger records no
+    /// delivery: the job's webhook still goes out, from memory as before
+    /// 029, and a warning says so.
+    #[tokio::test]
+    async fn a_terminal_webhook_with_no_outbox_delivery_goes_out_from_memory_and_says_so() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+        let sqlite = in_memory_db().await;
+        sqlx::query("DROP TRIGGER webhook_outbox_on_terminal").execute(sqlite.pool()).await.unwrap();
+        let db: Arc<dyn DatabaseStore> = sqlite.clone();
+        hooked_video(&db, "litegen-vid-wh-no-outbox", &format!("{}/wh", server.uri())).await;
+
+        let warned = warnings_of(async {
+            poll_once(&db, &make_registry().await, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+            until_a_request(&server).await;
+        })
+        .await;
+        assert_eq!(db.webhook_outbox_of("litegen-vid-wh-no-outbox").await.unwrap(), None, "no delivery was recorded");
+        assert_eq!(server.received_requests().await.unwrap_or_default().len(), 1, "the webhook went out");
+        assert!(
+            warned.iter().any(|l| l.contains("no outbox delivery was recorded") && l.contains("litegen-vid-wh-no-outbox")),
+            "a warning names the generation: {warned:#?}"
+        );
     }
 
     // ─── ages and stage claims on the database's clock (R8) ───────────────

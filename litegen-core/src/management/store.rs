@@ -67,6 +67,11 @@ pub trait ManagementStore: Send + Sync {
     async fn list_provider_configs(&self) -> Result<Vec<StoredProviderConfig>, sqlx::Error>;
     async fn get_provider_config(&self, provider: &str) -> Result<Option<StoredProviderConfig>, sqlx::Error>;
     async fn upsert_provider_config(&self, config: &StoredProviderConfig) -> Result<(), sqlx::Error>;
+    /// Write `sealed`'s ciphertext, nonce and settings_json over the row of
+    /// `read`'s provider, only while that row still holds what `read` holds
+    /// there, so a save that landed since is not undone. `updated_at` stays.
+    /// Whether it wrote.
+    async fn reseal_provider_config(&self, read: &StoredProviderConfig, sealed: &StoredProviderConfig) -> Result<bool, sqlx::Error>;
     async fn delete_provider_config(&self, provider: &str) -> Result<bool, sqlx::Error>;
 
     // ─── Gateway settings ───────────────────────────────────────────────

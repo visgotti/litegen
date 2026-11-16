@@ -7,6 +7,8 @@ import ScopePresetPicker from '../components/ScopePresetPicker';
 import KeyCreatedBanner from '../components/KeyCreatedBanner';
 import { useTenant } from '../context/tenant';
 import { PRESETS, presetFor, scopeLabel, type ScopePreset } from './key-scopes';
+import { redeliverRowIds } from './key-deliveries';
+import { quotaText } from './key-quota';
 
 interface EditState {
   id: string;
@@ -59,6 +61,8 @@ export default function Keys() {
     error: string;
   }
   const [deliveryPanels, setDeliveryPanels] = useState<Map<string, DeliveryPanel>>(new Map());
+  // What a redeliver answered, by delivery id: its state, or the server's refusal.
+  const [redeliveries, setRedeliveries] = useState<Map<string, { text: string; ok: boolean }>>(new Map());
 
   const load = () => {
     client.keys.list()
@@ -228,10 +232,27 @@ export default function Keys() {
     }
   };
 
-  const formatQuota = (key: ApiKeyInfo) => {
-    if (key.token_quota == null) return '—';
-    const used = key.tokens_used ?? 0;
-    return `${used}/${key.token_quota}`;
+  /** The key's deliveries again, its panel left open. */
+  const reloadDeliveries = async (id: string) => {
+    try {
+      const result = await client.keys.listWebhookDeliveries(id, { page: 1, per_page: 20 });
+      setDeliveryPanels(prev => new Map(prev).set(id, { open: true, deliveries: result.data, loading: false, error: '' }));
+    } catch (e: unknown) {
+      setDeliveryPanels(prev => new Map(prev).set(id, { open: true, deliveries: [], loading: false, error: (e as Error).message }));
+    }
+  };
+
+  // Send a delivery again (a fresh series of attempts under its id). Quiet:
+  // the server's refusal (409 still being sent, 429 asked again within its
+  // minute) is shown beside the button, not as a toast too.
+  const redeliver = async (keyId: string, deliveryId: string) => {
+    try {
+      const state = await quietClient.keys.redeliverWebhookDelivery(keyId, deliveryId);
+      setRedeliveries(prev => new Map(prev).set(deliveryId, { text: `Sent again: ${state.status}`, ok: true }));
+      await reloadDeliveries(keyId);
+    } catch (e: unknown) {
+      setRedeliveries(prev => new Map(prev).set(deliveryId, { text: (e as Error).message, ok: false }));
+    }
   };
 
   return (
@@ -274,7 +295,7 @@ export default function Keys() {
           />
         </div>
         <div>
-          <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Token Quota</label>
+          <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Quota (USD)</label>
           <input
             className="input"
             data-testid="new-key-token-quota"
@@ -357,7 +378,7 @@ export default function Keys() {
                       </>
                     ) : '—'}
                   </td>
-                  <td data-testid={`key-quota-${k.id}`}>{formatQuota(k)}</td>
+                  <td data-testid={`key-quota-${k.id}`}>{quotaText(k)}</td>
                   <td data-testid={`key-rpm-${k.id}`}>{k.rpm_limit ?? '—'}</td>
                   <td>
                     <span
@@ -477,10 +498,11 @@ export default function Keys() {
                                   <th style={{ textAlign: 'left', padding: '4px 8px', color: '#8b949e', fontWeight: 500 }}>Status</th>
                                   <th style={{ textAlign: 'left', padding: '4px 8px', color: '#8b949e', fontWeight: 500 }}>Success</th>
                                   <th style={{ textAlign: 'left', padding: '4px 8px', color: '#8b949e', fontWeight: 500 }}>Response</th>
+                                  <th style={{ textAlign: 'left', padding: '4px 8px', color: '#8b949e', fontWeight: 500 }}>Delivery</th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {deliveryPanels.get(k.id)!.deliveries.map(d => (
+                                {deliveryPanels.get(k.id)!.deliveries.map((d, _, rows) => (
                                   <tr key={d.id} data-testid={`delivery-row-${d.id}`}>
                                     <td style={{ padding: '4px 8px', color: '#e6edf3', whiteSpace: 'nowrap' }}>
                                       {new Date(d.created_at).toLocaleString()}
@@ -513,6 +535,29 @@ export default function Keys() {
                                         ? d.response_body.slice(0, 80) + (d.response_body.length > 80 ? '…' : '')
                                         : d.error_message ?? '—'}
                                     </td>
+                                    <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>
+                                      {d.delivery_id && redeliverRowIds(rows).has(d.id) && (
+                                        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                          <button
+                                            className="btn btn-secondary"
+                                            data-testid={`delivery-redeliver-${d.delivery_id}`}
+                                            onClick={() => redeliver(k.id, d.delivery_id!)}
+                                            title="Send this delivery again, under its delivery id"
+                                            style={{ fontSize: 11, padding: '2px 8px' }}
+                                          >
+                                            Redeliver
+                                          </button>
+                                          {redeliveries.has(d.delivery_id) && (
+                                            <span
+                                              data-testid={`delivery-redeliver-result-${d.delivery_id}`}
+                                              style={{ color: redeliveries.get(d.delivery_id)!.ok ? '#3fb950' : '#f85149', whiteSpace: 'normal' }}
+                                            >
+                                              {redeliveries.get(d.delivery_id)!.text}
+                                            </span>
+                                          )}
+                                        </span>
+                                      )}
+                                    </td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -539,7 +584,7 @@ export default function Keys() {
                         }}
                       >
                         <div>
-                          <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Token Quota</label>
+                          <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Quota (USD)</label>
                           <input
                             className="input"
                             data-testid="edit-token-quota"

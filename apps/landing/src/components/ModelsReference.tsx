@@ -6,15 +6,16 @@
  * and expandable rows. A row's head says what the model does and its exact
  * price per unit; its details give the full spec — the vendor's lifecycle,
  * sizes (listed, or freeform bounds), aspect ratios (and the frame images
- * that set the shape instead), reference-image roles,
- * prompt limits, parameters with their limits, and the price with its rules.
+ * that set the shape instead), reference-image roles (those never sent
+ * together, and a last frame that needs a first), prompt limits, parameters
+ * with their limits, and the price with its rules.
  * The wording lives in src/lib/{price,model}-format.mjs, tested in scripts/.
  */
 import { useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { MODELS, type ModelEntry } from '@/config/models.generated';
 import { formatUsd, priceDefaultText, priceText, ruleText } from '@/lib/price-format.mjs';
-import { aspectRatioFramesText, lifecycleText, paramLimitsText, presetText, sizeRangeText } from '@/lib/model-format.mjs';
+import { aspectRatioFramesText, lifecycleText, needsFirstFrameText, notWithText, paramLimitsText, presetText, sizeRangeText } from '@/lib/model-format.mjs';
 import styles from './ModelsReference.module.css';
 
 /** The prompt line of a model that takes none, by what it works on instead. */
@@ -194,6 +195,15 @@ export function ModelsReference() {
                                     n: m.maxRefImages,
                                     roles: m.refRoles.map((r) => r.name).join(', ') || '—',
                                   })}
+                              {/* Roles never sent together (validator.rs check_refs: ref_role_conflict). */}
+                              {notWithText(m.refRoles, t, locale).map((line) => (
+                                <p key={line} className={styles.paramDesc}>{line}</p>
+                              ))}
+                              {/* An image sent without the first frame its role needs: a last frame, or a reference on
+                                  Runway's Kling O3 (validator.rs check_video_request: ref_role_required). */}
+                              {needsFirstFrameText(m.refRoles, t, locale).map((line) => (
+                                <p key={line} className={styles.paramDesc}>{line}</p>
+                              ))}
                             </dd>
                             <dt>{t('prompt')}</dt>
                             <dd>

@@ -1,5 +1,18 @@
 import { describe, it, expect, expectTypeOf, vi } from "vitest";
-import { LiteGenClient, type GatewaySettings, type GatewaySettingsView } from "../src";
+import {
+  LiteGenClient,
+  type AuditLogEntry,
+  type WebhookDelivery,
+  type WebhookDeliveryState,
+  type GatewaySettings,
+  type GatewaySettingsView,
+  type InviteResponse,
+  type PasswordResetLink,
+  type PatchKeyBody,
+  type PatchProviderConfigRequest,
+  type PendingInvitation,
+  type ProviderConfigView,
+} from "../src";
 
 interface Captured {
   url: string;
@@ -173,6 +186,14 @@ describe("admin", () => {
     expect(last()).toMatchObject({ method: "DELETE", path: "/v1/admin/providers/openai" });
   });
 
+  it("providers: patch changes only what it sends", async () => {
+    const { client, last } = recordingClient({ name: "openai" });
+    const body: PatchProviderConfigRequest = { api_base: null, enabled: false, extra_headers: { "X-Gateway": "t" } };
+    expect(await client.admin.providers.patch("open/ai", body)).toEqual({ name: "openai" });
+    expect(last()).toEqual({ method: "PATCH", path: "/v1/admin/providers/open%2Fai", query: {}, body });
+    expectTypeOf(client.admin.providers.patch).returns.resolves.toEqualTypeOf<ProviderConfigView>();
+  });
+
   it("routes and settings", async () => {
     const { client, last } = recordingClient({});
     await client.admin.routes.get();
@@ -194,5 +215,106 @@ describe("admin", () => {
     const { client, last } = recordingClient({});
     await client.admin.settings.update({ cache_max_bytes: 268_435_456 });
     expect(last()).toMatchObject({ method: "PUT", path: "/v1/admin/settings", body: { cache_max_bytes: 268_435_456 } });
+  });
+});
+
+describe("invitations", () => {
+  it("an invitation made answers its token and link (no email is sent)", async () => {
+    const invite: InviteResponse = {
+      id: "inv1", email: "a@example.com", role: "member", org_id: "o1", expires_at: "2026-11-22T00:00:00Z",
+      token: "tok", invite_url: null,
+    };
+    const { client, last } = recordingClient(invite);
+    expect(await client.orgs.members.invite("o1", { email: "a@example.com", role: "member" })).toEqual(invite);
+    expect(last()).toEqual({ method: "POST", path: "/v1/orgs/o1/members", query: {}, body: { email: "a@example.com", role: "member" } });
+    expectTypeOf(client.orgs.members.invite).returns.resolves.toEqualTypeOf<InviteResponse>();
+    expectTypeOf(client.users.invite).returns.resolves.toEqualTypeOf<InviteResponse>();
+  });
+
+  it("orgs.invitations.list → GET the org's pending invitations, a bare array", async () => {
+    const pending: PendingInvitation[] = [{
+      id: "inv1", email: "a@example.com", role: "member", org_id: "o/1", invited_by: null,
+      created_at: "2026-11-15T00:00:00Z", expires_at: "2026-11-22T00:00:00Z",
+    }];
+    const { client, last } = recordingClient(pending);
+    expect(await client.orgs.invitations.list("o/1")).toEqual(pending);
+    expect(last()).toEqual({ method: "GET", path: "/v1/orgs/o%2F1/invitations", query: {}, body: undefined });
+  });
+
+  it("orgs.invitations.revoke → DELETE one, answered 204", async () => {
+    const calls: Array<{ method: string; url: string }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ method: init?.method ?? "GET", url: String(input) });
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    const client = new LiteGenClient({ baseUrl: "http://gw", fetch: fetchImpl });
+    await expect(client.orgs.invitations.revoke("o1", "inv/1")).resolves.toBeUndefined();
+    expect(calls).toEqual([{ method: "DELETE", url: "http://gw/v1/orgs/o1/invitations/inv%2F1" }]);
+  });
+});
+
+describe("keys.patch, a merge patch", () => {
+  it("sends null to clear, and a field left out stays", async () => {
+    expectTypeOf<PatchKeyBody["expires_at"]>().toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<PatchKeyBody["is_active"]>().toEqualTypeOf<boolean | undefined>();
+    const { client, last } = recordingClient({ id: "k1" });
+    const body: PatchKeyBody = { expires_at: null, token_quota: null, rpm_limit: null, webhook_url: null };
+    await client.keys.patch("k/1", body);
+    expect(last()).toEqual({ method: "PATCH", path: "/v1/keys/k%2F1", query: {}, body });
+    await client.keys.patch("k1", { expires_at: "2027-01-01T00:00:00Z", is_active: false });
+    expect(last().body).toEqual({ expires_at: "2027-01-01T00:00:00Z", is_active: false });
+  });
+});
+
+describe("the audit log and webhook deliveries, as round 3 serves them", () => {
+  it("an audit entry names the org it is filed under, absent for one filed under none", () => {
+    expectTypeOf<AuditLogEntry["org_id"]>().toEqualTypeOf<string | null | undefined>();
+  });
+
+  it("audit.list and audit.exportCsv pass org_id (the master key reads any org's entries)", async () => {
+    const { client, last } = recordingClient({ data: [], total: 0, page: 1, per_page: 50, total_pages: 0 });
+    await client.audit.list({ org_id: "o/1", action: "key.create" });
+    expect(last()).toMatchObject({ method: "GET", path: "/v1/audit", query: { page: "1", per_page: "50", action: "key.create", org_id: "o/1" } });
+    await client.audit.exportCsv({ org_id: "o2" });
+    expect(last()).toMatchObject({ method: "GET", path: "/v1/audit", query: { format: "csv", org_id: "o2" } });
+    await client.audit.list({});
+    expect(last().query).not.toHaveProperty("org_id");
+  });
+
+  it("a webhook delivery attempt names the delivery it belongs to", async () => {
+    expectTypeOf<WebhookDelivery["delivery_id"]>().toEqualTypeOf<string | null>();
+    const row = {
+      id: "a1", key_id: "k1", generation_id: "g1", url: "https://hooks.example.com/x", attempt_number: 2,
+      status_code: 200, success: true, response_body: "ok", error_message: null, payload_json: "{}",
+      created_at: "2026-11-15T00:00:00Z", delivery_id: "whd-0b6e1a64-6a8f-4c6c-9d7e-3a0c0f3f1e2d",
+    } satisfies WebhookDelivery;
+    const { client } = recordingClient({ data: [row], total: 1, page: 1, per_page: 20, total_pages: 1 });
+    expect((await client.keys.listWebhookDeliveries("k1", { page: 1, per_page: 20 })).data[0]?.delivery_id).toBe(row.delivery_id);
+  });
+});
+
+describe("keys.redeliverWebhookDelivery", () => {
+  it("POSTs the delivery's redeliver and answers its state (202)", async () => {
+    const state: WebhookDeliveryState = {
+      delivery_id: "whd-1", generation_id: "g1", status: "pending", attempts: 0,
+      next_attempt_at: "2026-11-15T00:00:00Z", created_at: "2026-11-15T00:00:00Z",
+      last_status_code: null, last_error: null, finished_at: null, redelivered_at: "2026-11-15T00:00:00Z",
+    };
+    const { client, last } = recordingClient(state);
+    expect(await client.keys.redeliverWebhookDelivery("k/1", "whd-1")).toEqual(state);
+    expect(last()).toEqual({ method: "POST", path: "/v1/keys/k%2F1/webhook-deliveries/whd-1/redeliver", query: {}, body: undefined });
+    expectTypeOf(client.keys.redeliverWebhookDelivery).returns.resolves.toEqualTypeOf<WebhookDeliveryState>();
+  });
+});
+
+describe("users.passwordResetLink", () => {
+  it("POSTs the user's password-reset and answers the link, shown only here", async () => {
+    const link: PasswordResetLink = {
+      user_id: "u/1", email: "a@example.com", token: "tok", reset_url: null, expires_at: "2026-11-15T13:00:00Z",
+    };
+    const { client, last } = recordingClient(link);
+    expect(await client.users.passwordResetLink("u/1")).toEqual(link);
+    expect(last()).toEqual({ method: "POST", path: "/v1/users/u%2F1/password-reset", query: {}, body: undefined });
+    expectTypeOf(client.users.passwordResetLink).returns.resolves.toEqualTypeOf<PasswordResetLink>();
   });
 });

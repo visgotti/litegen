@@ -18,12 +18,16 @@ class ParamSpecExpand:
         description (Union[None, Unset, str]):
         label (Union[None, Unset, str]):
         max_px (Union[None, Unset, int]): The most pixels it adds to one side.
+        required (Union[Unset, bool]): The row grows a canvas and nothing else: a request without `expand`
+            is refused with `param_required` (param `expand`) before anything is
+            quoted or reserved. Absent (false): `expand` is optional.
     """
 
     centered_only: Union[Unset, bool] = UNSET
     description: Union[None, Unset, str] = UNSET
     label: Union[None, Unset, str] = UNSET
     max_px: Union[None, Unset, int] = UNSET
+    required: Union[Unset, bool] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -47,6 +51,8 @@ class ParamSpecExpand:
         else:
             max_px = self.max_px
 
+        required = self.required
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -58,6 +64,8 @@ class ParamSpecExpand:
             field_dict["label"] = label
         if max_px is not UNSET:
             field_dict["max_px"] = max_px
+        if required is not UNSET:
+            field_dict["required"] = required
 
         return field_dict
 
@@ -93,11 +101,14 @@ class ParamSpecExpand:
 
         max_px = _parse_max_px(d.pop("max_px", UNSET))
 
+        required = d.pop("required", UNSET)
+
         param_spec_expand = cls(
             centered_only=centered_only,
             description=description,
             label=label,
             max_px=max_px,
+            required=required,
         )
 
         param_spec_expand.additional_properties = d

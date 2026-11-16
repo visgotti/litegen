@@ -127,33 +127,8 @@ impl PixverseProvider {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<(&'static str, Value), ProviderError> {
-        // What PixVerse cannot make is refused before anything is uploaded
-        // (an upload counts against the account's quota).
-        // @see <https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md> — the
-        //   transition `model` enum is "- c1 - v6 - v5.6 - v5"; it needs "first_frame_img" and
-        //   "last_frame_img"
-        // @see <https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md> —
-        //   "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older models: 5 or 8."
-        let has_role = |role: &str| materialized.refs.iter().any(|r| r.role == role);
-        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("pixverse/{native}: {why}")));
-        if has_role("last_frame") && !has_role("first_frame") {
-            return refuse("a last_frame needs a first_frame".into());
-        }
-        if has_role("last_frame") && !matches!(native, "c1" | "v6" | "v5.6" | "v5") {
-            return refuse("first and last frames are not a mode it has".into());
-        }
-        if matches!(native, "v3.5" | "v4.5" | "v5") && ![5.0, 8.0].contains(&extras.duration_seconds) {
-            return refuse(format!("{} s is not a length it makes (5 or 8 s)", extras.duration_seconds));
-        }
-        // img/'s schema forbids 8 s at 1080p in a branch naming no model
-        // ("not: properties: duration: enum: - 8 quality: enum: - 1080p",
-        // 2026-11-09); the text/ and transition/ descriptions that pinned it to
-        // v3.5 ("v3.5 1080p cannot use 8", read 2026-10-31) are bare enums now.
-        // The catalog cannot pair two params, so it is refused here.
-        if native == "v3.5" && extras.duration_seconds == 8.0 && extras.resolution.as_deref() == Some("1080p") {
-            return refuse("8 s is not a length it makes at 1080p (5 s is)".into());
-        }
-
+        // What PixVerse cannot make was refused by `preflight`, before
+        // anything is uploaded (an upload counts against the account's quota).
         // Upload any reference images first (-> img_id), tracking first/last.
         let mut first_img: Option<i64> = None;
         let mut last_img: Option<i64> = None;
@@ -374,6 +349,42 @@ impl VideoProvider for PixverseProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What PixVerse cannot make on its text, image and transition routes,
+    /// refused before anything is quoted, reserved, uploaded or sent;
+    /// `generate` asks it first. Keyframes (multi-transition) are the
+    /// validator's.
+    /// @see <https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md> — the
+    ///   transition `model` enum is "- c1 - v6 - v5.6 - v5"; it needs "first_frame_img" and
+    ///   "last_frame_img"
+    /// @see <https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md> —
+    ///   "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older models: 5 or 8."
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if roles.contains(&"keyframe") {
+            return Ok(());
+        }
+        let native = Self::resolve_model(&model.id);
+        let has_role = |role: &str| roles.contains(&role);
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("pixverse/{native}: {why}")));
+        if has_role("last_frame") && !has_role("first_frame") {
+            return refuse("a last_frame needs a first_frame".into());
+        }
+        if has_role("last_frame") && !matches!(native, "c1" | "v6" | "v5.6" | "v5") {
+            return refuse("first and last frames are not a mode it has".into());
+        }
+        if matches!(native, "v3.5" | "v4.5" | "v5") && ![5.0, 8.0].contains(&extras.duration_seconds) {
+            return refuse(format!("{} s is not a length it makes (5 or 8 s)", extras.duration_seconds));
+        }
+        // img/'s schema forbids 8 s at 1080p in a branch naming no model
+        // ("not: properties: duration: enum: - 8 quality: enum: - 1080p",
+        // 2026-11-09); the text/ and transition/ descriptions that pinned it to
+        // v3.5 ("v3.5 1080p cannot use 8", read 2026-10-31) are bare enums now.
+        // The catalog cannot pair two params, so it is refused here.
+        if native == "v3.5" && extras.duration_seconds == 8.0 && extras.resolution.as_deref() == Some("1080p") {
+            return refuse("8 s is not a length it makes at 1080p (5 s is)".into());
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -383,6 +394,9 @@ impl VideoProvider for PixverseProvider {
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
 
         let (path, mut body) = if materialized.refs.iter().any(|r| r.role == "keyframe") {
             ("/openapi/v2/video/multi_transition/generate", self.multi_transition(&creds, native, base, extras, materialized).await?)

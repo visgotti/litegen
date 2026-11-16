@@ -1,52 +1,96 @@
-## fal-ai/birefnet/v2 — active image-to-image
+## fal-ai/flux-2 — active text-to-image (spec written for fal-ai/flux-2-dev)
 {
-  "POST /fal-ai/birefnet/v2 (application/json)": {
+  "POST /fal-ai/flux-2-dev (application/json)": {
     "properties": {
-      "image_url": {
-        "_fal_ui_field": "image",
+      "acceleration": {
+        "default": "regular",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
         "type": "string"
       },
-      "mask_only": {
+      "enable_prompt_expansion": {
         "default": false,
         "type": "boolean"
       },
-      "model": {
-        "default": "General Use (Light)",
-        "enum": [
-          "General Use (Light)",
-          "General Use (Light 2K)",
-          "General Use (Heavy)",
-          "Matting",
-          "Portrait",
-          "General Use (Dynamic)"
-        ],
-        "type": "string"
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
       },
-      "operating_resolution": {
-        "default": "1024x1024",
-        "enum": [
-          "1024x1024",
-          "2048x2048",
-          "2304x2304"
+      "guidance_scale": {
+        "default": 2.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
         ],
-        "type": "string"
+        "default": "landscape_4_3"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
+        "minimum": 4,
+        "type": "integer"
       },
       "output_format": {
         "default": "png",
         "enum": [
-          "webp",
+          "jpeg",
           "png",
-          "gif"
+          "webp"
         ],
         "type": "string"
       },
-      "output_mask": {
-        "default": false,
-        "type": "boolean"
+      "prompt": {
+        "type": "string"
       },
-      "refine_foreground": {
-        "default": true,
-        "type": "boolean"
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
       },
       "sync_mode": {
         "default": false,
@@ -54,23 +98,295 @@
       }
     },
     "required": [
-      "image_url"
+      "prompt"
     ],
     "type": "object"
   }
 }
 
-## fal-ai/bria/background/remove — active image-to-image
+## fal-ai/flux-2/edit — active image-to-image (spec written for fal-ai/flux-2-dev/edit)
 {
-  "POST /fal-ai/bria/background/remove (application/json)": {
+  "POST /fal-ai/flux-2-dev/edit (application/json)": {
     "properties": {
-      "image_url": {
+      "acceleration": {
+        "default": "regular",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
+        "type": "string"
+      },
+      "enable_prompt_expansion": {
+        "default": false,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 2.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "image_urls": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
         "type": "string"
       },
       "prompt": {
+        "type": "string"
+      },
+      "seed": {
         "anyOf": [
           {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt",
+      "image_urls"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux-2/turbo — active text-to-image
+{
+  "POST /fal-ai/flux-2/turbo (application/json)": {
+    "properties": {
+      "enable_prompt_expansion": {
+        "default": false,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 2.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
             "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux-pro/v1.1-ultra/redux — active image-to-image
+{
+  "POST /fal-ai/flux-pro/v1.1-ultra/redux (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "anyOf": [
+          {
+            "enum": [
+              "21:9",
+              "16:9",
+              "4:3",
+              "3:2",
+              "1:1",
+              "2:3",
+              "3:4",
+              "9:16",
+              "9:21"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "default": "16:9"
+      },
+      "enhance_prompt": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image_prompt_strength": {
+        "default": 0.1,
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "default": "",
+        "type": "string"
+      },
+      "raw": {
+        "default": false,
+        "type": "boolean"
+      },
+      "safety_tolerance": {
+        "default": "2",
+        "enum": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
           },
           {
             "type": "null"
@@ -89,179 +405,101 @@
   }
 }
 
-## fal-ai/sam-3-1/image — active image-to-image
+## fal-ai/flux-pro/v1.1/redux — active image-to-image
 {
-  "POST /fal-ai/sam-3-1/image (application/json)": {
+  "POST /fal-ai/flux-pro/v1.1/redux (application/json)": {
     "properties": {
-      "apply_mask": {
-        "default": true,
+      "enhance_prompt": {
+        "default": false,
         "type": "boolean"
       },
-      "box_prompts": {
-        "default": [],
-        "items": {
-          "properties": {
-            "frame_index": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+      "guidance_scale": {
+        "default": 3.5,
+        "maximum": 20,
+        "minimum": 1,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
             },
-            "object_id": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "x_max": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "x_min": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "y_max": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "y_min": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
+            "type": "object"
           },
-          "type": "object"
-        },
-        "type": "array"
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
       },
       "image_url": {
         "type": "string"
       },
-      "include_boxes": {
-        "default": false,
-        "type": "boolean"
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
       },
-      "include_scores": {
-        "default": false,
-        "type": "boolean"
-      },
-      "max_masks": {
-        "default": 3,
-        "maximum": 32,
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
         "minimum": 1,
         "type": "integer"
       },
       "output_format": {
-        "default": "png",
+        "default": "jpeg",
         "enum": [
           "jpeg",
-          "png",
-          "webp"
+          "png"
         ],
         "type": "string"
       },
-      "point_prompts": {
-        "default": [],
-        "items": {
-          "properties": {
-            "frame_index": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "label": {
-              "anyOf": [
-                {
-                  "enum": [
-                    0,
-                    1
-                  ],
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "object_id": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "x": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "y": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "type": "array"
-      },
       "prompt": {
-        "default": "wheel",
+        "default": "",
         "type": "string"
       },
-      "return_multiple_masks": {
-        "default": false,
-        "type": "boolean"
+      "safety_tolerance": {
+        "default": "2",
+        "enum": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
       },
       "sync_mode": {
         "default": false,
@@ -275,198 +513,210 @@
   }
 }
 
-## fal-ai/sam-3/image — active image-to-image
+## fal-ai/flux-pro/v1/erase — active image-to-image
 {
-  "POST /fal-ai/sam-3/image (application/json)": {
+  "POST /fal-ai/flux-pro/v1/erase (application/json)": {
     "properties": {
-      "apply_mask": {
+      "dilate_pixels": {
+        "default": 10,
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "enable_safety_checker": {
         "default": true,
         "type": "boolean"
-      },
-      "box_prompts": {
-        "default": [],
-        "items": {
-          "properties": {
-            "frame_index": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "object_id": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "x_max": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "x_min": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "y_max": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "y_min": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "type": "array"
       },
       "image_url": {
         "type": "string"
       },
-      "include_boxes": {
-        "default": false,
-        "type": "boolean"
-      },
-      "include_scores": {
-        "default": false,
-        "type": "boolean"
-      },
-      "max_masks": {
-        "default": 3,
-        "maximum": 32,
-        "minimum": 1,
-        "type": "integer"
+      "mask_url": {
+        "type": "string"
       },
       "output_format": {
-        "default": "png",
+        "default": "jpeg",
         "enum": [
           "jpeg",
-          "png",
-          "webp"
+          "png"
         ],
         "type": "string"
-      },
-      "point_prompts": {
-        "default": [],
-        "items": {
-          "properties": {
-            "frame_index": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "label": {
-              "anyOf": [
-                {
-                  "enum": [
-                    0,
-                    1
-                  ],
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "object_id": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "x": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "y": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "type": "array"
-      },
-      "prompt": {
-        "default": "wheel",
-        "type": "string"
-      },
-      "return_multiple_masks": {
-        "default": false,
-        "type": "boolean"
       },
       "sync_mode": {
         "default": false,
         "type": "boolean"
+      }
+    },
+    "required": [
+      "image_url",
+      "mask_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux-pro/v1/fill — active image-to-image
+{
+  "POST /fal-ai/flux-pro/v1/fill (application/json)": {
+    "properties": {
+      "enhance_prompt": {
+        "default": false,
+        "type": "boolean"
       },
-      "text_prompt": {
+      "image_url": {
+        "type": "string"
+      },
+      "mask_url": {
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": "2",
+        "enum": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "type": "string"
+      },
+      "seed": {
         "anyOf": [
           {
-            "type": "string"
+            "type": "integer"
           },
           {
             "type": "null"
           }
-        ],
-        "deprecated": true
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
       }
     },
     "required": [
-      "image_url"
+      "prompt",
+      "image_url",
+      "mask_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux/dev — active text-to-image
+{
+  "POST /fal-ai/flux/dev (application/json)": {
+    "properties": {
+      "acceleration": {
+        "default": "none",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
+        "type": "string"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 3.5,
+        "maximum": 20,
+        "minimum": 1,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
     ],
     "type": "object"
   }

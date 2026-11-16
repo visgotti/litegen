@@ -89,23 +89,30 @@ test('hosted multi-tenant: signup, apps, keys, BYO creds, invites, isolation, re
   await expect(page.locator('[data-testid="model-detail-panel"]')).toContainText('Pricing');
 
   // ─── 5. Invite a member ──────────────────────────────────────────────────────
+  // No email goes out: the page hands over the invitation's link to copy, to
+  // this dashboard's own accept page (the server's invite_url, built from its
+  // public URL, is for API callers), and lists the invitation until it is used.
   await page.goto('/members');
   await page.locator('[data-testid="members-invite-btn"]').click();
   await page.locator('[data-testid="invite-email"]').fill(memberAEmail);
   await page.locator('[data-testid="invite-role"]').selectOption('member');
+  const created = page.waitForResponse(r => r.request().method() === 'POST' && /^\/v1\/orgs\/[^/]+\/members$/.test(new URL(r.url()).pathname));
   await page.locator('[data-testid="invite-send"]').click();
-  const inviteTokenLocator = page.locator('[data-testid="invite-dev-token"]');
-  await expect(inviteTokenLocator).toBeVisible({ timeout: 15_000 });
-  const inviteToken = (await inviteTokenLocator.textContent())!.trim();
-  expect(inviteToken.length).toBeGreaterThan(20);
-  await page.locator('[data-testid="invite-dev-token-close"]').click();
-  await expect(inviteTokenLocator).not.toBeVisible({ timeout: 5_000 });
+  const invitation = (await (await created).json()) as { token: string };
+  const inviteLink = page.getByTestId('invite-link');
+  await expect(inviteLink).toBeVisible({ timeout: 15_000 });
+  const link = await inviteLink.inputValue();
+  expect(link).toBe(`http://127.0.0.1:5274/invite/${invitation.token}`);
+  await expect(page.getByTestId('invite-modal')).not.toContainText('Invitation sent');
+  await page.getByTestId('invite-close').click();
+  await expect(inviteLink).toHaveCount(0);
+  await expect(page.getByTestId(`invitation-row-${memberAEmail}`)).toContainText('member');
 
   // ─── 6. Accept invite as member in a fresh context ───────────────────────────
   const memberCtx = await browser.newContext();
   const mp = await memberCtx.newPage();
   try {
-    await mp.goto(`http://127.0.0.1:5274/invite/${inviteToken}`);
+    await mp.goto(link);
     await expect(mp.locator('[data-testid="accept-email"]')).toContainText(memberAEmail, {
       timeout: 15_000,
     });
@@ -125,6 +132,10 @@ test('hosted multi-tenant: signup, apps, keys, BYO creds, invites, isolation, re
   } finally {
     await memberCtx.close();
   }
+  // Used, so no longer pending: the member is listed instead.
+  await page.goto('/members');
+  await expect(page.locator(`[data-testid="member-row-${memberAEmail}"]`)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId(`invitation-row-${memberAEmail}`)).toHaveCount(0);
 
   // ─── 7. Cross-tenant isolation: org B owner ──────────────────────────────────
   const ctxB = await browser.newContext();
@@ -195,6 +206,55 @@ test('hosted multi-tenant: signup, apps, keys, BYO creds, invites, isolation, re
     data: { model: 'mock/image-gen', prompt: 'a dog' },
   });
   expect(r2.status()).toBe(200);
+});
+
+test('hosted multi-tenant: a pending invitation is listed, and a revoked one no longer opens', async ({ page, browser }) => {
+  const owner = `inv+${rand()}@litegen.test`;
+  const kept = `kept+${rand()}@litegen.test`;
+  const revoked = `revoked+${rand()}@litegen.test`;
+  await page.goto('/signup');
+  await page.getByTestId('signup-org-name').fill('Invites Co');
+  await page.getByTestId('signup-email').fill(owner);
+  await page.getByTestId('signup-password').fill(PW);
+  await page.getByTestId('signup-confirm-password').fill(PW);
+  await page.getByTestId('signup-submit').click();
+  await page.waitForURL('**/');
+  await page.goto('/');
+  await expect(page.getByTestId('user-menu-email')).toContainText(owner, { timeout: 15_000 });
+
+  const invite = async (email: string, role: 'member' | 'viewer') => {
+    await page.goto('/members');
+    await page.getByTestId('members-invite-btn').click();
+    await page.getByTestId('invite-email').fill(email);
+    await page.getByTestId('invite-role').selectOption(role);
+    await page.getByTestId('invite-send').click();
+    const link = await page.getByTestId('invite-link').inputValue({ timeout: 15_000 });
+    await page.getByTestId('invite-close').click();
+    return link;
+  };
+  await invite(kept, 'viewer');
+  const revokedLink = await invite(revoked, 'member');
+
+  // Both are pending, as GET /v1/orgs/{id}/invitations serves them.
+  await expect(page.getByTestId(`invitation-row-${kept}`)).toContainText('viewer');
+  await expect(page.getByTestId(`invitation-row-${revoked}`)).toContainText('member');
+  const listed = page.waitForResponse(r => r.request().method() === 'GET' && /^\/v1\/orgs\/[^/]+\/invitations$/.test(new URL(r.url()).pathname));
+  const gone = page.waitForResponse(r => r.request().method() === 'DELETE' && /^\/v1\/orgs\/[^/]+\/invitations\/[^/]+$/.test(new URL(r.url()).pathname));
+  await page.getByTestId(`invitation-revoke-${revoked}`).click();
+  expect((await gone).status()).toBe(204);
+  await listed;
+  await expect(page.getByTestId(`invitation-row-${revoked}`)).toHaveCount(0);
+  await expect(page.getByTestId(`invitation-row-${kept}`)).toBeVisible();
+
+  // The revoked link opens nothing.
+  const ctx = await browser.newContext();
+  try {
+    const stranger = await ctx.newPage();
+    await stranger.goto(revokedLink);
+    await expect(stranger.getByText('Invitation not found')).toBeVisible({ timeout: 15_000 });
+  } finally {
+    await ctx.close();
+  }
 });
 
 test('hosted multi-tenant: BYO S3 storage configure, persist-without-secret, remove', async ({ page }) => {

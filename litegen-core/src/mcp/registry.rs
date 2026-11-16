@@ -363,7 +363,7 @@ fn gate_words(def: &ToolDef) -> String {
         Gate::OrgRead(p) => format!("org read access (`read` or `admin` scope, or a member role with `{}`)", p.as_str()),
         Gate::OrgWrite(p) => format!("org write access (`admin` scope, or a member role with `{}`)", p.as_str()),
         Gate::Member(p) => format!("a signed-in member with `{}`, or the platform admin", p.as_str()),
-        Gate::Perm(p) => format!("a signed-in user with `{}`", p.as_str()),
+        Gate::Perm(p) => format!("a signed-in user with `{}` (single-tenant: also the platform admin)", p.as_str()),
         Gate::Global(p) => format!("the platform admin (single-tenant: a user with `{}`)", p.as_str()),
         Gate::GatewayAdmin => "the platform admin (single-tenant: owners, admins and `admin` keys)".to_string(),
         Gate::Deployment(s) => format!("the platform admin (single-tenant: the {} scope in the deployment's org)", scope(&s)),

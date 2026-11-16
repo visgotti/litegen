@@ -882,3 +882,454 @@ class Model3dConversion(TypedDict):
     library or texture the upload could not include, cubic and NURBS curves, an
     FBX animation layer. Non-ASCII characters arrive as ``?``; ``[]`` when the
     reader had nothing to say."""
+
+
+# ─── Management: keys, provider configs, invitations ────────────────────────
+
+
+Role = Literal["owner", "admin", "member", "viewer"]
+"""A member's role in an organization. An invitation can't make an ``owner``:
+the owner hands over with transfer-owner."""
+
+
+class UpdateApiKeyRequest(TypedDict, total=False):
+    """What ``keys.patch`` takes (``PATCH /v1/keys/{id}``): a JSON merge patch.
+
+    A key given is set and a key left out stays as it is. ``None`` is sent as
+    ``null``, which clears ``token_quota``, ``rpm_limit``, ``webhook_url`` and
+    ``expires_at``; ``name``, ``scopes`` and ``is_active`` can't be cleared.
+    """
+
+    name: str | None
+    token_quota: float | None
+    """``None`` removes the quota."""
+    rpm_limit: int | None
+    """Requests per minute; ``None`` removes the limit."""
+    scopes: str | None
+    """Comma-separated (``"generate,read"``): replaces the key's scopes, with the
+    same check as on create (an unknown scope is a 400, one the caller may not
+    grant a 403)."""
+    webhook_url: str | None
+    """``None`` or ``""`` removes the webhook."""
+    expires_at: str | None
+    """RFC 3339; ``None`` removes the expiry."""
+    is_active: bool | None
+
+
+class ApiKeyDetail(TypedDict):
+    """One key, as ``keys.get`` and ``keys.patch`` return it. Never the secret."""
+
+    id: str
+    name: str
+    key_prefix: str
+    created_at: str
+    is_active: bool
+    tokens_used: float
+    scopes: str
+    """Comma-separated, e.g. ``"generate,read"``."""
+    token_quota: NotRequired[float | None]
+    rpm_limit: NotRequired[int | None]
+    webhook_url: NotRequired[str | None]
+    expires_at: NotRequired[str | None]
+
+
+class PatchProviderConfigRequest(TypedDict, total=False):
+    """What ``admin.providers.patch`` takes (``PATCH /v1/admin/providers/{name}``).
+
+    A key given is set, ``None`` (sent as ``null``) clears it so it falls back
+    to env/YAML, and a key left out keeps its stored value. The secrets
+    (``api_key``, ``api_keys``, ``key_id``, ``key_secret``) differ: left out or
+    ``None``, a secret keeps its stored value, and ``""`` removes it, so the
+    env/YAML one applies again. A map or ``options`` given replaces the stored
+    one whole.
+    """
+
+    api_key: str | None
+    api_keys: str | None
+    key_id: str | None
+    key_secret: str | None
+    api_base: str | None
+    """Sent back as ``admin.providers.get`` showed it
+    (``https://[redacted]@host/v1``), it keeps the URL in force."""
+    model_mapping: dict[str, str] | None
+    extra_headers: dict[str, str] | None
+    options: Any
+    region: str | None
+    enabled: bool | None
+    """``False`` takes the provider out of service until re-enabled."""
+
+
+class ProviderConfigView(TypedDict):
+    """One provider's config, as the ``admin.providers`` methods return it, with
+    every secret masked."""
+
+    name: str
+    modalities: list[str]
+    """What the adapter serves: ``image``, ``video``, ``model3d``."""
+    active: bool
+    """Whether a live instance is registered and serving requests."""
+    source: str
+    """Where the config in force comes from: ``env``, ``runtime`` or ``none``."""
+    has_secret: bool
+    key_hint: NotRequired[str | None]
+    """The key's last 4 characters, e.g. ``…a1b2``."""
+    api_base: NotRequired[str | None]
+    """The api_base in force, with ``[redacted]`` for its user info."""
+    model_mapping: dict[str, str]
+    extra_header_names: list[str]
+    """Header names only: their values can carry secrets."""
+    options: NotRequired[Any]
+    """The options in force, with ``[redacted]`` for the user info of each URL."""
+    region: NotRequired[str | None]
+    enabled: bool
+    updated_at: NotRequired[str | None]
+
+
+class InviteResponse(TypedDict):
+    """A new invitation, as ``orgs.members.invite`` returns it. Its ``token`` and
+    ``invite_url`` are shown only here: litegen sends no email, so give one of
+    them to the invitee."""
+
+    id: str
+    email: str
+    role: str
+    org_id: str
+    """The organization the invitee joins on accepting."""
+    expires_at: str
+    token: str
+    """Accepts the invitation once, until ``expires_at``
+    (``POST /v1/auth/invitations/{token}/accept``): whoever holds it joins the
+    org as ``role``."""
+    invite_url: str | None
+    """The dashboard's page that accepts it, ``/invite/{token}`` on the origin of
+    the server's ``server.public_base_url``; ``None`` when that isn't set, so
+    build it from ``token`` on the dashboard's origin."""
+
+
+class PendingInvitation(TypedDict):
+    """An invitation not yet accepted or expired (``orgs.invitations.list``),
+    without its token: to send a lost link again, revoke it and invite anew."""
+
+    id: str
+    email: str
+    role: str
+    org_id: str
+    invited_by: str | None
+    """The account that sent it; ``None`` when the master key did."""
+    created_at: str
+    expires_at: str
+
+
+class AuditLogEntry(TypedDict):
+    """One audit log entry (``audit.list``): an admin action, who took it and
+    what it changed."""
+
+    id: str
+    action: str
+    """E.g. ``"key.create"``, ``"generation.cancel"``."""
+    actor_label: str
+    """Who acted: a signed-in person's email, an API key's id, ``master-key``
+    for the master key, or ``system`` for litegen itself (a budget alert)."""
+    actor_key_id: NotRequired[str | None]
+    """The API key that acted; ``None`` for the master key, a signed-in person
+    and litegen itself."""
+    target_type: str
+    """What the action changed: ``api_key``, ``generation``, ``user``,
+    ``invitation``, ``provider``, ``settings``, a budget, …"""
+    target_id: str
+    before_json: NotRequired[str | None]
+    """The target as JSON before the action; ``None`` on a create."""
+    after_json: NotRequired[str | None]
+    """The target as JSON after the action; ``None`` on a delete or revoke."""
+    created_at: str
+    org_id: NotRequired[str | None]
+    """The organization the entry is filed under: the one whose object the
+    action changed, else the one the caller acted in. Absent for an entry filed
+    under no org (in hosted mode, the master key's changes to the gateway and to
+    accounts, and an account change by a person in no org), which only the
+    master key reads."""
+
+
+class AuditLogPage(TypedDict):
+    """One page of ``audit.list``."""
+
+    data: list[AuditLogEntry]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class WebhookDelivery(TypedDict):
+    """One attempt at delivering a key's webhook (``keys.list_webhook_deliveries``)."""
+
+    id: str
+    key_id: str
+    generation_id: str
+    url: str
+    attempt_number: int
+    success: bool
+    """Whether the receiver answered 2xx."""
+    status_code: NotRequired[int | None]
+    response_body: NotRequired[str | None]
+    """The first 16 KiB of the receiver's reply."""
+    error_message: NotRequired[str | None]
+    payload_json: str
+    """The webhook as sent, when the reader is inside the app's owner scope for
+    the generation (or its files are public); for anyone else, the generation as
+    stored now, presented for them, or ``{}`` once it is gone. Every attempt of
+    one delivery shows the payload of its latest attempt."""
+    delivery_id: NotRequired[str | None]
+    """``whd-`` and a UUID: the ``X-Litegen-Delivery-Id`` the receiver got, the
+    same on every attempt of one delivery; ``None`` on attempts recorded before
+    migration 029."""
+    created_at: str
+
+
+class WebhookDeliveryPage(TypedDict):
+    """One page of ``keys.list_webhook_deliveries``, newest first."""
+
+    data: list[WebhookDelivery]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+WebhookDeliveryStatus = Literal["pending", "delivered", "failed"]
+"""Where a webhook delivery stands: an attempt is to come, one was answered
+2xx, or it ended without a 2xx (a 410 Gone, its last attempt failed, or it
+can't be sent)."""
+
+
+class WebhookDeliveryState(TypedDict):
+    """A key's webhook delivery, as ``keys.redeliver_webhook_delivery`` returns
+    it: one terminal webhook of a job, sent until an attempt is answered 2xx or
+    its retries run out."""
+
+    delivery_id: str
+    """``whd-`` and a UUID: the ``X-Litegen-Delivery-Id`` of every attempt."""
+    generation_id: str
+    """The job whose webhook this is."""
+    status: WebhookDeliveryStatus
+    attempts: int
+    """The attempts sent in the current series; a redeliver starts a new series
+    at 0."""
+    next_attempt_at: str
+    """When the next attempt is due, while ``pending``."""
+    last_status_code: NotRequired[int | None]
+    """The latest attempt's HTTP status, when it got an answer."""
+    last_error: NotRequired[str | None]
+    """Why the latest attempt failed, or why the delivery can't be sent."""
+    created_at: str
+    finished_at: NotRequired[str | None]
+    """When it ended (``delivered`` or ``failed``)."""
+    redelivered_at: NotRequired[str | None]
+    """When it was last redelivered."""
+
+
+class PasswordResetLink(TypedDict):
+    """A password reset link for an account, as ``users.password_reset_link``
+    returns it. Shown only in this answer: litegen sends no email, so give
+    ``reset_url`` or ``token`` to the account's owner."""
+
+    user_id: str
+    email: str
+    token: str
+    """Sets the account's password once, until ``expires_at`` (1 hour), with
+    ``POST /v1/auth/password-reset/confirm``. Whoever holds it can take the
+    account over, so give it only to its owner."""
+    reset_url: str | None
+    """The dashboard's page that sets the password, ``/reset-password/{token}``
+    on the origin of the server's ``server.public_base_url``; ``None`` when
+    that isn't set, so build it from ``token`` on the dashboard's origin."""
+    expires_at: str
+
+
+# ─── Request logs, spend logs and gateway settings ──────────────────────────
+
+
+class RequestLog(TypedDict):
+    """One request, as ``logs.list`` returns it."""
+
+    id: str
+    model: str
+    provider: str
+    status: GenerationStatus
+    media_type: MediaType
+    cost_usd: float
+    latency_ms: int
+    created_at: str
+    error: NotRequired[str | None]
+    metadata: NotRequired[Any]
+    cache_hit: bool
+    """Whether the cache answered this request (an image's ``X-Litegen-Cache:
+    hit``): a hit has a row of its own, at what it was charged."""
+
+
+class RequestLogPage(TypedDict):
+    """One page of ``logs.list``, newest first."""
+
+    data: list[RequestLog]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class SpendLogEntry(TypedDict):
+    """One attributed request, as ``spend.logs`` returns it."""
+
+    id: str
+    created_at: str
+    model: str
+    provider: str
+    media_type: str
+    status: str
+    cost_usd: float
+    latency_ms: int
+    tags: list[str]
+    org_id: NotRequired[str | None]
+    app_id: NotRequired[str | None]
+    key_id: NotRequired[str | None]
+    user_id: NotRequired[str | None]
+    end_user: NotRequired[str | None]
+    cache_hit: bool
+    """Whether the cache answered this request: a hit has a row of its own, at
+    what it was charged."""
+
+
+class SpendLogPage(TypedDict):
+    """One page of ``spend.logs``."""
+
+    data: list[SpendLogEntry]
+    total: int
+    page: int
+    per_page: int
+
+
+AccessMode = Literal["public", "signed", "private"]
+"""Who may open an app's stored files: anyone with the link, a signed link's
+holder, or a litegen key only."""
+
+OwnerScope = Literal["key", "app", "org"]
+"""Which keys a file belongs to, for ``signed`` and ``private`` files."""
+
+SignedLinks = Literal["store", "litegen"]
+"""Who signs a signed link: the store (the bucket, or litegen's local store) or
+litegen (links it can revoke)."""
+
+
+class GatewaySettings(TypedDict, total=False):
+    """The gateway-wide settings editable at runtime, as
+    ``admin.settings.update`` takes them and ``admin.settings.get`` shows them
+    (``settings``). ``None``, or a key left out, means the value from config."""
+
+    cost_markup_percent: float | None
+    cache_enabled: bool | None
+    cache_ttl_seconds: int | None
+    cache_max_items: int | None
+    cache_max_bytes: int | None
+    cache_charge_hits: bool | None
+    """Whether a cache hit is charged the cached answer's price (default true);
+    ``False`` makes hits free. Either way the hit's log row says ``cache_hit``."""
+    retry_max_retries: int | None
+    retry_backoff_ms: int | None
+    retry_max_backoff_ms: int | None
+    vendor_timeout_seconds: int | None
+    circuit_breaker_threshold: int | None
+    circuit_breaker_open_for_seconds: int | None
+    alert_webhook_url: str | None
+    """Receives budget alerts (a soft budget crossed, a hard budget hit)."""
+    default_end_user_max_budget_usd: float | None
+    default_end_user_budget_duration: str | None
+    storage_access_mode: AccessMode | None
+    storage_access_owner_scope: OwnerScope | None
+    storage_access_signed_url_ttl_seconds: int | None
+    storage_access_keep_outputs: bool | None
+    storage_access_retention_days: int | None
+    storage_access_signed_links: SignedLinks | None
+    encrypt_provider_credentials: bool | None
+    """Also encrypt each ``extra_headers`` value and the user info of
+    ``api_base`` and of the URLs in ``options`` at rest; needs
+    ``LITEGEN__SECRETS_KEY``. Unlike the other keys, an update that leaves it
+    out keeps its stored value; ``None`` or ``False`` turns it off."""
+
+
+class AccessSettings(TypedDict):
+    """The stored-output settings in force."""
+
+    mode: AccessMode
+    owner_scope: OwnerScope
+    signed_url_ttl_seconds: int
+    keep_outputs: bool
+    retention_days: int
+    """0 keeps files until they are deleted."""
+    signed_links: SignedLinks
+
+
+class EffectiveCache(TypedDict):
+    """The response cache in force."""
+
+    enabled: bool
+    ttl_seconds: int
+    max_items: int
+    max_bytes: int
+    charge_hits: bool
+    """Whether a cache hit is charged the cached answer's price."""
+
+
+class EffectiveRetries(TypedDict):
+    """The vendor retries in force."""
+
+    max_retries: int
+    backoff_ms: int
+    max_backoff_ms: int
+
+
+class EffectiveBreaker(TypedDict):
+    """The circuit breaker in force."""
+
+    threshold: int
+    open_for_seconds: int
+
+
+class SettingRange(TypedDict):
+    """The lowest and the highest value a setting takes, both allowed."""
+
+    min: int
+    max: int
+
+
+class GatewaySettingLimits(TypedDict):
+    """The range of each numeric gateway setting, as ``admin.settings.update``
+    is held to it (a value outside is a 400 ``invalid_settings``)."""
+
+    cost_markup_percent: SettingRange
+    cache_ttl_seconds: SettingRange
+    cache_max_items: SettingRange
+    cache_max_bytes: SettingRange
+    retry_max_retries: SettingRange
+    retry_backoff_ms: SettingRange
+    retry_max_backoff_ms: SettingRange
+    vendor_timeout_seconds: SettingRange
+    circuit_breaker_threshold: SettingRange
+    circuit_breaker_open_for_seconds: SettingRange
+    storage_access_signed_url_ttl_seconds: SettingRange
+    storage_access_retention_days: SettingRange
+
+
+class GatewaySettingsView(TypedDict):
+    """What ``admin.settings.get`` and ``admin.settings.update`` return: the
+    stored settings and what is in force."""
+
+    settings: GatewaySettings
+    effective_cost_markup_percent: float
+    effective_storage_access: AccessSettings
+    effective_cache: EffectiveCache
+    cache_entries: int
+    """Answers the cache holds now, on this replica."""
+    effective_retries: EffectiveRetries
+    effective_vendor_timeout_seconds: int
+    effective_circuit_breaker: EffectiveBreaker
+    limits: GatewaySettingLimits

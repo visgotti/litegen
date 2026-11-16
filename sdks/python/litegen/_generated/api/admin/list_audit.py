@@ -19,6 +19,7 @@ def _get_kwargs(
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
     format_: Union[Unset, str] = UNSET,
+    org_id: Union[Unset, str] = UNSET,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {}
 
@@ -35,6 +36,8 @@ def _get_kwargs(
     params["per_page"] = per_page
 
     params["format"] = format_
+
+    params["org_id"] = org_id
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -85,6 +88,7 @@ def sync_detailed(
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
     format_: Union[Unset, str] = UNSET,
+    org_id: Union[Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, PaginatedResponseAuditLogEntry]]:
     r"""GET /v1/audit — List audit log entries (admin scope required). Supports `?format=csv`.
     Live: `curl https://app.litegen.ai/api/v1/audit -H \"Authorization: Bearer sk_live_...\"`
@@ -97,6 +101,7 @@ def sync_detailed(
         page (Union[Unset, int]):
         per_page (Union[Unset, int]):
         format_ (Union[Unset, str]):
+        org_id (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -114,6 +119,7 @@ def sync_detailed(
         page=page,
         per_page=per_page,
         format_=format_,
+        org_id=org_id,
     )
 
     response = client.get_httpx_client().request(
@@ -133,6 +139,7 @@ def sync(
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
     format_: Union[Unset, str] = UNSET,
+    org_id: Union[Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, PaginatedResponseAuditLogEntry]]:
     r"""GET /v1/audit — List audit log entries (admin scope required). Supports `?format=csv`.
     Live: `curl https://app.litegen.ai/api/v1/audit -H \"Authorization: Bearer sk_live_...\"`
@@ -145,6 +152,7 @@ def sync(
         page (Union[Unset, int]):
         per_page (Union[Unset, int]):
         format_ (Union[Unset, str]):
+        org_id (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -163,6 +171,7 @@ def sync(
         page=page,
         per_page=per_page,
         format_=format_,
+        org_id=org_id,
     ).parsed
 
 
@@ -176,6 +185,7 @@ async def asyncio_detailed(
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
     format_: Union[Unset, str] = UNSET,
+    org_id: Union[Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, PaginatedResponseAuditLogEntry]]:
     r"""GET /v1/audit — List audit log entries (admin scope required). Supports `?format=csv`.
     Live: `curl https://app.litegen.ai/api/v1/audit -H \"Authorization: Bearer sk_live_...\"`
@@ -188,6 +198,7 @@ async def asyncio_detailed(
         page (Union[Unset, int]):
         per_page (Union[Unset, int]):
         format_ (Union[Unset, str]):
+        org_id (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -205,6 +216,7 @@ async def asyncio_detailed(
         page=page,
         per_page=per_page,
         format_=format_,
+        org_id=org_id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -222,6 +234,7 @@ async def asyncio(
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
     format_: Union[Unset, str] = UNSET,
+    org_id: Union[Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, PaginatedResponseAuditLogEntry]]:
     r"""GET /v1/audit — List audit log entries (admin scope required). Supports `?format=csv`.
     Live: `curl https://app.litegen.ai/api/v1/audit -H \"Authorization: Bearer sk_live_...\"`
@@ -234,6 +247,7 @@ async def asyncio(
         page (Union[Unset, int]):
         per_page (Union[Unset, int]):
         format_ (Union[Unset, str]):
+        org_id (Union[Unset, str]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -253,5 +267,6 @@ async def asyncio(
             page=page,
             per_page=per_page,
             format_=format_,
+            org_id=org_id,
         )
     ).parsed

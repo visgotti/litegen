@@ -557,6 +557,27 @@ tokio::task_local! {
     /// How long the caller waits for an image job before litegen answers that
     /// it is still running (`Prefer: wait`, `respond-async`).
     static CALL_WAIT: std::time::Duration;
+    /// Set once the vendor call running in this task starts downloading a
+    /// finished job's result ([`noting_result_download`]).
+    static RESULT_DOWNLOAD: std::sync::Arc<std::sync::atomic::AtomicBool>;
+}
+
+/// Run `call`, setting `started` once it starts downloading the result of a
+/// job its vendor reports finished ([`note_result_download`]): the vendor
+/// has answered by then, and the download has its client's own limits. The
+/// poller's budget for a vendor's answer stops counting there, as it does
+/// when a 3D or video adapter asks its [`FetchGate`].
+pub async fn noting_result_download<F: std::future::Future>(
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    call: F,
+) -> F::Output {
+    RESULT_DOWNLOAD.scope(started, call).await
+}
+
+/// The vendor call running in this task starts downloading a finished job's
+/// result now: noted for [`noting_result_download`], when it runs under one.
+pub(crate) fn note_result_download() {
+    let _ = RESULT_DOWNLOAD.try_with(|started| started.store(true, std::sync::atomic::Ordering::SeqCst));
 }
 
 /// Run `call` for a caller that waits at most `wait` for an image job: the
@@ -752,6 +773,20 @@ pub trait ImageProvider: Send + Sync {
     /// Lightweight health check (validate credentials, check connectivity).
     async fn health_check(&self) -> HealthCheckResult;
 
+    /// Refuse, with `InvalidRequest`, what this adapter would refuse at
+    /// submit for a reason the catalog can't say (a vendor rule across two of
+    /// the request's fields, or of the images it carries), from the request
+    /// alone: its params, prompt and `roles`, the role of each image it
+    /// carries, a mask litegen draws from a region included. Never the
+    /// images' bytes, which aren't read yet, and never `extras.edit`, which
+    /// is made from them. No vendor is called. The quote and the generation
+    /// run it before anything is quoted or reserved, and `generate` runs it
+    /// first, so both refuse the same requests in the same words. Default:
+    /// nothing to refuse.
+    fn preflight(&self, _model: &ModelSchema, _base: &BaseGenerationRequest, _extras: &ImageExtras, _roles: &[&str]) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     /// Whether `model`'s jobs can be asked about again after the call that
     /// submitted them returned ([`poll_job`](Self::poll_job)): true for an
     /// adapter whose vendor runs jobs and records them in `extras.vendor_job`.
@@ -762,7 +797,10 @@ pub trait ImageProvider: Send + Sync {
     /// One look at job `job` of catalog model `model` (and the `resume` state
     /// it was recorded with):
     /// running, done (the image `generate` would have returned), or failed.
-    /// A transient failure is a retryable `Err`.
+    /// A transient failure is a retryable `Err`. Download a finished job's
+    /// image with `image::fetch_result`: the poller gives the vendor a
+    /// budget to answer, which stops counting once that download starts
+    /// ([`noting_result_download`]).
     async fn poll_job(&self, model: &str, job: &str, resume: Option<&serde_json::Value>) -> Result<ImageJobPoll, ProviderError> {
         let _ = (job, resume);
         Err(ProviderError::InvalidRequest(format!("'{model}' jobs can't be resumed")))
@@ -844,6 +882,17 @@ pub trait VideoProvider: Send + Sync {
         true
     }
 
+    /// Refuse, with `InvalidRequest`, what this adapter would refuse at
+    /// submit for a reason the catalog can't say (a vendor rule across two
+    /// of the request's fields), from the request alone: its params,
+    /// prompt and `roles`, the role of each image it carries. No vendor is
+    /// called. The quote and the generation run it before anything is
+    /// quoted or reserved, and `generate` runs it first, so both refuse the
+    /// same requests in the same words. Default: nothing to refuse.
+    fn preflight(&self, _model: &ModelSchema, _base: &BaseGenerationRequest, _extras: &VideoExtras, _roles: &[&str]) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     /// Ask the vendor to stop a job the caller cancelled (L18). The row is
     /// already `cancelled`; this decides whether the VENDOR keeps working (and
     /// billing), and the answer is what `vendor_cancelled` reports. Vendors
@@ -889,7 +938,8 @@ pub struct Model3dExtras {
     /// Every entry must come back as a `Mesh` file or the generation fails;
     /// litegen derives the ones the vendor omits (whatever
     /// `proxy::model3d_convert::derivable_formats` covers), so an adapter asks
-    /// the vendor for ONE container — see `prefers_vendor_native` there.
+    /// the vendor for ONE container — see `asks_vendor_for` there, which
+    /// applies `format_source`.
     pub output_formats: Vec<String>,
     /// Texture the mesh rather than returning bare geometry.
     pub texture: Option<bool>,
@@ -969,6 +1019,68 @@ pub struct Model3dExtras {
     /// serialised.
     #[serde(skip)]
     pub preflight: Option<serde_json::Value>,
+}
+
+/// A test's [`Model3dExtras`]: committed to `formats`, every option unset, as
+/// a request that names nothing else arrives. The struct has no `Default` (an
+/// empty `output_formats` is never valid), so an adapter's tests start from
+/// this and set what they test with struct update syntax:
+/// `Model3dExtras { rig: Some(true), ..Model3dExtras::for_formats(&["glb"]) }`
+/// (`.claude/skills/model3d-provider/references/adapter-template.md`).
+#[cfg(test)]
+impl Model3dExtras {
+    pub(crate) fn for_formats(formats: &[&str]) -> Self {
+        Model3dExtras {
+            output_formats: formats.iter().map(|f| f.to_string()).collect(),
+            texture: None,
+            pbr: None,
+            target_polycount: None,
+            symmetry: None,
+            topology: None,
+            rig: None,
+            skeleton: None,
+            joint_naming: None,
+            height_m: None,
+            texture_resolution: None,
+            keep_uvs: None,
+            ground: None,
+            center: None,
+            animations: Vec::new(),
+            fps: None,
+            fbx_color_space: None,
+            fbx_light_units: None,
+            usd_light_units: None,
+            dae_morphs: None,
+            usdz_root: None,
+            usd_clips: None,
+            format_source: None,
+            output_packages: None,
+            ktx2_textures: None,
+            extra: None,
+            source: None,
+            preflight: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod model3d_extras_tests {
+    use super::Model3dExtras;
+
+    /// The adapter template's tests build their extras with
+    /// [`Model3dExtras::for_formats`]: the formats asked for, and nothing
+    /// else set, so a test reads only what it sets itself.
+    #[test]
+    fn test_extras_carry_the_formats_asked_for_and_no_option() {
+        let extras = Model3dExtras::for_formats(&["glb", "fbx"]);
+        assert_eq!(extras.output_formats, ["glb", "fbx"]);
+        let mut fields = serde_json::to_value(&extras).expect("extras serialise");
+        let fields = fields.as_object_mut().expect("an object");
+        fields.remove("output_formats");
+        let set: Vec<_> = fields.iter().filter(|(_, v)| !v.is_null() && !v.as_array().is_some_and(Vec::is_empty)).collect();
+        assert!(set.is_empty(), "options set: {set:?}");
+        assert!(extras.source.is_none() && extras.preflight.is_none());
+    }
 }
 
 /// How an operation's source reached the vendor — recorded on its row
@@ -1079,6 +1191,9 @@ impl SourceInput {
 /// One file a provider produced, already downloaded. litegen re-hosts every one
 /// of these on its own storage, so providers hand back BYTES, not vendor URLs —
 /// several vendors expire their download URLs within minutes of task success.
+/// The exception is a job that keeps nothing ([`Fetch::LinksOnly`]): its
+/// files are handed out by their vendor links, so each comes with its link
+/// checked and its size, and no bytes.
 #[derive(Debug, Clone)]
 pub struct Model3dFile {
     pub kind: crate::types::Model3dAssetKind,
@@ -1100,6 +1215,10 @@ pub struct Model3dFile {
     /// generation that keeps nothing hands out (`keep_outputs: false`).
     /// `None` for bytes no URL serves, such as a file litegen derived.
     pub source_url: Option<String>,
+    /// The file's size in bytes, as its host reported it when litegen checked
+    /// the link instead of downloading the file ([`Fetch::LinksOnly`]: `bytes`
+    /// is then empty). `None` otherwise: a re-host measures the bytes it keeps.
+    pub size_bytes: Option<u64>,
 }
 
 /// Handle returned when a 3D generation is started (for polling).
@@ -1123,7 +1242,8 @@ pub struct Model3dGenerationHandle {
 /// Status from polling a 3D generation.
 ///
 /// On `Completed`, `files` MUST carry at least one `Mesh` — whatever the vendor
-/// itself emitted, already downloaded. A completed generation without a mesh is
+/// itself emitted, already downloaded (for a job that keeps nothing, its link
+/// checked: [`Fetch::LinksOnly`]). A completed generation without a mesh is
 /// a contract violation, not a degraded success: every observer of completion
 /// turns it into `failed`. Containers the caller asked for but the vendor did
 /// not emit are derived by the caller of `poll_status`, never by the adapter.
@@ -1151,8 +1271,9 @@ pub struct Model3dGenerationPollResult {
 }
 
 /// What an observer of a finished job may do with its files: download them
-/// (it delivers the job), or stand aside (another observer does). Asked for
-/// 3D files and for a finished video alike.
+/// (it delivers the job), only check their links (it delivers a 3D job that
+/// keeps nothing), or stand aside (another observer does). Asked for 3D files
+/// and for a finished video alike; a video is never answered links only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fetch {
     /// Download them. `waited` is how long the observer waited for the
@@ -1162,13 +1283,20 @@ pub enum Fetch {
     /// Another observer delivers the job: download nothing, and report it
     /// still processing, short of done, with no files and no error.
     StandAside,
+    /// Deliver the job, but it keeps nothing (`keep_outputs: false`): check
+    /// each file's link instead of downloading the file. A link that is dead
+    /// counts as a file that would not download. `waited` is as for
+    /// [`Fetch::Go`]: the links handed out are read again after
+    /// [`REFRESH_LINKS_AFTER`].
+    LinksOnly { waited: std::time::Duration },
 }
 
 /// Asked by an adapter once its vendor says a job finished, before it
-/// downloads anything: whether this observer delivers the job. Only one
-/// observer of a finished job (a client's poll or the poller, on any
-/// replica) downloads its files; the server's delivery claim answers
-/// (`proxy::delivery_lease::DeliveryGate`). An adapter asks once per poll.
+/// downloads anything or checks any link: whether this observer delivers the
+/// job, and how. Only one observer of a finished job (a client's poll or the
+/// poller, on any replica) downloads its files; the server's delivery claim
+/// answers (`proxy::delivery_lease::DeliveryGate`). An adapter asks once per
+/// poll.
 #[async_trait]
 pub trait FetchGate: Send + Sync {
     async fn ask(&self) -> Fetch;
@@ -1221,9 +1349,11 @@ pub trait Model3dProvider: Send + Sync {
     /// [`poll_status`](Self::poll_status), asking `gate` once the vendor says
     /// the job finished and before downloading any of its files. On
     /// [`Fetch::StandAside`] it downloads nothing and reports the job still
-    /// processing. An adapter that downloads overrides this, and its
-    /// `poll_status` asks [`AlwaysFetch`]. The default never asks: the caller
-    /// then claims after the poll.
+    /// processing; on [`Fetch::LinksOnly`] it downloads nothing either, but
+    /// checks each file's link and reports the job as `poll_status` would,
+    /// each file with its link and size and no bytes. An adapter that
+    /// downloads overrides this, and its `poll_status` asks [`AlwaysFetch`].
+    /// The default never asks: the caller then claims after the poll.
     async fn poll_status_gated(
         &self,
         handle: &Model3dGenerationHandle,

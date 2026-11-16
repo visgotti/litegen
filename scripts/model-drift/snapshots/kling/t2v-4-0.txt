@@ -1,0 +1,35 @@
+# notice
+(no retirement notice)
+
+# POST /text-to-video/kling-4.0 request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `prompt` | string | Yes | - | - |
+| `settings` | object | No | - | - |
+| `settings.resolution` | string | No | `1080p` | `720p`, `1080p` |
+| `settings.aspect_ratio` | string | No | `16:9` | `21:9`, `16:9`, `9:16`, `1:1`, `4:3`, `3:4` |
+| `settings.duration` | int | No | - | `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`, `20`, `21`, `22`, `23`, `24`, `25`, `26`, `27`, `28`, `29`, `30` |
+| `options` | object | No | - | - |
+| `options.callback_url` | string | No | - | - |
+| `options.external_task_id` | string | No | - | - |
+| `options.watermark_info` | object | No | - | - |
+| `options.watermark_info.enabled` | boolean | No | `false` | - |
+
+# field notes
+- `prompt`: English-only input supports up to 26,000 characters, and non-English-only input supports up to 11,000 characters. Mixed input must satisfy E / 26000 + N / 11000 <= 1, where E is the number of English characters and N is the number of non-English characters.
+- `prompt`: > **The Kling 4.0 Text-to-Video endpoint generates videos from prompts that describe scene content, character actions, camera movement, event sequences, and visual style.**
+  > 1. **Define the scene.** Describe the characters, setting, visual style, and lighting. For example: “A man in a white shirt walks along a beach at sunset, in a realistic cinematic style.”
+  > 2. **Describe actions and camera movement.** Specify how characters or objects move, how the camera follows them, and the order of events. For a sequence with multiple stages, describe each stage in chronological order. For more details, see the [Kling 4.0 & Kling 4.0 Flash User Guide](https://kling.ai/document-api/api/usage-guide/kling-4-0).
+  > 3. **This endpoint generates videos from text prompts. To provide reference images, videos, or elements, use the Omni Reference Generation endpoint.**
+- `settings.resolution`: 720p: output video with a resolution of 720P
+- `settings.resolution`: 1080p: output video with a resolution of 1080P
+- `settings.duration`: When this parameter is set, its value takes precedence over any duration requested in the prompt.
+- `settings.duration`: When this parameter is omitted, the model uses an explicit duration identified in the prompt. For example, "Generate a 15-second video" sets the target duration to 15 seconds.
+- `settings.duration`: When this parameter is omitted and no explicit duration is identified in the prompt, the default is 10 seconds.
+- `settings.duration`: The final target duration is used to bill the output video. It is returned as usage.output_duration in the task query response and as output_duration in deduction details. Use output_duration when calculating the cost, and apply the corresponding [billing rules](https://kling.ai/document-api/pricing/base/video).
+- `options.callback_url`: If configured, the server will actively notify when the task status changes
+- `options.callback_url`: For specific message schema, see [Callback Protocol](https://kling.ai/document-api/api/get-started/callbacks)
+- `options.external_task_id`: Will not overwrite the system-generated task ID, but can be used for task queries
+- `options.external_task_id`: Must be unique within a single user account
+- `options.watermark_info`: Defined through the enabled parameter:
+- `options.watermark_info`: Custom watermarks are not currently supported

@@ -194,6 +194,16 @@ impl ImageProvider for LumaImageProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What Luma's image API can't make, refused before anything is quoted,
+    /// reserved or sent; `generate` asks it first: a container other than
+    /// its jpeg or png.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, _roles: &[&str]) -> Result<(), ProviderError> {
+        match extras.output_format.as_deref().filter(|asked| !LUMA_IMAGE_FORMATS.iter().any(|(ours, _)| ours.eq_ignore_ascii_case(asked))) {
+            Some(asked) => Err(ProviderError::InvalidRequest(format!("{}: Luma returns jpeg or png, not {asked}", model.id))),
+            None => Ok(()),
+        }
+    }
+
     /// Submit `POST /generations/image`, poll to completion, fetch the bytes.
     ///
     /// @see <https://docs.lumalabs.ai/reference/generateimage> — request body
@@ -207,6 +217,9 @@ impl ImageProvider for LumaImageProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let native = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "luma".into() })?;
         let url = format!("{}/generations/image", self.api_base());
 
@@ -219,13 +232,8 @@ impl ImageProvider for LumaImageProvider {
         }
         // The asked container (PixelGenie L9) in Luma's spelling; none asked,
         // none sent (Luma's default is jpg).
-        if let Some(asked) = extras.output_format.as_deref() {
-            let format = LUMA_IMAGE_FORMATS
-                .iter()
-                .find(|(ours, _)| ours.eq_ignore_ascii_case(asked))
-                .map(|(_, luma)| *luma)
-                .ok_or_else(|| ProviderError::InvalidRequest(format!("{}: Luma returns jpeg or png, not {asked}", model.id)))?;
-            body["format"] = Value::String(format.to_string());
+        if let Some(format) = extras.output_format.as_deref().and_then(|asked| LUMA_IMAGE_FORMATS.iter().find(|(ours, _)| ours.eq_ignore_ascii_case(asked))) {
+            body["format"] = Value::String(format.1.to_string());
         }
 
         // Reference images (CDN URLs only). Map roles to Luma's ref fields.

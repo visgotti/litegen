@@ -113,6 +113,38 @@ test('compare mode: unified params from diverse schemas + multi-model generation
   }
 });
 
+test('compare mode: a sub-cent quote and charge show every digit they have', async ({ page }) => {
+  await authenticate(page);
+  // Every mock model costs $0 or at least half a cent, so the server's real
+  // answers come back with a vendor's sub-cent price put in (fal flux-2-klein
+  // at 256x256 is $0.00033), which three fixed decimals showed as "$0.000".
+  const PRICE = 0.00033;
+  await page.route(/\/v1\/images\/cost$/, async route => {
+    const response = await route.fetch();
+    const body = (await response.json()) as Record<string, unknown>;
+    await route.fulfill({ response, json: response.ok() ? { ...body, total_cost_usd: PRICE } : body });
+  });
+  await page.route(/\/v1\/images\/generations$/, async route => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { usage?: Record<string, unknown> };
+    await route.fulfill({ response, json: response.ok() ? { ...body, usage: { ...body.usage, cost_usd: PRICE } } : body });
+  });
+
+  await page.goto('/playground');
+  await feature('Compare — the cost preview and the tile show a sub-cent price whole');
+  await page.getByTestId('pg-mode-compare').click();
+  await page.getByTestId('pg-model-filter').fill('mock');
+  await page.getByTestId('pg-model-mock/visual-image-gen').locator('input').check();
+  await page.getByTestId('pg-prompt').fill('a red fox');
+  await expect(page.getByTestId('pg-cost')).toHaveText('Est. cost: $0.00033', { timeout: 30_000 });
+
+  await page.getByTestId('pg-view-results').click();
+  await page.getByTestId('pg-generate').click();
+  const tile = page.getByTestId('pg-tile-mock/visual-image-gen');
+  await expect(tile.getByTestId('pg-tile-img-mock/visual-image-gen')).toBeVisible({ timeout: 30_000 });
+  await expect(tile.locator('.pg-tile-meta')).toContainText('$0.00033');
+});
+
 test('single mode: Generate waits for a model', async ({ page }) => {
   await authenticate(page);
   // Hold the model list back. Until it arrives and its default lands there is

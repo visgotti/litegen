@@ -119,8 +119,15 @@ export default {
     },
   ],
   acknowledged: [
-    { id: 'v5.5', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
-    { id: 'v5.6', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
+    // Re-checked 2026-11-16 to carry them: both are priced (fixed Credits per
+    // clip by length, audio and quality; v5.5 also by multi-shot) and v5.6 is
+    // on the capability map, but each prices its 10 s clip at 1080p "Not
+    // supported" (img/: "V5.5/V5.6: 5, 8, or 10 … Do not use unsupported
+    // duration/quality combinations"), a pair the catalog cannot refuse and
+    // pixverse.rs's preflight does not refuse yet, as it does v3.5's 8 s at
+    // 1080p. Add the rows once it does.
+    { id: 'v5.5', reason: 'held 2026-11-16: priced, but pixverse.rs must first refuse its 10 s clip at 1080p ("Not supported"); skipped 2026-09-11 as legacy' },
+    { id: 'v5.6', reason: 'held 2026-11-16: priced and on the capability map, but pixverse.rs must first refuse its 10 s clip at 1080p ("Not supported"); skipped 2026-09-11 as legacy' },
     { id: 'v4', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
     {
       id: 'v5-fast',

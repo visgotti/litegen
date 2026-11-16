@@ -1,6 +1,15 @@
 models:
   # Vidu (api.vidu.com). Async: POST /ent/v2/{text2video,img2video,reference2video,
   # start-end2video} -> poll GET /ent/v2/tasks/{id}/creations. Auth: Authorization: Token.
+  #
+  # Prices: Vidu bills in credits and prices a credit in RMB only, "| Credits |
+  # Price (RMB) |" … "| 1 | 0.03125 |" (its top-ups too: "| 500 | 16,000
+  # credits |"), and gives no USD rate; its docs index (llms.txt) lists no
+  # other pricing page (overview/pricing.md is the same page; re-read
+  # 2026-11-16). The $0.005 a credit every row below uses is litegen's own
+  # conversion (it implies 6.25 RMB to the dollar), not a rate Vidu
+  # publishes: unverified.
+  # @see https://platform.vidu.com/docs/pricing.md (2026-11-16)
   - id: vidu/viduq1
     provider: vidu
     media_type: video
@@ -51,7 +60,11 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
         last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference:   { required: false, min_count: 0, max_count: 7 }
+        # Frames or references, not both: reference2video's `images` form takes references only (its body: model,
+        # images, prompt, bgm, duration, seed, aspect_ratio, …; no frame field), and img2video and start-end2video
+        # take no reference, so a mix is refused before it is quoted (vidu.rs refuses it too).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md (2026-11-09)
+        reference:   { required: false, min_count: 0, max_count: 7, not_with: [first_frame, last_frame] }
     # No `style` (no current page documents it) and no `off_peak`: "Tasks
     # submitted in off-peak mode will be generated within 48 hours", while
     # litegen fails a job still running after 2 hours (and bills it).
@@ -71,7 +84,7 @@ models:
     provider: vidu
     media_type: video
     display_name: Vidu 2.0
-    docs_url: https://platform.vidu.com/docs/overview/model-map
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-2-0/image-to-video
     description: Vidu 2.0 image/reference to video (no text-to-video).
     # @see https://platform.vidu.com/docs/pricing.md (re-read 2026-11-03); credits at $0.005, as viduq1's 80 credits = $0.40.
     pricing:
@@ -85,7 +98,11 @@ models:
         - { when: { references.reference: '*' }, usd: 0.40 }
     # Model Map marks Text-to-Video as unsupported for vidu2.0.
     capabilities: { image_to_video: true }
-    prompt: { required: true, max_length: 5000 }
+    # img2video, where a lone first frame routes: "Note 1: Maximum length of
+    # **2000 characters**" (start-end2video and reference2video take 5000),
+    # and one limit serves every mode.
+    # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-2-0/image-to-video.md (2026-11-16)
+    prompt: { required: true, max_length: 2000 }
     params:
       # "seed … When not passed or passed as 0, a random number will be used
       # instead Manual setting uses the specified seed" — every endpoint; 0 is
@@ -106,12 +123,16 @@ models:
         default: 720p
       aspect_ratio:
         kind: aspect_ratio
-        # Only reference2video takes aspect_ratio for vidu2.0 (its start-end2video
-        # page has none). No current endpoint page gives an aspect-ratio rule
-        # for vidu2.0 on reference2video: the legacy page's "3:4&4:3 only
-        # support q2 model" is gone (2026-11-09; that URL now serves the Q4
-        # Preview page), so the three ratios stand on that earlier reading.
-        # https://platform.vidu.com/docs/start-end-to-video.md (vidu2.0 only, 2026-11-09)
+        # Only reference2video takes aspect_ratio for vidu2.0 (its img2video and
+        # start-end2video bodies have none). Its vidu2.0 page carries the row
+        # every model's page shares ("The q2 and q3 models support any ratio
+        # or auto. … Accepted values: 1:1, 9:16, 16:9, 3:4, 4:3"), and its
+        # vidu2.0 example sends "3:4" beside a 5 s, 1080p clip that the same
+        # page's duration ("`vidu2.0`: Default is 4 seconds, available option:
+        # 4") and resolution rows refuse. Nothing there is said of vidu2.0
+        # alone, so the three ratios still stand on the legacy page's "3:4&4:3
+        # only support q2 model" (gone 2026-11-09).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-2-0/reference-to-video.md (2026-11-16)
         allowed: ["16:9","9:16","1:1"]
         # So img2video and start-end2video drop it: a frame without a reference
         # image sets the shape (E5).
@@ -124,7 +145,8 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
         last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference:   { required: false, min_count: 0, max_count: 7 }
+        # Frames or references, not both, as on viduq1 (vidu.rs refuses the mix too).
+        reference:   { required: false, min_count: 0, max_count: 7, not_with: [first_frame, last_frame] }
     # No `style`: no current page documents it (2026-11-09), and vidu2.0 has no
     # text2video, where it used to live (Model Map: "| Text-to-video | - |").
     # https://platform.vidu.com/docs/overview/model-map.md (2026-11-09)
@@ -212,7 +234,10 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
         last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference:   { required: false, min_count: 0, max_count: 7 }
+        # Frames or references, not both: reference2video's body (model, images, videos, prompt, duration, seed,
+        # aspect_ratio, resolution, …; drift snapshot vidu/q2-reference-to-video.txt) has no frame field, and img2video
+        # and start-end2video take no reference (vidu.rs refuses the mix too).
+        reference:   { required: false, min_count: 0, max_count: 7, not_with: [first_frame, last_frame] }
     # viduq2-pro's bodies (img2video, start-end2video, reference2video) have no
     # bgm or movement_amplitude; no off_peak (see viduq1).
     tags: [image-to-video, reference-to-video, premium]
@@ -479,7 +504,10 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        reference:   { required: false, min_count: 0, max_count: 15 }
+        # A first frame or references, not both: img2video takes its one image as the first frame, reference2video
+        # 1 to 15 references and no frame (vidu.rs refuses the mix too).
+        # @see https://platform.vidu.com/docs/api-reference/video-models/vidu-q4-preview/reference-to-video.md (2026-11-03)
+        reference:   { required: false, min_count: 0, max_count: 15, not_with: [first_frame] }
     tags: [image-to-video, reference-to-video, audio, premium]
 
   # ─── Carried 2026-11-03 (skipped 2026-09-11 as "optional"): each on the

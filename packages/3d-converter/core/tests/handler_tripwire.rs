@@ -28,8 +28,13 @@ use std::path::Path;
 /// and spacing, as the core's `parse` reads them; given to the write as the
 /// core's `convert` gives them, `usdz_root` defaulting to usda and `usd_clips`
 /// left to mesh (write.rs `usd_choices_equal_the_hosted_pipeline`); usdc
-/// served as `application/octet-stream`.
-const PINNED: u64 = 0x1a47_8eea_b11d_1e00;
+/// served as `application/octet-stream`. Re-checked 2026-11-16 for the Draco
+/// settings, the only change: `convert_bytes` takes the server's
+/// `mesh.draco` options and puts them in its `ReadOptions`; `PARAMS`,
+/// `parse_query`, `parse_format` and `mesh_error_response` are unchanged (a
+/// refusal is the existing `mesh_unsupported`). The core reads with
+/// `DracoOptions::default()`, which equals the server's defaults (model.rs).
+const PINNED: u64 = 0xfae3_1963_aa76_24a0;
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;

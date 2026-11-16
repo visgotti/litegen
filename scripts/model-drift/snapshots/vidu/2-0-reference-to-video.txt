@@ -1,0 +1,43 @@
+POST /ent/v2/reference2video · vidu2.0
+Body parameters
+model | string | Required | vidu2.0
+images | string | Optional | 1 7 128 128 1:4 4:1 20
+sounds | string | Optional | 1 3 3 3-12s 50 20
+prompt | string | Required | 5000
+bgm | boolean | Optional | 9 10
+duration | integer | Optional | viduq3-drama 8s 2-15s viduq3-ad viduq3-turbo viduq3-mix 5 3-15 viduq3 5 3-16 viduq2-pro viduq2 5 1-10 viduq1 5 5 vidu2.0 4 4
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | viduq3-drama 9:16 16:9 viduq3-ad 1:1 9:16 16:9 3:4 4:3 16:9 1:1 9:16 16:9 3:4 4:3
+audio | boolean | Optional | 
+movement_amplitude | string | Optional | auto auto small medium large
+resolution | string | Optional | vidu2.0 4s 360p 360p 720p
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | 48 2.0
+watermark | boolean | Optional | 
+wm_position | integer | Optional | 3 1 2 3 4
+wm_url | string | Optional | 
+meta_data | string | Optional | 
+callback_url | string | Optional | callback_url
+Request Body
+model | string | Required | vidu2.0
+auto_subjects | boolean | Optional | 
+subjects | string | Required | 2.0 7
+subjects.name | string | Required | 
+subjects.images | string | Optional | 3 128 128 1:4 4:1 20
+subjects.videos | string | Optional | 5 5 128 128 1:4 4:1 20
+subjects.voice_id | string | Optional | 
+subjects.server_id | string | Optional | 
+prompt | string | Required | 5000 1 2
+audio | boolean | Optional | 
+duration | integer | Optional | vidu2.0 4 4
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 1:1 9:16 16:9 3:4 4:3
+resolution | string | Optional | vidu2.0 4s 360p 360p 720p
+movement_amplitude | string | Optional | 
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | 48 2.0
+watermark | boolean | Optional | 
+wm_position | integer | Optional | 3 1 2 3 4
+wm_url | string | Optional | 
+meta_data | string | Optional | 
+callback_url | string | Optional | callback_url

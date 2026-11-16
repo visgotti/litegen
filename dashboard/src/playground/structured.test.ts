@@ -11,24 +11,29 @@ const { buildGenerationBody, buildSegmentationBody, runKindOf } = await import('
 const schema = (s: Record<string, unknown>) => s as unknown as ModelSchema;
 
 describe('wireValue: what a structured control sends', () => {
-  it('sends a region only once all four sides are whole pixels', () => {
+  // N4: a value is sent as typed once it is complete; whether it is a window,
+  // a colour, whole pixels or inside the canvas is the server's to say, in
+  // its words. A draft the page dropped instead went as a different request.
+  it('sends a region as typed once all four are numbers: the server judges the pixels', () => {
     const spec = { kind: 'region' };
     expect(wireValue(spec, { x: '10', y: '20', w: '300', h: '256' })).toEqual({ x: 10, y: 20, w: 300, h: 256 });
+    expect(wireValue(spec, { x: '10', y: '20', w: '0', h: '256' })).toEqual({ x: 10, y: 20, w: 0, h: 256 });
+    expect(wireValue(spec, { x: '1.5', y: '20', w: '300', h: '256' })).toEqual({ x: 1.5, y: 20, w: 300, h: 256 });
+    expect(wireValue(spec, { x: '-8', y: '20', w: '300', h: '256' })).toEqual({ x: -8, y: 20, w: 300, h: 256 });
     expect(wireValue(spec, { x: '10', y: '20', w: '300' })).toBeUndefined();
-    expect(wireValue(spec, { x: '10', y: '20', w: '0', h: '256' })).toBeUndefined();
-    expect(wireValue(spec, { x: '1.5', y: '20', w: '300', h: '256' })).toBeUndefined();
     expect(wireValue(spec, '')).toBeUndefined();
   });
 
-  it('sends the sides of an expand that grow, and nothing when none does', () => {
+  it('sends an expand as typed once a side is, a blank side as 0: the server judges the sides', () => {
     const spec = { kind: 'expand' };
     expect(wireValue(spec, { left: '64', right: '64' })).toEqual({ left: 64, top: 0, right: 64, bottom: 0 });
-    expect(wireValue(spec, { left: '', top: '0' })).toBeUndefined();
-    expect(wireValue(spec, { left: '-4' })).toBeUndefined();
+    expect(wireValue(spec, { left: '', top: '0' })).toEqual({ left: 0, top: 0, right: 0, bottom: 0 });
+    expect(wireValue(spec, { left: '-4' })).toEqual({ left: -4, top: 0, right: 0, bottom: 0 });
+    expect(wireValue(spec, { left: '2.5' })).toEqual({ left: 2.5, top: 0, right: 0, bottom: 0 });
+    expect(wireValue(spec, { left: '', top: '' })).toBeUndefined();
+    expect(wireValue(spec, '')).toBeUndefined();
   });
 
-  // N4: a value is sent as typed once it is complete; whether it is a window,
-  // a colour or inside the canvas is the server's to say, in its words.
   it('sends a time range as typed once both ends are numbers: the server judges the window', () => {
     const spec = { kind: 'time_range' };
     expect(wireValue(spec, { start_s: '0.5', end_s: '1.5' })).toEqual({ start_s: 0.5, end_s: 1.5 });
@@ -106,6 +111,20 @@ describe('wireValue: what a structured control sends', () => {
       { type: 'text', text: 'the cat' },
       { type: 'point', x: 5, y: 6, label: 2 },
       { type: 'point', x: 7, y: 8 },
+    ]);
+  });
+
+  it('sends a segmentation box as typed once its four numbers are: the server judges its area', () => {
+    const spec = { kind: 'segmentation_prompts', types: ['point', 'box'], max_items: 16 };
+    expect(wireValue(spec, [
+      { type: 'box', x: '96', y: '96', w: '64', h: '64' },
+      { type: 'box', x: '96', y: '96', w: '0', h: '64' },
+      { type: 'box', x: '-1', y: '0', w: '10', h: '-10' },
+      { type: 'box', x: '1', y: '2', w: '3', h: '' },
+    ])).toEqual([
+      { type: 'box', x: 96, y: 96, w: 64, h: 64 },
+      { type: 'box', x: 96, y: 96, w: 0, h: 64 },
+      { type: 'box', x: -1, y: 0, w: 10, h: -10 },
     ]);
   });
 });

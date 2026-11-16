@@ -590,3 +590,100 @@ async fn a_database_url_for_another_database_refuses_to_start_naming_only_its_sc
         .collect();
     assert!(made.is_empty(), "made {made:?} in {}", dir.path().display());
 }
+
+// ─── LITEGEN__OWNER_EMAIL ───────────────────────────────────────────────────
+
+/// Follow-up item 3 (2026-11-15): only LITEGEN__OWNER_EMAIL may claim the
+/// first account, and signup takes only addresses, so one that isn't an
+/// address would block the first signup for good. With no account yet,
+/// litegen refuses to start; an address starts. Once accounts exist the
+/// setting no longer applies: it starts and says so.
+#[tokio::test]
+async fn an_owner_email_that_is_not_an_address_refuses_to_start_before_the_first_signup() {
+    let dir = site(&[]);
+    let db = format!("sqlite://{}/litegen.db?mode=rwc", dir.path().display());
+    let (status, out) = start(dir.path(), |port| {
+        let mut cmd = served(dir.path(), port);
+        cmd.env("LITEGEN__DATABASE_URL", &db).env("LITEGEN__OWNER_EMAIL", "admin");
+        cmd
+    })
+    .await
+    .exited("LITEGEN__OWNER_EMAIL=admin, no account yet");
+    assert!(!status.success() && out.contains("LITEGEN__OWNER_EMAIL"), "{status}: {out}");
+
+    let server = start(dir.path(), |port| {
+        let mut cmd = served(dir.path(), port);
+        cmd.env("LITEGEN__DATABASE_URL", &db).env("LITEGEN__OWNER_EMAIL", "owner@example.com");
+        cmd
+    })
+    .await
+    .up("an address");
+    let signed_up = reqwest::Client::new()
+        .post(format!("{}/v1/auth/signup", server.base))
+        .json(&json!({ "email": "owner@example.com", "password": "a-long-enough-password" }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(signed_up.as_u16(), 200, "{}", server.log());
+    drop(server);
+
+    let server = start(dir.path(), |port| {
+        let mut cmd = served(dir.path(), port);
+        cmd.env("LITEGEN__DATABASE_URL", &db).env("LITEGEN__OWNER_EMAIL", "admin");
+        cmd
+    })
+    .await
+    .up("LITEGEN__OWNER_EMAIL=admin once an account exists");
+    let log = server.log();
+    assert!(log.lines().any(|line| line.contains("WARN") && line.contains("LITEGEN__OWNER_EMAIL")), "no warning names it:\n{log}");
+}
+
+/// Review A7: the dev token flags are for local tests only (the reset one
+/// hands any account's reset token to whoever asks), so they refuse to start
+/// in hosted mode, on a bind other than loopback, or behind a public URL that
+/// isn't loopback, naming the flag.
+#[tokio::test]
+async fn a_dev_token_flag_refuses_to_start_where_the_public_could_reach_it() {
+    let dir = site(&[]);
+    for (why, extra) in [
+        ("hosted", ("LITEGEN__MODE", "hosted")),
+        ("a public bind", ("LITEGEN__SERVER__HOST", "0.0.0.0")),
+        ("a public URL", ("LITEGEN__SERVER__PUBLIC_BASE_URL", "https://app.example.com/api")),
+    ] {
+        let (status, out) = start(dir.path(), |port| {
+            let mut cmd = served(dir.path(), port);
+            cmd.env("LITEGEN__DEV__EXPOSE_RESET_TOKENS", "true").env(extra.0, extra.1);
+            cmd
+        })
+        .await
+        .exited(why);
+        assert!(!status.success() && out.contains("FATAL") && out.contains("LITEGEN__DEV__EXPOSE_RESET_TOKENS"), "{why}: {status}: {out}");
+    }
+    let server = start(dir.path(), |port| {
+        let mut cmd = served(dir.path(), port);
+        cmd.env("LITEGEN__DEV__EXPOSE_RESET_TOKENS", "true");
+        cmd
+    })
+    .await
+    .up("single-tenant on loopback, for local tests");
+    let log = server.log();
+    assert!(log.lines().any(|line| line.contains("WARN") && line.contains("LITEGEN__DEV__EXPOSE_RESET_TOKENS")), "no warning names it:\n{log}");
+}
+
+/// Review A5: a single-tenant deployment with no account yet lets the first
+/// signup claim its Owner; reachable from outside with no owner email set,
+/// it says so at start.
+#[tokio::test]
+async fn an_open_first_signup_on_a_public_bind_is_named_at_start() {
+    let dir = site(&[]);
+    let server = start(dir.path(), |port| {
+        let mut cmd = served(dir.path(), port);
+        cmd.env("LITEGEN__SERVER__HOST", "0.0.0.0");
+        cmd
+    })
+    .await
+    .up("a public bind with a master key");
+    let log = server.log();
+    assert!(log.lines().any(|line| line.contains("WARN") && line.contains("LITEGEN__OWNER_EMAIL")), "no warning names it:\n{log}");
+}

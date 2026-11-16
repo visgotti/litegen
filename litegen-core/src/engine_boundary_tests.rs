@@ -64,6 +64,7 @@ const SERVER_PROXY_FILES: &[&str] = &[
     "webhook.rs",
     "poller.rs",
     "retention.rs",
+    "tenant_files.rs",
     "aws_sts.rs",
 ];
 

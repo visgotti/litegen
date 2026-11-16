@@ -533,74 +533,76 @@ models:
     description: OpenAI's GPT Image 2.6 Flare through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.
     docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
     # "Credits can be purchased for $0.01 per credit"; gpt_image_2_6_flare:
-    #   `gpt_image_2_6_flare` and `gpt_image_2_6_sunburst` use the same `low`, `medium`, and `high` rows below; `xhigh` and `max` are not supported. Both default to `quality: "high"` and `reasoningEffort: "high"`. Reasoning effort does not change the price.
-    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9)
-    # The default request is 11 credits = $0.11.
-    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    #   For PNG, JPEG and WebP, `gpt_image_2_6_flare` and `gpt_image_2_6_sunburst` are billed on the tables below, at the same resolutions as `gpt_image_2_5_flare` and `gpt_image_2_5_sunburst`. `high` costs the same as on GPT Image 2.5, and `low` and `medium` cost more. `xhigh` and `max` are not supported. Both models default to `quality: "high"` and `reasoningEffort: "high"`. Reasoning effort does not change the price.
+    #   | `low`    | 5 | 4 | 4 | 3 | 2 | 2 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9; 2K 8 5 5 4 3 3; 4K 9 8 7 6 5 4)
+    #   | `medium` | 9 | 6 | 6 | 5 | 4 | 3 | (1K; 2K 13 9 8 7 5 4; 4K 16 13 12 11 9 6)
+    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K; 2K 16 11 10 8 6 5; 4K 19 15 14 13 11 7)
+    # The default request is 11 credits = $0.11. (On 2026-11-10 `low` and `medium` were GPT Image 2.5's rows.)
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-16)
     pricing:
       base_cost_usd: 0.11
       variable_pricing:
         # Then 1 credit per reference image (the count rules below).
-        - { when: { quality: low, resolution: "1K" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "4K" }, usd: 0.03 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: medium, resolution: "1K" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: medium, resolution: "2K" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "4K" }, usd: 0.05 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K" }, usd: 0.08 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "4K" }, usd: 0.09 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.06 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.06 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.07 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.07 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.08 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.08 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "1K" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K" }, usd: 0.13 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.07 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.07 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.08 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.08 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K" }, usd: 0.16 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.11 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.11 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.12 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.12 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.13 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.13 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.06 }
         - { when: { quality: high, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.06 }
         - { when: { quality: high, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.06 }
         - { when: { quality: high, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.07 }
@@ -669,8 +671,9 @@ models:
         init: { required: false, min_count: 0, max_count: 16 }
     extra_allowlist: [reasoningEffort]
     extra_params:
-      # From the pricing comment above (values unstated).
-      reasoningEffort: { kind: string }
+      # The branch's `reasoningEffort` enum: "low", "medium", "high" ("Reasoning effort does not change the price").
+      # @see https://docs.dev.runwayml.com/openapi.json (2026-11-16)
+      reasoningEffort: { kind: string, enum_values: [low, medium, high] }
     tags: [text-to-image, image-to-image]
 
   - id: runway/gpt_image_2_6_sunburst
@@ -680,74 +683,76 @@ models:
     description: OpenAI's GPT Image 2.6 Sunburst through Runway's API — text-to-image and edits from up to 16 images, 1K to 4K.
     docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
     # "Credits can be purchased for $0.01 per credit"; gpt_image_2_6_sunburst:
-    #   `gpt_image_2_6_flare` and `gpt_image_2_6_sunburst` use the same `low`, `medium`, and `high` rows below; `xhigh` and `max` are not supported. Both default to `quality: "high"` and `reasoningEffort: "high"`. Reasoning effort does not change the price.
-    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9)
-    # The default request is 11 credits = $0.11.
-    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-10)
+    #   For PNG, JPEG and WebP, `gpt_image_2_6_flare` and `gpt_image_2_6_sunburst` are billed on the tables below, at the same resolutions as `gpt_image_2_5_flare` and `gpt_image_2_5_sunburst`. `high` costs the same as on GPT Image 2.5, and `low` and `medium` cost more. `xhigh` and `max` are not supported. Both models default to `quality: "high"` and `reasoningEffort: "high"`. Reasoning effort does not change the price.
+    #   | `low`    | 5 | 4 | 4 | 3 | 2 | 2 | (1K: 1:1, 4:5/5:4, 3:4/4:3, 2:3/3:2, 9:16/16:9, 21:9; 2K 8 5 5 4 3 3; 4K 9 8 7 6 5 4)
+    #   | `medium` | 9 | 6 | 6 | 5 | 4 | 3 | (1K; 2K 13 9 8 7 5 4; 4K 16 13 12 11 9 6)
+    #   | `high`   | 11 | 8 | 7 | 6 | 5 | 4 | (1K; 2K 16 11 10 8 6 5; 4K 19 15 14 13 11 7)
+    # The default request is 11 credits = $0.11. (On 2026-11-10 `low` and `medium` were GPT Image 2.5's rows.)
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-11-16)
     pricing:
       base_cost_usd: 0.11
       variable_pricing:
         # Then 1 credit per reference image (the count rules below).
-        - { when: { quality: low, resolution: "1K" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: low, resolution: "4K" }, usd: 0.03 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.02 }
-        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: medium, resolution: "1K" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.01 }
-        - { when: { quality: medium, resolution: "2K" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.02 }
-        - { when: { quality: medium, resolution: "4K" }, usd: 0.05 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.04 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.03 }
-        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.02 }
+        - { when: { quality: low, resolution: "2K" }, usd: 0.08 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.04 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.03 }
+        - { when: { quality: low, resolution: "4K" }, usd: 0.09 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.06 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.06 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.07 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.07 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.08 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.08 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: low, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "1K" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:3" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "4:5" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "5:4" }, usd: 0.06 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "9:16" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "16:9" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "1K", aspect_ratio: "21:9" }, usd: 0.03 }
+        - { when: { quality: medium, resolution: "2K" }, usd: 0.13 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "2:3" }, usd: 0.07 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:2" }, usd: 0.07 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "3:4" }, usd: 0.08 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:3" }, usd: 0.08 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "4:5" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "5:4" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "9:16" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "16:9" }, usd: 0.05 }
+        - { when: { quality: medium, resolution: "2K", aspect_ratio: "21:9" }, usd: 0.04 }
+        - { when: { quality: medium, resolution: "4K" }, usd: 0.16 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "2:3" }, usd: 0.11 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:2" }, usd: 0.11 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "3:4" }, usd: 0.12 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:3" }, usd: 0.12 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "4:5" }, usd: 0.13 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "5:4" }, usd: 0.13 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "9:16" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "16:9" }, usd: 0.09 }
+        - { when: { quality: medium, resolution: "4K", aspect_ratio: "21:9" }, usd: 0.06 }
         - { when: { quality: high, resolution: "1K", aspect_ratio: "2:3" }, usd: 0.06 }
         - { when: { quality: high, resolution: "1K", aspect_ratio: "3:2" }, usd: 0.06 }
         - { when: { quality: high, resolution: "1K", aspect_ratio: "3:4" }, usd: 0.07 }
@@ -816,8 +821,9 @@ models:
         init: { required: false, min_count: 0, max_count: 16 }
     extra_allowlist: [reasoningEffort]
     extra_params:
-      # From the pricing comment above (values unstated).
-      reasoningEffort: { kind: string }
+      # The branch's `reasoningEffort` enum: "low", "medium", "high" ("Reasoning effort does not change the price").
+      # @see https://docs.dev.runwayml.com/openapi.json (2026-11-16)
+      reasoningEffort: { kind: string, enum_values: [low, medium, high] }
     tags: [text-to-image, image-to-image]
 
   - id: runway/gemini_2.5_flash
@@ -1665,7 +1671,10 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 5 }
+        # Frames or references, not both: image_to_video's gemini_omni_flash_1.1 branch, where every frame goes (a
+        # last frame needs a first), takes no `references`, so a mix is refused before it is quoted (runway.rs
+        # refuses it too: "reference images go without a start frame (text-to-video)").
+        reference: { required: false, min_count: 0, max_count: 5, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -1714,7 +1723,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 5 }
+        # Frames or references, not both: image_to_video's gemini_omni_flash_1.2 branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 5, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -1933,7 +1944,11 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 7 }
+        # References need a start frame: the klingO3_standard branch of /v1/text_to_video takes no `references`
+        # (audio, providerSettings, promptText, ratio, duration, model), its /v1/image_to_video branch does
+        # (runway.rs `references_t2v: 0`, `references_i2v: 7`; `resold_request` refuses them alone too).
+        # @see https://docs.dev.runwayml.com/openapi.json (2026-11-15)
+        reference: { required: false, min_count: 0, max_count: 7, needs_first_frame: true }
     extra_allowlist: [providerSettings]
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -1974,7 +1989,8 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 7 }
+        # References need a start frame, as on klingO3_standard (its /v1/text_to_video branch takes no `references`).
+        reference: { required: false, min_count: 0, max_count: 7, needs_first_frame: true }
     extra_allowlist: [providerSettings]
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -2015,7 +2031,8 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 7 }
+        # References need a start frame, as on klingO3_standard (its /v1/text_to_video branch takes no `references`).
+        reference: { required: false, min_count: 0, max_count: 7, needs_first_frame: true }
     extra_allowlist: [providerSettings]
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -2161,7 +2178,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: image_to_video's hailuo3 branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -2248,7 +2267,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: image_to_video's seedance2 branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     extra_allowlist: [bitrate]
     extra_params:
       # From the pricing comment above.
@@ -2297,7 +2318,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: image_to_video's seedance2_fast branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     extra_allowlist: [bitrate]
     extra_params:
       # From the pricing comment above.
@@ -2346,7 +2369,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: image_to_video's seedance2_mini branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     extra_allowlist: [bitrate]
     extra_params:
       # From the pricing comment above.
@@ -2397,7 +2422,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 30 }
+        # Frames or references, not both: image_to_video's seedance2_5 branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 30, not_with: [first_frame, last_frame] }
     extra_allowlist: [draft]
     extra_params:
       # A switch: "A preview (`draft: true` …) bills at the 480p rate" (the price above).
@@ -2454,7 +2481,9 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        reference: { required: false, min_count: 0, max_count: 7 }
+        # A first frame or references, not both: image_to_video's grok_imagine_1_5 branch takes no `references`, as
+        # on gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 7, not_with: [first_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -2545,7 +2574,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 10 }
+        # Frames or references, not both: image_to_video's wan3 branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 10, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -2590,7 +2621,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 10 }
+        # Frames or references, not both: image_to_video's wan3_prime branch takes no `references`, as on
+        # gemini_omni_flash_1.1 (runway.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 10, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 

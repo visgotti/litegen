@@ -1,1 +1,1 @@
-(no deprecation row names a model we carry)
+| **Feb 10, 2027** | `gpt-image-2`, `gpt-image-2-2026-04-21`                                      | Deprecated | `gpt-image-2.6-sunburst` or `gpt-image-2.6-flare`          | Nov 10, 2026 |

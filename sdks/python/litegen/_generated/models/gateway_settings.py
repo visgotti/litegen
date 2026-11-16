@@ -18,6 +18,9 @@ class GatewaySettings:
     Attributes:
         alert_webhook_url (Union[None, Unset, str]): URL that receives budget alerts (soft budget crossed, hard budget
             hit).
+        cache_charge_hits (Union[None, Unset, bool]): Whether a cache hit is charged the cached answer's price (default
+            true). False makes hits free, as LiteLLM does; either way the hit's log
+            row says `cache_hit`. Overrides `cache.charge_hits`.
         cache_enabled (Union[None, Unset, bool]): Whether image answers are cached. Overrides `cache.enabled`.
         cache_max_bytes (Union[None, Unset, int]): About how much memory the cached answers may take on each replica, in
             bytes, 1048576 to 68719476736. Overrides `cache.max_bytes`.
@@ -34,6 +37,17 @@ class GatewaySettings:
         default_end_user_budget_duration (Union[None, Unset, str]): Window for that default end-user budget.
         default_end_user_max_budget_usd (Union[None, Unset, float]): Default hard budget (USD) for an end user with no
             limits of its own.
+        encrypt_provider_credentials (Union[None, Unset, bool]): Encrypt the credentials inside runtime provider configs
+            at rest (the
+            keys are always encrypted): each `extra_headers` value, and the user
+            info of `api_base` and of the URLs in `options`, are stored with the
+            config's encrypted keys, and the row keeps `[redacted]` in their place.
+            Needs `LITEGEN__SECRETS_KEY`. Off (the default), they are stored in
+            plain text, as versions before 2026-11-15 read them. Unlike the other
+            fields, a PUT that leaves it out keeps its stored value; `null` or
+            `false` turns it off. Each save of these settings stores every runtime
+            provider config again as this says. Turn it on once every replica runs
+            this version, and off before a rollback.
         retry_backoff_ms (Union[None, Unset, int]): The longest first wait before a retry, 0 to 60000 ms. Overrides
             `retries.backoff_ms`.
         retry_max_backoff_ms (Union[None, Unset, int]): The longest any wait may be, up to 60000 ms. Overrides
@@ -56,6 +70,7 @@ class GatewaySettings:
     """
 
     alert_webhook_url: Union[None, Unset, str] = UNSET
+    cache_charge_hits: Union[None, Unset, bool] = UNSET
     cache_enabled: Union[None, Unset, bool] = UNSET
     cache_max_bytes: Union[None, Unset, int] = UNSET
     cache_max_items: Union[None, Unset, int] = UNSET
@@ -65,6 +80,7 @@ class GatewaySettings:
     cost_markup_percent: Union[None, Unset, float] = UNSET
     default_end_user_budget_duration: Union[None, Unset, str] = UNSET
     default_end_user_max_budget_usd: Union[None, Unset, float] = UNSET
+    encrypt_provider_credentials: Union[None, Unset, bool] = UNSET
     retry_backoff_ms: Union[None, Unset, int] = UNSET
     retry_max_backoff_ms: Union[None, Unset, int] = UNSET
     retry_max_retries: Union[None, Unset, int] = UNSET
@@ -83,6 +99,12 @@ class GatewaySettings:
             alert_webhook_url = UNSET
         else:
             alert_webhook_url = self.alert_webhook_url
+
+        cache_charge_hits: Union[None, Unset, bool]
+        if isinstance(self.cache_charge_hits, Unset):
+            cache_charge_hits = UNSET
+        else:
+            cache_charge_hits = self.cache_charge_hits
 
         cache_enabled: Union[None, Unset, bool]
         if isinstance(self.cache_enabled, Unset):
@@ -137,6 +159,12 @@ class GatewaySettings:
             default_end_user_max_budget_usd = UNSET
         else:
             default_end_user_max_budget_usd = self.default_end_user_max_budget_usd
+
+        encrypt_provider_credentials: Union[None, Unset, bool]
+        if isinstance(self.encrypt_provider_credentials, Unset):
+            encrypt_provider_credentials = UNSET
+        else:
+            encrypt_provider_credentials = self.encrypt_provider_credentials
 
         retry_backoff_ms: Union[None, Unset, int]
         if isinstance(self.retry_backoff_ms, Unset):
@@ -211,6 +239,8 @@ class GatewaySettings:
         field_dict.update({})
         if alert_webhook_url is not UNSET:
             field_dict["alert_webhook_url"] = alert_webhook_url
+        if cache_charge_hits is not UNSET:
+            field_dict["cache_charge_hits"] = cache_charge_hits
         if cache_enabled is not UNSET:
             field_dict["cache_enabled"] = cache_enabled
         if cache_max_bytes is not UNSET:
@@ -235,6 +265,8 @@ class GatewaySettings:
             field_dict["default_end_user_max_budget_usd"] = (
                 default_end_user_max_budget_usd
             )
+        if encrypt_provider_credentials is not UNSET:
+            field_dict["encrypt_provider_credentials"] = encrypt_provider_credentials
         if retry_backoff_ms is not UNSET:
             field_dict["retry_backoff_ms"] = retry_backoff_ms
         if retry_max_backoff_ms is not UNSET:
@@ -272,6 +304,15 @@ class GatewaySettings:
             return cast(Union[None, Unset, str], data)
 
         alert_webhook_url = _parse_alert_webhook_url(d.pop("alert_webhook_url", UNSET))
+
+        def _parse_cache_charge_hits(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        cache_charge_hits = _parse_cache_charge_hits(d.pop("cache_charge_hits", UNSET))
 
         def _parse_cache_enabled(data: object) -> Union[None, Unset, bool]:
             if data is None:
@@ -368,6 +409,19 @@ class GatewaySettings:
 
         default_end_user_max_budget_usd = _parse_default_end_user_max_budget_usd(
             d.pop("default_end_user_max_budget_usd", UNSET)
+        )
+
+        def _parse_encrypt_provider_credentials(
+            data: object,
+        ) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        encrypt_provider_credentials = _parse_encrypt_provider_credentials(
+            d.pop("encrypt_provider_credentials", UNSET)
         )
 
         def _parse_retry_backoff_ms(data: object) -> Union[None, Unset, int]:
@@ -514,6 +568,7 @@ class GatewaySettings:
 
         gateway_settings = cls(
             alert_webhook_url=alert_webhook_url,
+            cache_charge_hits=cache_charge_hits,
             cache_enabled=cache_enabled,
             cache_max_bytes=cache_max_bytes,
             cache_max_items=cache_max_items,
@@ -523,6 +578,7 @@ class GatewaySettings:
             cost_markup_percent=cost_markup_percent,
             default_end_user_budget_duration=default_end_user_budget_duration,
             default_end_user_max_budget_usd=default_end_user_max_budget_usd,
+            encrypt_provider_credentials=encrypt_provider_credentials,
             retry_backoff_ms=retry_backoff_ms,
             retry_max_backoff_ms=retry_max_backoff_ms,
             retry_max_retries=retry_max_retries,

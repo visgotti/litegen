@@ -1,4 +1,234 @@
 {
+  "POST /v1/flux-2-flex (application/json)": {
+    "properties": {
+      "guidance": {
+        "anyOf": [
+          {
+            "maximum": 10,
+            "minimum": 1.5,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 5
+      },
+      "height": {
+        "anyOf": [
+          {
+            "minimum": 64,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 0
+      },
+      "input_image": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_2": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_3": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_4": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_5": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_6": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_7": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_8": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_blob_path": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "output_format": {
+        "anyOf": [
+          {
+            "enum": [
+              "jpeg",
+              "png",
+              "webp"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "jpeg"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "prompt_upsampling": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": true
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 7,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "steps": {
+        "anyOf": [
+          {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 50
+      },
+      "user": {
+        "anyOf": [
+          {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "webhook_secret": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "webhook_url": {
+        "anyOf": [
+          {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "width": {
+        "anyOf": [
+          {
+            "minimum": 64,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 0
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
   "POST /v1/flux-2-klein-9b (application/json)": {
     "properties": {
       "height": {
@@ -509,6 +739,268 @@
           }
         ],
         "default": 0
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v1/flux-3-image (application/json)": {
+    "additionalProperties": false,
+    "properties": {
+      "aspect_ratio": {
+        "anyOf": [
+          {
+            "enum": [
+              "21:9",
+              "2:1",
+              "16:9",
+              "3:2",
+              "7:5",
+              "4:3",
+              "5:4",
+              "1:1",
+              "4:5",
+              "3:4",
+              "5:7",
+              "2:3",
+              "9:16",
+              "1:2",
+              "9:21"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "auto",
+            "type": "string"
+          }
+        ],
+        "default": "auto"
+      },
+      "grounding": {
+        "default": true,
+        "type": "boolean"
+      },
+      "height": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "images": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "resolution": {
+        "default": "1k",
+        "enum": [
+          "768sq",
+          "1k",
+          "1.5k",
+          "2k",
+          "4k",
+          "match_input"
+        ],
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 7,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "user": {
+        "anyOf": [
+          {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "version": {
+        "const": "latest",
+        "default": "latest",
+        "type": "string"
+      },
+      "width": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v1/flux-3-image-klein (application/json)": {
+    "additionalProperties": false,
+    "properties": {
+      "aspect_ratio": {
+        "anyOf": [
+          {
+            "enum": [
+              "21:9",
+              "2:1",
+              "16:9",
+              "3:2",
+              "7:5",
+              "4:3",
+              "5:4",
+              "1:1",
+              "4:5",
+              "3:4",
+              "5:7",
+              "2:3",
+              "9:16",
+              "1:2",
+              "9:21"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "auto",
+            "type": "string"
+          }
+        ],
+        "default": "auto"
+      },
+      "height": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "images": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "resolution": {
+        "anyOf": [
+          {
+            "enum": [
+              "768sq",
+              "1k",
+              "1.5k",
+              "2k",
+              "4k"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 7,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "steps": {
+        "anyOf": [
+          {
+            "maximum": 16,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "user": {
+        "anyOf": [
+          {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "width": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
       }
     },
     "required": [

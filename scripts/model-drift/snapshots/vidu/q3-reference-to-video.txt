@@ -22,9 +22,32 @@ wm_url | string | Optional |
 meta_data | string | Optional | 
 callback_url | string | Optional | callback_url
 
-POST /ent/v2/reference2video · viduq3 (not carried)
+POST /ent/v2/reference2video · viduq3
+Body parameters
+model | string | Required | viduq3
+images | string | Optional | 1 7 128 128 1:4 4:1 20
+prompt | string | Required | 5000
+duration | integer | Optional | viduq3 5 3-16
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 1:1 9:16 16:9 3:4 4:3
+audio | boolean | Optional | 
+resolution | string | Optional | viduq3 3-16s 720p 540p 720p 1080p
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | 48
+callback_url | string | Optional | 
 
-POST /ent/v2/reference2video · viduq3-mix (not carried)
+POST /ent/v2/reference2video · viduq3-mix
+Body parameters
+model | string | Required | viduq3-mix
+images | string | Optional | 1 7 128 128 1:4 4:1 20
+sounds | string | Optional | 1 3 3 3-12 50 20
+prompt | string | Required | 5000
+duration | integer | Optional | viduq3-mix 5 3-15
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 1:1 9:16 16:9 3:4 4:3 auto
+resolution | string | Optional | viduq3-mix 3-16 720p 720p 1080p
+payload | string | Optional | 1048576
+callback_url | string | Optional | callback_url status processing success failed
 
 POST /ent/v2/reference2video · viduq3-ad (not carried)
 

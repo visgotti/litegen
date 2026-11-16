@@ -753,6 +753,317 @@ models:
         }
     }
 
+    /// The strict refusal suggests a reference image only where one may go
+    /// with the frame. Vidu's `reference` role is never sent with a frame
+    /// (`not_with`: `check_refs` refuses that mix), nor is that of the other
+    /// rows whose vendor takes one or the other (frames-refs: Ideogram's,
+    /// MiniMax's H3, Runway's Grok Imagine 1.5, TokenHub's MiniMax H3 and
+    /// PixVerse), and viduq3-turbo has no `reference` role, so none of these
+    /// rows' answers names one; `f/framed`'s reference may ride along, so its
+    /// answer still does.
+    #[test]
+    fn a_refused_ratio_suggests_a_reference_only_where_one_may_go_with_the_frame() {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("models");
+        let catalog = CapabilityRegistry::from_dir(&p).unwrap();
+        let refused = |r: &CapabilityRegistry, model: &str| {
+            let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+                "model": model, "prompt": "a fox", "aspect_ratio": "9:16", "strict": true,
+                "reference_images": [{ "type": "url", "value": "https://x/0.png", "role": "first_frame" }],
+            }))
+            .unwrap();
+            let out = validate_video(r.get(model).unwrap(), req);
+            assert!(matches!(&out, Err(e) if e.code == "param_unsupported" && e.param.as_deref() == Some("aspect_ratio")), "{model}: {out:?}");
+            out.unwrap_err().message
+        };
+        for model in [
+            "vidu/viduq1",
+            "vidu/viduq3-turbo",
+            "ideogram/minimax-h3",
+            "ideogram/seedance-2-5",
+            "minimax/MiniMax-H3",
+            "minimax/MiniMax-H3-Max",
+            "minimax/MiniMax-H3-Highspeed",
+            "minimax/MiniMax-H3-Lite",
+            "runway/grok_imagine_1_5",
+            "tokenhub/minimax-video-h3",
+            "tokenhub/pixverse-video-v6.0",
+            "tokenhub/pixverse-video-c1",
+            "tokenhub/pixverse-video-v5.6",
+        ] {
+            let message = refused(&catalog, model);
+            assert!(!message.contains("reference"), "{model}: {message}");
+        }
+        let message = refused(&framed_registry(), "f/framed");
+        assert!(message.contains("unless a reference image goes with it"), "f/framed: {message}");
+    }
+
+    // ─── Roles a vendor never takes together (vidu-mix) ──────────────────────
+
+    /// A row shaped like Vidu's, whose vendor takes first/last frames or
+    /// reference images, never both: its `reference` role names the frame
+    /// roles in `not_with`. A mix is refused in either mode, since neither
+    /// image is the one to drop, with `ref_role_conflict`, ahead of the
+    /// last-frame rule (a first frame would not help); a role-less image
+    /// counts under its `default_role`. Each role alone, and the frames
+    /// together, still pass.
+    #[test]
+    fn a_role_is_never_sent_with_a_role_it_names_in_not_with() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("n.yaml", r#"
+models:
+  - id: n/apart
+    provider: n
+    media_type: video
+    display_name: Apart
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 4
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
+        reference: { required: false, min_count: 0, max_count: 2, not_with: [first_frame, last_frame] }
+"#)]).unwrap();
+        let run = |roles: &[Option<&str>], strict: bool| {
+            let refs: Vec<serde_json::Value> = roles
+                .iter()
+                .enumerate()
+                .map(|(i, role)| {
+                    let mut image = serde_json::json!({ "type": "url", "value": format!("https://x/{i}.png") });
+                    if let Some(role) = role {
+                        image["role"] = serde_json::json!(role);
+                    }
+                    image
+                })
+                .collect();
+            let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+                "model": "n/apart", "prompt": "a fox", "reference_images": refs, "strict": strict,
+            }))
+            .unwrap();
+            validate_video(r.get("n/apart").unwrap(), req)
+        };
+        for roles in [
+            vec![Some("first_frame"), Some("reference")],
+            vec![Some("reference"), Some("last_frame")],
+            vec![None, Some("reference")],
+            vec![Some("first_frame"), Some("last_frame"), Some("reference")],
+        ] {
+            for strict in [true, false] {
+                let out = run(&roles, strict);
+                assert!(
+                    matches!(&out, Err(e) if e.code == "ref_role_conflict" && e.param.as_deref() == Some("reference_images")),
+                    "{roles:?} strict={strict}: {out:?}"
+                );
+            }
+        }
+        for roles in [vec![Some("first_frame")], vec![None], vec![Some("reference"), Some("reference")], vec![Some("first_frame"), Some("last_frame")]] {
+            let out = run(&roles, true);
+            assert!(out.is_ok(), "{roles:?}: {out:?}");
+        }
+    }
+
+    /// catalog-rules: Runway's Kling O3 takes reference images on
+    /// image-to-video only, so its `reference` role sets `needs_first_frame`.
+    /// A reference sent without a `first_frame` (or `init`) image is refused
+    /// in either mode with `ref_role_required`, naming the image to add,
+    /// before the prompt check (a prompt would not help); with one (a
+    /// role-less image counts under its `default_role`) it passes, as does a
+    /// reference alone on a row whose role doesn't set it.
+    #[test]
+    fn a_reference_that_needs_a_first_frame_is_refused_without_one() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("f.yaml", r#"
+models:
+  - id: f/o3
+    provider: f
+    media_type: video
+    display_name: O3
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: false, required_for_text_to_video: true }
+    ref_inputs:
+      max_total: 4
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
+        reference: { required: false, min_count: 0, max_count: 2, needs_first_frame: true }
+  - id: f/init
+    provider: f
+    media_type: video
+    display_name: Init
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 3
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 2, needs_first_frame: true }
+  - id: f/any
+    provider: f
+    media_type: video
+    display_name: Any
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 3
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 2 }
+"#)]).unwrap();
+        let run = |model: &str, roles: &[Option<&str>], prompt: &str, strict: bool| {
+            let refs: Vec<serde_json::Value> = roles
+                .iter()
+                .enumerate()
+                .map(|(i, role)| {
+                    let mut image = serde_json::json!({ "type": "url", "value": format!("https://x/{i}.png") });
+                    if let Some(role) = role {
+                        image["role"] = serde_json::json!(role);
+                    }
+                    image
+                })
+                .collect();
+            let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+                "model": model, "prompt": prompt, "reference_images": refs, "strict": strict,
+            }))
+            .unwrap();
+            validate_video(r.get(model).unwrap(), req)
+        };
+        for (model, roles, prompt, start) in [
+            ("f/o3", vec![Some("reference")], "a fox", "first_frame"),
+            ("f/o3", vec![Some("reference"), Some("reference")], "a fox", "first_frame"),
+            ("f/o3", vec![Some("reference")], "", "first_frame"),
+            ("f/init", vec![Some("reference")], "a fox", "init"),
+        ] {
+            for strict in [true, false] {
+                let out = run(model, &roles, prompt, strict);
+                assert!(
+                    matches!(&out, Err(e) if e.code == "ref_role_required" && e.param.as_deref() == Some("reference_images")
+                        && e.message.contains(model) && e.message.contains(start)),
+                    "{model} {roles:?} prompt={prompt:?} strict={strict}: {out:?}"
+                );
+            }
+        }
+        for (model, roles) in [
+            ("f/o3", vec![Some("first_frame"), Some("reference")]),
+            ("f/o3", vec![None, Some("reference"), Some("reference")]),
+            ("f/o3", vec![Some("first_frame"), Some("last_frame"), Some("reference")]),
+            ("f/init", vec![Some("init"), Some("reference")]),
+            ("f/init", vec![None, Some("reference")]),
+            ("f/any", vec![Some("reference")]),
+        ] {
+            let out = run(model, &roles, "a fox", true);
+            assert!(out.is_ok(), "{model} {roles:?}: {out:?}");
+        }
+    }
+
+    /// round 3: the last-frame and reference refusals name the image the row
+    /// starts a clip from, `init` on a row whose start role is `init`, not a
+    /// `first_frame` it doesn't take.
+    #[test]
+    fn a_frame_rule_names_the_rows_own_start_role() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("s.yaml", r#"
+models:
+  - id: s/init
+    provider: s
+    media_type: video
+    display_name: Init
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 3
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
+        reference: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
+"#)]).unwrap();
+        for role in ["last_frame", "reference"] {
+            let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+                "model": "s/init", "prompt": "a fox", "reference_images": [{ "type": "url", "value": "https://x/0.png", "role": role }],
+            }))
+            .unwrap();
+            let err = validate_video(r.get("s/init").unwrap(), req).unwrap_err();
+            assert_eq!(err.code, "ref_role_required", "{role}: {}", err.message);
+            assert!(err.message.contains("an init image") && !err.message.contains("first_frame"), "{role}: {}", err.message);
+        }
+    }
+
+    /// round 3: an image sent without a role is the init only where the row's
+    /// `default_role` is `init`, as the materializer resolves it and the
+    /// generation (`apply_image_edit`) reads it; elsewhere it is an image of
+    /// the default role, so a region, an expand or a mask prompt still needs
+    /// an init, and a layout doesn't count it as one.
+    #[test]
+    fn an_image_without_a_role_is_the_init_only_where_the_default_role_is_init() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("d.yaml", r#"
+models:
+  - id: d/styled
+    provider: d
+    media_type: image
+    display_name: Styled
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true, inpainting: true }
+    prompt: { required: false, max_length: 100 }
+    params:
+      region: { kind: region, input: mask }
+      expand: { kind: expand, max_px: 100 }
+      mask_prompt: { kind: string, max_length: 50 }
+    ref_inputs:
+      max_total: 3
+      default_role: style
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        style: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+  - id: d/plain
+    provider: d
+    media_type: image
+    display_name: Plain
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true, inpainting: true }
+    prompt: { required: false, max_length: 100 }
+    params:
+      region: { kind: region, input: mask }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+"#)]).unwrap();
+        let ask = |model: &str, role: Option<&str>, edit: &dyn Fn(&mut ImageGenerationRequest)| {
+            let mut req = img("make it glow");
+            req.base.model = model.into();
+            req.base.reference_images = vec![ReferenceImage { kind: RefImageKind::Url, value: "https://x/0.png".into(), role: role.map(str::to_string), time_s: None }];
+            edit(&mut req);
+            validate_image(r.get(model).unwrap(), req)
+        };
+        let region = |req: &mut ImageGenerationRequest| req.region = Some(Region { x: 0, y: 0, w: 4, h: 4 });
+        let expand = |req: &mut ImageGenerationRequest| req.expand = Some(Expand { left: 8, top: 0, right: 0, bottom: 0 });
+        let mask_prompt = |req: &mut ImageGenerationRequest| req.mask_prompt = Some("the door".into());
+        for (name, edit) in [("region", &region as &dyn Fn(&mut ImageGenerationRequest)), ("expand", &expand), ("mask_prompt", &mask_prompt)] {
+            let err = ask("d/styled", None, edit).unwrap_err();
+            assert_eq!(err.code, "init_required", "{name} with an image of the default role (style): {}", err.message);
+            assert!(ask("d/styled", Some("init"), edit).is_ok(), "{name} with an init image");
+        }
+        assert!(ask("d/plain", None, &region).is_ok(), "an image without a role is the init where the default role is init");
+    }
+
     // ─── Fields the request has no name for (E2) ─────────────────────────────
 
     fn allow_registry() -> CapabilityRegistry {
@@ -1116,6 +1427,62 @@ models:
         assert_eq!((err.code.as_str(), err.param.as_deref()), ("expand_unsupported", Some("expand")));
     }
 
+    /// round 3: a row that grows a canvas and nothing else says its `expand`
+    /// is required. A request without one is refused, in either mode, with
+    /// `param_required` (param `expand`), as the quote runs this too; with
+    /// one, or on a row whose `expand` is optional, it passes.
+    #[test]
+    fn a_missing_expand_is_refused_where_the_row_requires_one() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/outpaint
+    provider: t
+    media_type: image
+    display_name: Outpaint
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 100 }
+    params:
+      expand: { kind: expand, max_px: 100, required: true }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+  - id: t/optional
+    provider: t
+    media_type: image
+    display_name: Optional
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 100 }
+    params:
+      expand: { kind: expand, max_px: 100 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+"#)]).unwrap();
+        let ask = |model: &str, expand: Option<Expand>, strict: bool| {
+            let mut req = with_images(1);
+            req.base.model = model.into();
+            req.base.prompt = String::new();
+            req.base.strict = strict;
+            req.expand = expand;
+            validate_image(r.get(model).unwrap(), req)
+        };
+        for strict in [true, false] {
+            let err = ask("t/outpaint", None, strict).unwrap_err();
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_required", Some("expand")), "strict={strict}: {}", err.message);
+            assert!(err.message.contains("t/outpaint") && err.message.contains("expand"), "{}", err.message);
+        }
+        assert!(ask("t/outpaint", Some(Expand { left: 8, top: 0, right: 0, bottom: 0 }), true).is_ok());
+        assert!(ask("t/optional", None, true).is_ok());
+    }
+
     // ─── Masks named in text (3D doc §4, P2) ──────────────────────────────────
 
     #[test]
@@ -1151,6 +1518,75 @@ models:
         req.region = None;
         req.mask_prompt = Some("x".repeat(51));
         assert_eq!(validate_image(m, req).unwrap_err().param.as_deref(), Some("mask_prompt"), "the model's own length limit");
+    }
+
+    /// round 3: the quote runs this validation too, so it refuses the regions
+    /// the generation does. One with no area, or an end past any image, is
+    /// refused with `region_out_of_bounds` (param `region`), in either mode;
+    /// one off an init image sent in the request (base64, as a `data:` URI or
+    /// not) too, in `proxy::image_edit`'s words. One inside, or on an init
+    /// only the generation reads (a URL), passes.
+    #[test]
+    fn a_region_with_no_area_or_off_an_inline_init_is_refused_at_validation() {
+        use base64::Engine;
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/region
+    provider: t
+    media_type: image
+    display_name: Region
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      region: { kind: region, input: mask }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+"#)]).unwrap();
+        let m = r.get("t/region").unwrap();
+        let mut png = Vec::new();
+        image::RgbaImage::new(64, 48).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let inline = base64::engine::general_purpose::STANDARD.encode(&png);
+        let ask = |kind: RefImageKind, value: &str, region: Region, strict: bool| {
+            let mut req = img("make it glow");
+            req.base.model = "t/region".into();
+            req.base.strict = strict;
+            req.base.reference_images = vec![ReferenceImage { kind, value: value.to_string(), role: Some("init".into()), time_s: None }];
+            req.region = Some(region);
+            validate_image(m, req)
+        };
+        let at = |x: u32, y: u32, w: u32, h: u32| Region { x, y, w, h };
+        let data_uri = format!("data:image/png;base64,{inline}");
+        let url = "https://x/init.png";
+        for (kind, value, region, words) in [
+            (RefImageKind::Base64, inline.as_str(), at(0, 0, 0, 8), "at least 1x1"),
+            (RefImageKind::Base64, inline.as_str(), at(0, 0, 8, 0), "at least 1x1"),
+            (RefImageKind::Url, url, at(0, 0, 0, 8), "at least 1x1"),
+            (RefImageKind::Url, url, at(u32::MAX - 2, 0, 8, 8), "at least 1x1"),
+            (RefImageKind::Base64, inline.as_str(), at(60, 0, 8, 8), "region 8x8 at 60,0 is not inside the 64x48 init image (and must be at least 1x1)"),
+            (RefImageKind::Base64, data_uri.as_str(), at(0, 44, 8, 8), "region 8x8 at 0,44 is not inside the 64x48 init image (and must be at least 1x1)"),
+        ] {
+            for strict in [true, false] {
+                let out = ask(kind, value, region, strict);
+                assert!(
+                    matches!(&out, Err(e) if e.code == "region_out_of_bounds" && e.param.as_deref() == Some("region") && e.message.contains(words)),
+                    "{kind:?} {region:?} strict={strict}: {out:?}"
+                );
+            }
+        }
+        for (kind, value, region) in [
+            (RefImageKind::Base64, inline.as_str(), at(56, 40, 8, 8)),
+            (RefImageKind::Base64, data_uri.as_str(), at(0, 0, 64, 48)),
+            (RefImageKind::Url, url, at(60, 0, 8, 8)),
+        ] {
+            let out = ask(kind, value, region, true);
+            assert!(out.is_ok(), "{kind:?} {region:?}: {out:?}");
+        }
     }
 
     // ─── Video operations (3D doc §5, P2) ─────────────────────────────────────

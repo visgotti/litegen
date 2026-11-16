@@ -50,6 +50,13 @@ class ParamSpecStringArray:
                 `|requested \ derivable_values| + (requested ∩ derivable_values ≠ ∅ ? 1 : 0)`
                 jobs, and more than `max_items` is refused with `param_too_many`.
                 `None` means no limit.
+            returned_together (Union[Unset, List[str]]): For `output_formats`: the containers one vendor job returns
+                together
+                (Meshy's rig names a glb and an fbx at once); empty: a job returns the
+                one container it is asked for. A generation that keeps nothing
+                (`keep_outputs: false`) converts nothing, so it can be promised only
+                what its vendor job returns; anything more is refused, 400
+                `format_needs_keeping`.
     """
 
     default: Union[Unset, List[str]] = UNSET
@@ -58,6 +65,7 @@ class ParamSpecStringArray:
     enum_values: Union[Unset, List[str]] = UNSET
     label: Union[None, Unset, str] = UNSET
     max_items: Union[None, Unset, int] = UNSET
+    returned_together: Union[Unset, List[str]] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -91,6 +99,10 @@ class ParamSpecStringArray:
         else:
             max_items = self.max_items
 
+        returned_together: Union[Unset, List[str]] = UNSET
+        if not isinstance(self.returned_together, Unset):
+            returned_together = self.returned_together
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -106,6 +118,8 @@ class ParamSpecStringArray:
             field_dict["label"] = label
         if max_items is not UNSET:
             field_dict["max_items"] = max_items
+        if returned_together is not UNSET:
+            field_dict["returned_together"] = returned_together
 
         return field_dict
 
@@ -145,6 +159,8 @@ class ParamSpecStringArray:
 
         max_items = _parse_max_items(d.pop("max_items", UNSET))
 
+        returned_together = cast(List[str], d.pop("returned_together", UNSET))
+
         param_spec_string_array = cls(
             default=default,
             derivable_values=derivable_values,
@@ -152,6 +168,7 @@ class ParamSpecStringArray:
             enum_values=enum_values,
             label=label,
             max_items=max_items,
+            returned_together=returned_together,
         )
 
         param_spec_string_array.additional_properties = d

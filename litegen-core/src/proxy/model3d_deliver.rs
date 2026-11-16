@@ -155,12 +155,14 @@ pub struct PlacementPlan {
 }
 
 /// How delivery reads a vendor file: an FBX's colours in the requested space,
-/// and an FBX's and a USD's lights in the requested units.
-fn read_options(plan: &DeliveryPlan) -> crate::mesh::ReadOptions {
+/// an FBX's and a USD's lights in the requested units, and a Draco primitive
+/// as `draco` says (the server's settings, which the caller reads).
+fn read_options(plan: &DeliveryPlan, draco: crate::mesh::DracoOptions) -> crate::mesh::ReadOptions {
     crate::mesh::ReadOptions {
         fbx_color_space: crate::proxy::model3d_convert::fbx_color_space(plan.fbx_color_space),
         fbx_light_units: crate::proxy::model3d_convert::light_units(plan.fbx_light_units),
         usd_light_units: crate::proxy::model3d_convert::light_units(plan.usd_light_units),
+        draco,
     }
 }
 
@@ -291,8 +293,9 @@ fn manifest(
     oriented_by: &str,
     litegen_in_place: &[bool],
     sidecars: &dyn crate::mesh::Sidecars,
+    draco: crate::mesh::DracoOptions,
 ) -> Option<SceneManifest> {
-    let scene = crate::mesh::read_scene_with(bytes, MeshFormat::parse(format)?, sidecars, read_options(plan)).ok()?.scene;
+    let scene = crate::mesh::read_scene_with(bytes, MeshFormat::parse(format)?, sidecars, read_options(plan, draco)).ok()?.scene;
     let facts = crate::mesh::inspect::inspect(&scene).ok()?;
     let skin = facts.skin.map(|s| SceneSkin {
         skeleton: if s.humanoid.is_some() { Some("humanoid".into()) } else { plan.skeleton.clone() },
@@ -378,13 +381,14 @@ pub fn needs_delivery(poll: &crate::providers::Model3dGenerationPollResult) -> b
 /// Deliver the files of the poll that saw a job complete — what both
 /// observers run, so whichever sees completion first delivers the same thing.
 /// The work is CPU-bound and runs on a blocking thread; a failed delivery
-/// fails the poll.
-pub async fn deliver_poll(poll: &mut crate::providers::Model3dGenerationPollResult, plan: DeliveryPlan, id: &str) {
+/// fails the poll. A Draco-compressed vendor mesh is read as `draco` says:
+/// the server's settings, which each observer reads from its config.
+pub async fn deliver_poll(poll: &mut crate::providers::Model3dGenerationPollResult, plan: DeliveryPlan, id: &str, draco: crate::mesh::DracoOptions) {
     if poll.status != crate::types::GenerationStatus::Completed || poll.files.is_empty() || plan.keep_nothing {
         return;
     }
     let files = std::mem::take(&mut poll.files);
-    let delivered = tokio::task::spawn_blocking(move || deliver(files, &plan))
+    let delivered = tokio::task::spawn_blocking(move || deliver_with(files, &plan, draco))
         .await
         .unwrap_or_else(|e| Delivered { fatal: Some(format!("the delivery step failed: {e}")), ..Default::default() });
     for (what, why) in &delivered.failures {
@@ -400,8 +404,18 @@ pub async fn deliver_poll(poll: &mut crate::providers::Model3dGenerationPollResu
     }
 }
 
+/// [`deliver_with`] under the mesh library's default Draco options: the
+/// tests' shorthand, so test-only. Production code reads a vendor's mesh under
+/// the server's `mesh.draco` settings ([`deliver_poll`]).
+#[cfg(test)]
+pub(crate) fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
+    deliver_with(files, plan, crate::mesh::DracoOptions::default())
+}
+
 /// Normalise and measure a vendor's files. CPU work: run on a blocking thread.
-pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
+/// A Draco-compressed vendor mesh is read as `draco` says: the server's
+/// `mesh.draco` settings, which the caller reads.
+pub fn deliver_with(files: Vec<Model3dFile>, plan: &DeliveryPlan, draco: crate::mesh::DracoOptions) -> Delivered {
     let requested: Vec<String> = if plan.requested_formats.is_empty() {
         vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()]
     } else {
@@ -422,7 +436,7 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
     let read = MeshFormat::parse(&primary_format)
         .ok_or_else(|| format!("'{primary_format}' is not a container litegen reads"))
         .and_then(|f| {
-            crate::mesh::read_scene_with(&primary.bytes, f, &crate::mesh::package::NoSidecars, read_options(plan)).map_err(|e| e.to_string())
+            crate::mesh::read_scene_with(&primary.bytes, f, &crate::mesh::package::NoSidecars, read_options(plan, draco)).map_err(|e| e.to_string())
         });
     let (mut scene, read_warnings) = match read {
         Ok(r) => (r.scene, r.warnings),
@@ -647,6 +661,7 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
                         height: None,
                         manifest: None,
                         source_url: None,
+                        size_bytes: None,
                     }),
                     None => {
                         failures.push((fmt.to_string(), "the writer produced no file".into()));
@@ -703,7 +718,7 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
     for f in out.iter_mut().filter(|f| f.kind == Model3dAssetKind::Mesh) {
         let format = f.format.to_ascii_lowercase();
         let lost = losses.get(&format).cloned().unwrap_or_default();
-        f.manifest = manifest(&f.bytes, &format, plan, oriented_by, &litegen_in_place, &crate::mesh::package::NoSidecars)
+        f.manifest = manifest(&f.bytes, &format, plan, oriented_by, &litegen_in_place, &crate::mesh::package::NoSidecars, draco)
             .map(|m| annotate(m, &format, &lost));
     }
     out.extend(others);
@@ -718,7 +733,7 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
                 Ok(None) => {}
                 Ok(Some(PackageZip { zip, files, losses })) => {
                     let sidecars = crate::mesh::package::MemorySidecars { files: &files };
-                    let measured = manifest(&files[0].bytes, target.as_str(), plan, oriented_by, &litegen_in_place, &sidecars)
+                    let measured = manifest(&files[0].bytes, target.as_str(), plan, oriented_by, &litegen_in_place, &sidecars, draco)
                         .map(|m| annotate(m, target.as_str(), &losses));
                     out.push(Model3dFile {
                         kind: Model3dAssetKind::Package,
@@ -730,6 +745,7 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
                         height: None,
                         manifest: measured,
                         source_url: None,
+                        size_bytes: None,
                     });
                 }
                 Err(e) => {
@@ -818,6 +834,7 @@ mod tests {
             height: None,
             manifest: None,
             source_url: None,
+            size_bytes: None,
         }
     }
 
@@ -1200,7 +1217,7 @@ mod tests {
         // Measured, never taken from the request: a manifest that echoed the
         // asked-for names would vouch for a file that does not carry them.
         let file = animated(&[("Armature|walk", &[0.0, 1.0])]);
-        let m = manifest(&file, "glb", &clip_plan(&["walk"]), "vendor", &[], &crate::mesh::package::NoSidecars).unwrap();
+        let m = manifest(&file, "glb", &clip_plan(&["walk"]), "vendor", &[], &crate::mesh::package::NoSidecars, crate::mesh::DracoOptions::default()).unwrap();
         assert_eq!(m.animations[0].name, "Armature|walk");
     }
 
@@ -1967,6 +1984,7 @@ mod tests {
             height: None,
             manifest: None,
             source_url: None,
+            size_bytes: None,
         };
         let formats = ["glb", "obj", "dae", "usda", "usdc", "gltf", "fbx"];
         let without = deliver(vec![mesh("glb", vendor.clone()), preview.clone()], &plan(&formats, Some(("+y", "+z"))));

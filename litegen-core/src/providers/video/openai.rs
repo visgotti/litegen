@@ -413,6 +413,12 @@ impl VideoProvider for OpenAiVideoProvider {
         ))
     }
 
+    /// Sora's video is at `/videos/{id}/content`, which answers only a call
+    /// with the key: the poll downloads it, so there is no link to hand out.
+    fn hands_out_links(&self, _model: &ModelSchema) -> bool {
+        false
+    }
+
     /// Validate the API key via `GET {api_base}/models`.
     ///
     /// @see <https://developers.openai.com/api/reference/resources/models/methods/list> — Models: list (2026-11-09)

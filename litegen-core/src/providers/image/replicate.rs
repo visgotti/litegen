@@ -312,6 +312,15 @@ impl ImageProvider for ReplicateProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
+    /// What Replicate can't take, refused before anything is quoted,
+    /// reserved or sent; `generate` asks it first: a tier it names.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, _roles: &[&str]) -> Result<(), ProviderError> {
+        match extras.resolution.as_deref().filter(|t| replicate_resolution(t).is_none()) {
+            Some(tier) => Err(ProviderError::InvalidRequest(format!("{}: Replicate has no resolution {tier}", model.id))),
+            None => Ok(()),
+        }
+    }
+
     /// Create a prediction (versioned `POST /v1/predictions` or official-model
     /// `POST /v1/models/{owner}/{name}/predictions`), then poll for the result.
     ///
@@ -326,6 +335,9 @@ impl ImageProvider for ReplicateProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let (owner_name, version) = self.resolve_model_version(&model.id);
         let post_url = self.prediction_url(&owner_name, &version);
 
@@ -372,8 +384,7 @@ impl ImageProvider for ReplicateProvider {
             input["prompt_strength"] = json!(strength);
         }
 
-        if let Some(tier) = extras.resolution.as_deref() {
-            let r = replicate_resolution(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: Replicate has no resolution {tier}", model.id)))?;
+        if let Some(r) = extras.resolution.as_deref().and_then(replicate_resolution) {
             input["resolution"] = Value::String(r.into());
         }
 

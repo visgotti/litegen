@@ -334,12 +334,13 @@ impl TripoModel3dProvider {
     }
 
     /// One container from Tripo, which emits glb or fbx; litegen derives the
-    /// rest. Its own fbx when one was promised (`prefers_vendor_native`).
+    /// rest. Its own fbx when one was promised and `format_source` lets the
+    /// vendor make it (`asks_vendor_for`); with `format_source: glb`, its glb.
     fn out_format(extras: &Model3dExtras) -> &'static str {
         if extras
             .output_formats
             .iter()
-            .any(|f| f.eq_ignore_ascii_case("fbx") && crate::proxy::model3d_convert::prefers_vendor_native(f))
+            .any(|f| f.eq_ignore_ascii_case("fbx") && crate::proxy::model3d_convert::asks_vendor_for(f, extras.format_source))
         {
             "fbx"
         } else {
@@ -395,6 +396,12 @@ impl TripoModel3dProvider {
         super::download::fetch_asset(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "tripo").await
     }
 
+    /// [`fetch`](Self::fetch), or for a job that keeps nothing (`links_only`)
+    /// only a check of the link, under the same rules.
+    async fn fetch_or_check(&self, url: &str, links_only: bool) -> Result<super::download::Fetched, AssetError> {
+        super::download::fetch_or_check(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "tripo", links_only).await
+    }
+
     /// How often a task is polled while a call waits on it.
     pub(crate) fn poll_interval(&self) -> Duration {
         self.check_interval
@@ -437,6 +444,21 @@ impl TripoModel3dProvider {
     #[cfg(test)]
     pub(crate) async fn rig_downloads_for_tests(server: &wiremock::MockServer) -> usize {
         server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/files/rigged.glb").count()
+    }
+
+    /// The `Range` header of each request for the mesh of
+    /// [`Self::finished_rig_for_tests`]: `bytes=0-0` for a link check, `None`
+    /// for a download.
+    #[cfg(test)]
+    pub(crate) async fn rig_ranges_for_tests(server: &wiremock::MockServer) -> Vec<Option<String>> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/files/rigged.glb")
+            .map(|r| r.headers.get("range").and_then(|v| v.to_str().ok()).map(str::to_string))
+            .collect()
     }
 
     fn served(model: &ModelSchema) -> Result<(), ProviderError> {
@@ -615,8 +637,9 @@ impl Model3dProvider for TripoModel3dProvider {
     }
 
     /// On success, `gate` decides whether this observer downloads the
-    /// result; after a long wait for it, the task is read again for links
-    /// that have not expired.
+    /// result, or for a job that keeps nothing only checks its links; after
+    /// a long wait for it, the task is read again for links that have not
+    /// expired.
     async fn poll_status_gated(
         &self,
         handle: &Model3dGenerationHandle,
@@ -640,56 +663,62 @@ impl Model3dProvider for TripoModel3dProvider {
                 if t["output"]["model_url"].as_str().filter(|u| !u.is_empty()).is_none() {
                     return Ok(poll(GenerationStatus::Failed, 100, Some("tripo finished without a model_url".into()), Vec::new(), meta));
                 }
-                let t = match gate.ask().await {
+                let answer = gate.ask().await;
+                let t = match answer {
                     crate::providers::Fetch::StandAside => {
                         let mut aside = poll(GenerationStatus::Completed, 100, None, Vec::new(), meta);
                         crate::proxy::model3d_deliver::stand_aside(&mut aside);
                         return Ok(aside);
                     }
-                    crate::providers::Fetch::Go { waited } if waited >= crate::providers::REFRESH_LINKS_AFTER => {
+                    crate::providers::Fetch::Go { waited } | crate::providers::Fetch::LinksOnly { waited }
+                        if waited >= crate::providers::REFRESH_LINKS_AFTER =>
+                    {
                         let again = self.call(self.request(Method::GET, &format!("tasks/{task}"))?, "poll", false).await?;
                         let fresh = again["status"].as_str() == Some("success")
                             && again["output"]["model_url"].as_str().is_some_and(|u| !u.is_empty());
                         if fresh { again } else { t }
                     }
-                    crate::providers::Fetch::Go { .. } => t,
+                    crate::providers::Fetch::Go { .. } | crate::providers::Fetch::LinksOnly { .. } => t,
                 };
+                // Keeping nothing, the links are handed out: each is checked, no file is downloaded.
+                let links_only = matches!(answer, crate::providers::Fetch::LinksOnly { .. });
                 let url = t["output"]["model_url"].as_str().unwrap_or_default();
-                let (bytes, served_ct) =
-                    match super::download::fetch_asset(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "tripo").await {
-                        Ok(v) => v,
-                        Err(AssetError::Transient(e)) => return Err(e),
-                        Err(AssetError::Gone(why)) => {
-                            return Ok(poll(GenerationStatus::Failed, 100, Some(format!("tripo model could not be downloaded: {why}")), Vec::new(), meta))
-                        }
-                    };
+                let mesh = match self.fetch_or_check(url, links_only).await {
+                    Ok(v) => v,
+                    Err(AssetError::Transient(e)) => return Err(e),
+                    Err(AssetError::Gone(why)) => {
+                        return Ok(poll(GenerationStatus::Failed, 100, Some(format!("tripo model could not be downloaded: {why}")), Vec::new(), meta))
+                    }
+                };
                 let format = format_of(url);
-                let content_type = crate::store::model3d_content_type(&format, &served_ct).to_string();
+                let content_type = crate::store::model3d_content_type(&format, &mesh.content_type).to_string();
                 let mut files = vec![Model3dFile {
                     kind: Model3dAssetKind::Mesh,
                     format,
                     content_type,
-                    bytes,
+                    bytes: mesh.bytes,
                     polycount: None,
                     width: None,
                     height: None,
                     manifest: None,
                     source_url: Some(url.to_string()),
+                    size_bytes: mesh.size_bytes,
                 }];
                 // A preview is a courtesy: one that will not download never
                 // fails a good mesh.
                 if let Some(img) = t["output"]["rendered_image_url"].as_str().filter(|u| !u.is_empty()) {
-                    match super::download::fetch_asset(&self.asset_client, img, self.max_asset_bytes, self.public_assets_only, "tripo").await {
-                        Ok((bytes, ct)) => files.push(Model3dFile {
+                    match self.fetch_or_check(img, links_only).await {
+                        Ok(preview) => files.push(Model3dFile {
                             kind: Model3dAssetKind::Preview,
                             format: format_of(img),
-                            content_type: ct,
-                            bytes,
+                            content_type: preview.content_type,
+                            bytes: preview.bytes,
                             polycount: None,
                             width: None,
                             height: None,
                             manifest: None,
                             source_url: Some(img.to_string()),
+                            size_bytes: preview.size_bytes,
                         }),
                         Err(_) => tracing::warn!(task = %task, "tripo preview could not be downloaded; skipped"),
                     }
@@ -963,6 +992,18 @@ mod tests {
         assert_eq!(body["out_format"], "fbx");
     }
 
+    /// `format_source: glb` wants the fbx litegen makes from Tripo's glb, as
+    /// every 3D adapter reads it (`asks_vendor_for`): Tripo is asked for its
+    /// glb, not its own fbx.
+    #[tokio::test]
+    async fn an_fbx_made_from_the_glb_asks_tripo_for_its_glb() {
+        let server = MockServer::start().await;
+        let mut x = extras(&["glb", "fbx"], Some("humanoid"), None, source(None));
+        x.format_source = Some(Model3dFormatSource::Glb);
+        let (_, body, _) = submit(&server, x, json!({ "input": "file_abc", "delivery": "upload", "rig_type": "biped" })).await;
+        assert_eq!(body["out_format"], "glb", "{body}");
+    }
+
     #[tokio::test]
     async fn joint_naming_on_a_creature_is_refused_before_any_call() {
         let server = MockServer::start().await;
@@ -1180,6 +1221,148 @@ mod tests {
         assert_eq!(r.files[0].source_url.as_deref(), Some(format!("{}/cdn/new.glb", server.uri()).as_str()));
         assert!(received(&server, "/cdn/old.glb").await.is_empty(), "the stale link was not tried");
         assert_eq!(received(&server, "/v3/tasks/rig-1").await.len(), 2, "the task was read again");
+    }
+
+    /// A delivery gate for a job that keeps nothing: check the links, after
+    /// waiting this long for the right to.
+    struct LinksOnly(Duration);
+
+    #[async_trait]
+    impl crate::providers::FetchGate for LinksOnly {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::LinksOnly { waited: self.0 }
+        }
+    }
+
+    /// Mount `at` answering a one-byte range with `size` as the file's
+    /// total, as object storage does.
+    async fn mount_range(server: &MockServer, at: &str, size: u64, content_type: &str) {
+        Mock::given(method("GET"))
+            .and(path(at))
+            .and(header("range", "bytes=0-0"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("content-range", format!("bytes 0-0/{size}"))
+                    .insert_header("content-type", content_type)
+                    .set_body_bytes(b"x".to_vec()),
+            )
+            .mount(server)
+            .await;
+    }
+
+    /// Each file request the vendor's CDN saw: its method and Range header.
+    async fn cdn_requests(server: &MockServer) -> Vec<(String, Option<String>)> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|q| q.url.path().starts_with("/cdn/"))
+            .map(|q| (q.method.to_string(), q.headers.get("range").and_then(|v| v.to_str().ok()).map(str::to_string)))
+            .collect()
+    }
+
+    /// Keeping nothing, the caller gets Tripo's own links: the adapter checks
+    /// each one with a one-byte GET and downloads neither file, and each
+    /// file's size comes from its check.
+    #[tokio::test]
+    async fn a_job_that_keeps_nothing_checks_each_link_and_downloads_nothing() {
+        let server = MockServer::start().await;
+        mount_range(&server, "/cdn/rigged.glb", 7_340_032, "model/gltf-binary").await;
+        // A plain GET would download the mesh whole.
+        Mock::given(method("GET"))
+            .and(path("/cdn/rigged.glb"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0u8; 4 << 20]))
+            .mount(&server)
+            .await;
+        // The preview's host ignores the range and sends the whole file.
+        Mock::given(method("GET"))
+            .and(path("/cdn/preview.webp"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/webp").set_body_bytes(vec![0u8; 4 << 20]))
+            .mount(&server)
+            .await;
+        mount_task(&server, "rig-1", json!({
+            "task_id": "rig-1", "status": "success", "progress": 100,
+            "output": {
+                "model_url": format!("{}/cdn/rigged.glb?Expires=1", server.uri()),
+                "rendered_image_url": format!("{}/cdn/preview.webp", server.uri()),
+            },
+        })).await;
+        let r = provider(&server).poll_status_gated(&rig_handle(), &LinksOnly(Duration::ZERO)).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        let files: Vec<(Model3dAssetKind, String, Option<u64>, usize)> =
+            r.files.iter().map(|f| (f.kind, f.source_url.clone().unwrap_or_default(), f.size_bytes, f.bytes.len())).collect();
+        assert_eq!(
+            files,
+            [
+                (Model3dAssetKind::Mesh, format!("{}/cdn/rigged.glb?Expires=1", server.uri()), Some(7_340_032), 0),
+                (Model3dAssetKind::Preview, format!("{}/cdn/preview.webp", server.uri()), Some(4 << 20), 0),
+            ],
+            "each vendor link with its size, and no bytes"
+        );
+        let one_byte = ("GET".to_string(), Some("bytes=0-0".to_string()));
+        assert_eq!(cdn_requests(&server).await, [one_byte.clone(), one_byte], "one one-byte GET per file");
+    }
+
+    /// Keeping nothing changes no outcome: a mesh whose link is dead fails
+    /// the job, as one that will not download does, and a passing failure
+    /// is asked again at the next poll.
+    #[tokio::test]
+    async fn a_job_that_keeps_nothing_fails_when_its_mesh_link_is_dead() {
+        for (status, retried) in [(404, false), (503, true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).and(path("/cdn/rigged.glb")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
+            mount_task(&server, "rig-1", json!({
+                "task_id": "rig-1", "status": "success", "progress": 100,
+                "output": { "model_url": format!("{}/cdn/rigged.glb", server.uri()) },
+            })).await;
+            let r = provider(&server).poll_status_gated(&rig_handle(), &LinksOnly(Duration::ZERO)).await;
+            if retried {
+                assert!(r.unwrap_err().is_retryable(), "{status}");
+            } else {
+                let r = r.unwrap();
+                assert_eq!(r.status, GenerationStatus::Failed, "{status}");
+                assert!(r.error.as_deref().is_some_and(|e| e.contains("could not be downloaded")), "{:?}", r.error);
+            }
+        }
+    }
+
+    /// A preview whose link is dead is left out, as one that will not
+    /// download is: it never fails a good mesh.
+    #[tokio::test]
+    async fn a_job_that_keeps_nothing_skips_a_preview_whose_link_is_dead() {
+        let server = MockServer::start().await;
+        mount_range(&server, "/cdn/rigged.glb", 1_000, "model/gltf-binary").await;
+        Mock::given(method("GET")).and(path("/cdn/preview.webp")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        mount_task(&server, "rig-1", json!({
+            "task_id": "rig-1", "status": "success", "progress": 100,
+            "output": {
+                "model_url": format!("{}/cdn/rigged.glb", server.uri()),
+                "rendered_image_url": format!("{}/cdn/preview.webp", server.uri()),
+            },
+        })).await;
+        let r = provider(&server).poll_status_gated(&rig_handle(), &LinksOnly(Duration::ZERO)).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        assert_eq!(r.files.iter().map(|f| f.kind).collect::<Vec<_>>(), [Model3dAssetKind::Mesh]);
+    }
+
+    /// Keeping nothing, the links themselves are the answer, so an observer
+    /// that waited long for the delivery reads the task again and checks
+    /// (and hands out) the fresh link, not the one it first saw.
+    #[tokio::test]
+    async fn a_job_that_keeps_nothing_checks_fresh_links_after_a_long_wait() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/cdn/old.glb")).respond_with(ResponseTemplate::new(403)).mount(&server).await;
+        mount_range(&server, "/cdn/new.glb", 2_048, "model/gltf-binary").await;
+        let task = |at: &str| json!({ "task_id": "rig-1", "status": "success", "progress": 100, "output": { "model_url": format!("{}{at}", server.uri()) } });
+        Mock::given(method("GET")).and(path("/v3/tasks/rig-1")).respond_with(ok(task("/cdn/old.glb"))).up_to_n_times(1).mount(&server).await;
+        Mock::given(method("GET")).and(path("/v3/tasks/rig-1")).respond_with(ok(task("/cdn/new.glb"))).mount(&server).await;
+
+        let r = provider(&server).poll_status_gated(&rig_handle(), &LinksOnly(Duration::from_secs(11))).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        assert_eq!(r.files[0].source_url.as_deref(), Some(format!("{}/cdn/new.glb", server.uri()).as_str()));
+        assert_eq!(r.files[0].size_bytes, Some(2_048));
+        assert!(received(&server, "/cdn/old.glb").await.is_empty(), "the stale link was not handed out");
     }
 
     #[tokio::test]

@@ -20,18 +20,25 @@ T = TypeVar("T", bound="UpdateApiKeyRequest")
 
 @_attrs_define
 class UpdateApiKeyRequest:
-    """Request body for PATCH /v1/keys/{id}.
+    """Request body for PATCH /v1/keys/{id}, a JSON merge patch: a field left
+    out stays as it is, `null` clears `token_quota`, `rpm_limit`,
+    `webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and
+    `is_active` can't be cleared: `null` leaves them as they are.
 
-    Attributes:
-        expires_at (Union[None, Unset, datetime.datetime]):
-        is_active (Union[None, Unset, bool]):
-        name (Union[None, Unset, str]):
-        rpm_limit (Union[None, Unset, int]):
-        scopes (Union[None, Unset, str]): Replace the key's scopes: the same values and the same privilege check
-            as on create (an unknown scope is a 400, one the caller may not grant a
-            403).
-        token_quota (Union[None, Unset, float]):
-        webhook_url (Union[None, Unset, str]):
+        Attributes:
+            expires_at (Union[None, Unset, datetime.datetime]): When the key stops working; `null` removes the expiry (it
+                never
+                expires).
+            is_active (Union[None, Unset, bool]):
+            name (Union[None, Unset, str]):
+            rpm_limit (Union[None, Unset, int]): Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to
+                stop a key, block it); `null` removes it (no limit).
+            scopes (Union[None, Unset, str]): Replace the key's scopes: the same values and the same privilege check
+                as on create (an unknown scope is a 400, one the caller may not grant a
+                403).
+            token_quota (Union[None, Unset, float]): USD budget cap; `null` removes it (no cap).
+            webhook_url (Union[None, Unset, str]): The key's webhook URL, held to the same address rules as on create;
+                `null` or `""` removes it (the key then shows `webhook_url: null`).
     """
 
     expires_at: Union[None, Unset, datetime.datetime] = UNSET

@@ -145,17 +145,18 @@ models:
     display_name: FLUX 3 Image (Replicate)
     description: Black Forest Labs FLUX 3 Image on Replicate — generation and editing with up to ten references and web-grounded prompts.
     docs_url: https://replicate.com/black-forest-labs/flux-3-image/api/schema
-    # "$0.0205 per output image [image_output_count] when target resolution
-    # equals 768sq", $0.024 at 1k (the default), $0.035 at 1.5k, $0.05 at 2k,
-    # $0.3035 at 4k.
-    # @see https://replicate.com/black-forest-labs/flux-3-image/api/schema (2026-11-03)
+    # "$0.048 per output image [image_output_count] when target resolution
+    # equals 1k" (the default, one image a call: $0.048), $0.041 at 768sq,
+    # $0.07 at 1.5k, $0.10 at 2k, $0.607 at 4k. (On 2026-11-03 every tier was
+    # half that: $0.024 at 1k.)
+    # @see https://replicate.com/black-forest-labs/flux-3-image/api/schema (2026-11-16)
     pricing:
-      base_cost_usd: 0.024
+      base_cost_usd: 0.048
       variable_pricing:
-        - { when: { resolution: "0.75K" }, usd: 0.0205 }
-        - { when: { resolution: "1.5K" }, usd: 0.035 }
-        - { when: { resolution: "2K" }, usd: 0.05 }
-        - { when: { resolution: "4K" }, usd: 0.3035 }
+        - { when: { resolution: "0.75K" }, usd: 0.041 }
+        - { when: { resolution: "1.5K" }, usd: 0.07 }
+        - { when: { resolution: "2K" }, usd: 0.1 }
+        - { when: { resolution: "4K" }, usd: 0.607 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true }
     params:

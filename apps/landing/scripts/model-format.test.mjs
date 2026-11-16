@@ -94,6 +94,15 @@ test("a param's limits read as the validator enforces them", () => {
   assert.deepEqual(fmt.paramLimitsText({ name: 'palette', kind: 'palette', maxColors: 10, forced: true }, en, 'en'), ['up to 10 colors', 'every pixel is one of them']);
   assert.deepEqual(fmt.paramLimitsText({ name: 'prompts', kind: 'segmentation_prompts', maxItems: 64, maxMasks: 32 }, en, 'en'), ['up to 64', 'up to 32 masks per answer']);
   assert.deepEqual(fmt.paramLimitsText({ name: 'expand', kind: 'expand', maxPx: 2048 }, en, 'en'), ['up to 2,048 px per side']);
+  // stability/outpaint: it grows a canvas and nothing else (validator.rs check_expand: 400 param_required).
+  assert.deepEqual(fmt.paramLimitsText({ name: 'expand', kind: 'expand', maxPx: 2000, required: true }, en, 'en'), [
+    'up to 2,000 px per side',
+    'required: a request without it is refused before it is quoted',
+  ]);
+  assert.deepEqual(fmt.paramLimitsText({ name: 'expand', kind: 'expand', maxPx: 2000, required: true }, translator('es'), 'es'), [
+    'hasta 2000 px por lado',
+    'obligatorio: una petición sin él se rechaza antes de cotizarla',
+  ]);
   assert.deepEqual(fmt.paramLimitsText({ name: 'layout', kind: 'layout', maxItems: 32, singleWordText: true }, en, 'en'), ['up to 32', 'one word per text box']);
   assert.deepEqual(fmt.paramLimitsText({ name: 'seed', kind: 'seed' }, en, 'en'), []);
 });
@@ -102,10 +111,11 @@ test("a param's limits read as the validator enforces them", () => {
 // aspect_ratio sent with a frame image: "aspect_ratio applies only without a
 // first_frame, last_frame or init image unless a reference image goes with it".
 // The page names the row's own frame roles, says "unless" only where the row
-// takes a reference image, and names the role a role-less image takes.
+// takes a reference image beside a frame, and names the role a role-less image takes.
 test('a ratio a frame image overrides reads as the validator applies it', () => {
   const en = translator('en');
-  // vidu/viduq1, in es
+  // A row whose reference image may go with a frame (none ships today: frames-refs gave every such reference a
+  // not_with), in es
   assert.equal(
     fmt.aspectRatioFramesText({ roles: ['first_frame', 'last_frame'], unlessReference: true, defaultRole: 'first_frame' }, translator('es'), 'es'),
     'una imagen de fotograma (first_frame o last_frame) fija la forma del vídeo, así que la relación de aspecto solo se aplica sin ella, salvo que la acompañe una imagen con rol reference · una imagen enviada sin rol cuenta como first_frame',
@@ -115,7 +125,7 @@ test('a ratio a frame image overrides reads as the validator applies it', () => 
     fmt.aspectRatioFramesText({ roles: ['first_frame', 'last_frame'], unlessReference: false, defaultRole: 'first_frame' }, en, 'en'),
     'a frame image (first_frame or last_frame) sets the shape of the video, so a ratio applies only without one · an image sent without a role counts as first_frame',
   );
-  // vidu/viduq1
+  // The same row, in en
   assert.equal(
     fmt.aspectRatioFramesText({ roles: ['first_frame', 'last_frame'], unlessReference: true, defaultRole: 'first_frame' }, en, 'en'),
     'a frame image (first_frame or last_frame) sets the shape of the video, so a ratio applies only without one, unless a reference image goes with it · an image sent without a role counts as first_frame',
@@ -125,6 +135,106 @@ test('a ratio a frame image overrides reads as the validator applies it', () => 
     fmt.aspectRatioFramesText({ roles: ['first_frame'], unlessReference: false }, en, 'en'),
     'a frame image (first_frame) sets the shape of the video, so a ratio applies only without one',
   );
+});
+
+// vidu-mix: Vidu takes first/last frames or reference images, never both, so
+// its reference role names the frame roles in `not_with` and the mix is
+// refused before the ratio is read. The page says no "unless" for it.
+test('a ratio on a row whose reference image is never sent with a frame reads without the unless', () => {
+  const [row] = readCatalog().filter((r) => r.id === 'vidu/viduq1');
+  assert.ok(row, 'vidu/viduq1 is in the catalog');
+  assert.equal(
+    fmt.aspectRatioFramesText(deriveModel(row).aspectRatioFrames, translator('en'), 'en'),
+    'a frame image (first_frame or last_frame) sets the shape of the video, so a ratio applies only without one · an image sent without a role counts as first_frame',
+  );
+});
+
+// validator.rs `check_refs` refuses an image of a role sent with one of a role
+// it names in `not_with` (400 ref_role_conflict, in either mode): "'vidu/viduq1'
+// takes reference or first_frame images, not both in one request".
+test('roles a model never takes together read as one line per role that names them', () => {
+  const en = translator('en');
+  const frames = [
+    { name: 'first_frame', required: false, min: 0, max: 1 },
+    { name: 'last_frame', required: false, min: 0, max: 1 },
+  ];
+  // vidu/viduq1
+  const viduq1 = [...frames, { name: 'reference', required: false, min: 0, max: 7, notWith: ['first_frame', 'last_frame'] }];
+  assert.deepEqual(fmt.notWithText(viduq1, en, 'en'), [
+    "reference images can't be sent with first_frame or last_frame images: the vendor takes one or the other",
+  ]);
+  assert.deepEqual(fmt.notWithText(viduq1, translator('es'), 'es'), [
+    'las imágenes con rol reference no pueden ir en la misma petición que las de rol first_frame o last_frame: el proveedor admite unas u otras',
+  ]);
+  // vidu/viduq4-preview
+  assert.deepEqual(fmt.notWithText([frames[0], { name: 'reference', required: false, min: 0, max: 15, notWith: ['first_frame'] }], en, 'en'), [
+    "reference images can't be sent with first_frame images: the vendor takes one or the other",
+  ]);
+  // No role names another: nothing to say.
+  assert.deepEqual(fmt.notWithText([...frames, { name: 'reference', required: false, min: 0, max: 3 }], en, 'en'), []);
+});
+
+// validator.rs `check_video_request` refuses a last_frame image sent without a
+// first_frame (or init) image where the last_frame role sets `needs_first_frame`
+// (400 ref_role_required, in either mode): "'ideogram/kling-3-standard' ends a
+// clip on a last_frame only after a first_frame; send a first_frame image too".
+test('a last frame that needs a first frame reads as one line that names the roles it needs', () => {
+  const en = translator('en');
+  const first = { name: 'first_frame', required: false, min: 0, max: 1 };
+  // ideogram/kling-3-standard
+  const kling = [first, { name: 'last_frame', required: false, min: 0, max: 1, needsFirstFrame: true }];
+  assert.deepEqual(fmt.needsFirstFrameText(kling, en, 'en'), [
+    'last_frame images need a first_frame image in the same request: the vendor ends a clip on a last frame only after a first frame',
+  ]);
+  assert.deepEqual(fmt.needsFirstFrameText(kling, translator('es'), 'es'), [
+    'las imágenes con rol last_frame necesitan una imagen con rol first_frame en la misma petición: el proveedor solo cierra un clip con un último fotograma si lo abre con un primero',
+  ]);
+  // A row that starts a clip from an init image too: either one goes with the last frame.
+  assert.deepEqual(fmt.needsFirstFrameText([{ name: 'init', required: false, min: 0, max: 1 }, ...kling], en, 'en'), [
+    'last_frame images need a first_frame or init image in the same request: the vendor ends a clip on a last frame only after a first frame',
+  ]);
+  // luma/ray-2: a last frame alone goes, so nothing to say.
+  assert.deepEqual(fmt.needsFirstFrameText([first, { name: 'last_frame', required: false, min: 0, max: 1 }], en, 'en'), []);
+});
+
+// validator.rs `check_video_request` refuses a reference image sent without a
+// first_frame (or init) image where the reference role sets `needs_first_frame`
+// (400 ref_role_required, in either mode): "'runway/klingO3_pro' takes reference
+// images only on image-to-video; send a first_frame image too".
+test('a reference that needs a first frame reads as a line of its own, with its own reason', () => {
+  const en = translator('en');
+  const first = { name: 'first_frame', required: false, min: 0, max: 1 };
+  const last = { name: 'last_frame', required: false, min: 0, max: 1, needsFirstFrame: true };
+  const lastLine = 'last_frame images need a first_frame image in the same request: the vendor ends a clip on a last frame only after a first frame';
+  // runway/klingO3_pro
+  const o3 = [first, last, { name: 'reference', required: false, min: 0, max: 7, needsFirstFrame: true }];
+  assert.deepEqual(fmt.needsFirstFrameText(o3, en, 'en'), [
+    lastLine,
+    'reference images need a first_frame image in the same request: the vendor takes reference images only in a clip that starts from a first frame',
+  ]);
+  assert.deepEqual(fmt.needsFirstFrameText(o3, translator('es'), 'es'), [
+    'las imágenes con rol last_frame necesitan una imagen con rol first_frame en la misma petición: el proveedor solo cierra un clip con un último fotograma si lo abre con un primero',
+    'las imágenes con rol reference necesitan una imagen con rol first_frame en la misma petición: el proveedor solo admite imágenes de referencia en un clip que parte de un primer fotograma',
+  ]);
+  // runway/kling_4: its references go without a frame too, so only the last frame's line.
+  assert.deepEqual(fmt.needsFirstFrameText([first, last, { name: 'reference', required: false, min: 0, max: 10 }], en, 'en'), [lastLine]);
+});
+
+// `returned_together` (schema.rs): the containers one vendor job returns
+// together. A generation that keeps nothing (keep_outputs: false) converts
+// nothing, so it is promised only what its job returns; anything more is
+// refused, 400 format_needs_keeping.
+test('a format set reads as the containers one vendor job returns together', () => {
+  // meshy/rig's output_formats
+  const rig = { name: 'output_formats', kind: 'string_array', enum: ['glb', 'fbx'], default: ['glb'], returnedTogether: ['glb', 'fbx'] };
+  assert.deepEqual(fmt.paramLimitsText(rig, translator('en'), 'en'), [
+    'one vendor job returns glb and fbx together; a generation that keeps nothing (keep_outputs: false) gets only what its job returns',
+  ]);
+  assert.deepEqual(fmt.paramLimitsText(rig, translator('es'), 'es'), [
+    'un trabajo del proveedor devuelve glb y fbx a la vez; una generación que no guarda nada (keep_outputs: false) recibe solo lo que devuelve su trabajo',
+  ]);
+  // tripo/rig: a job returns the one container it is asked for
+  assert.deepEqual(fmt.paramLimitsText({ name: 'output_formats', kind: 'string_array', enum: ['glb', 'fbx'], default: ['glb'] }, translator('en'), 'en'), []);
 });
 
 test('a clip preset reads as its id, its name and the canonical preset it plays', () => {
@@ -143,6 +253,8 @@ test('every shipped model words its size, lifecycle and limits cleanly in both l
         m.sizeRange ? fmt.sizeRangeText(m.sizeRange, t, locale) : '',
         m.lifecycle ? fmt.lifecycleText(m.lifecycle, t) : '',
         m.aspectRatioFrames ? fmt.aspectRatioFramesText(m.aspectRatioFrames, t, locale) : '',
+        ...fmt.notWithText(m.refRoles, t, locale),
+        ...fmt.needsFirstFrameText(m.refRoles, t, locale),
         ...m.params.flatMap((p) => fmt.paramLimitsText(p, t, locale)),
         ...m.params.flatMap((p) => (p.presets ?? []).map((preset) => fmt.presetText(preset))),
       ];

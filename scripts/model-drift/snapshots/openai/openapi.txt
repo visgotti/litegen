@@ -17,6 +17,33 @@
         ],
         "default": "auto"
       },
+      "complexity": {
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          null
+        ],
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "frame_count": {
+        "maximum": 16,
+        "minimum": 2,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "frame_duration_ms": {
+        "minimum": 20,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "images": {
         "items": {
           "additionalProperties": false,
@@ -146,6 +173,8 @@
               "gpt-image-2.5-sunburst-2026-09-08",
               "gpt-image-2.5-flare",
               "gpt-image-2.5-flare-2026-09-08",
+              "gpt-image-2.6-sunburst",
+              "gpt-image-2.6-flare",
               "gpt-image-1",
               "gpt-image-1-mini",
               "chatgpt-image-latest"
@@ -203,8 +232,10 @@
           {
             "enum": [
               "png",
+              "webp",
               "jpeg",
-              "webp"
+              "gif",
+              "svg"
             ],
             "type": "string"
           },
@@ -289,6 +320,52 @@
         ],
         "default": false
       },
+      "svg": {
+        "anyOf": [
+          {
+            "properties": {
+              "model": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "reasoning": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "effort": {
+                        "oneOf": [
+                          {
+                            "enum": [
+                              "none",
+                              "minimal",
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ],
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "user": {
         "deprecated": true,
         "type": "string"
@@ -317,6 +394,33 @@
           }
         ],
         "default": "auto"
+      },
+      "complexity": {
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          null
+        ],
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "frame_count": {
+        "maximum": 16,
+        "minimum": 2,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "frame_duration_ms": {
+        "minimum": 20,
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "image": {
         "anyOf": [
@@ -370,6 +474,8 @@
               "gpt-image-2.5-sunburst-2026-09-08",
               "gpt-image-2.5-flare",
               "gpt-image-2.5-flare-2026-09-08",
+              "gpt-image-2.6-sunburst",
+              "gpt-image-2.6-flare",
               "gpt-image-1",
               "gpt-image-1-mini",
               "chatgpt-image-latest",
@@ -400,8 +506,10 @@
           {
             "enum": [
               "png",
+              "webp",
               "jpeg",
-              "webp"
+              "gif",
+              "svg"
             ],
             "type": "string"
           },
@@ -495,6 +603,52 @@
           "null"
         ]
       },
+      "svg": {
+        "anyOf": [
+          {
+            "properties": {
+              "model": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "reasoning": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "effort": {
+                        "oneOf": [
+                          {
+                            "enum": [
+                              "none",
+                              "minimal",
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ],
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "user": {
         "deprecated": true,
         "type": "string"
@@ -525,6 +679,33 @@
         ],
         "default": "auto"
       },
+      "complexity": {
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          null
+        ],
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "frame_count": {
+        "maximum": 16,
+        "minimum": 2,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "frame_duration_ms": {
+        "minimum": 20,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "model": {
         "anyOf": [
           {
@@ -539,6 +720,8 @@
               "gpt-image-2.5-sunburst-2026-09-08",
               "gpt-image-2.5-flare",
               "gpt-image-2.5-flare-2026-09-08",
+              "gpt-image-2.6-sunburst",
+              "gpt-image-2.6-flare",
               "gpt-image-1",
               "gpt-image-1-mini",
               "chatgpt-image-latest",
@@ -585,8 +768,10 @@
           {
             "enum": [
               "png",
+              "webp",
               "jpeg",
-              "webp"
+              "gif",
+              "svg"
             ],
             "type": "string"
           },
@@ -692,6 +877,48 @@
         ],
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "svg": {
+        "properties": {
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reasoning": {
+            "properties": {
+              "effort": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "none",
+                      "minimal",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "type": [
+          "object",
           "null"
         ]
       },

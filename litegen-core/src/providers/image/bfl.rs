@@ -288,6 +288,25 @@ impl ImageProvider for BflProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What BFL can't make, refused before anything is quoted, reserved or
+    /// sent; `generate` asks it first: FLUX 3 Image's smaller ceiling with
+    /// reference images ([`FLUX_3_IMAGE_EDIT_MAX_PIXELS`]), and a tier BFL
+    /// names.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if Self::resolve_model(&model.id) == "flux-3-image" && !roles.is_empty() {
+            let pixels = extras.size.as_deref().and_then(|s| s.split_once('x')).and_then(|(w, h)| Some(w.parse::<u64>().ok()? * h.parse::<u64>().ok()?));
+            if let Some(pixels) = pixels.filter(|p| *p > FLUX_3_IMAGE_EDIT_MAX_PIXELS) {
+                return Err(ProviderError::InvalidRequest(format!(
+                    "FLUX 3 Image makes at most {FLUX_3_IMAGE_EDIT_MAX_PIXELS} pixels with reference images; the size asks for {pixels}"
+                )));
+            }
+        }
+        if let Some(tier) = extras.resolution.as_deref().filter(|t| bfl_resolution(t).is_none()) {
+            return Err(ProviderError::InvalidRequest(format!("{}: BFL has no resolution {tier}", model.id)));
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -296,17 +315,11 @@ impl ImageProvider for BflProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let native = Self::resolve_model(&model.id);
         let url = format!("{}/v1/{}", self.api_base(), crate::providers::wire_model(self.config.as_ref(), &model.id, native));
-
-        if native == "flux-3-image" && !materialized.refs.is_empty() {
-            let pixels = extras.size.as_deref().and_then(|s| s.split_once('x')).and_then(|(w, h)| Some(w.parse::<u64>().ok()? * h.parse::<u64>().ok()?));
-            if let Some(pixels) = pixels.filter(|p| *p > FLUX_3_IMAGE_EDIT_MAX_PIXELS) {
-                return Err(ProviderError::InvalidRequest(format!(
-                    "FLUX 3 Image makes at most {FLUX_3_IMAGE_EDIT_MAX_PIXELS} pixels with reference images; the size asks for {pixels}"
-                )));
-            }
-        }
 
         // A layout rides in the prompt, on the rows that declare one (FLUX 3).
         let prompt = match extras.layout.as_deref() {
@@ -328,8 +341,7 @@ impl ImageProvider for BflProvider {
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
         }
-        if let Some(tier) = extras.resolution.as_deref() {
-            let r = bfl_resolution(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: BFL has no resolution {tier}", model.id)))?;
+        if let Some(r) = extras.resolution.as_deref().and_then(bfl_resolution) {
             body["resolution"] = Value::String(r.into());
         }
         // flux-dev: "steps … Number of steps for the image generation process"

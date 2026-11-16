@@ -313,14 +313,11 @@ const drafts = (v: unknown): Draft[] => (Array.isArray(v) ? v.filter(isDraft) : 
 const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
 /** A typed number, or NaN when the field is blank or not a number. */
 const num = (v: unknown): number => (text(v) === '' ? NaN : Number(text(v)));
-const whole = (v: unknown): number | undefined => {
-  const n = num(v);
-  return Number.isInteger(n) && n >= 0 ? n : undefined;
-};
-/** A layout draft's box once all four of its numbers are typed, as typed;
- *  else undefined. Whether it lies inside the canvas, with an area, is the
+/** A box draft (a region, a layout box, a segmentation box) once all four of
+ *  its numbers are typed, as typed; else undefined. Whether they are whole
+ *  pixels or fractions, inside the image or canvas, with an area, is the
  *  server's to say (N4). */
-export function layoutBox(d: Draft): { x: number; y: number; w: number; h: number } | undefined {
+export function boxOf(d: Draft): { x: number; y: number; w: number; h: number } | undefined {
   const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => num(d[k]));
   return [x, y, w, h].every(Number.isFinite) ? { x, y, w, h } : undefined;
 }
@@ -334,17 +331,18 @@ export function layoutBox(d: Draft): { x: number; y: number; w: number; h: numbe
 export function wireValue(spec: AnySpec, value: unknown): unknown {
   const max = typeof spec.max_items === 'number' ? spec.max_items : Infinity;
   switch (spec.kind) {
-    case 'region': {
+    case 'region':
       // Pixels of the init image, top-left origin.
-      if (!isDraft(value)) return undefined;
-      const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => whole(value[k]));
-      return x === undefined || y === undefined || !w || !h ? undefined : { x, y, w, h };
-    }
+      return isDraft(value) ? boxOf(value) : undefined;
     case 'expand': {
+      // Pixels to add to each side: once one is typed, a side left blank
+      // adds none.
       if (!isDraft(value)) return undefined;
-      const sides = ['left', 'top', 'right', 'bottom'].map(k => (text(value[k]) === '' ? 0 : whole(value[k])));
-      if (sides.some(s => s === undefined) || sides.every(s => s === 0)) return undefined;
-      const [left, top, right, bottom] = sides as number[];
+      const typed = ['left', 'top', 'right', 'bottom'].map(k => text(value[k]));
+      if (typed.every(s => s === '')) return undefined;
+      const sides = typed.map(s => (s === '' ? 0 : Number(s)));
+      if (!sides.every(Number.isFinite)) return undefined;
+      const [left, top, right, bottom] = sides;
       return { left, top, right, bottom };
     }
     case 'time_range': {
@@ -362,7 +360,7 @@ export function wireValue(spec: AnySpec, value: unknown): unknown {
       // Fractions of the canvas: the output's size may not be known yet.
       const out: Draft[] = [];
       for (const d of drafts(value)) {
-        const box = layoutBox(d);
+        const box = boxOf(d);
         if (!box || out.length >= max) continue;
         if (d.kind === 'text') {
           if (text(d.text)) out.push({ kind: 'text', text: text(d.text), box });
@@ -417,8 +415,8 @@ export function wireValue(spec: AnySpec, value: unknown): unknown {
           const label = num(d.label);
           out.push(Number.isFinite(label) ? { type: 'point', x, y, label } : { type: 'point', x, y });
         } else if (d.type === 'box') {
-          const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => num(d[k]));
-          if ([x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) out.push({ type: 'box', x, y, w, h });
+          const box = boxOf(d);
+          if (box) out.push({ type: 'box', ...box });
         } else if (d.type === 'text' && text(d.text)) {
           out.push({ type: 'text', text: text(d.text) });
         }
@@ -759,7 +757,7 @@ const NON_PARAM_FIELDS = new Set([
 
 /** A stored value as the draft its control edits: a layout item's wire form
  *  `{kind, text, box: {x, y, w, h}}` is the draft `{kind, text, x, y, w, h}`
- *  (`layoutBox` reads the box flat). Other values are their own drafts. */
+ *  (`boxOf` reads the box flat). Other values are their own drafts. */
 function draftOfStored(v: unknown): unknown {
   if (!Array.isArray(v)) return v;
   return v.map(item => {

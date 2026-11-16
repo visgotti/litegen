@@ -1,4 +1,5 @@
 import { useFileSrc } from '../file-src';
+import { formatCost } from '../components/model-detail';
 import type { ResultTileState } from './types';
 
 interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; rerunDisabled?: boolean; }
@@ -27,7 +28,7 @@ export default function ResultTile({ tile, onRerun, rerunDisabled }: Props) {
         )}
       </div>
       <div className="pg-tile-meta">
-        {tile.costUsd != null && <span>${tile.costUsd.toFixed(3)}</span>}
+        {tile.costUsd != null && <span>{formatCost(tile.costUsd)}</span>}
         {tile.latencyMs != null && <span>{tile.latencyMs}ms</span>}
       </div>
     </div>

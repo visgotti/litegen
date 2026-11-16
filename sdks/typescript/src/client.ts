@@ -52,6 +52,9 @@ type InvitationView = Schemas["InvitationView"];
 type AcceptInvitationRequest = Schemas["AcceptInvitationRequest"];
 type InviteRequest = Schemas["InviteRequest"];
 type InviteResponse = Schemas["InviteResponse"];
+type PasswordResetLink = Schemas["PasswordResetLink"];
+type PendingInvitation = Schemas["PendingInvitation"];
+type WebhookDeliveryState = Schemas["WebhookDeliveryState"];
 type PublicUser = Schemas["PublicUser"];
 type PatchUserRequest = Schemas["PatchUserRequest"];
 type TransferOwnerRequest = Schemas["TransferOwnerRequest"];
@@ -102,6 +105,7 @@ type AdminModelListResponse = Schemas["AdminModelListResponse"];
 type ProviderConfigView = Schemas["ProviderConfigView"];
 type ProviderConfigListResponse = Schemas["ProviderConfigListResponse"];
 type PutProviderConfigRequest = Schemas["PutProviderConfigRequest"];
+type PatchProviderConfigRequest = Schemas["PatchProviderConfigRequest"];
 type RoutesDocument = Schemas["RoutesDocument"];
 type RouteSpec = Schemas["RouteSpec"];
 type GatewaySettings = Schemas["GatewaySettings"];
@@ -145,6 +149,14 @@ export interface AuditLogEntry {
   before_json: string | null;
   after_json: string | null;
   created_at: string;
+  /**
+   * The organization this entry is filed under: the one whose object the
+   * action changed, else the one the caller acted in. Absent for an entry
+   * filed under no org (in hosted mode, the master key's changes to the
+   * gateway and to accounts, and an account change by a person who belongs to
+   * no org); only the master key reads those.
+   */
+  org_id?: string | null;
 }
 
 export interface PaginatedResponse<T> {
@@ -233,10 +245,17 @@ export interface WebhookDelivery {
    * The webhook as sent, when the reader is inside the app's owner scope for
    * its generation (or the app's files are `public`). Any other reader gets
    * the generation as stored now, presented for that reader, or `{}` once it
-   * is gone.
+   * is gone. The payload is stored once per delivery, so every attempt of one
+   * delivery shows the payload of its latest attempt.
    */
   payload_json: string;
   created_at: string;
+  /**
+   * The delivery this attempt belongs to, `whd-` and a UUID: the
+   * `X-Litegen-Delivery-Id` the receiver got. Every attempt of one delivery
+   * has the same one; `null` on attempts recorded before migration 029.
+   */
+  delivery_id: string | null;
 }
 
 export interface TestWebhookResponse {
@@ -245,6 +264,11 @@ export interface TestWebhookResponse {
   error: string | null;
 }
 
+/**
+ * The body of `keys.patch`, a JSON merge patch: a field left out stays as it
+ * is, and `null` clears `token_quota`, `rpm_limit`, `webhook_url` (so does
+ * `""`) and `expires_at`. `name`, `scopes` and `is_active` can't be cleared.
+ */
 export interface PatchKeyBody {
   name?: string;
   token_quota?: number | null;
@@ -252,6 +276,10 @@ export interface PatchKeyBody {
   /** CSV string e.g. "generate,read,admin" */
   scopes?: string;
   webhook_url?: string | null;
+  /** RFC 3339 date-time; `null` removes the expiry. */
+  expires_at?: string | null;
+  /** `false` deactivates the key, `true` reactivates it. */
+  is_active?: boolean;
 }
 
 export interface CreateKeyBody {
@@ -271,6 +299,12 @@ export interface ListAuditLogOptions {
   action?: string;
   from?: string;
   to?: string;
+  /**
+   * The master key only: the organization whose entries to read. Omit for the
+   * org the caller acts in (the hosted master key: the entries filed under no
+   * org). Anyone else may name only their own.
+   */
+  org_id?: string;
 }
 
 /** Filter options for `audit.exportCsv` (same filters as `audit.list`, sans pagination). */
@@ -848,7 +882,7 @@ export class LiteGenClient {
         // Non-JSON error body; keep the default detail.
       }
       this.onError?.(res.status, parsedBody);
-      throw new LiteGenAPIError(res.status, detail, parseRetryAfter(res.headers.get("retry-after")), res.headers);
+      throw new LiteGenAPIError(res.status, detail, parseRetryAfter(res.headers.get("retry-after")), res.headers, parsedBody ?? undefined);
     }
     return res;
   }
@@ -1358,6 +1392,12 @@ class ProvidersNamespace {
   }
 }
 
+/** A `/health` body (the report a 503 also carries when a provider is down). */
+function isHealthBody(body: unknown): body is HealthResponse {
+  const b = body as Partial<HealthResponse> | null | undefined;
+  return typeof b?.status === "string" && Array.isArray(b.providers) && typeof b.cache === "object" && b.cache !== null;
+}
+
 class HealthNamespace {
   constructor(private readonly client: LiteGenClient) {}
   /**
@@ -1366,8 +1406,17 @@ class HealthNamespace {
    * deployment's own keys, so it takes the master key, or in single-tenant
    * mode the `read` scope in the deployment's org; other credentials get 403.
    */
-  check(signal?: AbortSignal): Promise<HealthResponse> {
-    return this.client.request("GET", "/health", undefined, signal);
+  async check(signal?: AbortSignal): Promise<HealthResponse> {
+    try {
+      return await this.client.request<HealthResponse>("GET", "/health", undefined, signal);
+    } catch (err) {
+      // A provider that did not check healthy makes it a 503 with the same
+      // body (`status: "degraded"`, each provider's answer): the report, not a
+      // failure. A 503 without that body (something in front of the gateway,
+      // the server at capacity) and any other refusal still throw.
+      if (err instanceof LiteGenAPIError && err.status === 503 && isHealthBody(err.body)) return err.body;
+      throw err;
+    }
   }
   /** Alias used by Health page. */
   get(signal?: AbortSignal): Promise<HealthResponse> {
@@ -1416,12 +1465,13 @@ function applyLogFilters(params: URLSearchParams, opts: ExportLogsOptions): void
   applyMetadataFilter(params, opts.metadata);
 }
 
-/** Append the shared audit-log filters (actor_key_id/action/from/to) to a query string. */
+/** Append the shared audit-log filters (actor_key_id/action/from/to/org_id) to a query string. */
 function applyAuditFilters(params: URLSearchParams, opts: ExportAuditLogOptions): void {
   if (opts.actor_key_id) params.set("actor_key_id", opts.actor_key_id);
   if (opts.action) params.set("action", opts.action);
   if (opts.from) params.set("from", opts.from);
   if (opts.to) params.set("to", opts.to);
+  if (opts.org_id) params.set("org_id", opts.org_id);
 }
 
 class LogsNamespace {
@@ -1562,6 +1612,22 @@ class KeysNamespace {
       signal,
     );
   }
+  /**
+   * Send one of the key's webhook deliveries again
+   * (`POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver`): a fresh
+   * series of attempts under the same delivery id (`delivery_id` in
+   * {@link listWebhookDeliveries}), answered 202 with the delivery's state.
+   * A delivery still being sent is a 409 `delivery_pending`; one redelivered
+   * less than a minute ago a 429 `redeliver_too_soon` (`retryAfterMs` set).
+   */
+  redeliverWebhookDelivery(id: string, deliveryId: string, signal?: AbortSignal): Promise<WebhookDeliveryState> {
+    return this.client.request(
+      "POST",
+      `/v1/keys/${encodeURIComponent(id)}/webhook-deliveries/${encodeURIComponent(deliveryId)}/redeliver`,
+      undefined,
+      signal,
+    );
+  }
 }
 
 class CacheNamespace {
@@ -1670,6 +1736,19 @@ class UsersNamespace {
   }
   transferOwner(req: TransferOwnerRequest, signal?: AbortSignal): Promise<void> {
     return this.client.request("POST", "/v1/users/transfer-owner", req, signal);
+  }
+  /**
+   * Issue a password reset link for an account (`POST /v1/users/{id}/password-reset`):
+   * the master key, or a signed-in person who outranks the account in every
+   * org it belongs to, never for their own account. For a deactivated account,
+   * only someone who may reactivate it may issue a link, since confirming the
+   * link reactivates it. litegen sends no email: the
+   * answer's `token` (and `reset_url`, null when the server has no
+   * `server.public_base_url`) is shown only here, for the caller to hand to
+   * the account's owner. It sets the password once, until `expires_at`.
+   */
+  passwordResetLink(id: string, signal?: AbortSignal): Promise<PasswordResetLink> {
+    return this.client.request("POST", `/v1/users/${encodeURIComponent(id)}/password-reset`, undefined, signal);
   }
 }
 
@@ -1891,7 +1970,12 @@ class OrgMembersNamespace {
       signal,
     );
   }
-  invite(orgId: string, req: AddMemberRequest, signal?: AbortSignal): Promise<unknown> {
+  /**
+   * Invite someone to the org (`POST /v1/orgs/{id}/members`). litegen sends no
+   * email: the answer's `token` and `invite_url` (null when the server has no
+   * `server.public_base_url`) are shown only here, for the inviter to hand over.
+   */
+  invite(orgId: string, req: AddMemberRequest, signal?: AbortSignal): Promise<InviteResponse> {
     return this.client.request(
       "POST",
       `/v1/orgs/${encodeURIComponent(orgId)}/members`,
@@ -1916,6 +2000,24 @@ class OrgMembersNamespace {
     return this.client.request(
       "DELETE",
       `/v1/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+      undefined,
+      signal,
+    );
+  }
+}
+
+class OrgInvitationsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  /** The org's invitations not yet accepted or expired, newest first, without their tokens (`member:invite`). */
+  list(orgId: string, signal?: AbortSignal): Promise<PendingInvitation[]> {
+    return this.client.request("GET", `/v1/orgs/${encodeURIComponent(orgId)}/invitations`, undefined, signal);
+  }
+  /** Revoke an invitation, so its link opens nothing (`invitation:revoke`). */
+  revoke(orgId: string, invitationId: string, signal?: AbortSignal): Promise<void> {
+    return this.client.request(
+      "DELETE",
+      `/v1/orgs/${encodeURIComponent(orgId)}/invitations/${encodeURIComponent(invitationId)}`,
       undefined,
       signal,
     );
@@ -2014,6 +2116,7 @@ class OrgMemberLimitsNamespace {
 
 class OrgsNamespace {
   readonly members: OrgMembersNamespace;
+  readonly invitations: OrgInvitationsNamespace;
   readonly apps: OrgAppsNamespace;
   readonly allowedModels: OrgAllowedModelsNamespace;
   readonly providerCredentials: OrgProviderCredentialsNamespace;
@@ -2022,6 +2125,7 @@ class OrgsNamespace {
 
   constructor(private readonly client: LiteGenClient) {
     this.members = new OrgMembersNamespace(client);
+    this.invitations = new OrgInvitationsNamespace(client);
     this.apps = new OrgAppsNamespace(client);
     this.allowedModels = new OrgAllowedModelsNamespace(client);
     this.providerCredentials = new OrgProviderCredentialsNamespace(client);
@@ -2389,6 +2493,16 @@ class AdminProvidersNamespace {
   /** Set keys, api_base, model mapping, headers, options or the enabled flag at runtime. */
   configure(name: string, config: PutProviderConfigRequest, signal?: AbortSignal): Promise<ProviderConfigView> {
     return this.client.request("PUT", `/v1/admin/providers/${encodeURIComponent(name)}`, config, signal);
+  }
+  /**
+   * Change some of a provider's runtime config and keep the rest
+   * (`PATCH /v1/admin/providers/{name}`): a field sent is set, `null` clears
+   * it (back to the env/YAML config), and a field left out keeps its stored
+   * value. A key left out, blank or `null` keeps its stored value, as with
+   * `configure`; a map or `options` sent replaces the stored one whole.
+   */
+  patch(name: string, changes: PatchProviderConfigRequest, signal?: AbortSignal): Promise<ProviderConfigView> {
+    return this.client.request("PATCH", `/v1/admin/providers/${encodeURIComponent(name)}`, changes, signal);
   }
   /** Drop the runtime config; the provider falls back to its env/YAML config. */
   reset(name: string, signal?: AbortSignal): Promise<ProviderConfigView> {

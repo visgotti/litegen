@@ -255,6 +255,41 @@ async fn config_contract(db: &dyn DatabaseStore) {
     assert!(store.delete_provider_config(&name).await.unwrap());
     assert!(store.get_provider_config(&name).await.unwrap().is_none());
 
+    // A reseal (provider-secrets, 2026-11-15) writes over the row it read and
+    // keeps its updated_at; once a save has landed since, it writes nothing.
+    let name = uid("prov");
+    let at = now - Duration::days(2);
+    let plain = StoredProviderConfig {
+        provider: name.clone(),
+        ciphertext: None,
+        nonce: None,
+        display_hint: None,
+        settings_json: "{\"extra_headers\":{\"x-a\":\"v\"}}".into(),
+        created_at: at,
+        updated_at: at,
+    };
+    store.upsert_provider_config(&plain).await.unwrap();
+    let read = store.get_provider_config(&name).await.unwrap().unwrap();
+    let sealed = StoredProviderConfig { ciphertext: Some("ct-1".into()), nonce: Some("n-1".into()), settings_json: "{\"extra_headers\":{\"x-a\":\"[redacted]\"}}".into(), ..read.clone() };
+    assert!(store.reseal_provider_config(&read, &sealed).await.unwrap(), "the row is as it was read");
+    let got = store.get_provider_config(&name).await.unwrap().unwrap();
+    assert_eq!(
+        (got.ciphertext.as_deref(), got.nonce.as_deref(), got.settings_json.as_str(), got.updated_at),
+        (Some("ct-1"), Some("n-1"), sealed.settings_json.as_str(), read.updated_at)
+    );
+    for saved in [
+        StoredProviderConfig { ciphertext: Some("ct-saved".into()), nonce: Some("n-saved".into()), updated_at: Utc::now(), ..got.clone() },
+        StoredProviderConfig { settings_json: "{\"enabled\":false}".into(), updated_at: Utc::now(), ..got.clone() },
+    ] {
+        store.upsert_provider_config(&got).await.unwrap();
+        store.upsert_provider_config(&saved).await.unwrap();
+        let resealed = StoredProviderConfig { ciphertext: Some("ct-2".into()), nonce: Some("n-2".into()), ..got.clone() };
+        assert!(!store.reseal_provider_config(&got, &resealed).await.unwrap(), "a save landed since the read");
+        let now_stored = store.get_provider_config(&name).await.unwrap().unwrap();
+        assert_eq!((now_stored.ciphertext, now_stored.settings_json), (saved.ciphertext, saved.settings_json), "the save stands");
+    }
+    assert!(store.delete_provider_config(&name).await.unwrap());
+
     let key = uid("setting");
     assert!(store.get_setting(&key).await.unwrap().is_none());
     store.set_setting(&key, "1").await.unwrap();

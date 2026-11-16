@@ -16,7 +16,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::api::handlers::auth_password::create_org_for_user;
-use crate::api::middleware::{create_session_cookies, cookie_value, AppState};
+use crate::api::middleware::{cookie_value, AppState};
 use crate::auth::tokens::{constant_time_eq, generate_session_token};
 use crate::config::Mode;
 use crate::types::{Role, User};
@@ -237,6 +237,9 @@ enum ResolveOutcome {
     /// A password (non-OAuth) account already owns this email. We refuse to
     /// silently link the OAuth identity onto it — see the security note below.
     EmailOwnedByPassword,
+    /// Hosted social sign-up: the provider's email isn't one an account may
+    /// be made with (`auth::email::account_email`), and why.
+    InvalidEmail(&'static str),
 }
 
 /// `email` MUST already be lowercased by the caller.
@@ -276,11 +279,19 @@ async fn resolve_or_create_user(
         return Ok(ResolveOutcome::NotInvited);
     }
 
+    // The provider verifies the address it asserts, but an account is made
+    // only with one signup and invitations would take (review round 4, S5's
+    // note).
+    let email = match crate::auth::email::account_email(email) {
+        Ok(email) => email,
+        Err(why) => return Ok(ResolveOutcome::InvalidEmail(why)),
+    };
+
     // Hosted auto-create: new owner user with the matching oauth id.
     let now = chrono::Utc::now();
     let user = User {
         id: format!("user-{}", uuid::Uuid::new_v4()),
-        email: email.to_string(),
+        email: email.clone(),
         password_hash: None,
         role: Role::Owner,
         oauth_github_id: if provider == "github" { Some(oauth_id.to_string()) } else { None },
@@ -289,18 +300,22 @@ async fn resolve_or_create_user(
         updated_at: now,
         last_login_at: None,
         is_active: true,
+        sign_in_epoch: 0,
     };
-    state.db.create_user(&user).await?;
-    // Provision org + owner membership + first app (shared with password signup).
-    create_org_for_user(&state.db, &user.id, email, None).await?;
+    // The account with its org, owner membership and first app, made together
+    // (shared with password signup).
+    create_org_for_user(&state.db, crate::db::OrgOwner::New(&user), &email, None).await?;
     Ok(ResolveOutcome::User(user))
 }
 
 /// Create a session for `user_id`, set the session + csrf cookies, clear the
 /// OAuth state + next cookies, and redirect (302) to the resolved `next` target.
-async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &HeaderMap) -> Response {
+async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, begun: i64, headers: &HeaderMap) -> Response {
     let next = resolve_next_target(headers, &api_mounts(state));
-    match create_session_cookies(&state.db, user_id, None, None).await {
+    // `begun`: the account's sign-in epoch, from the row the sign-in resolved
+    // (review round 5, finding 2): a reset, deactivation or password change
+    // that commits after it refuses the session.
+    match crate::api::middleware::create_session_cookies_at(&state.db, user_id, None, None, begun).await {
         Ok((_st, _ct, sc, cc)) => {
             let mut resp = StatusCode::FOUND.into_response();
             resp.headers_mut().insert(
@@ -346,7 +361,7 @@ async fn apply_invitation_oauth(
     oauth_id: &str,
     email: &str,
     invite_token: &str,
-) -> Result<String, Response> {
+) -> Result<(String, i64), Response> {
     let inv = match state.db.get_invitation(invite_token).await {
         Ok(Some(i)) => i,
         Ok(None) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
@@ -359,10 +374,17 @@ async fn apply_invitation_oauth(
     if inv.email.to_lowercase() != email {
         return Err(invite_error_redirect(invite_token, "email_mismatch"));
     }
+    // Whoever sent it may still send it (review round 7, finding 6).
+    match crate::api::handlers::orgs::sender_may_still_invite(state.db.as_ref(), &inv).await {
+        Ok(true) => {}
+        Ok(false) => return Err(invite_error_redirect(invite_token, "invitation_revoked")),
+        Err(e) => return Err(internal_clear_state("db_error", &e)),
+    }
 
-    // Resolve the user without auto-creating a fresh org.
-    let user = match state.db.get_user_by_oauth(provider, oauth_id).await {
-        Ok(Some(u)) => u,
+    // Resolve the user without auto-creating a fresh org. A new account is
+    // made below, in the same transaction as the acceptance.
+    let (user, is_new) = match state.db.get_user_by_oauth(provider, oauth_id).await {
+        Ok(Some(u)) => (u, false),
         Ok(None) => match state.db.get_user_by_email(email).await {
             Ok(Some(u)) => {
                 // Same anti-pre-hijacking rule as resolve_or_create_user: only
@@ -372,7 +394,7 @@ async fn apply_invitation_oauth(
                 // invitee can accept by signing in with their password instead.
                 if u.oauth_github_id.is_some() || u.oauth_google_id.is_some() {
                     let _ = state.db.link_oauth(&u.id, provider, oauth_id).await;
-                    u
+                    (u, false)
                 } else {
                     return Err(invite_error_redirect(invite_token, "email_password_account"));
                 }
@@ -390,11 +412,9 @@ async fn apply_invitation_oauth(
                     updated_at: now,
                     last_login_at: None,
                     is_active: true,
+                    sign_in_epoch: 0,
                 };
-                if let Err(e) = state.db.create_user(&u).await {
-                    return Err(internal_clear_state("db_error", &e));
-                }
-                u
+                (u, true)
             }
             Err(e) => return Err(internal_clear_state("db_error", &e)),
         },
@@ -405,25 +425,15 @@ async fn apply_invitation_oauth(
         return Err(invite_error_redirect(invite_token, "account_inactive"));
     }
 
-    // Atomically consume the invite BEFORE mutating org membership. If we added
-    // the member first and then lost the single-use race (Ok(false)) or hit a DB
-    // error, the user would already be in the org yet receive an
-    // "invitation_invalid" redirect — joined-but-told-it-failed. Consuming first
-    // means only the winner proceeds to add membership.
-    match state.db.mark_invitation_used(invite_token).await {
-        Ok(true) => {}
-        Ok(false) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
-        Err(e) => return Err(internal_clear_state("db_error", &e)),
+    // One transaction: the invite consumed while neither accepted nor
+    // revoked, with the new account and the membership (idempotent). One
+    // used or revoked meanwhile leaves nothing written; a failure part way
+    // leaves the invite unused.
+    match state.db.accept_invitation(invite_token, is_new.then_some(&user), &user.id, &inv.org_id, inv.role).await {
+        Ok(true) => Ok((user.id, user.sign_in_epoch)),
+        Ok(false) => Err(invite_error_redirect(invite_token, "invitation_invalid")),
+        Err(e) => Err(internal_clear_state("db_error", &e)),
     }
-
-    // Add membership (idempotent).
-    if state.db.get_membership(&inv.org_id, &user.id).await.ok().flatten().is_none() {
-        if let Err(e) = state.db.add_org_member(&inv.org_id, &user.id, inv.role).await {
-            return Err(internal_clear_state("db_error", &e));
-        }
-    }
-
-    Ok(user.id)
 }
 
 // ─── Query params ──────────────────────────────────────────────────────────────
@@ -677,7 +687,7 @@ pub async fn handle_github_callback(
     // not the normal resolve/auto-create flow.
     if let Some(invite_token) = cookie_value(headers, "litegen_oauth_invite") {
         return match apply_invitation_oauth(state, "github", &gh_id, &email, &invite_token).await {
-            Ok(user_id) => finish_oauth_login(state, &user_id, headers).await,
+            Ok((user_id, begun)) => finish_oauth_login(state, &user_id, begun, headers).await,
             Err(resp) => resp,
         };
     }
@@ -701,6 +711,9 @@ pub async fn handle_github_callback(
                 "An account with this email already exists. Sign in with your password, then link this provider from account settings.",
             );
         }
+        Ok(ResolveOutcome::InvalidEmail(why)) => {
+            return error_resp_clear_state(StatusCode::BAD_REQUEST, "invalid_email", why);
+        }
         Err(e) => return internal_clear_state("session_error", &e),
     };
 
@@ -711,7 +724,7 @@ pub async fn handle_github_callback(
     let _ = state.db.touch_last_login(&user.id).await;
 
     // 6. Create session
-    finish_oauth_login(state, &user.id, headers).await
+    finish_oauth_login(state, &user.id, user.sign_in_epoch, headers).await
 }
 
 // ─── Google ───────────────────────────────────────────────────────────────────
@@ -933,7 +946,7 @@ pub async fn handle_google_callback(
     // not the normal resolve/auto-create flow.
     if let Some(invite_token) = cookie_value(headers, "litegen_oauth_invite") {
         return match apply_invitation_oauth(state, "google", &google_id, &email, &invite_token).await {
-            Ok(user_id) => finish_oauth_login(state, &user_id, headers).await,
+            Ok((user_id, begun)) => finish_oauth_login(state, &user_id, begun, headers).await,
             Err(resp) => resp,
         };
     }
@@ -957,6 +970,9 @@ pub async fn handle_google_callback(
                 "An account with this email already exists. Sign in with your password, then link this provider from account settings.",
             );
         }
+        Ok(ResolveOutcome::InvalidEmail(why)) => {
+            return error_resp_clear_state(StatusCode::BAD_REQUEST, "invalid_email", why);
+        }
         Err(e) => return internal_clear_state("session_error", &e),
     };
 
@@ -967,7 +983,7 @@ pub async fn handle_google_callback(
     let _ = state.db.touch_last_login(&user.id).await;
 
     // 5. Create session
-    finish_oauth_login(state, &user.id, headers).await
+    finish_oauth_login(state, &user.id, user.sign_in_epoch, headers).await
 }
 
 // ─── Unified callback ───────────────────────────────────────────────────────────
@@ -1099,6 +1115,19 @@ mod tests {
         state
     }
 
+    /// Review round 4 (S5's note): hosted social sign-up made an account with
+    /// the provider's email unchecked. It takes the address rule signup and
+    /// invitations take, and an email that fails it makes no account.
+    #[tokio::test]
+    async fn hosted_social_sign_up_refuses_an_email_that_is_not_an_address() {
+        let state = build_hosted_state_with_oauth(OAuthConfig::default()).await;
+        let outcome = resolve_or_create_user(&state, "github", "gh-1", "owner\u{fe0f}@example.com").await.unwrap();
+        assert!(matches!(outcome, ResolveOutcome::InvalidEmail(_)), "a variation selector in the address");
+        assert_eq!(state.db.count_users().await.unwrap(), 0, "no account made");
+        let outcome = resolve_or_create_user(&state, "github", "gh-2", "owner@example.com").await.unwrap();
+        assert!(matches!(outcome, ResolveOutcome::User(_)), "a plain address signs up");
+    }
+
     fn build_github_router(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/v1/auth/oauth/github/start", get(github_start))
@@ -1118,6 +1147,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             last_login_at: None,
             is_active: true,
+            sign_in_epoch: 0,
         };
         state.db.create_user(&user).await.unwrap();
     }
@@ -1310,7 +1340,7 @@ mod tests {
         create_user(state, "inviter@x.com", None, Some("inviter-oauth")).await;
         let inviter = state.db.get_user_by_email("inviter@x.com").await.unwrap().unwrap();
         crate::api::handlers::auth_password::create_org_for_user(
-            &state.db, &inviter.id, "inviter@x.com", Some("Acme".to_string()),
+            &state.db, crate::db::OrgOwner::Existing(&inviter.id), "inviter@x.com", Some("Acme".to_string()),
         ).await.unwrap();
         let org_id = state.db.list_orgs_for_user(&inviter.id).await.unwrap()[0].0.id.clone();
         let inv = Invitation {
@@ -1476,6 +1506,35 @@ mod tests {
         let loc = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(loc.contains("invite_error=invitation_invalid"), "got {}", loc);
         assert!(state.db.get_invitation("invtok").await.unwrap().unwrap().used_at.is_none());
+    }
+
+    /// Review round 7, finding 6, on the OAuth arm: an invitation whose
+    /// sender may no longer send it (here, demoted to a role that can't
+    /// invite) isn't accepted through a sign-in either.
+    #[tokio::test]
+    async fn oauth_accept_invite_from_a_sender_who_may_no_longer_invite_is_rejected() {
+        let server = MockServer::start().await;
+        let oauth = google_mock(&server, "alice-sub", "alice@x.com", true).await;
+        let state = build_state_with_oauth(oauth).await;
+        let org_id = seed_org_and_invite(&state, "alice@x.com", "invtok", Role::Member,
+            chrono::Utc::now() + chrono::Duration::days(7)).await;
+        let inviter = state.db.get_user_by_email("inviter@x.com").await.unwrap().unwrap();
+        state.db.update_member_role(&org_id, &inviter.id, Role::Member).await.unwrap();
+        let app = build_google_router(state.clone());
+
+        let req = Request::builder().method("GET")
+            .uri("/v1/auth/oauth/google/callback?code=c&state=s")
+            .header("cookie", "litegen_oauth_state=s; litegen_oauth_invite=invtok")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(loc.contains("/invite/invtok") && loc.contains("invite_error=invitation_revoked"), "got {}", loc);
+        let cookies: Vec<_> = resp.headers().get_all("set-cookie").iter()
+            .map(|v| v.to_str().unwrap_or("").to_string()).collect();
+        assert!(!cookies.iter().any(|c| c.contains("litegen_session=")), "no session");
+        assert!(state.db.get_user_by_email("alice@x.com").await.unwrap().is_none(), "alice not created");
+        assert!(state.db.get_invitation("invtok").await.unwrap().unwrap().used_at.is_none(), "not consumed");
     }
 
     #[tokio::test]

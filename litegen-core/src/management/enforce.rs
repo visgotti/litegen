@@ -269,10 +269,19 @@ pub async fn load_current(
 pub struct LimitGuard {
     store_backed: bool,
     reserved: f64,
-    charged: Vec<EntityLimits>,
+    charged: Vec<Charged>,
     attribution: Attribution,
     _slots: Vec<SlotGuard>,
     release_to: ReleaseTo,
+}
+
+/// A principal's limits row a request is charged against, and the record of
+/// what was reserved on it (migration 030), renewed while the guard holds
+/// it. No record where nothing was reserved, or the store keeps none.
+#[derive(Debug)]
+struct Charged {
+    limits: EntityLimits,
+    record: Option<super::reservations::Live>,
 }
 
 /// The store an unsettled guard gives its reservations back to when dropped.
@@ -294,19 +303,16 @@ impl Drop for LimitGuard {
             return;
         }
         let Some(db) = self.release_to.0.take() else { return };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!(reserved = self.reserved, "a dropped limits reservation could not be given back outside a runtime");
-            return;
-        };
         let (reserved, charged) = (std::mem::take(&mut self.reserved), std::mem::take(&mut self.charged));
-        runtime.spawn(async move {
-            let Some(store) = db.management() else { return };
-            for l in charged {
-                if let Err(e) = store.charge_limits_spend(l.entity_type, &l.entity_id, -reserved).await {
-                    tracing::warn!(error = %e, entity = %l.entity_id, "releasing a dropped limits reservation failed");
-                }
+        // Tracked, so a stop lets it finish (src/shutdown.rs).
+        let release = async move {
+            for c in charged {
+                super::reservations::give_back_on_limits(&*db, c.record, c.limits.entity_type, &c.limits.entity_id, reserved).await;
             }
-        });
+        };
+        if crate::shutdown::try_spawn_tracked(release).is_none() {
+            tracing::warn!(reserved, "a dropped limits reservation could not be given back outside a runtime; a sweep gives it back once its lease lapses");
+        }
     }
 }
 
@@ -344,7 +350,7 @@ impl LimitGuard {
     pub fn charged_to(&self) -> Vec<ChargedLimit> {
         self.charged
             .iter()
-            .map(|l| ChargedLimit { entity_type: l.entity_type, entity_id: l.entity_id.clone() })
+            .map(|c| ChargedLimit { entity_type: c.limits.entity_type, entity_id: c.limits.entity_id.clone() })
             .collect()
     }
 
@@ -356,20 +362,9 @@ impl LimitGuard {
             return;
         }
         let Some(store) = state.db.management() else { return };
-        let delta = actual - self.reserved;
         let charged = std::mem::take(&mut self.charged);
-        for limits in charged {
-            let spend = if delta.abs() > f64::EPSILON {
-                match store.charge_limits_spend(limits.entity_type, &limits.entity_id, delta).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(error = %e, entity = %limits.entity_id, "limits settlement failed");
-                        None
-                    }
-                }
-            } else {
-                Some(limits.spend_usd + self.reserved)
-            };
+        for Charged { limits, record } in charged {
+            let spend = super::reservations::settle_on_limits(&state.db, store, record, &limits, self.reserved, actual).await;
             if let (Some(spend), Some(soft)) = (spend, limits.soft_budget_usd) {
                 if actual > 0.0 && spend >= soft && limits.soft_budget_alerted_at.is_none() {
                     raise_soft_budget_alert(state, store, &limits, spend, soft).await;
@@ -417,7 +412,7 @@ async fn raise_soft_budget_alert(
         before_json: None,
         after_json: Some(payload.to_string()),
         created_at: now,
-        org_id: limits.org_id.clone(),
+        org_id: crate::api::audit::audit_org(state.mode, limits.org_id.clone()),
     };
     if let Err(e) = state.db.insert_audit_log(&entry).await {
         tracing::warn!(error = %e, "failed to audit soft budget alert");
@@ -545,10 +540,11 @@ pub async fn begin(
     let amount = estimate.max(0.0);
     guard.reserved = amount;
     for l in rows {
+        let mut record = None;
         if amount > 0.0 {
-            match store.reserve_limits_spend(l.entity_type, &l.entity_id, amount).await {
-                Ok(true) => {}
-                Ok(false) => {
+            match super::reservations::reserve_on_limits(&*state.db, store, l.entity_type, &l.entity_id, amount).await {
+                Ok(super::reservations::Reserved::Held(held)) => record = held,
+                Ok(super::reservations::Reserved::Refused) => {
                     guard.settle(state, 0.0).await;
                     let mut msg = format!("{} budget exceeded", l.entity_type.as_str());
                     if let Some(at) = l.budget_reset_at {
@@ -562,7 +558,7 @@ pub async fn begin(
                 }
             }
         }
-        guard.charged.push(l);
+        guard.charged.push(Charged { limits: l, record });
     }
     Ok(guard)
 }
@@ -910,7 +906,8 @@ mod tests {
         drop(begun); // cut off inside the loop
 
         // The release is a task the drop spawns. (The app's reservation
-        // landed, but its answer never reached `begin()`: that one stays.)
+        // landed, but its answer never reached `begin()`: its record goes
+        // unrenewed, and the sweep gives it back once its lease lapses.)
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut left = spend_of(&db, EntityType::Key, &key).await;
         while left != 0.0 && Instant::now() < deadline {
@@ -932,6 +929,34 @@ mod tests {
         drop(guard);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!((key_spend(&db, &ctx).await - 0.3).abs() < 1e-9, "the settled charge stands");
+    }
+
+    /// Crash safety (migration 030): a request whose process died leaves its
+    /// guard neither dropped nor settled. Its reservations are given back by
+    /// the sweep once their lease lapsed, each once, though two replicas
+    /// sweep at once. They used to stay held until the budget window rolled
+    /// (for good, for a lifetime budget). The key's limits row starts at 1.0
+    /// spent, so a reservation given back twice would show.
+    #[tokio::test]
+    async fn a_guard_whose_process_died_is_given_back_once_by_the_sweep() {
+        use crate::management::reservations::sweep_lapsed;
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let ctx = capped_key(&db).await;
+        let key = ctx.key_id.unwrap().to_string();
+        {
+            use crate::db::DatabaseStore;
+            db.management().unwrap().charge_limits_spend(EntityType::Key, &key, 1.0).await.unwrap();
+        }
+        let state = replica(db.clone(), Arc::new(RateLimiter::new())).await;
+        let guard = begin(&state, Some(&ctx), &RequestAttribution::default(), "mock/image-gen", 0.5).await.unwrap();
+        assert!((key_spend(&db, &ctx).await - 1.5).abs() < 1e-9, "the estimate is reserved");
+        // The process died: no drop runs, nothing settles. Two minutes on,
+        // the lease has lapsed.
+        std::mem::forget(guard);
+        crate::management::reservations_tests::lapse_every_reservation(&db).await;
+        let _ = tokio::join!(sweep_lapsed(&*db), sweep_lapsed(&*db));
+        let left = key_spend(&db, &ctx).await;
+        assert!((left - 1.0).abs() < 1e-9, "the dead request's reservation: {left} spent, 1.0 before it (1.5: never given back, 0.5: given back twice)");
     }
 
     #[tokio::test]

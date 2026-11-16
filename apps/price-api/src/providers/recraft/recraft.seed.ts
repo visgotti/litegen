@@ -41,6 +41,12 @@ export const seed: SeedModel[] = [
     prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.007 }],
   },
   {
+    id: "recraft/recraftv4_1_flash_v2",
+    displayName: "Recraft V4.1 Flash V2",
+    mediaType: MediaType.IMAGE,
+    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.007 }],
+  },
+  {
     id: "recraft/recraftv4_1_pro",
     displayName: "Recraft V4.1 Pro",
     mediaType: MediaType.IMAGE,

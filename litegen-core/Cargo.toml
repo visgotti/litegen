@@ -32,6 +32,9 @@ hyper-util = { version = "0.1", features = ["server", "http1", "http2", "service
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Which field of a request body didn't read (`malformed_request` names it).
+# Already in the lock (axum's Json extractor uses it).
+serde_path_to_error = "0.1"
 # YAML parsing for capability schemas
 serde_yaml = "0.9"
 # A catalog string's `pattern` (ParamSpecString), checked at load and enforced
@@ -92,6 +95,9 @@ metrics-exporter-prometheus = "0.16"
 
 # Password hashing for API keys
 sha2 = "0.10"
+# The account email rule (auth::email): NFKC, and Unicode format characters.
+unicode-normalization = "0.1.25"
+unicode-general-category = "1.1.0"
 # AES-256-GCM for BYO provider credential encryption
 aes-gcm = "0.10"
 # HMAC for webhook signing

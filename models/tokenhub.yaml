@@ -514,7 +514,7 @@ models:
     # is billed), nor moderation (the vendor's moderation stays on).
     extra_allowlist: [revise, footnote]
     extra_params:
-      # From TokenHub's docs (drift snapshot hunyuan/tokenhub-hy-video.txt).
+      # From TokenHub's docs (drift snapshot tokenhub/hy-video.txt).
       revise: { kind: bool }
       footnote: { kind: string, max_length: 16 }
     tags: [text-to-video, image-to-video]
@@ -577,7 +577,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: "三种生成形态（文生、首尾帧生、参考生）", one at a time (tokenhub.rs refuses the mix
+        # too: "WAND-Vega takes first/last frames or reference images, not both").
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     # options.return_last_frame is not offered: litegen delivers one video.
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -927,7 +929,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: they are "互斥" (tokenhub.rs refuses the mix too: "MiniMax H3 takes
+        # first/last frames or reference images, not both").
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     extra_allowlist: [aigc_watermark]
     extra_params:
       # From a switch (video/tokenhub.rs tests send it as a boolean).
@@ -1039,7 +1043,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 7 }
+        # Frames or references, not both: image-to-video, start-end-to-video and reference-to-video are separate
+        # endpoints (tokenhub.rs refuses the mix too: "first/last frames or reference images, not both").
+        reference: { required: false, min_count: 0, max_count: 7, not_with: [first_frame, last_frame] }
     extra_allowlist: [camera_movement, generate_multi_clip_switch]
     extra_params:
       # From PixVerse's OpenAPI (drift snapshot pixverse/image-to-video.txt); camera_movement stays untyped.
@@ -1095,7 +1101,8 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 7 }
+        # Frames or references, not both, as on pixverse-video-v6.0 (tokenhub.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 7, not_with: [first_frame, last_frame] }
     extra_allowlist: [camera_movement]
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -1148,7 +1155,8 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 7 }
+        # Frames or references, not both, as on pixverse-video-v6.0 (tokenhub.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 7, not_with: [first_frame, last_frame] }
     extra_allowlist: [camera_movement]
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -1208,7 +1216,9 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        reference: { required: false, min_count: 0, max_count: 15 }
+        # A first frame or references, not both: each goes to its own Vidu endpoint (tokenhub.rs refuses the mix too:
+        # "first/last frames or reference images, not both").
+        reference: { required: false, min_count: 0, max_count: 15, not_with: [first_frame] }
     extra_allowlist: []
     tags: [image-to-video, reference-to-video]
 
@@ -1294,7 +1304,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 3 }
+        # Frames or references, not both: each goes to its own Vidu endpoint (tokenhub.rs refuses the mix too:
+        # "first/last frames or reference images, not both").
+        reference: { required: false, min_count: 0, max_count: 3, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -1436,7 +1448,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 3 }
+        # Frames or references, not both: each goes to its own Vidu endpoint (tokenhub.rs refuses the mix too:
+        # "first/last frames or reference images, not both").
+        reference: { required: false, min_count: 0, max_count: 3, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [image-to-video, reference-to-video]
 

@@ -91,6 +91,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             last_login_at: None,
             is_active: true,
+            sign_in_epoch: 0,
         };
         db.create_user(&user).await.expect("create user");
         // Every account joins the default org at signup or invitation; the role
@@ -225,6 +226,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             last_login_at: None,
             is_active: true,
+            sign_in_epoch: 0,
         };
         db.create_user(&user).await.unwrap();
 
@@ -252,6 +254,54 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "Expired session should return 401");
+    }
+
+    // ─── Sessions are kept by their token's hash ─────────────────────────────
+
+    fn with_session_cookie(cookie: &str) -> Request {
+        Request::builder().uri("/test").header("cookie", format!("litegen_session={cookie}")).body(Body::empty()).unwrap()
+    }
+
+    /// Migration 044: the database keeps the hash of each session's token,
+    /// never the token. The cookie signs in; the stored id, sent as the
+    /// cookie, gets 401, so a copy of the database holds no working session.
+    #[tokio::test]
+    async fn a_stored_session_id_sent_as_the_cookie_gets_401() {
+        let db = build_test_db().await;
+        let (user, sess) = seed_user_and_session(&db, Role::Member).await;
+        let stored: String = sqlx::query_scalar("SELECT id FROM sessions WHERE user_id = ?").bind(&user.id).fetch_one(db.pool()).await.unwrap();
+        let app = build_auth_router(build_state_with_db(db).await);
+        assert_eq!(app.clone().oneshot(with_session_cookie(&sess.id)).await.unwrap().status(), StatusCode::OK, "the cookie signs in");
+        assert_eq!(app.oneshot(with_session_cookie(&stored)).await.unwrap().status(), StatusCode::UNAUTHORIZED, "the stored id doesn't");
+        assert_eq!(stored, crate::auth::tokens::token_hash(&sess.id), "the database keeps the token's hash");
+    }
+
+    /// The middleware acts on the session it found under its stored id: an
+    /// expired one is deleted, and one within a day of its end is extended.
+    #[tokio::test]
+    async fn an_expired_session_is_deleted_and_one_near_its_end_is_extended() {
+        let db = build_test_db().await;
+        let (user, _) = seed_user_and_session(&db, Role::Member).await;
+        let now = chrono::Utc::now();
+        let session = |token: &str, expires_at: chrono::DateTime<chrono::Utc>| Session {
+            id: token.to_string(),
+            user_id: user.id.clone(),
+            created_at: now - chrono::Duration::days(7),
+            expires_at,
+            ip: None,
+            user_agent: None,
+            csrf_token: generate_csrf_token(),
+        };
+        let (expired, ending) = (generate_session_token(), generate_session_token());
+        db.create_session(&session(&expired, now - chrono::Duration::minutes(1))).await.unwrap();
+        db.create_session(&session(&ending, now + chrono::Duration::hours(1))).await.unwrap();
+        let app = build_auth_router(build_state_with_db(db.clone()).await);
+
+        assert_eq!(app.clone().oneshot(with_session_cookie(&expired)).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert!(db.get_session_with_user(&expired).await.unwrap().is_none(), "the expired session is deleted");
+        assert_eq!(app.oneshot(with_session_cookie(&ending)).await.unwrap().status(), StatusCode::OK);
+        let (extended, _) = db.get_session_with_user(&ending).await.unwrap().expect("the session");
+        assert!(extended.expires_at > now + chrono::Duration::days(6), "extended to {}", extended.expires_at);
     }
 
     // ─── CSRF POST without header returns 403 ────────────────────────────────
@@ -773,6 +823,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             last_login_at: None,
             is_active: false,
+            sign_in_epoch: 0,
         };
         db.create_user(&user).await.expect("create user");
         let sess = Session {
@@ -873,6 +924,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             last_login_at: None,
             is_active: true,
+            sign_in_epoch: 0,
         };
         db.create_user(&user).await.expect("create user");
         let sess = Session {

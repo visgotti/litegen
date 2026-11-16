@@ -3,6 +3,4 @@
 | `gemini-3-pro-image` | May 28, 2026 | No shutdown date announced |  |
 | `gemini-3.1-flash-image` | May 28, 2026 | No shutdown date announced | `gemini-nano-banana-2.1` |
 | `gemini-3.1-flash-lite-image` | June 30, 2026 | No shutdown date announced |  |
-| `veo-3.1-fast-generate-preview` | October 15, 2025 | October 22, 2026 | `gemini-omni-1.1-flash` |
-| `veo-3.1-generate-preview` | October 15, 2025 | October 22, 2026 | `gemini-omni-1.1-flash` |
-| `veo-3.1-lite-generate-preview` | March 31, 2026 | October 22, 2026 | `gemini-omni-1.1-flash` |
+| `gemini-nano-banana-2.1` | October 6, 2026 | No shutdown date announced |  |

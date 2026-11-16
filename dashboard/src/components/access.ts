@@ -1,12 +1,19 @@
 // What litegen does with stored outputs (docs/storage-access.md): whether it
 // keeps them, for how long, and who may open them. The form behind the app's
 // access panel and the gateway's settings, kept free of React so it is
-// unit-tested.
-import type { AccessSettings, PutAppAccessRequest } from '@litegen/sdk';
+// unit-tested. Its ranges are the server's: the gateway's settings serve them
+// (`GatewaySettingsView.limits`); where none are served, a whole number goes
+// as typed and the server's 400 says its range.
+import type { AccessSettings, PutAppAccessRequest, SettingRange } from '@litegen/sdk';
 
-export const MIN_TTL_SECONDS = 60;
-export const MAX_TTL_SECONDS = 604_800;
-export const MAX_RETENTION_DAYS = 36_500;
+/** The served ranges the form holds to, when the page has them. */
+export interface AccessLimits {
+  ttl?: SettingRange;
+  retentionDays?: SettingRange;
+}
+
+const outside = (n: number, range: SettingRange | undefined) => !Number.isInteger(n) || (range !== undefined && (n < range.min || n > range.max));
+const within = (range: SettingRange | undefined) => (range ? ` from ${range.min} to ${range.max}` : '');
 
 /** The form as typed: `''` in any field means "use the next layer". */
 export interface AccessForm {
@@ -20,24 +27,22 @@ export interface AccessForm {
 }
 
 /** The request body for the form, or why it can't be sent. */
-export function accessBody(form: AccessForm): { body?: PutAppAccessRequest; error?: string } {
+export function accessBody(form: AccessForm, limits: AccessLimits = {}): { body?: PutAppAccessRequest; error?: string } {
   const body: PutAppAccessRequest = {};
   if (form.mode) body.mode = form.mode as PutAppAccessRequest['mode'];
   if (form.ownerScope) body.owner_scope = form.ownerScope as PutAppAccessRequest['owner_scope'];
   const ttl = form.ttl.trim();
   if (ttl !== '') {
     const n = Number(ttl);
-    if (!Number.isInteger(n) || n < MIN_TTL_SECONDS || n > MAX_TTL_SECONDS) {
-      return { error: `Link life must be a whole number of seconds between ${MIN_TTL_SECONDS} and ${MAX_TTL_SECONDS} (a week).` };
-    }
+    if (outside(n, limits.ttl)) return { error: `Link life must be a whole number of seconds${within(limits.ttl)}.` };
     body.signed_url_ttl_seconds = n;
   }
   if (form.keepOutputs === 'true' || form.keepOutputs === 'false') body.keep_outputs = form.keepOutputs === 'true';
   const days = form.retentionDays.trim();
   if (days !== '') {
     const n = Number(days);
-    if (!Number.isInteger(n) || n < 0 || n > MAX_RETENTION_DAYS) {
-      return { error: `Retention must be a whole number of days between 0 and ${MAX_RETENTION_DAYS}; 0 keeps files until they are deleted.` };
+    if (outside(n, limits.retentionDays)) {
+      return { error: `Retention must be a whole number of days${within(limits.retentionDays)}; 0 keeps files until they are deleted.` };
     }
     body.retention_days = n;
   }

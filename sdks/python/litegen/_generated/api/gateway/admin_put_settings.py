@@ -65,7 +65,8 @@ def sync_detailed(
     body: GatewaySettings,
 ) -> Response[Union[ErrorResponse, GatewaySettingsView]]:
     """PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
-    webhook, default end-user budget). An omitted field is cleared.
+    webhook, default end-user budget). An omitted field is cleared, except
+    `encrypt_provider_credentials`, which keeps its stored value.
 
     Args:
         body (GatewaySettings): Gateway-wide settings editable at runtime.
@@ -95,7 +96,8 @@ def sync(
     body: GatewaySettings,
 ) -> Optional[Union[ErrorResponse, GatewaySettingsView]]:
     """PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
-    webhook, default end-user budget). An omitted field is cleared.
+    webhook, default end-user budget). An omitted field is cleared, except
+    `encrypt_provider_credentials`, which keeps its stored value.
 
     Args:
         body (GatewaySettings): Gateway-wide settings editable at runtime.
@@ -120,7 +122,8 @@ async def asyncio_detailed(
     body: GatewaySettings,
 ) -> Response[Union[ErrorResponse, GatewaySettingsView]]:
     """PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
-    webhook, default end-user budget). An omitted field is cleared.
+    webhook, default end-user budget). An omitted field is cleared, except
+    `encrypt_provider_credentials`, which keeps its stored value.
 
     Args:
         body (GatewaySettings): Gateway-wide settings editable at runtime.
@@ -148,7 +151,8 @@ async def asyncio(
     body: GatewaySettings,
 ) -> Optional[Union[ErrorResponse, GatewaySettingsView]]:
     """PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
-    webhook, default end-user budget). An omitted field is cleared.
+    webhook, default end-user budget). An omitted field is cleared, except
+    `encrypt_provider_credentials`, which keeps its stored value.
 
     Args:
         body (GatewaySettings): Gateway-wide settings editable at runtime.

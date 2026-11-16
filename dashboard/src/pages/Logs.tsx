@@ -4,6 +4,7 @@ import { client } from '../sdk-client';
 import type { RequestLog, ModelInfo } from '@litegen/sdk';
 import type { PaginatedResponse } from '@litegen/sdk';
 import TracePanel from '../components/TracePanel';
+import { formatCost } from '../components/model-detail';
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -243,8 +244,11 @@ export default function Logs() {
                     <td><code>{log.model}</code></td>
                     <td>{log.provider}</td>
                     <td><span className={`badge ${log.media_type}`}>{log.media_type}</span></td>
-                    <td><span className={`badge ${log.status}`}>{log.status}</span></td>
-                    <td>${log.cost_usd.toFixed(4)}</td>
+                    <td>
+                      <span className={`badge ${log.status}`}>{log.status}</span>
+                      {log.cache_hit && <span className="badge" data-testid={`logs-cache-hit-${log.id}`} style={{ marginLeft: 6 }}>cache hit</span>}
+                    </td>
+                    <td>{formatCost(log.cost_usd)}</td>
                     <td>{log.latency_ms}ms</td>
                     <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{log.error || '—'}</td>
                   </tr>

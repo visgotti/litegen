@@ -363,6 +363,24 @@ impl VideoProvider for MiniMaxVideoProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What Hailuo cannot make, refused before anything is quoted, reserved
+    /// or sent; `generate` asks it first. Hailuo makes 6 or 10 s, and only
+    /// 6 s at 1080P: "| MiniMax-Hailuo-02 | `6` or `10` | `6` or `10` | `6` |"
+    /// (512P / 768P / 1080P).
+    /// @see <https://platform.minimax.io/docs/api-reference/video-generation-i2v.md>
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, _roles: &[&str]) -> Result<(), ProviderError> {
+        let native = Self::resolve_model(&model.id);
+        if Self::is_v2(&model.id) || !native.starts_with("MiniMax-Hailuo") || extras.duration_seconds <= 0.0 {
+            return Ok(());
+        }
+        let secs = extras.duration_seconds.round() as i64;
+        let at_1080 = extras.resolution.as_deref() == Some("1080P");
+        if !(secs == 6 || (secs == 10 && !at_1080)) {
+            return Err(ProviderError::InvalidRequest(format!("{} makes 6 or 10 s, and only 6 s at 1080P; asked for {secs} s", model.id)));
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -374,29 +392,21 @@ impl VideoProvider for MiniMaxVideoProvider {
             return self.generate_v2(model, base, extras, materialized).await;
         }
         let creds = self.creds()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let native = Self::resolve_model(&model.id);
         let url = format!("{}/video_generation", self.api_base());
 
         let mut body = json!({ "model": crate::providers::wire_model(self.config.as_ref(), &model.id, native), "prompt": base.prompt });
         // S2V-01's request has no duration or resolution: "required: - model
-        // - subject_reference".
+        // - subject_reference". Its catalog row was retired 2026-11-16 (MiniMax
+        // publishes no price for it), but MiniMax still serves it and ids pass
+        // through verbatim, so an operator's runtime row can still send it here.
         // @see <https://platform.minimax.io/docs/api-reference/video-generation-s2v.md>
         let takes_length = native != "S2V-01";
         if takes_length && extras.duration_seconds > 0.0 {
             let secs = extras.duration_seconds.round() as i64;
-            // Hailuo makes 6 or 10 s, and only 6 s at 1080P: "| MiniMax-Hailuo-02 |
-            // `6` or `10` | `6` or `10` | `6` |" (512P / 768P / 1080P). A length it
-            // cannot make is refused rather than sent.
-            // @see <https://platform.minimax.io/docs/api-reference/video-generation-i2v.md>
-            if native.starts_with("MiniMax-Hailuo") {
-                let at_1080 = extras.resolution.as_deref() == Some("1080P");
-                if !(secs == 6 || (secs == 10 && !at_1080)) {
-                    return Err(ProviderError::InvalidRequest(format!(
-                        "{} makes 6 or 10 s, and only 6 s at 1080P; asked for {secs} s",
-                        model.id
-                    )));
-                }
-            }
             body["duration"] = Value::Number(secs.into());
         }
         if takes_length {
@@ -604,6 +614,15 @@ mod tests {
         r.get(id).expect("model").clone()
     }
 
+    /// S2V-01 left the catalog on 2026-11-16 (MiniMax publishes no price for
+    /// it), but its request shape stays for an operator's runtime row; its last
+    /// catalog row is kept as a test fixture.
+    fn retired_schema(id: &str) -> crate::capabilities::ModelSchema {
+        let yaml = include_str!("../../../tests/fixtures/retired-models.yaml");
+        let r = crate::capabilities::CapabilityRegistry::from_yaml_strs(&[("retired-models.yaml", yaml)]).expect("load");
+        r.get(id).expect("model").clone()
+    }
+
     fn make_provider(api_base: &str) -> MiniMaxVideoProvider {
         let mut p = MiniMaxVideoProvider::new();
         let mut cfg = ProviderInstanceConfig { api_key: "mm-key".to_string(), api_base: Some(api_base.to_string()), ..Default::default() };
@@ -680,7 +699,7 @@ mod tests {
             .await;
 
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("minimax/S2V-01");
+        let schema = retired_schema("minimax/S2V-01");
         let base = make_base("the same character waves", "minimax/S2V-01");
         let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None, source: None, direction: None, time_range: None, replace: None };
         let materialized = MaterializedRequest {
@@ -1075,7 +1094,7 @@ mod tests {
             refs: vec![MaterializedRef { role: "subject".into(), form: MaterializedRefForm::Url("https://x/face.png".into()), time_s: None }],
             cleanup: Cleanup::empty(),
         };
-        make_provider(&server.uri()).generate(&ref_schema("minimax/S2V-01"), &make_base("x", "minimax/S2V-01"), &make_extras(), &refs).await.unwrap();
+        make_provider(&server.uri()).generate(&retired_schema("minimax/S2V-01"), &make_base("x", "minimax/S2V-01"), &make_extras(), &refs).await.unwrap();
         let body = submitted(&server).await;
         assert!(body.get("duration").is_none() && body.get("resolution").is_none(), "{body}");
     }

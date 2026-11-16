@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { client } from '../sdk-client';
 import { LiteGenAPIError } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
+import { passwordHint, type SignInConfig } from './auth-config';
 
 interface AccountUser {
   id: string;
@@ -32,6 +33,8 @@ export default function Account() {
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [pwError, setPwError] = useState('');
   const [pwLoading, setPwLoading] = useState(false);
+  // The password's minimum length, as GET /v1/auth/config serves it.
+  const [authConfig, setAuthConfig] = useState<SignInConfig | null>(null);
 
   // Revoking sessions
   const [revokingId, setRevokingId] = useState<string | null>(null);
@@ -64,14 +67,19 @@ export default function Account() {
     fetchSessions();
   }, [fetchUser, fetchSessions]);
 
+  useEffect(() => {
+    let cancelled = false;
+    client.auth.config()
+      .then(cfg => { if (!cancelled) setAuthConfig(cfg); })
+      .catch(() => { /* no hint: the server's 400 still says it */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setPwError('');
 
-    if (newPassword.length < 12) {
-      setPwError('New password must be at least 12 characters');
-      return;
-    }
+    // A typo guard, not a rule: what a password must be is the server's to say.
     if (newPassword !== confirmNewPassword) {
       setPwError('Passwords do not match');
       return;
@@ -170,7 +178,9 @@ export default function Account() {
             />
           </div>
           <div>
-            <label style={{ display: 'block', marginBottom: 6, color: '#8b949e', fontSize: 13 }}>New password</label>
+            <label style={{ display: 'block', marginBottom: 6, color: '#8b949e', fontSize: 13 }}>
+              New password{passwordHint(authConfig) && <> <span data-testid="account-password-hint" style={{ color: '#6e7681' }}>({passwordHint(authConfig)})</span></>}
+            </label>
             <input
               className="input"
               data-testid="account-new-password"
@@ -179,7 +189,7 @@ export default function Account() {
               onChange={e => setNewPassword(e.target.value)}
               placeholder="••••••••••••"
               required
-              minLength={12}
+              minLength={authConfig?.password_min_length}
               style={{ width: '100%', boxSizing: 'border-box' }}
             />
           </div>
@@ -187,6 +197,7 @@ export default function Account() {
             <label style={{ display: 'block', marginBottom: 6, color: '#8b949e', fontSize: 13 }}>Confirm new password</label>
             <input
               className="input"
+              data-testid="account-confirm-password"
               type="password"
               value={confirmNewPassword}
               onChange={e => setConfirmNewPassword(e.target.value)}
@@ -197,7 +208,7 @@ export default function Account() {
           </div>
 
           {pwError && (
-            <div style={{ padding: '8px 12px', background: '#3d1a1a', border: '1px solid #f85149', borderRadius: 6, color: '#f85149', fontSize: 13 }}>
+            <div data-testid="account-password-error" style={{ padding: '8px 12px', background: '#3d1a1a', border: '1px solid #f85149', borderRadius: 6, color: '#f85149', fontSize: 13 }}>
               {pwError}
             </div>
           )}

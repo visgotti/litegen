@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
-import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
+import { LiteGenAPIError } from '@litegen/sdk';
 import { useTenant } from '../context/tenant';
+import { SIGN_IN_FALLBACK, passwordHint, type SignInConfig } from './auth-config';
 
 function oauthAccept(provider: 'github' | 'google', token: string) {
   window.location.href =
@@ -12,6 +13,8 @@ function oauthAccept(provider: 'github' | 'google', token: string) {
 const INVITE_ERROR_MESSAGES: Record<string, string> = {
   email_mismatch: "That account’s email does not match this invitation. Sign in with the invited email.",
   invitation_invalid: 'This invitation is no longer valid (already used or expired).',
+  invitation_revoked: 'Whoever sent this invitation may no longer invite to this role. Ask for a new invitation.',
+  email_password_account: 'This email belongs to an account with a password. Accept the invitation with that password instead.',
   account_inactive: 'This account is inactive. Contact an administrator.',
 };
 
@@ -34,7 +37,7 @@ export default function AcceptInvite() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
+  const [authConfig, setAuthConfig] = useState<SignInConfig | null>(null);
   const inviteErrorCode = new URLSearchParams(window.location.search).get('invite_error') ?? '';
 
   useEffect(() => {
@@ -42,7 +45,7 @@ export default function AcceptInvite() {
     client.auth.config()
       .then(cfg => { if (!cancelled) setAuthConfig(cfg); })
       .catch(() => {
-        if (!cancelled) setAuthConfig({ password_enabled: true, providers_enabled: ['github', 'google'], signup_open: false });
+        if (!cancelled) setAuthConfig(SIGN_IN_FALLBACK);
       });
     return () => { cancelled = true; };
   }, []);
@@ -72,10 +75,7 @@ export default function AcceptInvite() {
     e.preventDefault();
     setError('');
 
-    if (password.length < 12) {
-      setError('Password must be at least 12 characters');
-      return;
-    }
+    // A typo guard, not a rule: what a password must be is the server's to say.
     if (password !== confirmPassword) {
       setError('Passwords do not match');
       return;
@@ -181,7 +181,7 @@ export default function AcceptInvite() {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div>
             <label style={{ display: 'block', marginBottom: 6, color: '#8b949e', fontSize: 13 }}>
-              Password <span style={{ color: '#6e7681' }}>(min 12 chars)</span>
+              Password{passwordHint(authConfig) && <> <span data-testid="accept-password-hint" style={{ color: '#6e7681' }}>({passwordHint(authConfig)})</span></>}
             </label>
             <input
               className="input"
@@ -191,7 +191,7 @@ export default function AcceptInvite() {
               onChange={e => setPassword(e.target.value)}
               placeholder="••••••••••••"
               required
-              minLength={12}
+              minLength={authConfig?.password_min_length}
               style={{ width: '100%', boxSizing: 'border-box' }}
             />
           </div>

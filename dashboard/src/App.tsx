@@ -12,6 +12,8 @@ import Audit from './pages/Audit';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import AcceptInvite from './pages/AcceptInvite';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import OAuthConsent from './pages/OAuthConsent';
 import Connect from './pages/Connect';
 import Account from './pages/Account';
@@ -189,6 +191,8 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/invite/:token" element={<AcceptInvite />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password/:token" element={<ResetPassword />} />
           {/* An MCP client's OAuth sign-in: a session is needed, the app shell is not. */}
           <Route path="/oauth/consent" element={
             <RequireAuth>

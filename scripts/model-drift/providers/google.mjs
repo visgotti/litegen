@@ -268,8 +268,13 @@ export default {
     },
     {
       key: 'image-generation',
-      // Moved from /generate-content/image-generation.md.txt (2026-11-03).
-      url: `${DOCS}/image-generation.md.txt`,
+      // Moved from /generate-content/image-generation.md.txt (2026-11-03). The
+      // plain page documents the Interactions API since 2026-11 (its REST
+      // samples send `input`, `generation_config`); `?generate-content=true` is
+      // the generateContent variant the image adapter calls and the YAML cites
+      // (same tables, `contents` / `generationConfig.imageConfig` samples;
+      // 2026-11-16).
+      url: `${DOCS}/image-generation.md.txt?generate-content=true`,
       expect: 'text',
       // A version number after `gemini-` skips image file names like gemini-native-image.png;
       // `gemini-nano-banana-<n>` is the naming Google adopted with Nano Banana 2.1.

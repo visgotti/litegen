@@ -188,7 +188,11 @@ pub(crate) fn policy_lookups() -> usize {
 }
 
 /// The policy for `app_id`'s files (none: the gateway's). A database error is
-/// logged and answered with the layers above the app, never a failed request.
+/// logged and answered with the strictest settings over the layers above the
+/// app (sweep of 2026-11-16): private to the key that made the file, and
+/// nothing kept. The app may have made its files private or asked to keep
+/// nothing, so a failed read never serves them more openly or keeps what it
+/// shouldn't. It never fails the request.
 pub async fn resolve_policy(
     db: &dyn DatabaseStore,
     defaults: &StorageAccessConfig,
@@ -201,8 +205,17 @@ pub async fn resolve_policy(
         Some(app) => match db.get_app_file_access(app).await {
             Ok(row) => row,
             Err(e) => {
-                tracing::error!(app_id = %app, error = %e, "could not read the app's file access settings; using the gateway's");
-                None
+                tracing::error!(app_id = %app, error = %e, "could not read the app's file access settings; serving its files privately until it can");
+                Some(crate::types::AppFileAccessRow {
+                    app_id: app.to_string(),
+                    mode: Some("private".to_string()),
+                    owner_scope: Some("key".to_string()),
+                    signed_url_ttl_seconds: None,
+                    keep_outputs: Some(false),
+                    retention_days: None,
+                    signed_links: None,
+                    updated_at: chrono::Utc::now(),
+                })
             }
         },
         None => None,
@@ -391,6 +404,26 @@ mod tests {
     use crate::management::types::GatewaySettings;
     use crate::types::AppFileAccessRow;
     use std::time::Duration;
+
+    /// When an app's settings can't be read, its files get the strictest
+    /// access (private, the key that made them), never the gateway's looser
+    /// default: the app may have made them private (sweep of 2026-11-16). The
+    /// other fields come from the layers above, and a request is never
+    /// failed for it.
+    #[tokio::test]
+    async fn an_unreadable_app_setting_resolves_to_private_never_looser() {
+        let gateway = GatewaySettings { storage_access_mode: Some(AccessMode::Public), storage_access_owner_scope: Some(OwnerScope::Org), ..Default::default() };
+        let defaults = yaml(AccessMode::Public, OwnerScope::Org, 600);
+        // Every read of an app's settings fails.
+        let db = crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("ALTER TABLE app_file_access RENAME TO app_file_access_away").execute(db.pool()).await.unwrap();
+        let policy = resolve_policy(&db, &defaults, &gateway, Some("app")).await;
+        assert_eq!((policy.mode, policy.owner_scope), (AccessMode::Private, OwnerScope::Key));
+        assert!(!policy.keep_outputs, "nor kept, where the app may keep nothing");
+        assert_eq!(policy.ttl, Duration::from_secs(600), "the rest from the layers above");
+        let no_app = resolve_policy(&db, &defaults, &gateway, None).await;
+        assert_eq!((no_app.mode, no_app.owner_scope), (AccessMode::Public, OwnerScope::Org), "no app, no read: the gateway's");
+    }
 
     fn row(mode: Option<&str>, scope: Option<&str>, ttl: Option<i64>) -> AppFileAccessRow {
         AppFileAccessRow {

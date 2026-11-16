@@ -246,6 +246,29 @@ async fn a_read_only_key_cannot_cancel_a_job() {
     assert_ne!(status_of(&app, &maker, &id).await, "cancelled", "a read-only key's cancel stopped the job");
 }
 
+/// What the SDKs' READMEs tell a read-only key (a Viewer's key keeps only
+/// `read`): a job's status route takes `generate`, since a status read can
+/// move the job on, so its wait helpers get 403 `forbidden_scope` at the first
+/// poll; the job's row (`generations.waitForCompletion`) is a read.
+#[tokio::test]
+async fn a_read_only_key_reads_a_jobs_row_but_not_its_status_route() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (_, maker) = owner.create_key(&app, "generate").await;
+    let (_, reader) = owner.create_key(&app, "read").await;
+    let video = held_job(&app, &maker).await;
+    let mesh = send(&app, "POST", "/v1/models3d/generations", Some(json!({ "model": "mock/mesh-3d", "prompt": "a cube" })), &[("authorization", &format!("Bearer {maker}"))]).await;
+    assert_eq!(mesh.status, StatusCode::OK, "submit: {:?}", mesh.body);
+    let mesh = mesh.body["id"].as_str().expect("job id").to_string();
+    for path in [format!("/v1/videos/{video}"), format!("/v1/models3d/{mesh}")] {
+        let r = get_with_key(&app, &reader, &path).await;
+        assert_eq!((r.status, r.body["error"]["code"].as_str()), (StatusCode::FORBIDDEN, Some("forbidden_scope")), "{path}: {:?}", r.body);
+    }
+    for id in [&video, &mesh] {
+        assert!(!status_of(&app, &reader, id).await.is_empty(), "{id}: the row reads with `read`");
+    }
+}
+
 #[tokio::test]
 async fn a_key_cannot_cancel_a_job_the_apps_owner_scope_keeps_from_it() {
     let (app, _dir) = app().await;
@@ -552,4 +575,293 @@ async fn me_serves_no_deployment_permission_to_a_hosted_role() {
     for (who, session, role) in [("owner", &owner, Role::Owner), ("admin", &admin, Role::Admin), ("member", &member, Role::Member), ("viewer", &viewer, Role::Viewer)] {
         assert_served_as_checked(&app, who, session, &org, role, false).await;
     }
+}
+
+// ─── (g) a key's PATCH is a JSON merge patch ──────────────────────────────────
+
+/// The key `id` as the API shows it.
+async fn key_of(app: &Router, owner: &Session, id: &str) -> Value {
+    let r = owner.call(app, "GET", &format!("/v1/keys/{id}"), None).await;
+    assert_eq!(r.status, StatusCode::OK, "get key: {:?}", r.body);
+    r.body
+}
+
+/// `PATCH /v1/keys/{id}` with `body`, which must be answered 200: the key
+/// as the answer shows it.
+async fn patched(app: &Router, owner: &Session, id: &str, body: Value) -> Value {
+    let r = owner.call(app, "PATCH", &format!("/v1/keys/{id}"), Some(body.clone())).await;
+    assert_eq!(r.status, StatusCode::OK, "PATCH {body}: {:?}", r.body);
+    r.body
+}
+
+/// `null` clears a key's budget, its rate limit, its webhook and its expiry
+/// (the dashboard's Keys page clears them that way; before, `null` read as
+/// "unchanged", so nothing could clear a quota or a limit), and a field left
+/// out stays as it is.
+#[tokio::test]
+async fn null_clears_a_keys_quota_limit_webhook_and_expiry_and_absent_keeps_them() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (id, _) = owner.create_key(&app, "generate,read").await;
+    let set = json!({
+        "token_quota": 5.0,
+        "rpm_limit": 30,
+        "webhook_url": "https://8.8.8.8/hook",
+        "expires_at": "2099-01-01T00:00:00Z",
+    });
+    let all_set = patched(&app, &owner, &id, set).await;
+    assert_eq!(
+        (&all_set["token_quota"], &all_set["rpm_limit"], &all_set["webhook_url"], all_set["expires_at"].is_string()),
+        (&json!(5.0), &json!(30), &json!("https://8.8.8.8/hook"), true),
+        "{all_set}"
+    );
+
+    let renamed = patched(&app, &owner, &id, json!({ "name": "renamed" })).await;
+    assert_eq!((&renamed["token_quota"], &renamed["rpm_limit"], &renamed["webhook_url"]), (&json!(5.0), &json!(30), &json!("https://8.8.8.8/hook")), "absent fields stay: {renamed}");
+    assert!(renamed["expires_at"].is_string(), "absent fields stay: {renamed}");
+
+    patched(&app, &owner, &id, json!({ "token_quota": null, "rpm_limit": null, "webhook_url": null, "expires_at": null })).await;
+    let cleared = key_of(&app, &owner, &id).await;
+    assert_eq!((&cleared["token_quota"], &cleared["rpm_limit"], &cleared["webhook_url"]), (&Value::Null, &Value::Null, &Value::Null), "{cleared}");
+    assert!(cleared.get("expires_at").is_none_or(Value::is_null), "the expiry is removed: {cleared}");
+    assert_eq!(cleared["name"], "renamed");
+}
+
+/// A rate limit of 0 is refused, as the limits API refuses it: a key with
+/// `rpm_limit: 0` answered every request 429 forever, and many APIs read 0 as
+/// "unlimited". To stop a key, block it. Creating and patching both answer
+/// `400 invalid_limits` and change nothing.
+#[tokio::test]
+async fn a_zero_rate_limit_is_refused_on_create_and_patch() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let created = owner.call(&app, "POST", "/v1/keys", Some(json!({ "name": "zero", "rpm_limit": 0 }))).await;
+    assert_eq!((created.status, created.body["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_limits")), "{:?}", created.body);
+    let (id, _) = owner.create_key(&app, "generate,read").await;
+    let r = owner.call(&app, "PATCH", &format!("/v1/keys/{id}"), Some(json!({ "rpm_limit": 0 }))).await;
+    assert_eq!((r.status, r.body["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_limits")), "{:?}", r.body);
+    assert_eq!(key_of(&app, &owner, &id).await["rpm_limit"], Value::Null, "nothing changed");
+}
+
+/// `""` still clears a webhook, as it always has, and is stored as no
+/// webhook (`null`), on create and on edit: the outbox's trigger took a
+/// stored `""` for a webhook (review 2026-11-15 round 2, finding 4).
+#[tokio::test]
+async fn an_empty_webhook_url_is_stored_as_none() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let made = owner.call(&app, "POST", "/v1/keys", Some(json!({ "name": "blank", "webhook_url": "" }))).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let blank = made.body["id"].as_str().unwrap().to_string();
+    assert_eq!(key_of(&app, &owner, &blank).await["webhook_url"], Value::Null, "created with \"\": none");
+
+    let (id, _) = owner.create_key(&app, "generate,read").await;
+    patched(&app, &owner, &id, json!({ "webhook_url": "https://8.8.8.8/hook" })).await;
+    let cleared = patched(&app, &owner, &id, json!({ "webhook_url": "" })).await;
+    assert_eq!(cleared["webhook_url"], Value::Null, "the answer shows none: {cleared}");
+    assert_eq!(key_of(&app, &owner, &id).await["webhook_url"], Value::Null, "and none is stored");
+}
+
+/// `name`, `scopes` and `is_active` can't be cleared: `null` leaves them as
+/// they are.
+#[tokio::test]
+async fn null_leaves_a_keys_name_scopes_and_state_as_they_are() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (id, _) = owner.create_key(&app, "generate,read").await;
+    let before = key_of(&app, &owner, &id).await;
+    let after = patched(&app, &owner, &id, json!({ "name": null, "scopes": null, "is_active": null })).await;
+    for field in ["name", "scopes", "is_active"] {
+        assert_eq!(after[field], before[field], "{field}: {after}");
+    }
+}
+
+// ─── (h) sending a webhook delivery again ─────────────────────────────────────
+
+/// The single-tenant app over `db`, which a test reads and writes beside it.
+async fn app_over_db(db: &Arc<SqliteDatabase>, dir: &std::path::Path) -> Router {
+    harness::app_over_with(db.clone(), dir, |c| c.dev.expose_invite_tokens = true, Some(MASTER_KEY), Mode::SingleTenant).await
+}
+
+/// A job of key `key_id` whose webhook delivery has ended as `outcome` (no
+/// dispatcher runs here: the test plays the one that sent it): the
+/// delivery's id.
+async fn ended_delivery(db: &SqliteDatabase, key_id: &str, outcome: litegen::db::OutboxOutcome) -> String {
+    use litegen::api::middleware::{DEFAULT_APP_ID, DEFAULT_ORG_ID};
+    use litegen::db::DatabaseStore;
+    let generation = format!("g-{}", uuid::Uuid::new_v4().simple());
+    let key = uuid::Uuid::parse_str(key_id).unwrap();
+    db.insert_generation(&generation, Some(&key), "mock/video-gen", "mock", "video", Some("job"), 0.0, Some(DEFAULT_ORG_ID), Some(DEFAULT_APP_ID)).await.unwrap();
+    db.update_generation_if_active(&generation, "completed", 100, None, None, Some(chrono::Utc::now()), None).await.unwrap();
+    let claimed = db.claim_webhook_delivery_of(&generation, "test-sender", chrono::Duration::seconds(60)).await.unwrap().expect("its terminal write recorded it");
+    let attempt = litegen::db::OutboxAttempt { attempts: 1, outcome, status_code: Some(500), error: None, payload_json: None };
+    assert!(db.finish_webhook_attempt(&claimed.id, "test-sender", &attempt).await.unwrap());
+    claimed.id
+}
+
+fn code(r: &Reply) -> &str {
+    r.body["error"]["code"].as_str().unwrap_or("")
+}
+
+/// A delivery that ended is sent again when asked: 202 and its state (due,
+/// a fresh series), then a replica's dispatcher sends it under the same
+/// delivery id. While it is being sent a second ask is a 409, and within a
+/// minute of the last redeliver a 429 with `Retry-After`.
+#[tokio::test]
+async fn an_ended_delivery_is_sent_again_under_its_id_once_asked() {
+    use litegen::db::DatabaseStore;
+    use litegen::proxy::webhook::{Outbox, SendContext, WebhookDeliveries, WEBHOOK_RETRY_DELAYS};
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let app = app_over_db(&db, dir.path()).await;
+    let owner = owner(&app).await;
+    let hook = internal_hook().await;
+    let made = owner.call(&app, "POST", "/v1/keys", Some(json!({ "name": "hooked", "webhook_url": format!("{}/hook", hook.uri()) }))).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let key_id = made.body["id"].as_str().unwrap().to_string();
+    let delivery = ended_delivery(&db, &key_id, litegen::db::OutboxOutcome::Failed).await;
+    let path = format!("/v1/keys/{key_id}/webhook-deliveries/{delivery}/redeliver");
+
+    let r = owner.call(&app, "POST", &path, None).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    assert_eq!((r.body["delivery_id"].as_str(), r.body["status"].as_str(), &r.body["attempts"]), (Some(delivery.as_str()), Some("pending"), &json!(0)), "{:?}", r.body);
+    assert!(r.body["redelivered_at"].is_string() && r.body["finished_at"].is_null() && r.body["last_status_code"].is_null(), "{:?}", r.body);
+    let busy = owner.call(&app, "POST", &path, None).await;
+    assert_eq!((busy.status, code(&busy)), (StatusCode::CONFLICT, "delivery_pending"), "{:?}", busy.body);
+
+    // A replica's dispatcher sends it, under its id.
+    let slots = Arc::new(WebhookDeliveries::new(8, 4));
+    let outbox = Arc::new(Outbox::new("replica-test", slots.clone(), WEBHOOK_RETRY_DELAYS.to_vec()));
+    let store: Arc<dyn DatabaseStore> = db.clone();
+    let ctx = SendContext::new(Mode::SingleTenant, None, litegen::proxy::webhook::webhook_client(Mode::SingleTenant));
+    assert_eq!(outbox.tick(&store, &ctx).await, 1, "due at once");
+    assert!(slots.drain(tokio::time::Instant::now() + std::time::Duration::from_secs(10)).await.is_empty());
+    let got = hook.received_requests().await.unwrap_or_default();
+    assert_eq!(got.len(), 1, "sent once");
+    let sent_as = got[0].headers.get("x-litegen-delivery-id").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    assert_eq!(sent_as, delivery, "under its delivery id");
+
+    let soon = owner.call(&app, "POST", &path, None).await;
+    assert_eq!((soon.status, code(&soon)), (StatusCode::TOO_MANY_REQUESTS, "redeliver_too_soon"), "{:?}", soon.body);
+    let retry: u64 = soon.headers.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).expect("Retry-After");
+    assert!((1..=60).contains(&retry), "{retry}");
+}
+
+/// Who may send a key's delivery again: whoever may read the key's
+/// deliveries and send its webhook. An Owner (any key of the org), a
+/// Member (their own key), an admin-scope key and the master key may; a
+/// Member for another's key, a Viewer (who may read their own key's
+/// deliveries, not send them) and a key without `admin` may not. An unknown
+/// delivery, or another key's, is not found; a key with no webhook now is
+/// a 400.
+#[tokio::test]
+async fn who_may_send_a_keys_delivery_again() {
+    use litegen::db::{DatabaseStore, OutboxOutcome};
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let app = app_over_db(&db, dir.path()).await;
+    let owner = owner(&app).await;
+    let (member, _) = invited(&app, &owner, "redeliver-member@example.com", "member").await;
+    let (viewer, viewer_id) = invited(&app, &owner, "redeliver-viewer@example.com", "viewer").await;
+    let hooked = |name: &str| json!({ "name": name, "scopes": "generate,read", "webhook_url": "https://8.8.8.8/hook" });
+    let id_of = |r: Reply| {
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+        r.body["id"].as_str().unwrap().to_string()
+    };
+    let owners = id_of(owner.call(&app, "POST", "/v1/keys", Some(hooked("owners"))).await);
+    let members = id_of(member.call(&app, "POST", "/v1/keys", Some(hooked("members"))).await);
+    // A Viewer makes no keys: one made with the master key is given to them.
+    let viewers = id_of(send(&app, "POST", "/v1/keys", Some(hooked("viewers")), &[("authorization", &format!("Bearer {MASTER_KEY}"))]).await);
+    db.set_api_key_owner(&uuid::Uuid::parse_str(&viewers).unwrap(), &viewer_id).await.unwrap();
+    let (_, generate_only) = owner.create_key(&app, "generate,read").await;
+    let path = |key: &str, delivery: &str| format!("/v1/keys/{key}/webhook-deliveries/{delivery}/redeliver");
+    let ended = |key: String| {
+        let db = db.clone();
+        async move { ended_delivery(&db, &key, OutboxOutcome::Delivered).await }
+    };
+
+    let r = member.call(&app, "POST", &path(&members, &ended(members.clone()).await), None).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "a member, their own key's: {:?}", r.body);
+    let r = owner.call(&app, "POST", &path(&members, &ended(members.clone()).await), None).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "an owner, any key of the org: {:?}", r.body);
+    let bearer = |key: &str| format!("Bearer {key}");
+    let r = send(&app, "POST", &path(&owners, &ended(owners.clone()).await), None, &[("authorization", &bearer(MASTER_KEY))]).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "the master key: {:?}", r.body);
+
+    let r = member.call(&app, "POST", &path(&owners, &ended(owners.clone()).await), None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "a member, another's key: {:?}", r.body);
+    let r = viewer.call(&app, "POST", &path(&viewers, &ended(viewers.clone()).await), None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "a viewer, their own key's: {:?}", r.body);
+    let r = send(&app, "POST", &path(&owners, &ended(owners.clone()).await), None, &[("authorization", &bearer(&generate_only))]).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "a key without admin: {:?}", r.body);
+
+    let r = owner.call(&app, "POST", &path(&owners, "whd-00000000-0000-4000-8000-000000000000"), None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "an unknown delivery: {:?}", r.body);
+    let r = owner.call(&app, "POST", &path(&owners, &ended(members.clone()).await), None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "another key's delivery under this key: {:?}", r.body);
+
+    let delivery = ended(owners.clone()).await;
+    let cleared = owner.call(&app, "PATCH", &format!("/v1/keys/{owners}"), Some(json!({ "webhook_url": null }))).await;
+    assert_eq!(cleared.status, StatusCode::OK, "{:?}", cleared.body);
+    let r = owner.call(&app, "POST", &path(&owners, &delivery), None).await;
+    assert_eq!((r.status, code(&r)), (StatusCode::BAD_REQUEST, "no_webhook_configured"), "{:?}", r.body);
+}
+
+/// A job's webhook refused when it is sent still shows in the key's
+/// delivery list, with its delivery id and why, so its managers can see why
+/// it never came; once the cause is fixed, the redeliver route sends it. Here
+/// the key is a demoted Admin's whose webhook points inside the deployment,
+/// and the fix is making them an Admin again.
+#[tokio::test]
+async fn a_refused_webhook_is_listed_and_redelivered_once_its_cause_is_fixed() {
+    use litegen::db::DatabaseStore;
+    use litegen::proxy::webhook::{Outbox, SendContext, WebhookDeliveries, WEBHOOK_RETRY_DELAYS};
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let app = app_over_db(&db, dir.path()).await;
+    let owner = owner(&app).await;
+    let (admin, admin_id) = invited(&app, &owner, "refused-admin@example.com", "admin").await;
+    let hook = internal_hook().await;
+    let made = admin.call(&app, "POST", "/v1/keys", Some(json!({ "name": "ops", "scopes": "generate,read", "webhook_url": format!("{}/ops-hook", hook.uri()) }))).await;
+    assert_eq!(made.status, StatusCode::CREATED, "an admin's key may: {:?}", made.body);
+    let (key_id, secret) = (made.body["id"].as_str().unwrap().to_string(), made.body["key"].as_str().unwrap().to_string());
+    let org = owner.call(&app, "GET", "/v1/orgs", None).await.body[0]["id"].as_str().unwrap().to_string();
+    let role = |role: &'static str| json!({ "role": role });
+    let demoted = owner.call(&app, "PATCH", &format!("/v1/orgs/{org}/members/{admin_id}"), Some(role("member"))).await;
+    assert_eq!(demoted.status, StatusCode::OK, "demote: {:?}", demoted.body);
+
+    // The poll that ends the job sends its first attempt, which is refused.
+    let job = finished_video(&app, &secret).await;
+    let list = format!("/v1/keys/{key_id}/webhook-deliveries");
+    let mut listed = Value::Null;
+    for _ in 0..200 {
+        let r = owner.call(&app, "GET", &list, None).await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+        if r.body["data"].as_array().is_some_and(|rows| !rows.is_empty()) {
+            listed = r.body["data"][0].clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(listed["generation_id"].as_str(), Some(job.as_str()), "the refused delivery is in the key's list: {listed}");
+    assert!(listed["status_code"].is_null() && listed["success"] == false, "{listed}");
+    assert!(listed["error_message"].as_str().is_some_and(|e| e.contains("not allowed")), "it says why: {listed}");
+    let delivery = listed["delivery_id"].as_str().expect("its delivery id").to_string();
+    assert_eq!(arrivals(&hook, "/ops-hook").await, 0, "nothing reached the deployment's network");
+
+    // Fixed: an Admin again. The redeliver route makes it due, and a replica sends it.
+    let promoted = owner.call(&app, "PATCH", &format!("/v1/orgs/{org}/members/{admin_id}"), Some(role("admin"))).await;
+    assert_eq!(promoted.status, StatusCode::OK, "promote: {:?}", promoted.body);
+    let r = owner.call(&app, "POST", &format!("{list}/{delivery}/redeliver"), None).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let slots = Arc::new(WebhookDeliveries::new(8, 4));
+    let outbox = Arc::new(Outbox::new("replica-test", slots.clone(), WEBHOOK_RETRY_DELAYS.to_vec()));
+    let store: Arc<dyn DatabaseStore> = db.clone();
+    let ctx = SendContext::new(Mode::SingleTenant, None, litegen::proxy::webhook::webhook_client(Mode::SingleTenant));
+    assert_eq!(outbox.tick(&store, &ctx).await, 1, "due at once");
+    assert!(slots.drain(tokio::time::Instant::now() + std::time::Duration::from_secs(10)).await.is_empty());
+    let got = hook.received_requests().await.unwrap_or_default();
+    assert_eq!(got.len(), 1, "sent once its cause is fixed");
+    let sent_as = got[0].headers.get("x-litegen-delivery-id").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    assert_eq!(sent_as, delivery, "under its delivery id");
 }

@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from ..models.effective_breaker import EffectiveBreaker
     from ..models.effective_cache import EffectiveCache
     from ..models.effective_retries import EffectiveRetries
+    from ..models.gateway_setting_limits import GatewaySettingLimits
     from ..models.gateway_settings import GatewaySettings
 
 
@@ -27,6 +28,9 @@ class GatewaySettingsView:
             effective_retries (EffectiveRetries): Retries in force (`GET /v1/admin/settings`).
             effective_storage_access (AccessSettings): The stored-output settings in force.
             effective_vendor_timeout_seconds (int): The vendor call timeout in force, in seconds.
+            limits (GatewaySettingLimits): The range of each numeric gateway setting, named as the setting is: what
+                `PUT /v1/admin/settings` holds it to, served so a client need not keep a
+                copy. `default_end_user_max_budget_usd` has no upper bound, so it has none.
             settings (GatewaySettings): Gateway-wide settings editable at runtime.
     """
 
@@ -37,6 +41,7 @@ class GatewaySettingsView:
     effective_retries: "EffectiveRetries"
     effective_storage_access: "AccessSettings"
     effective_vendor_timeout_seconds: int
+    limits: "GatewaySettingLimits"
     settings: "GatewaySettings"
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -55,6 +60,8 @@ class GatewaySettingsView:
 
         effective_vendor_timeout_seconds = self.effective_vendor_timeout_seconds
 
+        limits = self.limits.to_dict()
+
         settings = self.settings.to_dict()
 
         field_dict: Dict[str, Any] = {}
@@ -68,6 +75,7 @@ class GatewaySettingsView:
                 "effective_retries": effective_retries,
                 "effective_storage_access": effective_storage_access,
                 "effective_vendor_timeout_seconds": effective_vendor_timeout_seconds,
+                "limits": limits,
                 "settings": settings,
             }
         )
@@ -80,6 +88,7 @@ class GatewaySettingsView:
         from ..models.effective_breaker import EffectiveBreaker
         from ..models.effective_cache import EffectiveCache
         from ..models.effective_retries import EffectiveRetries
+        from ..models.gateway_setting_limits import GatewaySettingLimits
         from ..models.gateway_settings import GatewaySettings
 
         d = src_dict.copy()
@@ -101,6 +110,8 @@ class GatewaySettingsView:
 
         effective_vendor_timeout_seconds = d.pop("effective_vendor_timeout_seconds")
 
+        limits = GatewaySettingLimits.from_dict(d.pop("limits"))
+
         settings = GatewaySettings.from_dict(d.pop("settings"))
 
         gateway_settings_view = cls(
@@ -111,6 +122,7 @@ class GatewaySettingsView:
             effective_retries=effective_retries,
             effective_storage_access=effective_storage_access,
             effective_vendor_timeout_seconds=effective_vendor_timeout_seconds,
+            limits=limits,
             settings=settings,
         )
 

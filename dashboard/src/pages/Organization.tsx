@@ -417,7 +417,7 @@ export default function Organization() {
                 </select>
               </label>
               <label style={{ color: '#8b949e', fontSize: 13 }}>Signed link life, in seconds
-                <input className="input" data-testid="access-ttl" value={acForm.ttl} placeholder="gateway default (60 to 604800)"
+                <input className="input" data-testid="access-ttl" value={acForm.ttl} placeholder="gateway default"
                   disabled={!activeApp} onChange={e => setAcForm({ ...acForm, ttl: e.target.value })} />
               </label>
               <label style={{ color: '#8b949e', fontSize: 13 }}>Who signs a signed link

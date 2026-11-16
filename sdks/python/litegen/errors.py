@@ -26,7 +26,9 @@ class LiteGenAPIError(LiteGenError):
     breaker open), but not a refusal. The server sends it on every vendor and
     router error; ``None`` when it did not say. ``headers`` are the error
     response's — the rate limit a 429 reports, for one (see
-    :func:`litegen.response_meta`).
+    :func:`litegen.response_meta`). ``body`` is the error response's body
+    parsed as JSON, when it was JSON (what the server answered with the
+    status), else ``None``.
     """
 
     def __init__(
@@ -42,6 +44,7 @@ class LiteGenAPIError(LiteGenError):
         retry_after: float | None = None,
         retryable: bool | None = None,
         headers: Mapping[str, str] | None = None,
+        body: Any = None,
     ) -> None:
         super().__init__(message)
         self.status = status
@@ -53,6 +56,7 @@ class LiteGenAPIError(LiteGenError):
         self.retry_after = retry_after
         self.retryable = retryable
         self.headers = headers
+        self.body = body
 
 
 class LiteGenValidationError(LiteGenAPIError):

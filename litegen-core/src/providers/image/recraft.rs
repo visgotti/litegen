@@ -13,6 +13,11 @@ use crate::providers::{
 };
 use crate::types::*;
 
+/// A tool request without its init image (the preflight's words).
+fn no_init(what: &str) -> ProviderError {
+    ProviderError::InvalidRequest(format!("{what} needs an init image"))
+}
+
 /// Recraft image generation provider (raster + vector).
 ///
 /// Synchronous, OpenAI-SDK-compatible: `POST /v1/images/generations` returns
@@ -153,7 +158,7 @@ impl RecraftProvider {
                 MaterializedRefForm::MultipartField { bytes, content_type, .. } => Some((bytes.to_vec(), content_type.clone())),
                 _ => None,
             })
-            .ok_or_else(|| ProviderError::InvalidRequest("a background swap needs an init image".into()))?;
+            .ok_or_else(|| no_init("a background swap"))?;
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name("image")
             .mime_str(&content_type)
@@ -201,7 +206,7 @@ impl RecraftProvider {
             MaterializedRefForm::MultipartField { bytes, content_type, .. } => Some((bytes.to_vec(), content_type.clone())),
             _ => None,
         });
-        let (bytes, content_type) = file.ok_or_else(|| ProviderError::InvalidRequest("background removal needs an init image".into()))?;
+        let (bytes, content_type) = file.ok_or_else(|| no_init("background removal"))?;
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name("image")
             .mime_str(&content_type)
@@ -257,6 +262,22 @@ impl ImageProvider for RecraftProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What Recraft's tools can't take, refused before anything is quoted,
+    /// reserved or sent; `generate` asks it first: background removal and a
+    /// background swap each work on an init image.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, _extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if roles.contains(&"init") {
+            return Ok(());
+        }
+        if model.capabilities.background_removal {
+            return Err(no_init("background removal"));
+        }
+        if model.task == crate::capabilities::ModelTask::BackgroundSwap {
+            return Err(no_init("a background swap"));
+        }
+        Ok(())
+    }
+
     /// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> — request fields
     ///   (`prompt`, `model`, `style`/`style_id`, `n`, `size`, `negative_prompt`,
     ///   `response_format`, `controls`) and the `data[].url`/`data[].b64_json` response.
@@ -265,13 +286,16 @@ impl ImageProvider for RecraftProvider {
         model: &ModelSchema,
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
-        _materialized: &MaterializedRequest,
+        materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         if model.capabilities.background_removal {
-            return self.remove_background(extras, _materialized).await;
+            return self.remove_background(extras, materialized).await;
         }
         if model.task == crate::capabilities::ModelTask::BackgroundSwap {
-            return self.replace_background(base, extras, _materialized).await;
+            return self.replace_background(base, extras, materialized).await;
         }
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);

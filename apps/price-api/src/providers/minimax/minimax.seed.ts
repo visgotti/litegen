@@ -52,16 +52,4 @@ export const seed: SeedModel[] = [
     mediaType: MediaType.VIDEO,
     prices: [{ unit: PriceUnit.PER_VIDEO, amountUsd: 0.19 }],
   },
-  {
-    id: "minimax/S2V-01",
-    displayName: "MiniMax S2V-01",
-    mediaType: MediaType.VIDEO,
-    prices: [{ unit: PriceUnit.PER_VIDEO, amountUsd: 0.65 }],
-  },
-  {
-    id: "minimax/T2V-01-Director",
-    displayName: "MiniMax T2V-01 Director",
-    mediaType: MediaType.VIDEO,
-    prices: [{ unit: PriceUnit.PER_VIDEO, amountUsd: 0.43 }],
-  },
 ];

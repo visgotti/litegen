@@ -6,7 +6,8 @@
 //! is submitted — what is deliverable (`deliverable_formats`), what the
 //! catalog serves (`served_output_formats_spec`), how many vendor jobs a
 //! request needs (`vendor_jobs_needed`) and which container to ask a vendor
-//! for (`prefers_vendor_native`). The deriving itself happens at delivery
+//! for (`asks_vendor_for`, which applies the request's `format_source` to
+//! `prefers_vendor_native`). The deriving itself happens at delivery
 //! (`proxy::model3d_deliver`), in [`crate::mesh`], which knows nothing about
 //! litegen.
 //!

@@ -1483,6 +1483,29 @@ async fn a_vendor_draco_glb_is_delivered() {
     a_vendor_compressed_glb_is_delivered("mock/draco-3d", "f7997c911589be5707caacd8043e1263c9738d5fe5c0c108d3b52a8c01c6e8f5").await;
 }
 
+/// The client's poll delivers with the server's `mesh.draco` settings: with
+/// Draco off, `mock/draco-3d`'s vendor GLB can't be read, so its delivery
+/// fails and the generation's error names the setting; with a lowered limit
+/// (the stream's header declares 768 faces) it names the limit. Nothing is
+/// delivered either way.
+#[tokio::test]
+async fn a_vendor_draco_glb_fails_its_delivery_under_the_servers_draco_settings() {
+    type Tweak = fn(&mut litegen::config::AppConfig);
+    let cases: [(Tweak, &[&str]); 2] = [
+        (|c| c.mesh.draco.enabled = false, &["is Draco-compressed (KHR_draco_mesh_compression)", "mesh.draco.enabled", "LITEGEN__MESH__DRACO__ENABLED"]),
+        (|c| c.mesh.draco.max_faces = 767, &["declares 768 faces, past this reader's limit of 767"]),
+    ];
+    for (tweak, says) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _db) = harness::app_with(dir.path(), tweak).await;
+        let done = generate_3d(&app, json!({ "model": "mock/draco-3d", "prompt": "a skinned leg" })).await;
+        assert_eq!(done["status"], "failed", "{done}");
+        let error = done["error"].as_str().unwrap_or_default();
+        assert!(says.iter().all(|s| error.contains(s)), "{says:?}: {error}");
+        assert!(done.get("assets").is_none(), "{done}");
+    }
+}
+
 
 // ─── output_packages: each multi-file container as a zip (D1) ───────────────
 

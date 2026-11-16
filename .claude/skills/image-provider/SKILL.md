@@ -146,6 +146,29 @@ specific to images; the shared rules still apply.
   that model; gpt-image rejects `response_format`.
 - **Never forward `n`.** You return one image, and the vendor would bill
   for N.
+- **Refusals the catalog can't say** (a vendor rule across two fields, such
+  as Seedream's "a tier or a size, 不可混用", or a field and the images, such
+  as "no negative prompt with an image" or "a mask, or a region") go in
+  `ImageProvider::preflight`. It reads only the request: params, prompt and
+  the roles of its images, plus the mask litegen draws from a region on an
+  `input: mask` row (`validator::image_roles`). The quote and the generation
+  run it before anything is quoted or reserved, the Playground quotes before
+  it generates, and both answer 400 `request_unsupported` in its words.
+  - `generate` asks it first with the materialized roles, which also hold a
+    mask litegen drew for a box row: a rule about that mask is then refused
+    at submit by the same code. The body builders add no rule of their own:
+    a lookup the preflight checked (a tier's vendor name) is `and_then`, and
+    where the body needs a value the preflight vouched for, it calls the same
+    function or error (openai.rs `vendor_size`, tripo.rs `needs_init`), so
+    the words can't drift.
+  - When the endpoint hangs on the images, pick it in one function the
+    preflight and the submit both call (fal.rs `image_endpoint`).
+  - Only a rule that needs the image's bytes (its type or size, a data URI's
+    length, a mask drawn on a box row's window) stays at submit.
+    `an_image_adapter_refuses_at_submit_only_what_its_preflight_refuses`
+    (catalog_conformance.rs) sends every row's requests to every image
+    adapter and fails on a submit refusal the preflight doesn't give; list a
+    new rule in its `IMAGE_RULES`.
 - **Ask for an output format you can name.** BFL sends
   `output_format: png`, so it can truthfully claim `image/png`. Otherwise
   read the vendor's declared format or its `Content-Type`.
@@ -175,8 +198,13 @@ specific to images; the shared rules still apply.
   `ImageProvider::poll_job(model, job, resume)` as that loop under
   `image::poll_once` (a deadline that ends after one poll), mapping its
   result with `image::job_failed`, and return true from `resumable`.
+  Download the finished image with `image::fetch_result`: it tells the
+  poller the vendor has answered, so the status-check budget stops counting
+  while the image downloads.
   `every_resumable_image_job_is_read_by_poll_job`
-  (`proxy/config_conformance.rs`) holds the seven polling adapters to it.
+  (`proxy/config_conformance.rs`) holds every polling adapter to it: BFL,
+  Replicate, Kling, Hunyuan, Leonardo, Luma and Runway, and TokenHub for its
+  Kling and Vidu image rows.
 - Map moderation and failure statuses to non-retryable errors that carry
   the vendor's reason (BFL `Content Moderated`, `Request Moderated`,
   `Error`).
@@ -204,7 +232,11 @@ specific to images:
 - **Roles**: `init` (image-to-image source), `mask` (inpainting), plus the
   vendor's reference kinds: `style`, `character`, `subject`, `modify`,
   `redux`. A model that cannot run without a reference marks the role
-  `required: true, min_count: 1`, as Runway `gen4_image_turbo` does. A
+  `required: true, min_count: 1`, as Runway `gen4_image_turbo` does. An
+  outpaint row, which grows a canvas and nothing else, marks its expand
+  `{ kind: expand, max_px: …, required: true }`, so a request without one
+  is refused before the quote; keep the adapter's refusal as a backstop
+  (`every_row_whose_adapter_needs_an_expand_requires_one` pins them). A
   model with a `mask` role or a `region` param gets `mask_grow_px`
   (0–100), `preserve_unmasked` and `feather_px` (0–256) from litegen,
   served in `litegen_params` on `GET /v1/models/{id}`; never declare them.

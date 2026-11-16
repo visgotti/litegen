@@ -124,7 +124,10 @@ export default function Spend() {
                 <tr key={l.id} data-testid="spend-log-row">
                   <td>{new Date(l.created_at).toLocaleString()}</td>
                   <td className="mg-mono">{l.model}</td>
-                  <td><span className={`badge ${l.status}`}>{l.status}</span></td>
+                  <td>
+                    <span className={`badge ${l.status}`}>{l.status}</span>
+                    {l.cache_hit && <span className="badge" data-testid="spend-log-cache-hit" style={{ marginLeft: 6 }}>cache hit</span>}
+                  </td>
                   <td>{formatUsd(l.cost_usd)}</td>
                   <td className="mg-mono">{l.key_id ? names[l.key_id] ?? l.key_id.slice(0, 8) : '—'}</td>
                   <td className="mg-mono">{l.end_user ?? '—'}</td>

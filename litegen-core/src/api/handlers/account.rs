@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::api::middleware::{make_clear_session_cookies, AppState, KeyContext};
 use crate::auth::permissions::Permission;
-use crate::auth::password::{hash_password, verify_password, PasswordError};
+use crate::auth::password::PasswordError;
 use crate::types::Session;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -28,6 +28,17 @@ fn err(code: StatusCode, error_code: &str, message: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+/// The 401 for a write refused because the sign-in sending it ended while
+/// the request ran (review round 5, finding 1; round 6, finding 2): nothing
+/// was written.
+pub(crate) fn sign_in_ended() -> Response {
+    err(
+        StatusCode::UNAUTHORIZED,
+        "sign_in_ended",
+        "Your sign-in ended while this request ran (a reset, a deactivation or another password change): sign in again",
+    )
 }
 
 /// A 500 that keeps its class (`error_code`: `db_error`, `hash_error`, ...)
@@ -71,12 +82,11 @@ impl From<crate::types::User> for AccountUser {
     }
 }
 
-/// Public session info. `id` is a NON-secret SHA-256 fingerprint of the session
-/// token — never the raw token. The session row's primary key IS the bearer
-/// credential (it's the `litegen_session` cookie value), so returning it
-/// verbatim would let any response-body capture (e.g. XSS — which HttpOnly is
-/// meant to stop) harvest usable session tokens for all the user's devices.
-/// Revocation resolves the fingerprint back to the row.
+/// Public session info. `id` is the SHA-256 hash of the session token, never
+/// the token: it is all the database keeps of the session, and sent as the
+/// `litegen_session` cookie it doesn't sign in. So neither a response body
+/// (e.g. an XSS, which HttpOnly is meant to stop) nor a copy of the database
+/// yields a working session. Revoking takes this id.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct SessionInfo {
     /// SHA-256 fingerprint of the session token (safe to expose; used for revoke).
@@ -90,7 +100,8 @@ pub struct SessionInfo {
 impl From<Session> for SessionInfo {
     fn from(s: Session) -> Self {
         Self {
-            id: crate::auth::secrets::sha256_hex(&s.id),
+            // The stored id, already the token's hash (migration 044).
+            id: s.id,
             created_at: s.created_at.to_rfc3339(),
             expires_at: s.expires_at.to_rfc3339(),
             ip: s.ip,
@@ -99,12 +110,16 @@ impl From<Session> for SessionInfo {
     }
 }
 
+/// Record a change to the caller's own account, under the org they act in.
+/// A hosted account that belongs to no org acts in none: filed under no org
+/// (`api::audit::audit_org`), never the default org's.
 fn log_audit_account(
-    db: Arc<dyn crate::db::DatabaseStore>,
+    state: &AppState,
     ctx: &KeyContext,
     action: &str,
     target_id: &str,
 ) {
+    let db = state.db.clone();
     let actor_key_id = ctx.key_id.map(|id| id.to_string());
     let actor_label = ctx
         .user
@@ -114,7 +129,7 @@ fn log_audit_account(
         .unwrap_or_else(|| "master-key".to_string());
     let action = action.to_string();
     let target_id = target_id.to_string();
-    let org_id = ctx.org_id.clone();
+    let org_id = crate::api::audit::audit_org(state.mode, ctx.org_id.clone());
     tokio::spawn(async move {
         let entry = crate::types::AuditLogEntry {
             id: format!("audit-{}", Uuid::new_v4()),
@@ -178,9 +193,9 @@ pub struct PatchAccountRequest {
     path = "/v1/account",
     request_body = PatchAccountRequest,
     responses(
-        (status = 200, description = "Updated profile", body = AccountUser),
+        (status = 200, description = "Password changed: in the same step your other sessions end, your apps' OAuth sign-ins and their unredeemed codes are revoked, and the unused reset links you issued are deleted; the session that sent this stays signed in. The invitations you sent stay pending (a reset or a deactivation revokes them, a password change doesn't): `GET /v1/orgs/{id}/invitations` lists them, and `DELETE /v1/orgs/{id}/invitations/{invitation_id}` (or the Members page) revokes one you don't want.", body = AccountUser),
         (status = 400, description = "Bad request (no changes or missing fields)", body = crate::types::ErrorResponse),
-        (status = 401, description = "Not authenticated or wrong password", body = crate::types::ErrorResponse),
+        (status = 401, description = "Not authenticated, a wrong current password (`wrong_password`), or `sign_in_ended`: your sign-in ended while the change ran (a reset, a deactivation or another password change committed, or the session is gone), and nothing was written.", body = crate::types::ErrorResponse),
     ),
     tag = "Account"
 )]
@@ -196,6 +211,12 @@ pub async fn patch_account(
     let user_id = match ctx.user.as_ref() {
         Some(u) => u.user_id.clone(),
         None => return err(StatusCode::UNAUTHORIZED, "not_authenticated", "Not authenticated"),
+    };
+
+    // The session sending the change: the write holds only at its sign-in
+    // epoch, and it is the one kept (review round 5, finding 1).
+    let Some(keep_session) = ctx.session_id.as_deref() else {
+        return sign_in_ended();
     };
 
     // Only password change is supported for now
@@ -233,7 +254,7 @@ pub async fn patch_account(
         }
     };
 
-    match verify_password(&current_password, &phc) {
+    match crate::auth::password::verify_password_async(current_password.clone(), phc.clone()).await {
         Ok(true) => {}
         Ok(false) => {
             return err(StatusCode::UNAUTHORIZED, "wrong_password", "Current password is incorrect");
@@ -241,29 +262,34 @@ pub async fn patch_account(
         Err(e) => return internal("verify_error", &e),
     }
 
-    let new_hash = match hash_password(body.new_password.as_deref().unwrap()) {
+    let new_hash = match crate::auth::password::hash_password_async(body.new_password.clone().unwrap_or_default()).await {
         Ok(h) => h,
         Err(PasswordError::TooShort) => {
             return err(
                 StatusCode::BAD_REQUEST,
                 "password_too_short",
-                "Password must be at least 12 characters",
+                &crate::auth::password::too_short_message(),
             );
         }
         Err(e) => return internal("hash_error", &e),
     };
 
-    match state.db.update_user(&user_id, None, None, Some(&new_hash)).await {
-        Ok(Some(updated)) => {
-            // Revoke all other sessions so a stolen session can't outlive a password change.
-            // Pass the current session id as `except_id` so the caller stays logged in.
-            let except_id = ctx.session_id.as_deref();
-            let _ = state.db.delete_user_sessions(&user_id, except_id).await;
-            tracing::info!(user_id = %user_id, "password changed — other sessions revoked");
-            log_audit_account(state.db.clone(), &ctx, "account.change_password", &user_id);
-            (StatusCode::OK, Json(AccountUser::from(updated))).into_response()
+    // One transaction (review round 4, finding 6): the password written, the
+    // sign-in epoch moved on, and every other sign-in ended: the other
+    // sessions, the apps' OAuth sign-ins and their unredeemed codes. This
+    // session stays, re-stamped with the new epoch. A failure leaves all of
+    // it as it was.
+    match state.db.change_own_password(&user_id, &new_hash, &phc, keep_session).await {
+        Ok(crate::db::PasswordChange::Done) => {
+            tracing::info!(user_id = %user_id, "password changed — other sign-ins ended");
+            log_audit_account(&state, &ctx, "account.change_password", &user_id);
+            match state.db.get_user_by_id(&user_id).await {
+                Ok(Some(updated)) => (StatusCode::OK, Json(AccountUser::from(updated))).into_response(),
+                Ok(None) => err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
+                Err(e) => internal("db_error", &e),
+            }
         }
-        Ok(None) => err(StatusCode::NOT_FOUND, "user_not_found", "User not found"),
+        Ok(crate::db::PasswordChange::SignInEnded) => sign_in_ended(),
         Err(e) => internal("db_error", &e),
     }
 }
@@ -331,17 +357,14 @@ pub async fn revoke_session(
         None => return err(StatusCode::UNAUTHORIZED, "not_authenticated", "Not authenticated"),
     };
 
-    // `id` is the SHA-256 fingerprint returned by list_sessions (NOT the raw
-    // token). Resolve it against the caller's own sessions — this both maps the
-    // fingerprint back to the real token and scopes revocation to the user.
+    // `id` is a session's stored id, as list_sessions shows it (the hash of
+    // its token, never the token). Looking it up among the caller's own
+    // sessions scopes revocation to the user.
     let sessions = match state.db.list_user_sessions(&user_id).await {
         Ok(s) => s,
         Err(e) => return internal("db_error", &e),
     };
-    let session = match sessions
-        .into_iter()
-        .find(|s| crate::auth::secrets::sha256_hex(&s.id) == id)
-    {
+    let session = match sessions.into_iter().find(|s| s.id == id) {
         Some(s) => s,
         None => return err(StatusCode::NOT_FOUND, "session_not_found", "Session not found"),
     };
@@ -350,22 +373,15 @@ pub async fn revoke_session(
         return internal("db_error", &e);
     }
 
-    // If revoking the current session, clear cookies (compare by fingerprint).
-    let is_current = ctx
-        .session_id
-        .as_deref()
-        .map(|cur| crate::auth::secrets::sha256_hex(cur) == id)
-        .unwrap_or(false);
-    if is_current {
+    // If revoking the current session, clear both cookies: the context
+    // carries its stored id too. Appended, as a header array would insert
+    // the second `Set-Cookie` over the first.
+    if ctx.session_id.as_deref() == Some(id.as_str()) {
         let (sc, cc) = make_clear_session_cookies();
-        return (
-            StatusCode::NO_CONTENT,
-            [
-                ("set-cookie", sc.to_str().unwrap_or("").to_string()),
-                ("set-cookie", cc.to_str().unwrap_or("").to_string()),
-            ],
-        )
-            .into_response();
+        let mut resp = StatusCode::NO_CONTENT.into_response();
+        resp.headers_mut().append("set-cookie", sc);
+        resp.headers_mut().append("set-cookie", cc);
+        return resp;
     }
 
     StatusCode::NO_CONTENT.into_response()
@@ -460,6 +476,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             last_login_at: None,
             is_active: true,
+            sign_in_epoch: 0,
         };
         db.create_user(&user).await.expect("create user");
         // Every account joins the default org at signup or invitation; the role
@@ -550,6 +567,64 @@ mod tests {
         assert!(crate::auth::password::verify_password("new-super-secure-pw-99", &new_hash).unwrap());
     }
 
+    /// Review round 4, finding 6: changing your own password ends your other
+    /// sign-ins in the same transaction: the other sessions, your apps' OAuth
+    /// sign-ins and their codes not yet redeemed. The session that changed
+    /// it stays valid (re-stamped with the new sign-in epoch).
+    #[tokio::test]
+    async fn changing_your_password_ends_your_other_sign_ins_and_keeps_this_one() {
+        use crate::mcp::oauth::store::{Grant, TokenKind, TokenRow};
+        let db = build_db().await;
+        let (user, session_tok, csrf_tok) = seed_user_with_session(&db, Role::Member, "mine@test.com", Some("correct-horse-battery-1")).await;
+        let other = Session {
+            id: generate_session_token(),
+            user_id: user.id.clone(),
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+            ip: None,
+            user_agent: None,
+            csrf_token: generate_csrf_token(),
+        };
+        db.create_session(&other).await.unwrap();
+        let oauth = db.mcp_oauth().expect("an OAuth store");
+        let now = chrono::Utc::now();
+        let grant = Grant {
+            id: "grant-thief".into(),
+            client_id: "lgc-thief".into(),
+            user_id: user.id.clone(),
+            org_id: crate::api::middleware::DEFAULT_ORG_ID.into(),
+            app_id: None,
+            surface: crate::mcp::Surface::Ai,
+            scopes: vec!["ai:read".into()],
+            created_at: now,
+            last_used_at: None,
+            revoked_at: None,
+            sign_in_epoch: 0,
+        };
+        oauth.insert_grant(&grant).await.unwrap();
+        oauth
+            .insert_token(&TokenRow { token_hash: "tok-thief".into(), grant_id: grant.id.clone(), kind: TokenKind::Refresh, created_at: now, expires_at: now + chrono::Duration::days(30), rotated_at: None, revoked_at: None })
+            .await
+            .unwrap();
+        let app = build_account_router(build_state(db.clone()).await);
+        let body = serde_json::to_vec(&serde_json::json!({ "current_password": "correct-horse-battery-1", "new_password": "new-super-secure-pw-99" })).unwrap();
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/v1/account")
+            .header("cookie", format!("litegen_session={session_tok}"))
+            .header("x-csrf-token", &csrf_tok)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+
+        assert!(db.get_session(&crate::auth::tokens::token_hash(&other.id)).await.unwrap().is_none(), "the other session ends");
+        assert!(oauth.get_grant(&grant.id).await.unwrap().is_some_and(|g| g.revoked_at.is_some()), "the OAuth sign-in ends");
+        assert!(oauth.get_token("tok-thief").await.unwrap().is_some_and(|t| t.revoked_at.is_some()), "and its refresh token");
+        let me = Request::builder().uri("/v1/account").header("cookie", format!("litegen_session={session_tok}")).body(Body::empty()).unwrap();
+        assert_eq!(app.oneshot(me).await.unwrap().status(), StatusCode::OK, "this session stays valid");
+    }
+
     #[tokio::test]
     async fn patch_account_with_wrong_current_password_returns_401() {
         let db = build_db().await;
@@ -633,8 +708,10 @@ mod tests {
 
         let app = build_account_router(build_state(db.clone()).await);
 
-        // Sessions are addressed by their SHA-256 fingerprint (never the raw token).
+        // Sessions are addressed by their SHA-256 fingerprint (never the raw
+        // token), which is also the id the database keeps.
         let fp2 = crate::auth::secrets::sha256_hex(&sess2);
+        assert!(db.get_session(&fp2).await.unwrap().is_some(), "stored under its fingerprint");
         let req = Request::builder()
             .method("DELETE")
             .uri(format!("/v1/account/sessions/{}", fp2))
@@ -646,7 +723,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         // Session deleted
-        let s = db.get_session(&sess2).await.unwrap();
+        let s = db.get_session(&fp2).await.unwrap();
         assert!(s.is_none());
     }
 
@@ -710,6 +787,35 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Revoking the session you're signed in with, by the id the list shows
+    /// (the hash of its token, never the token), ends it and clears its
+    /// cookies.
+    #[tokio::test]
+    async fn revoking_the_current_session_clears_its_cookies() {
+        let db = build_db().await;
+        let (_, sess, csrf) = seed_user_with_session(&db, Role::Member, "current@test.com", None).await;
+        let app = build_account_router(build_state(db).await);
+        let signed_in = |method: &str, uri: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("cookie", format!("litegen_session={sess}"))
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let listed = app.clone().oneshot(signed_in("GET", "/v1/account/sessions")).await.unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+        let id = listed[0]["id"].as_str().expect("the session's id").to_string();
+        assert_eq!(id, crate::auth::tokens::token_hash(&sess), "the list shows the token's hash");
+
+        let resp = app.clone().oneshot(signed_in("DELETE", &format!("/v1/account/sessions/{id}"))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let cookies: Vec<&str> = resp.headers().get_all("set-cookie").iter().filter_map(|v| v.to_str().ok()).collect();
+        assert!(cookies.iter().any(|c| c.starts_with("litegen_session=;") && c.contains("Max-Age=0")), "the session cookie is cleared: {cookies:?}");
+        assert_eq!(app.oneshot(signed_in("GET", "/v1/account")).await.unwrap().status(), StatusCode::UNAUTHORIZED, "the session ended");
     }
 
     // ── P1: Password change revokes other sessions ─────────────────────────────

@@ -5,20 +5,12 @@ import { client } from '../sdk-client';
 import type { ProxyStats, RequestLog, ApiKeyInfo } from '@litegen/sdk';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { useTenant } from '../context/tenant';
+import { formatCost } from '../components/model-detail';
+import { hourlyCost } from './overview-data';
 
 const COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#f0883e'];
 
 const AUTO_REFRESH_KEY = 'litegen_overview_autorefresh';
-
-function buildHourlyBuckets(logs: RequestLog[]): { hour: string; cost: number }[] {
-  const buckets = Array.from({ length: 24 }, (_, i) => ({ hour: String(i).padStart(2, '0') + ':00', cost: 0 }));
-  for (const log of logs) {
-    const d = new Date(log.created_at);
-    const h = d.getHours();
-    buckets[h].cost = parseFloat((buckets[h].cost + (log.cost_usd || 0)).toFixed(6));
-  }
-  return buckets;
-}
 
 export default function Overview() {
   const { activeOrg, activeApp } = useTenant();
@@ -73,7 +65,7 @@ export default function Overview() {
     ? ((stats.successful_requests / stats.total_requests) * 100).toFixed(1)
     : '0.0';
 
-  const hourlyBuckets = buildHourlyBuckets(logs);
+  const hourlyBuckets = hourlyCost(logs);
   const hasAnyTraffic = hourlyBuckets.some(b => b.cost > 0);
 
   const quotaKeys = keys.filter(k => k.is_active && k.token_quota != null);
@@ -112,7 +104,7 @@ export default function Overview() {
         </div>
         <div className="stat-card">
           <div className="label">Total Cost</div>
-          <div className="value">${stats.total_cost_usd.toFixed(4)}</div>
+          <div className="value">{formatCost(stats.total_cost_usd)}</div>
         </div>
         <div className="stat-card">
           <div className="label">Avg Latency</div>
@@ -163,7 +155,7 @@ export default function Overview() {
                 cx="50%"
                 cy="50%"
                 outerRadius={100}
-                label={(props: PieLabelRenderProps) => `${props.name ?? ''}: $${Number(props.value ?? 0).toFixed(4)}`}
+                label={(props: PieLabelRenderProps) => `${props.name ?? ''}: ${formatCost(Number(props.value ?? 0))}`}
               >
                 {stats.providers_used.map((_, i) => (
                   <Cell key={i} fill={COLORS[i % COLORS.length]} />
@@ -183,10 +175,10 @@ export default function Overview() {
             <BarChart data={hourlyBuckets}>
               <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
               <XAxis dataKey="hour" stroke="#8b949e" tick={{ fontSize: 11 }} />
-              <YAxis stroke="#8b949e" tickFormatter={(v: number) => `$${v.toFixed(4)}`} width={70} />
+              <YAxis stroke="#8b949e" tickFormatter={(v: number) => formatCost(v)} width={70} />
               <Tooltip
                 contentStyle={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 6, color: '#e1e4e8' }}
-                formatter={(value) => [`$${Number(value).toFixed(6)}`, 'Cost']}
+                formatter={(value) => [formatCost(Number(value)), 'Cost']}
               />
               <Bar dataKey="cost" fill="#58a6ff" radius={[4, 4, 0, 0]} />
             </BarChart>

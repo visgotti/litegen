@@ -212,8 +212,10 @@ test.describe('3D model generation', () => {
     expect(estimates.filter(e => e.path === '/v1/images/cost' && e.model === MESH_MODEL)).toHaveLength(0);
     const meshTotal = Number(meshEstimate()!.body.total_cost_usd);
     expect(Number.isFinite(meshTotal)).toBe(true);
+    // Shown with every digit it has and at least two (`formatCost`); these
+    // mocks' prices have two at most.
     await expect(page.getByTestId('pg-cost'))
-      .toHaveText(`Est. cost: $${(meshTotal + expensivePrice).toFixed(3)}`, { timeout: 30_000 });
+      .toHaveText(`Est. cost: $${(meshTotal + expensivePrice).toFixed(2)}`, { timeout: 30_000 });
 
     // ── Generation: 3D alongside an image model, N = 2 ─────────────────────
     await pickModel(page, 'mock/expensive-image').uncheck();

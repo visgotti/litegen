@@ -9,22 +9,22 @@ type `string` `Required`
   value: `image_url`
 image_url `object` `Required`
 url `string` `Required`
-  - > Aspect ratio (width/height): `[0.4, 2.5]`
-  - > Width and height (px): `[300, 6000]`
+  - Aspect ratio (width/height): `[0.4, 2.5]`
+  - Width and height (px): `[300, 6000]`
 role `string` `Required under certain conditions`
   [Image-to-video (first frame)] supported models: All models
   [Image-to-video (first and last frames)] supported models: Dreamina Seedance 2.0 series, Seedance 1.0 pro
   - Role of the first frame: `first_frame`
   - Role of the last frame: `last_frame`
-  [Image-to-video (reference images)] supported models: Dreamina Seedance 2.0 series (1–9 images)
+  [Image-to-video (reference images)] supported models: Dreamina Seedance 2.0 series (1-9 images)
 Video `object`
 type `string` `Required`
   value: `video_url`
 video_url `object` `Required`
 url `string` `Required`
-  - > Aspect ratio (width/height): `[0.4, 2.5]`
-  - > Width and height (px): `[300, 6000]`
-  - > Frame rate (FPS): `[24, 60]`
+  - Aspect ratio (width/height): `[0.4, 2.5]`
+  - Width and height (px): `[300, 6000]`
+  - Frame rate (FPS): `[24, 60]`
 role `string` `Required`
   value: `reference_video`
   supported models: Dreamina Seedance 2.0 series
@@ -42,7 +42,7 @@ type `string` `Required`
   value: `draft_task`
 draft_task `object` `Required`
 id `string` `Required`
-omni_reference_task_typenew `string` `Default value: auto`
+omni_reference_task_type `string` `Default value: auto`
   values: `auto`, `reference`, `edit`, `extend`
   supported models: (none of ours)
 resolution `string`
@@ -69,13 +69,13 @@ ratio `string`
   |  | `3:4` | 834×1112 | 832×1120 |
   |  | `9:16` | 720×1280 | 704×1248 |
   |  | `21:9` | 1470×630 | 1504×640 |
-  | 1080p (Seedance 2.0 fast and Seedance 2.0 mini are not supported) | `16:9` | 1920×1080 | 1920×1088 |
+  | 1080p (Dreamina Seedance 2.5 flash, Dreamina Seedance 2.0 fast, and Dreamina Seedance 2.0 mini are not supported) | `16:9` | 1920×1080 | 1920×1088 |
   |  | `4:3` | 1664×1248 | 1664×1248 |
   |  | `1:1` | 1440×1440 | 1440×1440 |
   |  | `3:4` | 1248×1664 | 1248×1664 |
   |  | `9:16` | 1080×1920 | 1088×1920 |
   |  | `21:9` | 2206×946 | 2176×928 |
-  | 4k | `16:9` | 3840×2160 | — |
+  | 4k (Dreamina Seedance 2.5 flash, Dreamina Seedance 2.0 fast, and Dreamina Seedance 2.0 mini are not supported) | `16:9` | 3840×2160 | — |
   |  | `4:3` | 3326×2494 | — |
   |  | `1:1` | 2880×2880 | — |
   |  | `3:4` | 2494×3326 | — |
@@ -86,7 +86,7 @@ ratio `string`
   Seedance 1.0 pro fast: Defaults to `16:9` for text-to-video and `adaptive` for image-to-video.
 duration `integer`
   | Model | Behavior when `duration` is `-1` |
-  | Dreamina Seedance 2.0 series and Seedance 1.5 pro | The model selects an appropriate whole-second video length within the valid `duration` range. |
+  | Dreamina Seedance 2.0 series | The model selects an appropriate whole-second video length within the valid `duration` range. |
   Dreamina Seedance 2.0 series: Default `5`; supports `[4, 15]` or `-1`.
   Seedance 1.0 pro: Default `5`; supports `[2, 12]`.
   Seedance 1.0 pro fast: Default `5`; supports `[2, 12]`.
@@ -98,7 +98,7 @@ generate_audio `boolean` `Default: true`
   supported models: Dreamina Seedance 2.0 series
 watermark `boolean` `Default value: false`
   values: `true`, `false`
-output_formatnew `string` `Default value: mp4`
+output_format `string` `Default value: mp4`
   values: `mp4`, `mov`
   supported models: (none of ours)
 seed `integer` `Default value: -1`

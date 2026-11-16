@@ -23,6 +23,10 @@ class WebhookDelivery:
         payload_json (str):
         success (bool): Whether this attempt was successful (HTTP 2xx).
         url (str):
+        delivery_id (Union[None, Unset, str]): The delivery this attempt belongs to, `whd-` and a UUID: the
+            `X-Litegen-Delivery-Id` the receiver got. Every attempt of one
+            delivery has the same one. `null` on attempts recorded before
+            migration 029.
         error_message (Union[None, Unset, str]):
         response_body (Union[None, Unset, str]): The first 16 KiB of the endpoint's reply, cut at a character boundary.
             The rest is never read.
@@ -37,6 +41,7 @@ class WebhookDelivery:
     payload_json: str
     success: bool
     url: str
+    delivery_id: Union[None, Unset, str] = UNSET
     error_message: Union[None, Unset, str] = UNSET
     response_body: Union[None, Unset, str] = UNSET
     status_code: Union[None, Unset, int] = UNSET
@@ -58,6 +63,12 @@ class WebhookDelivery:
         success = self.success
 
         url = self.url
+
+        delivery_id: Union[None, Unset, str]
+        if isinstance(self.delivery_id, Unset):
+            delivery_id = UNSET
+        else:
+            delivery_id = self.delivery_id
 
         error_message: Union[None, Unset, str]
         if isinstance(self.error_message, Unset):
@@ -91,6 +102,8 @@ class WebhookDelivery:
                 "url": url,
             }
         )
+        if delivery_id is not UNSET:
+            field_dict["delivery_id"] = delivery_id
         if error_message is not UNSET:
             field_dict["error_message"] = error_message
         if response_body is not UNSET:
@@ -118,6 +131,15 @@ class WebhookDelivery:
         success = d.pop("success")
 
         url = d.pop("url")
+
+        def _parse_delivery_id(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        delivery_id = _parse_delivery_id(d.pop("delivery_id", UNSET))
 
         def _parse_error_message(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -155,6 +177,7 @@ class WebhookDelivery:
             payload_json=payload_json,
             success=success,
             url=url,
+            delivery_id=delivery_id,
             error_message=error_message,
             response_body=response_body,
             status_code=status_code,

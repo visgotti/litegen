@@ -22,4 +22,16 @@ export const seed: SeedModel[] = [
     mediaType: MediaType.IMAGE,
     prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.0132 }],
   },
+  {
+    id: "openai/gpt-image-2.6-flare",
+    displayName: "GPT Image 2.6 Flare",
+    mediaType: MediaType.IMAGE,
+    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.0435 }],
+  },
+  {
+    id: "openai/gpt-image-2.6-sunburst",
+    displayName: "GPT Image 2.6 Sunburst",
+    mediaType: MediaType.IMAGE,
+    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.0435 }],
+  },
 ];

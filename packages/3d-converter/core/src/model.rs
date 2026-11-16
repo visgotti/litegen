@@ -78,6 +78,9 @@ impl Model {
                 fbx_color_space: options.fbx_color_space.unwrap_or(FbxColorSpace::Srgb).into(),
                 fbx_light_units: options.fbx_light_units.unwrap_or(LightUnits::Photometric).into(),
                 usd_light_units: options.usd_light_units.unwrap_or(LightUnits::Photometric).into(),
+                // The library's Draco limits and faces-per-point pre-check
+                // (litegen's server makes them settings; here, the defaults).
+                draco: litegen_mesh::DracoOptions::default(),
             },
         )
         .map_err(|e| mismatch_names_from(e, format, options.from.is_some()))?;

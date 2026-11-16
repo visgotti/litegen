@@ -26,7 +26,8 @@ class CreateApiKeyRequest:
         expires_at (Union[None, Unset, datetime.datetime]): Optional expiry; after this instant the key is rejected at
             auth. None =
             never expires. Enforced in auth_middleware and honoured on PATCH too.
-        rpm_limit (Union[None, Unset, int]): Requests-per-minute cap; None = unlimited.
+        rpm_limit (Union[None, Unset, int]): Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to
+            stop a key, block it); None = unlimited.
         scopes (Union[Unset, str]): CSV of scopes (default: "generate,read"). `generate`: create generations,
             quote costs, and read the model catalog and the key's generations, so a
             `generate` key is an AI-only key. `read`: read the catalog, generations,
@@ -34,7 +35,7 @@ class CreateApiKeyRequest:
             budgets, end users and settings. A key gets only scopes its creator may
             grant.
         token_quota (Union[None, Unset, float]): USD budget cap; None = unlimited.
-        webhook_url (Union[None, Unset, str]): Webhook URL for async callbacks.
+        webhook_url (Union[None, Unset, str]): Webhook URL for async callbacks; `""` or none sets no webhook.
     """
 
     name: str

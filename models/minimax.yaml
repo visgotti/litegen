@@ -166,49 +166,13 @@ models:
       fast_pretreatment: { kind: bool }
     tags: [image-to-video, fast]
 
-  - id: minimax/T2V-01-Director
-    provider: minimax
-    media_type: video
-    display_name: MiniMax T2V-01 Director
-    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-t2v
-    description: Text-to-video with camera-movement instructions.
-    pricing: { base_cost_usd: 0.43 }
-    capabilities: { text_to_video: true }
-    prompt: { required: true, max_length: 2000 }
-    params:
-      duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
-    extra_allowlist: [prompt_optimizer]
-    extra_params:
-      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
-      prompt_optimizer: { kind: bool }
-    tags: [text-to-video]
-
-  - id: minimax/S2V-01
-    provider: minimax
-    media_type: video
-    display_name: MiniMax S2V-01
-    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-s2v
-    description: Subject-reference video (character consistency from a face photo).
-    pricing: { base_cost_usd: 0.65 }
-    # subject_reference is required by the S2V-01 request schema, so a
-    # prompt-only request cannot succeed: not text_to_video.
-    # @see https://platform.minimax.io/docs/api-reference/video-generation-s2v.md
-    capabilities: { image_to_video: true }
-    prompt: { required: true, max_length: 2000 }
-    params:
-      duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
-    ref_inputs:
-      max_total: 1
-      default_role: subject
-      provider_format: { form: base64 }
-      roles:
-        # Required; "only one image supported".
-        subject: { required: true, min_count: 1, max_count: 1 }
-    extra_allowlist: [prompt_optimizer]
-    extra_params:
-      # From MiniMax's OpenAPI (drift snapshots minimax/*.txt: boolean).
-      prompt_optimizer: { kind: bool }
-    tags: [image-to-video, subject-reference]
+  # T2V-01-Director and S2V-01 (minimax/T2V-01-Director, minimax/S2V-01) were
+  # retired 2026-11-16 by litegen, not by MiniMax: both are still in the t2v and
+  # s2v request `model` enums, but MiniMax publishes no price for either (its
+  # pricing page lists neither, not even under "Legacy Models", nor does its
+  # China twin), so there was nothing true to bill
+  # (no_retired_model_ids_are_advertised in tests/catalog_conformance.rs).
+  # video/minimax.rs keeps S2V-01's request shape for an operator's runtime row.
 
   # ─── H3 video (V2 API) ────────────────────────────────────────────────────
   # Added 2026-09-11 (model-drift). The H3 family exists only on the V2 video
@@ -265,17 +229,26 @@ models:
         # @see https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md (2026-11-11)
         frames_set_shape: without_references
     # Images only: first frame ≤ 1, last frame ≤ 1, reference images ≤ 9.
-    # Frames and references are mutually exclusive upstream (the schema cannot
-    # say so). Reference video/audio (`video_url` / `audio_url`) are not
-    # declared: ref inputs are images.
+    # Frames and references are mutually exclusive upstream, so the reference
+    # role names the frames in `not_with`. Reference video/audio (`video_url` /
+    # `audio_url`) are not declared: ref inputs are images.
     ref_inputs:
       max_total: 9
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame alone goes to MiniMax (no needs_first_frame): two of its three sources take one. The create
+        # page lists "Image-to-video, last frame: `text` + 1 `image_url` (`role=last_frame`)." and the guide says
+        # "Provide a first-frame image, a last-frame image, or both, along with a text description."; the same
+        # create page's role enum says "`last_frame`: last-frame image (image-to-video first & last frame, must be
+        # paired with first_frame)." A refusal would come from MiniMax before it bills; the drift run settles it.
+        # @see https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md (2026-11-15)
+        # @see https://platform.minimax.io/docs/guides/video-generation.md (2026-11-15)
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-        reference:   { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: they "cannot be mixed" (the aspect_ratio note above), so a mix is refused
+        # before it is quoted. minimax.rs would send it on, and MiniMax refuses it.
+        reference:   { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     # callback_url is the only other documented body field, and it is
     # litegen's (it polls the task and fires the key's webhook): nothing is
     # allowlisted.
@@ -331,8 +304,10 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame alone goes to MiniMax, as on MiniMax-H3 (its docs disagree; the quotes are there).
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-        reference:   { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both, as on MiniMax-H3 (MiniMax refuses the mix).
+        reference:   { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     tags: [text-to-video, image-to-video, reference-to-video, fast]
   # MiniMax-H3-Highspeed (new 2026-11-03) on the V2 video API, like MiniMax-H3 and H3-Max:
   # "Supports text-to-video, image-to-video (first / last frame), and
@@ -384,8 +359,10 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame alone goes to MiniMax, as on MiniMax-H3 (its docs disagree; the quotes are there).
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-        reference:   { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both, as on MiniMax-H3 (MiniMax refuses the mix).
+        reference:   { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     tags: [text-to-video, image-to-video, reference-to-video]
 
   # MiniMax-H3-Lite (new 2026-11-03) on the V2 video API, like MiniMax-H3 and H3-Max:
@@ -438,7 +415,9 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame alone goes to MiniMax, as on MiniMax-H3 (its docs disagree; the quotes are there).
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-        reference:   { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both, as on MiniMax-H3 (MiniMax refuses the mix).
+        reference:   { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     tags: [text-to-video, image-to-video, reference-to-video]
 

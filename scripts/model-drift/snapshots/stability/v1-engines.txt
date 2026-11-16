@@ -1,0 +1,4 @@
+# v1 engine_id values the page names
+stable-diffusion-xl-1024-v1-0
+
+# GET /v1/engines/list

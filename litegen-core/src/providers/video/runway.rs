@@ -776,6 +776,36 @@ mod tests {
         }
     }
 
+    /// catalog-rules: a resold model whose text-to-video takes no references
+    /// and whose image-to-video does (`references_t2v: 0`, `references_i2v`
+    /// above 0: Kling O3) takes reference images only beside a start frame.
+    /// Its row's `reference` role says so (`needs_first_frame`), so a
+    /// reference sent without one is refused before it is quoted or
+    /// reserved, not by `resold_request` after; every other row with the
+    /// role sends references without a frame, and has it where Runway takes
+    /// references at all.
+    #[test]
+    fn the_catalog_says_which_references_need_a_start_frame_as_runway_does() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        let mut wrong = Vec::new();
+        for r in RESOLD {
+            let id = format!("runway/{}", r.wire);
+            let m = catalog.get(&id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+            let reference = m.ref_inputs.as_ref().and_then(|refs| refs.roles.get("reference"));
+            if reference.is_some() != (r.references_t2v > 0 || r.references_i2v > 0) {
+                wrong.push(format!("{id}: a reference role is {}, but Runway takes {} on text-to-video and {} on image-to-video", if reference.is_some() { "declared" } else { "missing" }, r.references_t2v, r.references_i2v));
+            }
+            let needs = r.references_t2v == 0 && r.references_i2v > 0;
+            if reference.is_some_and(|role| role.needs_first_frame) != needs {
+                wrong.push(format!("{id}: the reference role's needs_first_frame should be {needs} (references_t2v {}, references_i2v {})", r.references_t2v, r.references_i2v));
+            }
+        }
+        assert!(wrong.is_empty(), "{} rows:\n{}", wrong.len(), wrong.join("\n"));
+    }
+
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.pop();

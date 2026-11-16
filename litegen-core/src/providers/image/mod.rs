@@ -60,6 +60,11 @@ pub(crate) fn job_failed(e: ProviderError) -> Result<crate::providers::ImageJobP
 /// only from a public address (`public_only`; the tests' mock vendors run on
 /// loopback), and at most 64 MiB. The vendor has run and billed the job by
 /// then, so no failure here is worth a second call.
+///
+/// Every adapter that can resume a job ([`ImageProvider::poll_job`](crate::providers::ImageProvider::poll_job))
+/// downloads its result here: the download is noted
+/// ([`noting_result_download`](crate::providers::noting_result_download)),
+/// so the poller's budget for the vendor's answer never cuts it.
 pub(crate) async fn fetch_result(
     client: &reqwest::Client,
     url: &str,
@@ -67,6 +72,7 @@ pub(crate) async fn fetch_result(
     vendor: &str,
 ) -> Result<Vec<u8>, ProviderError> {
     use crate::providers::model3d::download::{fetch_asset, AssetError};
+    crate::providers::note_result_download();
     match fetch_asset(client, url, 64 * 1024 * 1024, public_only, vendor).await {
         Ok((bytes, _)) => Ok(bytes),
         Err(AssetError::Transient(ProviderError::RequestFailed { message, status_code, provider_error, .. })) => {

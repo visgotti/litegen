@@ -65,7 +65,8 @@ pub enum Gate {
     OrgWrite(Permission),
     /// `orgs::require_member_perm`: signed-in members (or the platform admin).
     Member(Permission),
-    /// The handler checks the caller's own permissions (`users::invite_user`).
+    /// The handler checks the caller's own permissions, or lets the master
+    /// key through where it acts in an org (`users::invite_user`).
     Perm(Permission),
     /// `users::authorize_global_user_admin`.
     Global(Permission),
@@ -997,6 +998,17 @@ pub static TOOLS: &[ToolDef] = &[
         catch_all: Some("id"),
     },
     ToolDef {
+        name: "update_gateway_provider",
+        method: Http::Patch,
+        path: "/v1/admin/providers/{name}",
+        surfaces: Surfaces::Admin,
+        toolset: "gateway",
+        gate: Gate::GatewayAdmin,
+        title: "Update gateway provider",
+        description: None,
+        catch_all: None,
+    },
+    ToolDef {
         name: "block_api_key",
         method: Http::Post,
         path: "/v1/keys/{id}/block",
@@ -1048,6 +1060,17 @@ pub static TOOLS: &[ToolDef] = &[
         toolset: "keys",
         gate: Gate::Scope(Scope::Admin),
         title: "List webhook deliveries",
+        description: None,
+        catch_all: None,
+    },
+    ToolDef {
+        name: "redeliver_webhook_delivery",
+        method: Http::Post,
+        path: "/v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver",
+        surfaces: Surfaces::Admin,
+        toolset: "keys",
+        gate: Gate::Scope(Scope::Admin),
+        title: "Redeliver webhook delivery",
         description: None,
         catch_all: None,
     },
@@ -1151,6 +1174,17 @@ pub static TOOLS: &[ToolDef] = &[
         catch_all: None,
     },
     ToolDef {
+        name: "list_invitations",
+        method: Http::Get,
+        path: "/v1/orgs/{id}/invitations",
+        surfaces: Surfaces::Admin,
+        toolset: "members",
+        gate: Gate::Member(Permission::MemberInvite),
+        title: "List invitations",
+        description: None,
+        catch_all: None,
+    },
+    ToolDef {
         name: "list_members",
         method: Http::Get,
         path: "/v1/orgs/{id}/members",
@@ -1169,6 +1203,17 @@ pub static TOOLS: &[ToolDef] = &[
         toolset: "members",
         gate: Gate::Member(Permission::MemberRemove),
         title: "Remove member",
+        description: None,
+        catch_all: None,
+    },
+    ToolDef {
+        name: "revoke_invitation",
+        method: Http::Delete,
+        path: "/v1/orgs/{id}/invitations/{invitation_id}",
+        surfaces: Surfaces::Admin,
+        toolset: "members",
+        gate: Gate::Member(Permission::InvitationRevoke),
+        title: "Revoke invitation",
         description: None,
         catch_all: None,
     },
@@ -1427,6 +1472,11 @@ pub static EXCLUDED: &[Excluded] = &[
     Excluded { method: Http::Post, path: "/v1/auth/signup", reason: "browser sign-in flow; MCP clients connect with an API key or OAuth" },
     Excluded { method: Http::Post, path: "/v1/auth/password-reset/request", reason: "browser sign-in flow; MCP clients connect with an API key or OAuth" },
     Excluded { method: Http::Post, path: "/v1/auth/password-reset/confirm", reason: "browser sign-in flow; MCP clients connect with an API key or OAuth" },
+    Excluded {
+        method: Http::Post,
+        path: "/v1/users/{id}/password-reset",
+        reason: "a password reset link can take over an account and is meant for a person: issue it from the dashboard or the API",
+    },
     Excluded { method: Http::Get, path: "/v1/auth/oauth/github/start", reason: "browser sign-in flow; MCP clients connect with an API key or OAuth" },
     Excluded { method: Http::Get, path: "/v1/auth/oauth/github/callback", reason: "browser sign-in flow; MCP clients connect with an API key or OAuth" },
     Excluded { method: Http::Get, path: "/v1/auth/oauth/google/start", reason: "browser sign-in flow; MCP clients connect with an API key or OAuth" },

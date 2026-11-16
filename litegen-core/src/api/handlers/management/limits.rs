@@ -45,9 +45,7 @@ pub(crate) fn validate_input(state: &AppState, input: &LimitsInput) -> Result<()
     if input.max_parallel_requests == Some(0) {
         return Err(bad_request("invalid_limits", "max_parallel_requests must be at least 1"));
     }
-    if input.rpm_limit == Some(0) {
-        return Err(bad_request("invalid_limits", "rpm_limit must be at least 1"));
-    }
+    crate::api::handlers::refuse_zero_rpm_limit(input.rpm_limit)?;
     if let Some(m) = &input.metadata {
         if !m.is_object() {
             return Err(bad_request("invalid_limits", "metadata must be a JSON object"));

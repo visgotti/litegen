@@ -11,6 +11,13 @@ pub fn generate_csrf_token() -> String {
     generate_session_token()
 }
 
+/// The SHA-256 of `token`, hex: what is stored of a reset or invitation
+/// token, so a copy of the database holds none that works.
+pub fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
     let b = b.as_bytes();

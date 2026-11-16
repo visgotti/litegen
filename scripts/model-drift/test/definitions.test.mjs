@@ -50,6 +50,20 @@ test('loadDefinitions rejects duplicate source keys, which would overwrite each 
   await assert.rejects(loadDefinitions(dir), /acme\.mjs.*duplicate source key "a"/);
 });
 
+test('loadDefinitions rejects a source whose fetch is not a function (url, get) => response', async () => {
+  const dir = defsDir({
+    'acme.mjs': `export default { provider: 'acme', models: {}, sources: [{ key: 'a', url: 'https://a.test', expect: 'text', extract: /a/g, fetch: 'yes' }] };`,
+  });
+  await assert.rejects(loadDefinitions(dir), /acme\.mjs.*source "a".*fetch/);
+});
+
+test('loadDefinitions rejects a source whose gone is not a function (parsed, body) => ids', async () => {
+  const dir = defsDir({
+    'acme.mjs': `export default { provider: 'acme', models: {}, sources: [{ key: 'a', url: 'https://a.test', expect: 'text', extract: /a/g, gone: ['x'] }] };`,
+  });
+  await assert.rejects(loadDefinitions(dir), /acme\.mjs.*source "a".*gone/);
+});
+
 test('loadDefinitions accepts a discover source in place of a fixed url', async () => {
   const dir = defsDir({
     'acme.mjs': `export default { provider: 'acme', models: {}, sources: [{ key: 'a', discover: { url: 'https://a.test/docs', pattern: /x/ }, expect: 'text', extract: /a/g }] };`,
@@ -118,6 +132,38 @@ test('formatReport names each problem with what to do about it', () => {
   assert.match(text, /changed[\s\S]*snapshots\/acme\/docs\.txt/i);
   assert.match(text, /zeta[\s\S]*spec[\s\S]*HTTP 404/);
   assert.doesNotMatch(text, /calm.*(new|missing|FAILED)/i);
+});
+
+test('formatReport ends with the repair steps for each broken source: reproduce its url, find where it moved, fix the definition, verify twice', () => {
+  const text = formatReport({
+    exitCode: 2,
+    providers: [
+      {
+        provider: 'zeta',
+        failed: [{ source: 'spec', error: 'HTTP 404' }, { source: '(typings)', error: 'zeta/one: one appears in no typings snapshot' }],
+        new: [], missing: [], changed: [], noBaseline: [],
+        sources: [{ key: 'spec', url: 'https://zeta.test/spec.json', ok: false, ids: 0, error: 'HTTP 404' }],
+      },
+      { provider: 'acme', failed: [{ source: '(config)', error: 'acme/x is in models/*.yaml but not mapped' }], new: [], missing: [], changed: [], noBaseline: [], sources: [] },
+      { provider: 'calm', failed: [], new: [], missing: [], changed: [], noBaseline: [], sources: [{ key: 'docs', ok: true, ids: 4 }] },
+    ],
+  });
+  const repair = text.slice(text.indexOf('Repair'));
+  assert.ok(text.indexOf('Repair') > text.indexOf('clean: calm'), 'the repair block comes after the findings');
+  assert.match(repair, /zeta · spec \(HTTP 404\)/);
+  assert.match(repair, /curl -sIL -m 30 'https:\/\/zeta\.test\/spec\.json'/);
+  assert.match(repair, /llms\.txt/);
+  assert.match(repair, /scripts\/model-drift\/providers\/zeta\.mjs/);
+  assert.match(repair, /zeta · \(typings\)[^\n]*\n[^\n]*typings source/);
+  assert.match(repair, /acme · \(config\)[^\n]*\n[^\n]*adapter/);
+  assert.match(repair, /--provider acme,zeta --snapshots "\$D"/);
+  assert.match(repair, /node --test 'scripts\/model-drift\/test\/\*\.test\.mjs'/);
+  assert.doesNotMatch(repair, /calm/);
+});
+
+test('formatReport prints no repair block when no source failed', () => {
+  const text = formatReport({ exitCode: 0, providers: [{ provider: 'calm', failed: [], new: [], missing: [], changed: [], noBaseline: [], sources: [{ key: 'docs', ok: true, ids: 4 }] }] });
+  assert.doesNotMatch(text, /Repair/);
 });
 
 test('formatReport lists a source with no baseline, so its first snapshot gets a whole-file review', () => {

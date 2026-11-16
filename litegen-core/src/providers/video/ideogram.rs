@@ -98,8 +98,52 @@ impl IdeogramVideoProvider {
         MODELS.iter().find(|(id, _)| *id == model_id).map(|(_, m)| m)
     }
 
-    /// The submit's body as text fields (JSON or multipart alike) for `mode`.
-    fn fields(model: &ModelSchema, m: &Model, mode: Mode, base: &BaseGenerationRequest, extras: &VideoExtras) -> Result<Vec<(String, Value)>, ProviderError> {
+    /// The endpoint the request's images choose, by the fields their roles go
+    /// to: reference images → reference to video; a start frame (and an
+    /// optional last) → image to video; none → text to video. What Ideogram
+    /// would refuse there is refused here. One copy: the `preflight` the
+    /// quote runs and the submit both ask it, so a request is refused at both
+    /// or at neither, in the same words.
+    fn mode(model: &ModelSchema, m: &Model, extras: &VideoExtras, roles: &[&str]) -> Result<Mode, ProviderError> {
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        // Each role's multipart field: the row's `field_map`, as the
+        // materializer names it, else the field Ideogram gives that role.
+        let field_map = match model.ref_inputs.as_ref().map(|r| &r.provider_format) {
+            Some(crate::capabilities::RefProviderFormat::Multipart(f)) => Some(&f.field_map),
+            _ => None,
+        };
+        let fields: Vec<&str> = roles
+            .iter()
+            .map(|role| match field_map.and_then(|f| f.get(*role)) {
+                Some(field) => field.as_str(),
+                None => match *role {
+                    "first_frame" => "image",
+                    "last_frame" => "end_image",
+                    "reference" => "reference_images",
+                    other => other,
+                },
+            })
+            .collect();
+        let has = |field: &str| fields.contains(&field);
+        let mode = match (has("image") || has("end_image"), has("reference_images")) {
+            (true, true) => return refuse("frames and reference images go to different endpoints: send one or the other".into()),
+            (false, true) if !m.reference => return refuse("takes no reference images (it has no reference-to-video endpoint)".into()),
+            (false, true) => Mode::Reference,
+            (true, false) if !has("image") => return refuse("a last frame needs a first frame (`image` is required)".into()),
+            (true, false) => Mode::Image,
+            (false, false) => Mode::Text,
+        };
+        for (k, _) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
+            if REFERENCE_ONLY_EXTRAS.contains(&k.as_str()) && mode != Mode::Reference {
+                return refuse(format!("`{k}` is taken by reference-to-video only (attach reference images)"));
+            }
+        }
+        Ok(mode)
+    }
+
+    /// The submit's body as text fields (JSON or multipart alike) for `mode`
+    /// ([`Self::mode`] refused what the endpoint doesn't take).
+    fn fields(model: &ModelSchema, m: &Model, mode: Mode, base: &BaseGenerationRequest, extras: &VideoExtras) -> Vec<(String, Value)> {
         use crate::capabilities::schema::ParamSpec;
         let default = |param: &str| match model.params.get(param) {
             Some(ParamSpec::AspectRatio(a)) => a.default.clone(),
@@ -125,12 +169,9 @@ impl IdeogramVideoProvider {
             out.push(("generate_audio".into(), json!(audio)));
         }
         for (k, v) in crate::providers::extra_fields(extras.extra.as_ref(), |k| OWNED_FIELDS.contains(&k)) {
-            if REFERENCE_ONLY_EXTRAS.contains(&k.as_str()) && mode != Mode::Reference {
-                return Err(ProviderError::InvalidRequest(format!("{}: `{k}` is taken by reference-to-video only (attach reference images)", model.id)));
-            }
             out.push((k.clone(), v.clone()));
         }
-        Ok(out)
+        out
     }
 
     /// A refs's bytes as a multipart file part named after its field.
@@ -174,9 +215,15 @@ impl VideoProvider for IdeogramVideoProvider {
         self.config.as_ref().is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
-    /// Submit to the endpoint the request's images choose: reference images →
-    /// reference to video; a start frame (and optional last) → image to
-    /// video; none → text to video.
+    /// What Ideogram would refuse on the endpoint the images choose:
+    /// [`IdeogramVideoProvider::mode`], which the submit asks too. An id with
+    /// no arm is the submit's `ModelNotSupported`, not this.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(m) = Self::resolve_model(&model.id) else { return Ok(()) };
+        Self::mode(model, m, extras, roles).map(drop)
+    }
+
+    /// Submit to the endpoint the request's images choose ([`IdeogramVideoProvider::mode`]).
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -186,7 +233,9 @@ impl VideoProvider for IdeogramVideoProvider {
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let m = Self::resolve_model(&model.id)
             .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "ideogram".into() })?;
-        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        // The endpoint the images' roles choose, refused as the quote refused it.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        let mode = Self::mode(model, m, extras, &roles)?;
         let files: Vec<(&str, &[u8], &str)> = materialized
             .refs
             .iter()
@@ -195,16 +244,7 @@ impl VideoProvider for IdeogramVideoProvider {
                 _ => None,
             })
             .collect();
-        let has = |field: &str| files.iter().any(|(f, ..)| *f == field);
-        let mode = match (has("image") || has("end_image"), has("reference_images")) {
-            (true, true) => return refuse("frames and reference images go to different endpoints: send one or the other".into()),
-            (false, true) if !m.reference => return refuse("takes no reference images (it has no reference-to-video endpoint)".into()),
-            (false, true) => Mode::Reference,
-            (true, false) if !has("image") => return refuse("a last frame needs a first frame (`image` is required)".into()),
-            (true, false) => Mode::Image,
-            (false, false) => Mode::Text,
-        };
-        let fields = Self::fields(model, m, mode, base, extras)?;
+        let fields = Self::fields(model, m, mode, base, extras);
         let path = match mode {
             Mode::Text => "text",
             Mode::Image => "image",

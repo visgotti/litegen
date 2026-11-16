@@ -301,10 +301,55 @@ pub async fn get_provider(State(state): State<Arc<AppState>>, ctx: Option<Extens
     }
 }
 
+/// What the audit log keeps of an extra header's value. Migration 027 writes
+/// the same string over the values that entries kept before 2026-11-14.
+const REDACTED: &str = runtime::REDACTED;
+
+/// What a provider's audit entry keeps of its settings: each extra header's
+/// name, never its value, since a gateway's own auth travels in them
+/// (`cf-aig-authorization`, `Helicone-Auth`) and the provider view shows names
+/// only. An api_base, and each URL in the options, shows `[redacted]` for its
+/// user info, as the provider view does. Everything else as set. The audit
+/// log goes further than the provider view: backups and CSV exports keep its
+/// entries, and in single-tenant mode the default org's Owners and Admins
+/// read the gateway's changes. (In hosted mode the master key's changes to
+/// the gateway are filed under no org, which only the master key reads.)
+fn audited_settings(settings: &ProviderSettings) -> Option<serde_json::Value> {
+    let mut kept = settings.clone();
+    if let Some(headers) = kept.extra_headers.as_mut() {
+        headers.values_mut().for_each(|v| *v = REDACTED.to_string());
+    }
+    if let Some(base) = kept.api_base.as_mut() {
+        *base = runtime::shown_api_base(base);
+    }
+    if let Some(options) = kept.options.as_mut() {
+        *options = runtime::shown_options(options);
+    }
+    serde_json::to_value(&kept).ok()
+}
+
+/// What a gateway settings entry keeps of its settings: `[redacted]` for the
+/// alert webhook URL, since a URL can carry its secret in the path (Slack,
+/// Discord) or in the host (Pipedream, an AWS Lambda function URL), and the
+/// alert POST is unsigned, so the URL is all that guards the receiver. An
+/// empty or absent URL stays as it is, so the entry still says whether one is
+/// set. `GET /v1/admin/settings` shows the whole URL to the gateway's admins
+/// only (the audit log's wider readers: see [`audited_settings`]). Everything
+/// else as set. Migration 028 does the same to the entries kept before
+/// 2026-11-14.
+fn audited_gateway_settings(settings: &GatewaySettings) -> Option<serde_json::Value> {
+    let mut kept = settings.clone();
+    if let Some(url) = kept.alert_webhook_url.as_mut().filter(|u| !u.is_empty()) {
+        *url = REDACTED.to_string();
+    }
+    serde_json::to_value(&kept).ok()
+}
+
 /// PUT /v1/admin/providers/{name} — Set a provider's keys, api_base, model
 /// mapping, headers, options or enabled flag at runtime. Secret fields left
 /// out keep their stored value; every unset field falls back to env/YAML.
-/// In-flight jobs finish on the instance they started with.
+/// In-flight jobs finish on the instance they started with. To change some
+/// fields and keep the rest, use PATCH.
 #[utoipa::path(
     operation_id = "admin_put_provider",
     put,
@@ -326,65 +371,222 @@ pub async fn put_provider(
 ) -> Response {
     let (ctx, store) = admin_or_return!(state, ctx);
     if let Err(r) = known_or_404(&name) { return r; }
-    if let Some(base) = &body.settings.api_base {
+    if let Err(r) = check_sent(body.settings.api_base.as_deref(), body.settings.extra_headers.as_ref()) { return r; }
+    let incoming = keys_sent(body.api_key, body.api_keys, body.key_id, body.key_secret);
+    let (existing, previous, stored) = match opened_row(&state, store, &name).await { Ok(o) => o, Err(r) => return r };
+    let settings = match meant_settings(body.settings, &in_force_urls(&state, &name, &stored)) {
+        Ok(s) => s,
+        Err(e) => return bad_request("invalid_provider_config", &e),
+    };
+    store_provider(&state, &ctx, store, &name, existing.as_ref(), &incoming.or(&previous), &settings).await
+}
+
+/// PATCH /v1/admin/providers/{name} — Change some of a provider's runtime
+/// config and keep the rest. A field sent is set, `null` clears it (it
+/// falls back to env/YAML), and a field left out keeps its stored value.
+/// A key left out or `null` keeps its stored value, and one sent as `""`
+/// removes it (the env/YAML key applies again). A map (`model_mapping`,
+/// `extra_headers`) or `options` sent replaces the stored one whole.
+/// In-flight jobs finish on the instance they started with.
+#[utoipa::path(
+    operation_id = "admin_patch_provider",
+    patch,
+    path = "/v1/admin/providers/{name}",
+    params(("name" = String, Path, description = "Provider adapter name, e.g. openai")),
+    request_body = PatchProviderConfigRequest,
+    responses(
+        (status = 200, description = "Provider config applied", body = ProviderConfigView),
+        (status = 400, description = "Invalid config", body = ErrorResponse),
+        (status = 404, description = "Unknown provider", body = ErrorResponse),
+    ),
+    tag = "Gateway"
+)]
+pub async fn patch_provider(
+    State(state): State<Arc<AppState>>,
+    ctx: Option<Extension<KeyContext>>,
+    Path(name): Path<String>,
+    Json(body): Json<PatchProviderConfigRequest>,
+) -> Response {
+    let (ctx, store) = admin_or_return!(state, ctx);
+    if let Err(r) = known_or_404(&name) { return r; }
+    let sent = body.sent_settings();
+    if let Err(r) = check_sent(sent.api_base.as_deref(), sent.extra_headers.as_ref()) { return r; }
+    let (existing, previous, stored) = match opened_row(&state, store, &name).await { Ok(o) => o, Err(r) => return r };
+    let sent = match meant_settings(sent, &in_force_urls(&state, &name, &stored)) {
+        Ok(s) => s,
+        Err(e) => return bad_request("invalid_provider_config", &e),
+    };
+    let settings = body.applied_to(stored, sent);
+    store_provider(&state, &ctx, store, &name, existing.as_ref(), &patched_keys(&body, &previous), &settings).await
+}
+
+/// The keys a PATCH leaves: one sent with a value replaces the stored one,
+/// one sent as `""` (or blank) is removed, so the env/YAML key applies again,
+/// and one left out or `null` keeps its stored value.
+fn patched_keys(body: &PatchProviderConfigRequest, stored: &ProviderSecrets) -> ProviderSecrets {
+    fn pick(sent: &Option<String>, stored: &Option<String>) -> Option<String> {
+        match sent.as_deref() {
+            Some(v) if v.trim().is_empty() => None,
+            Some(v) => Some(v.to_string()),
+            None => stored.clone(),
+        }
+    }
+    ProviderSecrets {
+        api_key: pick(&body.api_key, &stored.api_key),
+        api_keys: pick(&body.api_keys, &stored.api_keys),
+        key_id: pick(&body.key_id, &stored.key_id),
+        key_secret: pick(&body.key_secret, &stored.key_secret),
+    }
+}
+
+/// A provider's runtime row, if it has one, with its keys and its settings
+/// as set (credentials opened).
+type OpenedRow = (Option<StoredProviderConfig>, ProviderSecrets, ProviderSettings);
+
+/// Provider `name`'s [`OpenedRow`].
+async fn opened_row(state: &AppState, store: &dyn ManagementStore, name: &str) -> Result<OpenedRow, Response> {
+    let existing = store.get_provider_config(name).await.map_err(|e| internal(&e.to_string()))?;
+    let (keys, settings) = match &existing {
+        Some(s) => runtime::open_config(state, s).map_err(|e| internal(&e))?,
+        None => Default::default(),
+    };
+    Ok((existing, keys, settings))
+}
+
+/// The URLs in force for provider `name`, which a save may send back as the
+/// view shows them: its runtime config's (`stored`, credentials opened),
+/// else its env/YAML config's.
+fn in_force_urls(state: &AppState, name: &str, stored: &ProviderSettings) -> ProviderSettings {
+    let env = runtime::env_config(state, name);
+    ProviderSettings {
+        api_base: stored.api_base.clone().or_else(|| env.as_ref().and_then(|e| e.api_base.clone())),
+        options: stored.options.clone().or_else(|| env.and_then(|e| e.options)),
+        ..Default::default()
+    }
+}
+
+/// The settings a save meant. The provider view shows the user info of an
+/// api_base, and of each URL in the options, as `[redacted]`, and the
+/// dashboard sends the api_base it shows back with every save: a URL sent
+/// back exactly as shown stands for the one in force (`in_force`). Any other
+/// URL that keeps `[redacted]` for its user info would send it to the proxy
+/// as the user, so the save is refused, naming the field.
+fn meant_settings(mut sent: ProviderSettings, in_force: &ProviderSettings) -> Result<ProviderSettings, String> {
+    if let Some(base) = sent.api_base.as_mut() {
+        meant_url(base, in_force.api_base.as_deref(), "api_base")?;
+    }
+    if let Some(options) = sent.options.as_mut() {
+        meant_option_urls(options, in_force.options.as_ref(), "options")?;
+    }
+    Ok(sent)
+}
+
+/// `sent` as [`meant_settings`] reads it: the URL in force when `sent` is
+/// that URL as the view shows it; an error naming `field` when it keeps
+/// `[redacted]` for its user info otherwise.
+fn meant_url(sent: &mut String, in_force: Option<&str>, field: &str) -> Result<(), String> {
+    match in_force.filter(|b| *b != sent.as_str() && runtime::shown_api_base(b) == *sent) {
+        Some(b) => *sent = b.to_string(),
+        None if sent.contains(&runtime::redacted_user_info()) => {
+            return Err(format!(
+                "{field} has `[redacted]` for its user info: send the user info itself, or the URL exactly as the provider view shows it to keep the one in force"
+            ));
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// [`meant_url`] for each URL in `sent` options, against the option at the
+/// same place in `in_force`; `path` names it (`options.platform_api_base`).
+fn meant_option_urls(sent: &mut serde_json::Value, in_force: Option<&serde_json::Value>, path: &str) -> Result<(), String> {
+    use serde_json::Value;
+    match sent {
+        Value::String(s) => meant_url(s, in_force.and_then(Value::as_str), path),
+        Value::Array(items) => items
+            .iter_mut()
+            .enumerate()
+            .try_for_each(|(i, item)| meant_option_urls(item, in_force.and_then(|v| v.get(i)), &format!("{path}[{i}]"))),
+        Value::Object(fields) => fields
+            .iter_mut()
+            .try_for_each(|(k, v)| meant_option_urls(v, in_force.and_then(|f| f.get(k)), &format!("{path}.{k}"))),
+        _ => Ok(()),
+    }
+}
+
+/// The checks a provider save makes on what it sends: an http(s) api_base,
+/// and extra headers litegen can send.
+fn check_sent(api_base: Option<&str>, headers: Option<&std::collections::HashMap<String, String>>) -> Result<(), Response> {
+    if let Some(base) = api_base {
         let ok = reqwest::Url::parse(base).map(|u| matches!(u.scheme(), "http" | "https")).unwrap_or(false);
         if !ok {
-            return bad_request("invalid_provider_config", "api_base must be an http(s) URL");
+            return Err(bad_request("invalid_provider_config", "api_base must be an http(s) URL"));
         }
     }
-    if let Some(headers) = &body.settings.extra_headers {
-        if let Err(e) = crate::providers::check_extra_headers(headers) {
-            return bad_request("invalid_provider_config", &e);
-        }
+    if let Some(headers) = headers {
+        crate::providers::check_extra_headers(headers).map_err(|e| bad_request("invalid_provider_config", &e))?;
     }
+    Ok(())
+}
+
+/// The keys a provider save sends: one left out or blank keeps its stored value.
+fn keys_sent(api_key: Option<String>, api_keys: Option<String>, key_id: Option<String>, key_secret: Option<String>) -> ProviderSecrets {
     let blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
-    let incoming = ProviderSecrets {
-        api_key: blank(body.api_key),
-        api_keys: blank(body.api_keys),
-        key_id: blank(body.key_id),
-        key_secret: blank(body.key_secret),
-    };
-    let existing = match store.get_provider_config(&name).await { Ok(e) => e, Err(e) => return internal(&e.to_string()) };
-    let previous = match &existing {
-        Some(s) => match runtime::decrypt_secrets(&state, s) {
-            Ok(p) => p,
-            Err(e) => return internal(&e),
-        },
-        None => ProviderSecrets::default(),
-    };
-    let secrets = incoming.clone().or(&previous);
-    let (ciphertext, nonce) = if secrets.is_empty() {
-        (None, None)
-    } else {
-        let Some(key) = state.secrets_key.as_ref() else {
+    ProviderSecrets { api_key: blank(api_key), api_keys: blank(api_keys), key_id: blank(key_id), key_secret: blank(key_secret) }
+}
+
+/// Store provider `name`'s runtime config as `secrets` and `settings` (its
+/// row before: `existing`), its credentials as `encrypt_provider_credentials`
+/// says, then put it in force and answer with its view.
+async fn store_provider(
+    state: &AppState,
+    ctx: &KeyContext,
+    store: &dyn ManagementStore,
+    name: &str,
+    existing: Option<&StoredProviderConfig>,
+    secrets: &ProviderSecrets,
+    settings: &ProviderSettings,
+) -> Response {
+    let encrypt = runtime::encrypts_credentials(&state.router.overrides().gateway);
+    let sealed = match runtime::seal_config(state.secrets_key.as_ref(), encrypt, secrets, settings) {
+        Ok(s) => s,
+        Err(runtime::SealError::KeyMissing) => {
             return bad_request("secrets_key_missing", "storing provider secrets needs LITEGEN__SECRETS_KEY configured");
-        };
-        let plain = match serde_json::to_vec(&secrets) { Ok(p) => p, Err(e) => return internal(&e.to_string()) };
-        match crate::auth::secrets::encrypt(key, &plain) {
-            Ok((c, n)) => (Some(c), Some(n)),
-            Err(e) => return internal(&e),
         }
+        Err(runtime::SealError::Failed(e)) => return internal(&e),
     };
     let hint_source = secrets.api_key.clone().or_else(|| secrets.api_keys.clone()).or_else(|| secrets.key_id.clone());
     let now = Utc::now();
     let row = StoredProviderConfig {
-        provider: name.clone(),
-        ciphertext,
-        nonce,
+        provider: name.to_string(),
+        ciphertext: sealed.ciphertext,
+        nonce: sealed.nonce,
         display_hint: hint_source.as_deref().and_then(runtime::key_hint),
-        settings_json: serde_json::to_string(&body.settings).unwrap_or_else(|_| "{}".into()),
-        created_at: existing.as_ref().map(|e| e.created_at).unwrap_or(now),
+        settings_json: sealed.settings_json,
+        created_at: existing.map(|e| e.created_at).unwrap_or(now),
         updated_at: now,
     };
     if let Err(e) = store.upsert_provider_config(&row).await {
         return internal(&e.to_string());
     }
-    runtime::announce(&state, SharedEvent::Reload).await;
-    if let Err(e) = runtime::apply_provider(&state, store, &name).await {
+    // This replica may not have heard of a switch of the setting yet, and the
+    // switch's own pass may have read the rows before this write: read the
+    // stored setting after it, and store the row again if it changed.
+    match runtime::load_gateway_settings(store).await {
+        Ok(gateway) if runtime::encrypts_credentials(&gateway) != encrypt => {
+            if let Err(e) = runtime::store_configs_as(state, store, !encrypt, Some(name)).await {
+                tracing::warn!(provider = %name, error = %e, "could not store this runtime provider config again as encrypt_provider_credentials now says; the next save of the gateway settings does");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(provider = %name, error = %e, "could not read encrypt_provider_credentials after a provider save; its row stays as saved until the next save of the gateway settings"),
+    }
+    runtime::announce(state, SharedEvent::Reload).await;
+    if let Err(e) = runtime::apply_provider(state, store, name).await {
         return internal(&e);
     }
-    audit(&state, &ctx, None, "provider.configure", "provider", &name, serde_json::to_value(&body.settings).ok());
-    match runtime::provider_view(&state, store, &name).await {
+    audit(state, ctx, None, "provider.configure", "provider", name, audited_settings(settings));
+    match runtime::provider_view(state, store, name).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err(e) => internal(&e),
     }
@@ -519,6 +721,7 @@ async fn settings_view(state: &AppState) -> GatewaySettingsView {
         effective_retries: s.retries.into(),
         effective_vendor_timeout_seconds: s.vendor_timeout.as_secs(),
         effective_circuit_breaker: s.breaker.into(),
+        limits: GatewaySettingLimits::ALLOWED,
     }
 }
 
@@ -560,7 +763,8 @@ pub async fn revoke_links(
 }
 
 /// PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
-/// webhook, default end-user budget). An omitted field is cleared.
+/// webhook, default end-user budget). An omitted field is cleared, except
+/// `encrypt_provider_credentials`, which keeps its stored value.
 #[utoipa::path(
     operation_id = "admin_put_settings",
     put,
@@ -575,12 +779,29 @@ pub async fn revoke_links(
 pub async fn put_settings(
     State(state): State<Arc<AppState>>,
     ctx: Option<Extension<KeyContext>>,
-    Json(body): Json<GatewaySettings>,
+    Json(mut body): Json<GatewaySettings>,
 ) -> Response {
     let (ctx, store) = admin_or_return!(state, ctx);
     if let Err(msg) = runtime::validate_gateway_settings(&body) {
         return bad_request("invalid_settings", &msg);
     }
+    // Unlike the other fields, `encrypt_provider_credentials` left out keeps
+    // its stored value: a client written before it existed must not turn the
+    // encryption off and store every credential in plain text again. `null`
+    // or `false` turns it off, which is stored as left out.
+    if body.encrypt_provider_credentials.is_none() {
+        match runtime::load_gateway_settings(store).await {
+            Ok(stored) => body.encrypt_provider_credentials = stored.encrypt_provider_credentials,
+            Err(e) => return internal(&e.to_string()),
+        }
+    }
+    let encrypt = runtime::encrypts_credentials(&body);
+    body.encrypt_provider_credentials = encrypt.then_some(Some(true));
+    if encrypt && state.secrets_key.is_none() {
+        return bad_request("secrets_key_missing", "encrypt_provider_credentials needs LITEGEN__SECRETS_KEY configured");
+    }
+    // What this replica held before the save, to say when the setting switches.
+    let was_encrypting = runtime::encrypts_credentials(&state.router.overrides().gateway);
     let json = match serde_json::to_string(&body) { Ok(j) => j, Err(e) => return internal(&e.to_string()) };
     // Read before the row is written: once it is, a refresh on this replica
     // can apply it at any moment, and the cache would then look as if it had
@@ -589,6 +810,18 @@ pub async fn put_settings(
     if let Err(e) = store.set_setting(runtime::SETTINGS_KEY, &json).await {
         return internal(&e.to_string());
     }
+    // Now that the setting is stored, every provider row goes the way it
+    // says (`runtime::store_configs_as`), on this replica and to the end even
+    // if the client goes away: a pass stopped half way would leave rows an
+    // older version can't read before a rollback.
+    let pass = state.clone();
+    let stored_again = runtime::finish_even_if_dropped_with(async move {
+        match pass.db.management() {
+            Some(store) => runtime::store_configs_after_save(&pass, store, encrypt).await,
+            None => Ok((encrypt, Vec::new())),
+        }
+    })
+    .await;
     let cache_now_on = crate::management::settings::effective(&state.router.config, &body).cache.enabled;
     if cache_was_on != cache_now_on {
         // Turning the gateway cache off or on empties it everywhere: this
@@ -626,7 +859,30 @@ pub async fn put_settings(
         apply_gateway_settings(&state.router, body.clone());
         runtime::announce(&state, SharedEvent::Reload).await;
     }
-    audit(&state, &ctx, None, "settings.update", "settings", "gateway", serde_json::to_value(&body).ok());
+    audit(&state, &ctx, None, "settings.update", "settings", "gateway", audited_gateway_settings(&body));
+    match stored_again {
+        // `stored`: the setting the rows were stored for, which is another
+        // save's if it switched the setting again meanwhile.
+        Some(Ok((stored, providers))) => {
+            if was_encrypting != stored || !providers.is_empty() {
+                tracing::info!(
+                    encrypt_provider_credentials = stored,
+                    configs_stored_again = providers.len(),
+                    ?providers,
+                    "runtime provider configs stored again as encrypt_provider_credentials says"
+                );
+                let action = if stored { "provider.encrypt_credentials" } else { "provider.decrypt_credentials" };
+                let after = serde_json::json!({ "encrypt_provider_credentials": stored, "configs_stored_again": providers.len(), "providers": providers });
+                audit(&state, &ctx, None, action, "provider", "*", Some(after));
+            }
+        }
+        Some(Err(e)) => {
+            return internal(&format!(
+                "the settings were saved, but the runtime provider configs could not all be stored again as encrypt_provider_credentials says ({e}): save the settings again"
+            ));
+        }
+        None => return internal("the server is stopping: the runtime provider configs may not all be stored as encrypt_provider_credentials says; save the settings again"),
+    }
     (StatusCode::OK, Json(settings_view(&state).await)).into_response()
 }
 
@@ -660,6 +916,100 @@ mod tests {
     /// The round whose routes are in force, 0 before any.
     fn routes_round(router: &ProxyRouter) -> u32 {
         router.model_routes().first().and_then(|r| r.model.strip_prefix('m')?.parse().ok()).unwrap_or(0)
+    }
+
+    /// N1 (leftovers 2026-11-14): the audit copy of a provider's settings
+    /// names each extra header and holds none of their values, which can be
+    /// a gateway's auth. Every other field is kept as set.
+    #[test]
+    fn audited_settings_keep_header_names_and_drop_their_values() {
+        let settings = ProviderSettings {
+            api_base: Some("https://gateway.example/v1".into()),
+            model_mapping: Some([("openai/gpt-image-2".to_string(), "my-deployment".to_string())].into()),
+            extra_headers: Some([
+                ("cf-aig-authorization".to_string(), "Bearer cf-token-123".to_string()),
+                ("OpenAI-Organization".to_string(), "org-123".to_string()),
+            ].into()),
+            options: Some(serde_json::json!({ "platform_api_base": "https://gateway.example/fal-platform" })),
+            region: Some("us-east-1".into()),
+            enabled: Some(true),
+        };
+        assert_eq!(
+            audited_settings(&settings),
+            Some(serde_json::json!({
+                "api_base": "https://gateway.example/v1",
+                "model_mapping": { "openai/gpt-image-2": "my-deployment" },
+                "extra_headers": { "cf-aig-authorization": "[redacted]", "OpenAI-Organization": "[redacted]" },
+                "options": { "platform_api_base": "https://gateway.example/fal-platform" },
+                "region": "us-east-1",
+                "enabled": true,
+            }))
+        );
+    }
+
+    /// provider-secrets (2026-11-15): the audit copy shows an api_base's user
+    /// info as `[redacted]`, as the provider view does, since it is a
+    /// credential (a proxy's basic auth, a token as the user name). An
+    /// api_base without any is kept as set.
+    #[test]
+    fn audited_settings_show_an_api_bases_user_info_as_redacted() {
+        for (base, kept) in [
+            ("https://proxy-user:proxy-pass@gateway.example/v1", "https://[redacted]@gateway.example/v1"),
+            ("https://token-as-user@gateway.example/v1?team=a", "https://[redacted]@gateway.example/v1?team=a"),
+            ("https://:pass-only@gateway.example:8443/", "https://[redacted]@gateway.example:8443/"),
+            ("https://gateway.example/v1", "https://gateway.example/v1"),
+        ] {
+            let settings = ProviderSettings { api_base: Some(base.into()), ..Default::default() };
+            assert_eq!(audited_settings(&settings).expect("settings serialize")["api_base"], kept, "{base}");
+        }
+    }
+
+    /// provider-config (2026-11-15): a URL in `options` (fal's
+    /// `platform_api_base` and `sync_api_base`, Bedrock's `s3_api_base`) can
+    /// carry a credential in its user info as an api_base can, and the audit
+    /// copy kept it whole. It shows `[redacted]` for the user info, wherever
+    /// the URL sits in the options; everything else is kept as set.
+    #[test]
+    fn audited_settings_show_the_user_info_of_option_urls_as_redacted() {
+        let options = serde_json::json!({
+            "platform_api_base": "https://fal-user:fal-pass-7720@proxy.example/fal-platform",
+            "sync_api_base": "https://sync.example/",
+            "s3_output_uri": "s3://bucket/prefix",
+            "nested": { "urls": ["https://token-7720@hooks.example/a", "plain text"] },
+            "retries": 3,
+        });
+        let settings = ProviderSettings { options: Some(options), ..Default::default() };
+        assert_eq!(
+            audited_settings(&settings).expect("settings serialize")["options"],
+            serde_json::json!({
+                "platform_api_base": "https://[redacted]@proxy.example/fal-platform",
+                "sync_api_base": "https://sync.example/",
+                "s3_output_uri": "s3://bucket/prefix",
+                "nested": { "urls": ["https://[redacted]@hooks.example/a", "plain text"] },
+                "retries": 3,
+            })
+        );
+    }
+
+    /// N1 follow-up: the audit copy of the gateway settings shows the alert
+    /// webhook URL as `[redacted]`, whatever its form, since the secret can be
+    /// in the path or in the host. An empty or absent URL stays as it is, so
+    /// the entry still says whether one is set. Every other field is kept.
+    #[test]
+    fn audited_gateway_settings_redact_the_alert_webhook_url() {
+        let with = |url: Option<&str>| GatewaySettings { alert_webhook_url: url.map(str::to_string), cost_markup_percent: Some(12.5), ..Default::default() };
+        for (url, kept) in [
+            (Some("https://hooks.slack.com/services/T0001/B0002/secret-1"), serde_json::json!("[redacted]")),
+            (Some("https://eo3secret77.m.pipedream.net/hook"), serde_json::json!("[redacted]")),
+            (Some("HTTPS://User:Pass@Hooks.Example.COM:443/alerts?token=abc#frag"), serde_json::json!("[redacted]")),
+            (Some("not a url"), serde_json::json!("[redacted]")),
+            (Some(""), serde_json::json!("")),
+            (None, serde_json::Value::Null),
+        ] {
+            let audited = audited_gateway_settings(&with(url)).expect("settings serialize");
+            assert_eq!(audited["alert_webhook_url"], kept, "{url:?}");
+            assert_eq!(audited["cost_markup_percent"], 12.5, "{url:?}: the rest is kept");
+        }
     }
 
     /// FU-LOCK (follow-ups 2026-11-13): a route save and a settings save at

@@ -1,0 +1,148 @@
+# v1 engine_id values the page names
+stable-diffusion-xl-1024-v1-0
+
+{
+  "POST /v1/generation/{engine_id}/image-to-image (multipart/form-data)": {
+    "discriminator": {
+      "mapping": {
+        "IMAGE_STRENGTH": "#/components/schemas/ImageToImageUsingImageStrengthRequestBody",
+        "STEP_SCHEDULE": "#/components/schemas/ImageToImageUsingStepScheduleRequestBody"
+      },
+      "propertyName": "init_image_mode"
+    },
+    "properties": {
+      "cfg_scale": {
+        "default": 7,
+        "maximum": 35,
+        "minimum": 0,
+        "type": "number"
+      },
+      "clip_guidance_preset": {
+        "default": "NONE",
+        "enum": [
+          "FAST_BLUE",
+          "FAST_GREEN",
+          "NONE",
+          "SIMPLE",
+          "SLOW",
+          "SLOWER",
+          "SLOWEST"
+        ],
+        "type": "string"
+      },
+      "extras": {
+        "type": "object"
+      },
+      "image_strength": {
+        "default": 0.35,
+        "format": "float",
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "init_image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "init_image_mode": {
+        "default": "IMAGE_STRENGTH",
+        "enum": [
+          "IMAGE_STRENGTH",
+          "STEP_SCHEDULE"
+        ],
+        "type": "string"
+      },
+      "sampler": {
+        "enum": [
+          "DDIM",
+          "DDPM",
+          "K_DPMPP_2M",
+          "K_DPMPP_2S_ANCESTRAL",
+          "K_DPM_2",
+          "K_DPM_2_ANCESTRAL",
+          "K_EULER",
+          "K_EULER_ANCESTRAL",
+          "K_HEUN",
+          "K_LMS"
+        ],
+        "type": "string"
+      },
+      "samples": {
+        "default": 1,
+        "maximum": 10,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "seed": {
+        "default": 0,
+        "maximum": 4294967295,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "step_schedule_end": {
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "step_schedule_start": {
+        "default": 0.65,
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "steps": {
+        "default": 30,
+        "maximum": 50,
+        "minimum": 10,
+        "type": "integer"
+      },
+      "style_preset": {
+        "enum": [
+          "enhance",
+          "anime",
+          "photographic",
+          "digital-art",
+          "comic-book",
+          "fantasy-art",
+          "line-art",
+          "analog-film",
+          "neon-punk",
+          "isometric",
+          "low-poly",
+          "origami",
+          "modeling-compound",
+          "cinematic",
+          "3d-model",
+          "pixel-art",
+          "tile-texture"
+        ],
+        "type": "string"
+      },
+      "text_prompts": {
+        "items": {
+          "properties": {
+            "text": {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            "weight": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "minItems": 1,
+        "type": "array"
+      }
+    },
+    "required": [
+      "text_prompts",
+      "init_image"
+    ],
+    "type": "object"
+  }
+}

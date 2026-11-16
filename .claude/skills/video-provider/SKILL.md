@@ -169,16 +169,43 @@ specific to video.
     with `ref_role_required` before anything is quoted or reserved, and
     the adapter's refusal stays as a backstop. Don't set it where the
     vendor takes a last frame alone (Luma, MiniMax).
+  - If the vendor takes reference images only beside a start frame (on
+    image-to-video only, as Runway's Kling O3), refuse references sent
+    without one, and set `needs_first_frame: true` on the row's
+    `reference` role: the validator refuses that request the same way.
+  - If the vendor takes frames or reference images but never both in one
+    request (Vidu), refuse the mix, and list the roles in the `reference`
+    role's `not_with` (`[first_frame, last_frame]`): the validator then
+    refuses the mix with `ref_role_conflict` in either mode, before
+    anything is quoted or reserved, and the adapter's refusal stays as a
+    backstop.
 - **Order positional images yourself.** If the vendor reads an array by
   position (start, then end), sort by role rather than trusting the order
   the caller sent.
 - **Duration.**
   - Send the vendor's type and spelling: Luma `"5s"`, Sora a numeric string,
     Runway an integer.
-  - If the vendor takes discrete values ("5 or 10", "4, 6 or 8"), the YAML
-    can only state a range. Snap deterministically to an allowed value
-    (vidu's `resolve_duration`), or return `InvalidRequest` before
-    submitting. Test the snapping, and report it under "Can't express".
+  - If the vendor takes discrete values ("5 or 10", "4, 6 or 8"), list them
+    as the param's `values`: the validator refuses the rest. Never snap
+    (L13). A length that depends on another field or on the endpoint
+    (vidu2.0's 8 s at 720p only) is a refusal the catalog can't say (below).
+- **Refusals the catalog can't say** (a vendor rule across two fields, such
+  as "native audio only at 1080p" or "a loop can't end on a last frame", or
+  of the endpoint the images choose) go in `VideoProvider::preflight`, which
+  reads only the request (params, prompt, the roles of its images, a
+  keyframe's `time_s`). The quote and the generation run it before anything
+  is quoted or reserved and answer 400 `request_unsupported` in its words.
+  - `generate` asks it first, and the body builders refuse nothing
+    (tokenhub.rs, kling.rs, luma.rs, pixverse.rs, hunyuan.rs).
+  - When the endpoint hangs on the images, write one function that picks it
+    by their roles and refuses what that endpoint doesn't take, and have the
+    preflight and the submit both call it: vidu.rs `endpoint`, fal.rs
+    `route`, ideogram.rs `mode`. Two copies drift.
+  - Only a rule that needs the image's bytes (its type, its size) stays at
+    submit. `a_direct_video_adapter_refuses_at_submit_only_what_its_preflight_refuses`
+    (catalog_conformance.rs) sends every row's requests to every direct
+    adapter and fails on a submit refusal the preflight doesn't give; list a
+    new rule in its `DIRECT_VIDEO_RULES`.
   - Don't send `duration` to an endpoint whose schema has no such field (fal
     `EndpointSpec`).
 - **Resolution, ratio and fps.**

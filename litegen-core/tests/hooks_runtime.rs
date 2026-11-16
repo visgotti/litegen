@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use litegen::hooks::process::{write_runner, HookCallError, HookFn, HookOutcome, HookProcess, Refusal};
-use litegen::hooks::{HookConfig, ResolvedHook, Runtime};
+use litegen::hooks::{HookConfig, HookSet, ResolvedHook, Runtime};
 use serde_json::{json, Value};
 
 struct Rt {
@@ -165,6 +165,60 @@ async fn a_file_that_fails_to_load_fails_to_start() {
     for rt in RUNTIMES.iter().filter(|rt| installed(rt)) {
         let err = HookProcess::start(&resolved(rt, &format!("broken.{}", rt.load_ext), json!({}))).await.err().unwrap();
         assert!(err.contains(rt.parse_error), "{}: {err}", rt.label);
+    }
+}
+
+/// A hook entry for `file` in this runtime, as `litegen.yaml` would list it
+/// (the runtime named where the extension doesn't imply it), plus `extra`.
+fn entry(rt: &Rt, file: &str, extra: Value) -> HookConfig {
+    let mut v = json!({ "path": file });
+    if let Some(r) = rt.named {
+        v["runtime"] = json!(r);
+    }
+    for (k, val) in extra.as_object().cloned().unwrap_or_default() {
+        v[k] = val;
+    }
+    serde_json::from_value(v).unwrap()
+}
+
+/// A hook that can't start is named by its entry: its place in `hooks:`
+/// (from 0) and its path as written, so the operator finds it in
+/// `litegen.yaml`. A missing file, one that defines none of the three, and a
+/// runtime that won't start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hook_that_cannot_start_is_named_by_its_entry() {
+    for rt in RUNTIMES.iter().filter(|rt| installed(rt)) {
+        let pre_only = format!("pre_only.{}", rt.load_ext);
+        let refusal = |second: HookConfig| {
+            let configs = vec![entry(rt, &pre_only, json!({})), second];
+            async move { HookSet::start(&configs, &fixtures(), 4, T).await.err().unwrap_or_default() }
+        };
+        let gone = format!("gone.{}", rt.load_ext);
+        let not_found = format!("hooks[1] ({gone}): hook file not found: {}", fixtures().join(&gone).display());
+        assert_eq!(refusal(entry(rt, &gone, json!({}))).await, not_found, "{}", rt.label);
+        let neither = format!("neither.{}", rt.load_ext);
+        let defines_none = format!("hooks[1] ({neither}): {neither} defines none of pre_call, post_call and file_access");
+        assert_eq!(refusal(entry(rt, &neither, json!({}))).await, defines_none, "{}", rt.label);
+        let err = refusal(entry(rt, &pre_only, json!({ "command": "/no/such/runtime" }))).await;
+        assert!(err.starts_with(&format!("hooks[1] ({pre_only}): cannot start /no/such/runtime: ")), "{}: {err}", rt.label);
+    }
+}
+
+/// `routes` limits only `pre_call` and `post_call`, so on a file that defines
+/// only `file_access` it does nothing: litegen starts the hook and warns,
+/// naming the entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn routes_on_a_file_access_only_hook_is_warned_about() {
+    for rt in RUNTIMES.iter().filter(|rt| installed(rt)) {
+        let warnings = |configs: Vec<HookConfig>| async move { HookSet::start(&configs, &fixtures(), 4, T).await.unwrap().unwrap().warnings().to_vec() };
+        let file_only = format!("file_only.{}", rt.load_ext);
+        let routed = json!({ "routes": ["files"] });
+        let said = format!("hooks[1] ({file_only}): routes has no effect: the file defines only file_access, and routes limits only pre_call and post_call");
+        let both = vec![entry(rt, rt.behaviour, json!({})), entry(rt, &file_only, routed.clone())];
+        assert_eq!(warnings(both).await, vec![said], "{}", rt.label);
+        // Nothing to say without routes, or on a file that defines pre_call or post_call.
+        assert_eq!(warnings(vec![entry(rt, &file_only, json!({}))]).await, Vec::<String>::new(), "{}", rt.label);
+        assert_eq!(warnings(vec![entry(rt, rt.behaviour, routed)]).await, Vec::<String>::new(), "{}", rt.label);
     }
 }
 

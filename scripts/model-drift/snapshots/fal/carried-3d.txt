@@ -316,9 +316,34 @@
         "exclusiveMinimum": 0,
         "type": "number"
       },
+      "include_fingers": {
+        "default": false,
+        "type": "boolean"
+      },
       "model_url": {
         "minLength": 1,
         "type": "string"
+      },
+      "skeleton_template": {
+        "anyOf": [
+          {
+            "enum": [
+              "mixamo",
+              "ue5_mannequin",
+              "unity_humanoid",
+              "maya_human_ik",
+              "blender_rigify_basic_human",
+              "max_biped",
+              "cc5_hd_neutral_base",
+              "daz_genesis9",
+              "meshyrig"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
       }
     },
     "required": [

@@ -111,6 +111,12 @@ components:
           additionalProperties: false
         callback_url:
           type: string
+        response_format:
+          type: string
+          enum:
+            - task
+            - flat
+          default: task
     VideoGenerationV2Resp:
       type: object
       properties:

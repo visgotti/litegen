@@ -90,6 +90,35 @@ MIRRORED = {
     "PixelSize": t.PixelSize,
     "VideoSegment": t.VideoSegment,
     "ImageSegmentationResponse": t.ImageSegmentationResponse,
+    # Management: what the key and provider PATCHes take and answer, and an
+    # org's invitations. The request bodies have no required keys: what is
+    # left out is kept, and null clears.
+    "UpdateApiKeyRequest": t.UpdateApiKeyRequest,
+    "ApiKeyDetail": t.ApiKeyDetail,
+    "PatchProviderConfigRequest": t.PatchProviderConfigRequest,
+    "ProviderConfigView": t.ProviderConfigView,
+    "InviteResponse": t.InviteResponse,
+    "PendingInvitation": t.PendingInvitation,
+    # The audit log and a key's webhook delivery attempts, and their pages.
+    "AuditLogEntry": t.AuditLogEntry,
+    "PaginatedResponse_AuditLogEntry": t.AuditLogPage,
+    "WebhookDelivery": t.WebhookDelivery,
+    "PaginatedResponse_WebhookDelivery": t.WebhookDeliveryPage,
+    "WebhookDeliveryState": t.WebhookDeliveryState,
+    "PasswordResetLink": t.PasswordResetLink,
+    # What logs.list, spend.logs and admin.settings return.
+    "RequestLog": t.RequestLog,
+    "PaginatedResponse_RequestLog": t.RequestLogPage,
+    "SpendLogEntry": t.SpendLogEntry,
+    "SpendLogsResponse": t.SpendLogPage,
+    "GatewaySettings": t.GatewaySettings,
+    "GatewaySettingsView": t.GatewaySettingsView,
+    "AccessSettings": t.AccessSettings,
+    "EffectiveCache": t.EffectiveCache,
+    "EffectiveRetries": t.EffectiveRetries,
+    "EffectiveBreaker": t.EffectiveBreaker,
+    "GatewaySettingLimits": t.GatewaySettingLimits,
+    "SettingRange": t.SettingRange,
 }
 
 
@@ -177,6 +206,11 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("LayoutKind", t.LayoutKind),
         ("SegmentOrigin", t.SegmentOrigin),
         ("ExtendOutput", t.ExtendOutput),
+        ("Role", t.Role),
+        ("WebhookDeliveryStatus", t.WebhookDeliveryStatus),
+        ("AccessMode", t.AccessMode),
+        ("OwnerScope", t.OwnerScope),
+        ("SignedLinks", t.SignedLinks),
     ],
 )
 def test_literal_values_match_the_schema_enum(schema_name: str, alias: Any) -> None:

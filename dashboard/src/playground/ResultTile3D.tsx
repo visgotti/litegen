@@ -1,5 +1,6 @@
 import ModelViewer from '../components/ModelViewer';
 import PackageDownloads from '../components/PackageDownloads';
+import { formatCost } from '../components/model-detail';
 import { meshOf, previewOf, validAssets } from '../components/model3d-assets';
 import type { ResultTileState } from './types';
 
@@ -48,7 +49,7 @@ export default function ResultTile3D({ tile, onRerun, rerunDisabled }: Props) {
         <PackageDownloads assets={assets} testId={`pg-tile-packages-${tile.modelId}`} />
       )}
       <div className="pg-tile-meta">
-        {tile.costUsd != null && <span>${tile.costUsd.toFixed(3)}</span>}
+        {tile.costUsd != null && <span>{formatCost(tile.costUsd)}</span>}
         {tile.latencyMs != null && <span>{tile.latencyMs}ms</span>}
         {tile.droppedParams && tile.droppedParams.length > 0 && (
           <span className="pg-tile-dropped" data-testid={`pg-tile-dropped-${tile.modelId}`}

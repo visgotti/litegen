@@ -4,13 +4,15 @@ models:
   # gpt-image-1-mini / gpt-image-1.5 / chatgpt-image-latest are themselves
   # scheduled for shutdown on 2026-12-01; gpt-image-1 was shut down on
   # 2026-10-23 (replacement gpt-image-2.5-sunburst or -flare). GPT Image 2.5 (Sunburst,
-  # Flare; released 2026-09-08) is what OpenAI recommends for new integrations.
+  # Flare; released 2026-09-08). gpt-image-2 itself is deprecated and shuts down
+  # 2027-02-10; "For new integrations, use GPT-Image-2.6 Sunburst or Flare"
+  # (the guide, 2026-11-16).
   # Sora 2 and the Videos API were shut down on 2026-09-24, so OpenAI has no
   # video model here.
   # @see https://developers.openai.com/api/docs/deprecations
   # @see https://developers.openai.com/api/docs/guides/image-generation
   #
-  # GPT Image 2.5 is token-priced like GPT Image 2 ("Both GPT Image 2.5 models
+  # GPT Image 2.5 is token-priced like GPT Image 2 ("Both GPT-Image-2.5 models
   # use the same token rates: $8 per million image input tokens, … $30 per
   # million image output tokens"), and both 2.5 models share one entry
   # ("gpt-image-2.5") in OpenAI's token calculator, the guide's "Calculating
@@ -19,10 +21,11 @@ models:
   # default `auto` depends on the generated image): 439 output tokens x $30/1M
   # = $0.01317. The calculator is a client-rendered component, so its counts
   # are not page text; they were re-derived 2026-11-09 from its script's grid
-  # (medium 24 for "gpt-image-2.5") and formula. The adapter scales the base
-  # by quality (image/openai.rs `estimate_cost`).
-  # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (2026-11-09)
-  # @see https://developers.openai.com/_astro/GptImageTokenCalculator.react.Ul9pMTwf.js (2026-11-09)
+  # (medium 24 for "gpt-image-2.5") and formula, and the grid is unchanged in
+  # the redeployed script on 2026-11-16 (`"gpt-image-2.5":c`). The adapter
+  # scales the base by quality (image/openai.rs `estimate_cost`).
+  # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (2026-11-16)
+  # @see https://developers.openai.com/_astro/GptImageTokenCalculator.react.7TppeEsP.js (2026-11-16; the 2026-11-09 build, Ul9pMTwf, is gone)
   # @see https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst (image tokens: $8 input, $30 output per 1M)
   - id: openai/gpt-image-2.5-sunburst
     provider: openai
@@ -95,6 +98,7 @@ models:
     # parts, and "If you provide multiple input images, the mask will be
     # applied to the first image" — so the edited image (`init`) goes first.
     # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-03)
+    # @see https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.json (CreateImageEditRequest.image, 2026-11-16)
     ref_inputs:
       max_total: 17
       default_role: init
@@ -182,6 +186,7 @@ models:
     # parts, and "If you provide multiple input images, the mask will be
     # applied to the first image" — so the edited image (`init`) goes first.
     # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-03)
+    # @see https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.json (CreateImageEditRequest.image, 2026-11-16)
     ref_inputs:
       max_total: 17
       default_role: init
@@ -206,14 +211,190 @@ models:
       safety_identifier: { kind: string, max_length: 128 }
     tags: [text-to-image, image-to-image, inpainting, fast]
 
+  # GPT Image 2.6 Sunburst and Flare, OpenAI's named successors to gpt-image-2
+  # (added 2026-11-16 from the model-drift run). Both model pages list
+  # "| Image generation | `v1/images/generations` | Supported |" and
+  # "| Image edit | `v1/images/edits` | Supported |", image tokens
+  # "| Input | $8 | 1M tokens |" and "| Output | $30 | 1M tokens |". The guide:
+  # "Both models support complexity control, markup-guided edits, SVG output,
+  # and animated GIF output through the Image API." The 2.6 pages list no
+  # "Supported features" (the 2.5 pages list "inpainting"), so these rows take
+  # images on images/edits but no mask; nor `background`, which the reference
+  # names for gpt-image-2.5 and gpt-image-2 only. SVG and GIF output are not
+  # offered: SVG is generations-only and needs `svg.model` access, GIF needs
+  # `frame_count` and a preview, and image/openai.rs labels only raster bytes.
+  # @see https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst.md (2026-11-16)
+  # @see https://developers.openai.com/api/docs/models/gpt-image-2.6-flare.md (2026-11-16)
+  # @see https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst.md (2026-11-16; its "Supported features" list)
+  # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-16)
+  #
+  # Price: "Image output costs $30 per million billable tokens" (guide,
+  # "GPT-Image-2.6 costs"); the tokens per image come from the guide's
+  # calculator, a client-rendered component whose script holds the grid:
+  # `"gpt-image-2.6":c` with `c={low:16,medium:24,high:48,xhigh:64,max:96}`
+  # (2.5's grid) and a 2.6-only factor `l={low:4.2,medium:3.3,high:1,xhigh:1,max:1}`
+  # (`return e===`gpt-image-2.6`?Math.round(p*l[r]):p`). At 1024x1024 that is
+  # 823 / 1,449 / 1,756 / 3,122 / 7,024 output tokens for low / medium / high /
+  # xhigh / max. base_cost_usd is medium, the anchor 2.5 uses (`auto` depends on
+  # the image): 1,449 x $30/1M = $0.04347.
+  # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (2026-11-16)
+  # @see https://developers.openai.com/_astro/GptImageTokenCalculator.react.7TppeEsP.js (2026-11-16)
+  - id: openai/gpt-image-2.6-sunburst
+    provider: openai
+    media_type: image
+    display_name: GPT Image 2.6 Sunburst
+    docs_url: https://developers.openai.com/api/reference/resources/images/methods/generate
+    description: OpenAI GPT Image 2.6 Sunburst, image generation and editing for
+      detailed visual work. Text-to-image plus prompt-driven editing with up to
+      16 input images via the images/edits endpoint. Arbitrary resolutions (both
+      dimensions divisible by 16, aspect ratio between 1:3 and 3:1); quality up
+      to `xhigh` and `max`, and a `complexity` setting.
+    pricing:
+      base_cost_usd: 0.0435
+      # Output tokens by quality, relative to the medium image the base is for
+      # (the calculator's 2.6 counts above: 823 / 1,449 / 1,756 / 3,122 / 7,024);
+      # `auto` stays at medium. Then by size past 1024x1024, as for 2.5.
+      # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (2026-11-16)
+      variable_pricing:
+        - { when: { quality: low }, multiply: 0.567978 }
+        - { when: { quality: high }, multiply: 1.21187 }
+        - { when: { quality: xhigh }, multiply: 2.154589 }
+        - { when: { quality: max }, multiply: 4.847481 }
+        - { multiply_per_megapixel_above: 1.048576 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    # "The maximum length is 32000 characters for the GPT image models"
+    # (CreateImageRequest.prompt / CreateImageEditRequest.prompt).
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # "The default format is `png`, but you can also request `jpeg` or `webp`."
+      # (guide, "Output format"); `gif` and `svg` are left out (see above).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      # The calculator checks every model's size with the same constants
+      # (`f=16,p=655360,m=8294400,h=3840,g=3`): "Width and height must both be
+      # divisible by 16.", a pixel budget of 655,360 to 8,294,400, "Maximum edge
+      # length must be less than or equal to" 3,840px, "Aspect ratio must be no
+      # greater than 3:1."; the adapter applies them to every `gpt-image-2*` id.
+      # @see https://developers.openai.com/_astro/GptImageTokenCalculator.react.7TppeEsP.js (2026-11-16)
+      size:
+        kind: size
+        mode: freeform
+        min_width: 480
+        max_width: 3840
+        min_height: 480
+        max_height: 3840
+        multiple_of: 16
+        min_pixels: 655360
+        max_pixels: 8294400
+        max_aspect: 3.0
+      # "For the Sunburst and Flare models in both GPT-Image-2.6 and
+      # GPT-Image-2.5, the quality options are `low`, `medium`, `high`,
+      # `xhigh`, and `max`." (guide, "Calculating costs"); `auto` is the
+      # reference's default.
+      quality:
+        kind: string
+        enum_values: [auto, low, medium, high, xhigh, max]
+        default: auto
+    # `image` is "an array of images" (maxItems 16) on images/edits; the first
+    # is the edited one. No mask (see above).
+    # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-16)
+    # @see https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.json (CreateImageEditRequest.image, 2026-11-16)
+    ref_inputs:
+      max_total: 16
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, reference: image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 15 }
+    # complexity: "The supported complexity levels for Sunburst and Flare are
+    # `low`, `medium`, and `high`. If you omit `complexity`, both models use
+    # `high`." and "Adjusting complexity has no separate fee." (guide); the
+    # reference types it `"enum":["low","medium","high",null]` on both
+    # endpoints. The rest as on the 2.5 rows.
+    # @see https://developers.openai.com/api/docs/guides/image-generation.md (Set image complexity, 2026-11-16)
+    # @see https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.json (components.schemas.complexity, 2026-11-16)
+    extra_allowlist: [complexity, output_compression, moderation, user, safety_identifier]
+    extra_params:
+      complexity: { kind: string, enum_values: ["low", "medium", "high"], default: "high" }
+      output_compression: { kind: int, min: 0, max: 100, default: 100 }
+      moderation: { kind: string, enum_values: ["low", "auto"], default: "auto" }
+      user: { kind: string }
+      safety_identifier: { kind: string, max_length: 128 }
+    tags: [text-to-image, image-to-image, premium]
+
+  - id: openai/gpt-image-2.6-flare
+    provider: openai
+    media_type: image
+    display_name: GPT Image 2.6 Flare
+    docs_url: https://developers.openai.com/api/reference/resources/images/methods/generate
+    description: OpenAI GPT Image 2.6 Flare, image generation and editing for
+      fast iteration. Text-to-image plus prompt-driven editing with up to 16
+      input images via the images/edits endpoint. Arbitrary resolutions (both
+      dimensions divisible by 16, aspect ratio between 1:3 and 3:1); quality up
+      to `xhigh` and `max`, and a `complexity` setting.
+    # Same token rates and calculator entry as Sunburst ("gpt-image-2.6", see above).
+    pricing:
+      base_cost_usd: 0.0435
+      # @see https://developers.openai.com/api/docs/guides/image-generation#calculating-costs (2026-11-16)
+      variable_pricing:
+        - { when: { quality: low }, multiply: 0.567978 }
+        - { when: { quality: high }, multiply: 1.21187 }
+        - { when: { quality: xhigh }, multiply: 2.154589 }
+        - { when: { quality: max }, multiply: 4.847481 }
+        - { multiply_per_megapixel_above: 1.048576 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 32000 }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      # Same size rules as Sunburst (see above).
+      size:
+        kind: size
+        mode: freeform
+        min_width: 480
+        max_width: 3840
+        min_height: 480
+        max_height: 3840
+        multiple_of: 16
+        min_pixels: 655360
+        max_pixels: 8294400
+        max_aspect: 3.0
+      quality:
+        kind: string
+        enum_values: [auto, low, medium, high, xhigh, max]
+        default: auto
+    ref_inputs:
+      max_total: 16
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, reference: image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        reference: { required: false, min_count: 0, max_count: 15 }
+    # complexity and the rest as on Sunburst (see above).
+    extra_allowlist: [complexity, output_compression, moderation, user, safety_identifier]
+    extra_params:
+      complexity: { kind: string, enum_values: ["low", "medium", "high"], default: "high" }
+      output_compression: { kind: int, min: 0, max: 100, default: 100 }
+      moderation: { kind: string, enum_values: ["low", "auto"], default: "auto" }
+      user: { kind: string }
+      safety_identifier: { kind: string, max_length: 128 }
+    tags: [text-to-image, image-to-image, fast]
+
   - id: openai/gpt-image-2
     provider: openai
     media_type: image
     display_name: GPT Image 2
     docs_url: https://developers.openai.com/api/reference/resources/images/methods/generate
-    description: OpenAI GPT Image 2. Text-to-image plus prompt-driven editing
-      and inpainting via the images/edits endpoint. Arbitrary resolutions
-      (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).
+    description: "DEPRECATED: 2027-02-10, OpenAI shuts gpt-image-2 down; migrate to
+      openai/gpt-image-2.6-sunburst or openai/gpt-image-2.6-flare. OpenAI GPT Image 2.
+      Text-to-image plus prompt-driven editing and inpainting via the images/edits
+      endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio
+      between 1:3 and 3:1)."
+    # "| **Feb 10, 2027** | `gpt-image-2`, `gpt-image-2-2026-04-21` | Deprecated |
+    # `gpt-image-2.6-sunburst` or `gpt-image-2.6-flare` | Nov 10, 2026 |" (shutdown
+    # date, affected model, status, recommended replacement, notice date). Successor:
+    # Sunburst, the first one OpenAI names; Flare is the other.
+    # @see https://developers.openai.com/api/docs/deprecations.md (2026-11-16)
+    retires_at: 2027-02-10
+    replaced_by: openai/gpt-image-2.6-sunburst
     # GPT Image 2 at 1024 × 1024, "Low $0.006", "Medium $0.053", "High
     # $0.211" (the guide's "Historical output costs" table). The default
     # quality is `auto`, which OpenAI picks per image, so it bills at the
@@ -271,6 +452,7 @@ models:
     # parts, and "If you provide multiple input images, the mask will be
     # applied to the first image" — so the edited image (`init`) goes first.
     # @see https://developers.openai.com/api/docs/guides/image-generation.md (2026-11-03)
+    # @see https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.json (CreateImageEditRequest.image, 2026-11-16)
     ref_inputs:
       max_total: 17
       default_role: init

@@ -830,12 +830,19 @@ async fn every_resumable_image_job_is_read_by_poll_job() {
         }
         // Done: the result is on the mock's loopback, which the default
         // public-address check refuses — reaching that refusal proves the
-        // adapter read the job as done and went for its result.
-        match ask(ResponseTemplate::new(200).set_body_json(done)).await {
+        // adapter read the job as done and went for its result. It goes for
+        // it through `image::fetch_result`, which tells the poller its vendor
+        // has answered, so the poller's budget never cuts the download
+        // (follow-ups 2026-11-15).
+        let downloading = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        match crate::providers::noting_result_download(downloading.clone(), ask(ResponseTemplate::new(200).set_body_json(done))).await {
             Ok(crate::providers::ImageJobPoll::Done(_)) => {}
             Err(e) if e.to_string().contains("could not be fetched") => {}
             Ok(crate::providers::ImageJobPoll::Failed(why)) if why.contains("could not be fetched") => {}
             other => problems.push(format!("{}: a finished job read as {other:?}", row.id)),
+        }
+        if !downloading.load(std::sync::atomic::Ordering::SeqCst) {
+            problems.push(format!("{}: a finished job's image was downloaded some other way than image::fetch_result", row.id));
         }
         match ask(ResponseTemplate::new(200).set_body_json(failed)).await {
             Ok(crate::providers::ImageJobPoll::Failed(_)) => {}

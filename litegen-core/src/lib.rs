@@ -30,6 +30,7 @@ pub mod providers;
 pub mod proxy;
 pub mod serve;
 pub mod shared;
+pub mod shutdown;
 pub mod store;
 pub mod supervise;
 pub mod types;

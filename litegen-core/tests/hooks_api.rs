@@ -878,3 +878,179 @@ async fn chaining_another_end_users_file_asks_file_access() {
         }
     }
 }
+
+// ─── routes: the route groups a hook runs on ─────────────────────────────────
+
+/// A request to each hooked route as the master key, with the group a hook
+/// entry's `routes:` names it by (docs/hooks.md). The bodies needn't be
+/// valid: a hook that runs refuses them before litegen reads them.
+fn one_request_per_hooked_route() -> Vec<(&'static str, Request<Body>)> {
+    let auth = bearer();
+    let to = |path: &str| post(path, json!({}), &[("authorization", auth.as_str())]);
+    let convert = Request::post("/v1/utils/models3d/convert?from=glb&to=obj")
+        .header("authorization", auth.as_str())
+        .header("content-type", "model/gltf-binary")
+        .body(Body::from(vec![0u8; 16]))
+        .unwrap();
+    vec![
+        ("generations", to("/v1/images/generations")),
+        ("generations", to("/v1/images/segmentations")),
+        ("generations", to("/v1/videos/generations")),
+        ("generations", to("/v1/models3d/generations")),
+        ("cost", to("/v1/images/cost")),
+        ("cost", to("/v1/videos/cost")),
+        ("cost", to("/v1/models3d/cost")),
+        ("status", get("/v1/videos/litegen-vid-none")),
+        ("status", get("/v1/models3d/litegen-3d-none")),
+        ("convert", convert),
+        ("files", get("/v1/generations/litegen-img-none/assets/0")),
+    ]
+}
+
+/// The hooked routes `app`'s hooks refused, as `METHOD /path`.
+async fn routes_refused_by_hooks(app: &Router) -> Vec<String> {
+    let mut refused = Vec::new();
+    for (_, req) in one_request_per_hooked_route() {
+        let route = format!("{} {}", req.method(), req.uri().path());
+        let (_, _, body) = send(app, req).await;
+        if error_of(&body).0 == "refused_by_hook" {
+            refused.push(route);
+        }
+    }
+    refused
+}
+
+/// The bug this option fixes: the dashboard's Playground asks `/cost` for a
+/// price after each pause in typing, so a paid moderation or logging hook
+/// was billed for every one. Limited to generations, it never sees a price
+/// check, and litegen answers the quote itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hook_limited_to_generations_never_sees_a_price_check() {
+    if !installed("python3") {
+        return;
+    }
+    let (app, _a) = app(vec![hook("refuse_all.py", None, "python", json!({ "routes": ["generations"] }))]).await;
+    let auth = bearer();
+    let (status, _, quote) = send(&app, post("/v1/images/cost", image("a fox"), &[("authorization", &auth)])).await;
+    assert_eq!((status, error_of(&quote).0), (StatusCode::OK, ""), "litegen's own quote: {quote}");
+    let (status, _, body) = send(&app, post("/v1/images/generations", image("a fox"), &[("authorization", &auth)])).await;
+    assert_eq!((status, error_of(&body).0), (StatusCode::FORBIDDEN, "refused_by_hook"), "the generation reaches the hook: {body}");
+}
+
+/// Each hooked route is in exactly one group, the one docs/hooks.md gives
+/// it: a hook naming one group refuses that group's routes and no other's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hook_runs_only_on_the_route_groups_it_names() {
+    if !installed("python3") {
+        return;
+    }
+    for group in ["generations", "cost", "status", "convert", "files"] {
+        let (app, _a) = app(vec![hook("refuse_all.py", None, "python", json!({ "routes": [group] }))]).await;
+        let wanted: Vec<String> = one_request_per_hooked_route()
+            .into_iter()
+            .filter(|(g, _)| *g == group)
+            .map(|(_, req)| format!("{} {}", req.method(), req.uri().path()))
+            .collect();
+        assert_eq!(routes_refused_by_hooks(&app).await, wanted, "the routes a hook with routes: [{group}] refused");
+    }
+}
+
+/// Without `routes:` a hook runs on every hooked route, as it did before
+/// the option existed, so a custom-auth `pre_call` still covers every route
+/// its callers use. A narrower default would send those callers' price
+/// checks, status polls and file fetches to litegen without the key the
+/// hook injects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hook_without_routes_runs_on_every_hooked_route() {
+    if !installed("python3") {
+        return;
+    }
+    let (app, _a) = app(vec![hook("refuse_all.py", None, "python", json!({}))]).await;
+    let every: Vec<String> = one_request_per_hooked_route().into_iter().map(|(_, req)| format!("{} {}", req.method(), req.uri().path())).collect();
+    assert_eq!(routes_refused_by_hooks(&app).await, every);
+}
+
+/// `routes:` limits `post_call` as it does `pre_call`: a tagging hook limited
+/// to generations leaves a price check's answer as litegen made it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_post_call_limited_to_generations_leaves_a_price_check_alone() {
+    for rt in runtimes() {
+        let (app, _a) = behaviour_app(rt, json!({ "routes": ["generations"] })).await;
+        let auth = bearer();
+        let tag = [("authorization", auth.as_str()), ("x-test-post", "tag")];
+        let (status, headers, quote) = send(&app, post("/v1/images/cost", image("a fox"), &tag)).await;
+        assert_eq!(status, StatusCode::OK, "{}: {quote}", rt.label);
+        assert_eq!((headers.get("x-hooked"), quote.get("hooked")), (None, None), "{}: post_call ran on a price check: {quote}", rt.label);
+        let (status, headers, made) = send(&app, post("/v1/images/generations", image("a fox"), &tag)).await;
+        assert_eq!((status, headers.get("x-hooked").and_then(|v| v.to_str().ok())), (StatusCode::OK, Some(rt.label)), "{}: {made}", rt.label);
+    }
+}
+
+/// `routes:` never limits `file_access`, which is asked wherever a stored
+/// file is about to be read (docs/hooks.md): a hook naming only `cost` still
+/// decides on the file route and on a stored file a new job reads. Were it
+/// limited by the request's group, a file rule that names `files` alone
+/// would let a customer chain another customer's file into a generation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn routes_never_limits_file_access() {
+    for rt in runtimes() {
+        let (app, _a) = behaviour_app(rt, json!({ "routes": ["cost"] })).await;
+        let auth = bearer();
+        let id = kept_image(&app, &auth, "alice").await;
+        let deny = [("authorization", auth.as_str()), ("x-test-file", "deny-false")];
+        let (status, _, body) = send(&app, file_get(&id, &deny)).await;
+        assert_eq!((status, error_of(&body).0), (StatusCode::FORBIDDEN, "refused_by_hook"), "{}: the file route: {body}", rt.label);
+        let reuse = json!({ "model": "mock/base64-refs-image", "prompt": "reuse", "reference_images": [{ "type": "generation", "value": id, "role": "init" }] });
+        let (status, _, body) = send(&app, post("/v1/images/generations", reuse, &deny)).await;
+        assert_eq!((status, error_of(&body).0), (StatusCode::FORBIDDEN, "refused_by_hook"), "{}: a stored file a new job reads: {body}", rt.label);
+    }
+}
+
+/// The body `pre_call` sees on each hooked route: a POST's, except the
+/// converter's upload, which streams through unread; a GET has none. The
+/// route groups decide it, as they decide where a hook runs, so this pins
+/// it route by route. Every POST sends the same JSON, the converter's too,
+/// so a body the hook layer read would show.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pre_call_sees_the_body_of_each_hooked_post_but_the_converters() {
+    let probe = json!({ "probe": 1 });
+    let unread = Value::Null;
+    let expected: Vec<(String, Value)> = [
+        ("POST /v1/images/generations", &probe),
+        ("POST /v1/images/segmentations", &probe),
+        ("POST /v1/videos/generations", &probe),
+        ("POST /v1/models3d/generations", &probe),
+        ("POST /v1/images/cost", &probe),
+        ("POST /v1/videos/cost", &probe),
+        ("POST /v1/models3d/cost", &probe),
+        ("GET /v1/videos/litegen-vid-none", &unread),
+        ("GET /v1/models3d/litegen-3d-none", &unread),
+        ("POST /v1/utils/models3d/convert", &unread),
+        ("GET /v1/generations/litegen-img-none/assets/0", &unread),
+    ]
+    .into_iter()
+    .map(|(route, body)| (route.to_string(), body.clone()))
+    .collect();
+    for rt in runtimes() {
+        let (app, _a) = behaviour_app(rt, json!({})).await;
+        let mut seen = Vec::new();
+        for (_, sample) in one_request_per_hooked_route() {
+            let route = format!("{} {}", sample.method(), sample.uri().path());
+            let req = Request::builder()
+                .method(sample.method().clone())
+                .uri(sample.uri().clone())
+                .header("authorization", bearer())
+                .header("x-test-action", "report");
+            let req = if sample.method() == axum::http::Method::POST {
+                req.header("content-type", "application/json").body(Body::from(probe.to_string()))
+            } else {
+                req.body(Body::empty())
+            };
+            let (status, _, answer) = send(&app, req.unwrap()).await;
+            assert_eq!(status, StatusCode::IM_A_TEAPOT, "{}: {route}: {answer}", rt.label);
+            let view: Value = serde_json::from_str(error_of(&answer).1).unwrap();
+            seen.push((route, view["body"].clone()));
+        }
+        assert_eq!(seen, expected, "{}: the body pre_call saw on each hooked route", rt.label);
+    }
+}

@@ -66,8 +66,10 @@ fn every_model_is_mapped_in_its_drift_definition() {
     );
 }
 
-/// Model ids whose vendor shutdown date has already passed. Advertising any of
-/// these guarantees a runtime failure.
+/// Model ids litegen no longer carries. Most are past their vendor's shutdown,
+/// so advertising one guarantees a runtime failure; MiniMax's T2V-01-Director
+/// and S2V-01 are still served but have no published price to bill. The list
+/// also keeps a retired id from coming back as a different model.
 #[test]
 fn no_retired_model_ids_are_advertised() {
     let reg = registry();
@@ -116,6 +118,20 @@ fn no_retired_model_ids_are_advertised() {
         ("google/veo-3.1-generate-preview", "Google shut down the Veo 3.1 previews 2026-10-22; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
         ("google/veo-3.1-fast-generate-preview", "Google shut down the Veo 3.1 previews 2026-10-22; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
         ("google/veo-3.1-lite-generate-preview", "Google shut down the Veo 3.1 previews 2026-10-22; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
+        // 2026-11-16 model-drift run (.superpowers/sdd/2026-11-16-drift/ledger.md):
+        // fal's registry answers 404 "Endpoint(s) not found" for both endpoints,
+        // and their queue OpenAPI, model pages and llms.txt are gone too.
+        // @see https://api.fal.ai/v1/models?endpoint_id=fal-ai/aura-flow (HTTP 404, 2026-11-16)
+        // @see https://fal.ai/models/fal-ai/stable-diffusion-v35-medium/llms.txt (HTTP 404, 2026-11-16)
+        ("fal/auraflow", "fal removed fal-ai/aura-flow (deprecated 2026-10-27) from its registry and docs by 2026-11-16; no successor named"),
+        ("fal/sd35-medium", "fal removed fal-ai/stable-diffusion-v35-medium from its registry and docs by 2026-11-16; no successor named"),
+        // Retired by litegen on 2026-11-16, not by MiniMax: still in the t2v and
+        // s2v `model` enums, but neither MiniMax's pricing page (not even under
+        // "Legacy Models") nor its China twin prices them, so there is nothing
+        // true to bill.
+        // @see https://platform.minimax.io/docs/pricing/overview.md (2026-11-16)
+        ("minimax/T2V-01-Director", "MiniMax publishes no price for it; retired by litegen 2026-11-16"),
+        ("minimax/S2V-01", "MiniMax publishes no price for it; retired by litegen 2026-11-16"),
     ];
     let mut still_present = Vec::new();
     for (id, why) in retired {
@@ -141,6 +157,10 @@ const SCHEDULED_SHUTDOWNS: &[(&str, &str, &str)] = &[
     // @see https://ai.google.dev/gemini-api/docs/deprecations
     // Google moved this shutdown from 2026-10-02 to 2027-03-15 (deprecations page, 2026-10-12).
     ("google/gemini-2.5-flash-image", "2027-03-15", "Google shuts down gemini-2.5-flash-image; successor google/gemini-3.1-flash-lite-image"),
+    // @see https://developers.openai.com/api/docs/deprecations.md (2026-11-16): "| **Feb 10, 2027** |
+    // `gpt-image-2`, `gpt-image-2-2026-04-21` | Deprecated | `gpt-image-2.6-sunburst` or `gpt-image-2.6-flare` |
+    // Nov 10, 2026 |".
+    ("openai/gpt-image-2", "2027-02-10", "OpenAI shuts down gpt-image-2; successor openai/gpt-image-2.6-sunburst or openai/gpt-image-2.6-flare"),
 ];
 
 /// L14: a scheduled shutdown is the row's own `retires_at`, so litegen stops
@@ -229,6 +249,9 @@ fn replacement_models_are_advertised() {
         "openai/gpt-image-2",
         "openai/gpt-image-2.5-sunburst",
         "openai/gpt-image-2.5-flare",
+        // gpt-image-2's own successors (it shuts down 2027-02-10).
+        "openai/gpt-image-2.6-sunburst",
+        "openai/gpt-image-2.6-flare",
         "google/gemini-3.1-flash-image",
         "google/gemini-3-pro-image",
         "runway/gen4-turbo",
@@ -496,6 +519,140 @@ fn vidu_q1_duration_and_resolution_match_the_model_map() {
         }
         other => panic!("viduq1 resolution is {other:?}"),
     }
+}
+
+/// Vidu takes first/last frames (img2video, start-end2video) or reference
+/// images (reference2video, whose `images` form's body has no frame field),
+/// never both in one request, and TokenHub resells the same endpoints
+/// (tokenhub.rs: "first/last frames or reference images, not both"). So the
+/// `reference` role of every Vidu row that takes a frame, direct or on
+/// TokenHub, names those frame roles in `not_with`, and the validator refuses
+/// the mix before it is quoted or reserved.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md> (2026-11-09)
+/// @see <https://cloud.tencent.com/document/product/1823/135756> (2026-11-09)
+#[test]
+fn every_vidu_row_keeps_its_frames_and_references_apart() {
+    let reg = registry();
+    let mut checked = Vec::new();
+    // Vidu direct, and the TokenHub rows tokenhub.rs sends to `vidu_submit`.
+    for m in reg.all().filter(|m| m.provider == "vidu" || m.id.starts_with("tokenhub/vidu-video-")) {
+        let Some(refs) = &m.ref_inputs else { continue };
+        let Some(reference) = refs.roles.get("reference") else { continue };
+        for frame in ["first_frame", "last_frame"].into_iter().filter(|f| refs.roles.contains_key(*f)) {
+            assert!(reference.not_with.iter().any(|n| n == frame), "{}: the reference role names no {frame} in not_with: {:?}", m.id, reference.not_with);
+            checked.push(m.id.as_str());
+        }
+    }
+    assert!(checked.iter().any(|id| id.starts_with("vidu/")) && checked.iter().any(|id| id.starts_with("tokenhub/")), "{checked:?}");
+}
+
+/// frames-refs: the other video rows whose vendor takes first/last frames or
+/// reference images, never both in one request. Each adapter refused the mix
+/// only at submit, after the request was quoted and reserved, and /cost
+/// called it fine:
+/// - Ideogram sends frames to `…-image-to-video` and references to
+///   `…-reference-to-video` (ideogram.rs: "frames and reference images go to
+///   different endpoints: send one or the other");
+/// - TokenHub's WAND-Vega, MiniMax H3 and PixVerse take one or the other
+///   (tokenhub.rs: "takes first/last frames or reference images, not both");
+/// - Runway's image-to-video branch of these resold models has no
+///   `references` (runway.rs `references_i2v: 0`: "reference images go
+///   without a start frame (text-to-video)");
+/// - MiniMax H3 direct sent the mix on, and MiniMax refuses it: frames and
+///   references "cannot be mixed".
+///
+/// So each row's `reference` role names every frame role it declares in
+/// `not_with`, and the validator refuses the mix (`ref_role_conflict`, in
+/// either mode) before anything is quoted or reserved. Every other video row
+/// with a reference role beside a frame role is listed as taking both:
+/// Runway's Kling 4, Kling 4 Flash and Kling O3 send `references` with the
+/// start frame. Vidu's rows are the test above's.
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v2.json> (2026-11-10)
+/// @see <https://cloud.tencent.com/document/product/1823/138195> (2026-11-09)
+/// @see <https://cloud.tencent.com/document/product/1823/135737> (2026-11-09)
+/// @see <https://cloud.tencent.com/document/product/1823/135325> (2026-11-09)
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-11-10)
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-11-11)
+#[test]
+fn every_other_row_whose_vendor_takes_frames_or_references_keeps_them_apart() {
+    const FRAMES: [&str; 3] = ["first_frame", "last_frame", "init"];
+    let apart = [
+        "ideogram/minimax-h3",
+        "ideogram/seedance-2",
+        "ideogram/seedance-2-5",
+        "tokenhub/wand-vega-video-1.0-lite",
+        "tokenhub/minimax-video-h3",
+        "tokenhub/pixverse-video-v6.0",
+        "tokenhub/pixverse-video-c1",
+        "tokenhub/pixverse-video-v5.6",
+        "runway/gemini_omni_flash_1.1",
+        "runway/gemini_omni_flash_1.2",
+        "runway/hailuo3",
+        "runway/seedance2",
+        "runway/seedance2_fast",
+        "runway/seedance2_mini",
+        "runway/seedance2_5",
+        "runway/grok_imagine_1_5",
+        "runway/wan3",
+        "runway/wan3_prime",
+        "minimax/MiniMax-H3",
+        "minimax/MiniMax-H3-Max",
+        "minimax/MiniMax-H3-Highspeed",
+        "minimax/MiniMax-H3-Lite",
+    ];
+    let together = ["runway/kling_4", "runway/kling_4_flash", "runway/klingO3_standard", "runway/klingO3_pro", "runway/klingO3_4k"];
+    let reg = registry();
+    let (mut seen, mut wrong) = (Vec::new(), Vec::new());
+    for m in reg.all().filter(|m| m.media_type == MediaType::Video) {
+        if m.provider == "vidu" || m.id.starts_with("tokenhub/vidu-video-") {
+            continue;
+        }
+        let Some(refs) = &m.ref_inputs else { continue };
+        let Some(reference) = refs.roles.get("reference") else { continue };
+        let frames: Vec<&str> = FRAMES.into_iter().filter(|f| refs.roles.contains_key(*f)).collect();
+        if frames.is_empty() {
+            continue;
+        }
+        let id = m.id.as_str();
+        seen.push(id);
+        if together.contains(&id) {
+            if !reference.not_with.is_empty() {
+                wrong.push(format!("{id}: takes references beside a frame, but its reference role names {:?} in not_with", reference.not_with));
+            }
+            continue;
+        }
+        if !apart.contains(&id) {
+            wrong.push(format!("{id}: a reference role beside {frames:?}; list it as apart or together"));
+            continue;
+        }
+        let named: Vec<&str> = frames.iter().copied().filter(|f| reference.not_with.iter().any(|n| n == f)).collect();
+        if named != frames {
+            wrong.push(format!("{id}: the reference role names {:?} in not_with; its frame roles are {frames:?}", reference.not_with));
+        }
+        // Refused at validation, which /v1/videos/cost runs too, in either mode.
+        for frame in &frames {
+            for strict in [true, false] {
+                let req: litegen::types::VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+                    "model": id, "prompt": "a lighthouse at dusk", "strict": strict,
+                    "reference_images": [
+                        { "type": "url", "value": "https://example.com/frame.png", "role": frame },
+                        { "type": "url", "value": "https://example.com/reference.png", "role": "reference" },
+                    ],
+                }))
+                .unwrap();
+                match litegen::api::middleware::validator::validate_video(m, req) {
+                    Err(e) if e.code == "ref_role_conflict" && e.param.as_deref() == Some("reference_images") => {}
+                    Err(e) => wrong.push(format!("{id} {frame} + reference strict={strict}: {} {}", e.code, e.message)),
+                    Ok(_) => wrong.push(format!("{id} {frame} + reference strict={strict}: accepted")),
+                }
+            }
+        }
+    }
+    for id in apart.iter().chain(&together).filter(|id| !seen.contains(*id)) {
+        wrong.push(format!("{id}: listed, but no video row of the catalog has a reference role beside a frame role there"));
+    }
+    wrong.sort();
+    assert!(wrong.is_empty(), "{} findings over {} rows:\n{}", wrong.len(), seen.len(), wrong.join("\n"));
 }
 
 // ─── 3D family conformance ──────────────────────────────────────────────────
@@ -811,9 +968,12 @@ fn runway_resold_image_rows_are_carried_with_runways_contract() {
         // "(credits per image + 1 credit per reference image)".
         ("runway/gpt_image_2_5_flare", j!({ "quality": "max", "resolution": "4K" }), 2, 0.77),
         ("runway/gpt_image_2_5_flare", j!({ "quality": "low", "resolution": "4K", "aspect_ratio": "2:3" }), 0, 0.02),
-        ("runway/gpt_image_2_6_sunburst", j!({ "quality": "medium", "resolution": "4K", "aspect_ratio": "21:9" }), 0, 0.02),
+        // 2.6 since 2026-11-16: "`high` costs the same as on GPT Image 2.5, and `low` and
+        // `medium` cost more" — 4K `medium` 21:9 is 6, 1K `low` 4:5 is 4 (+1 per reference).
+        // @see <https://docs.dev.runwayml.com/guides/pricing.md> (2026-11-16)
+        ("runway/gpt_image_2_6_sunburst", j!({ "quality": "medium", "resolution": "4K", "aspect_ratio": "21:9" }), 0, 0.06),
         ("runway/gpt_image_2_5_sunburst", j!({ "quality": "xhigh", "resolution": "2K", "aspect_ratio": "21:9" }), 0, 0.08),
-        ("runway/gpt_image_2_6_flare", j!({ "quality": "low", "aspect_ratio": "4:5" }), 1, 0.02),
+        ("runway/gpt_image_2_6_flare", j!({ "quality": "low", "aspect_ratio": "4:5" }), 1, 0.05),
         ("runway/gpt_image_2_6_sunburst", j!({ "resolution": "2K", "aspect_ratio": "16:9" }), 0, 0.06),
         // "5 credits per 512px image, … 16 credits per 4K image".
         ("runway/gemini_image3.1_flash", j!({ "resolution": "0.5K" }), 0, 0.05),
@@ -1067,35 +1227,13 @@ fn minimax_v1_models_other_than_hailuo_02_declare_no_last_frame() {
         has_last_frame("minimax/MiniMax-Hailuo-02"),
         "MiniMax-Hailuo-02 is the fl2v model"
     );
-    for id in ["minimax/MiniMax-Hailuo-2.3", "minimax/T2V-01-Director", "minimax/S2V-01"] {
+    // The v1 models left once T2V-01-Director and S2V-01 were retired (2026-11-16).
+    for id in ["minimax/MiniMax-Hailuo-2.3", "minimax/MiniMax-Hailuo-2.3-Fast"] {
         assert!(
             !has_last_frame(id),
             "{id} declares a last_frame role, but fl2v only accepts MiniMax-Hailuo-02"
         );
     }
-}
-
-/// The S2V-01 request schema lists `subject_reference` in `required` (one
-/// image: "only one image supported"). A prompt-only request cannot succeed, so
-/// the role is required and the model is not text-to-video.
-/// @see <https://platform.minimax.io/docs/api-reference/video-generation-s2v.md> (2026-09-11)
-#[test]
-fn minimax_s2v_01_requires_its_subject_reference() {
-    let reg = registry();
-    let schema = reg.get("minimax/S2V-01").expect("minimax/S2V-01 missing");
-    let subject = schema
-        .ref_inputs
-        .as_ref()
-        .and_then(|ri| ri.roles.get("subject"))
-        .expect("S2V-01 needs a subject role");
-    assert!(
-        subject.required && subject.min_count == 1 && subject.max_count == 1,
-        "subject_reference is required, exactly one image: {subject:?}"
-    );
-    assert!(
-        !schema.capabilities.text_to_video,
-        "S2V-01 cannot generate from a prompt alone"
-    );
 }
 
 /// `fast_pretreatment` "Applies only to `MiniMax-Hailuo-2.3` and
@@ -1410,24 +1548,35 @@ fn recraft_v2_v3_sizes_are_the_v2_v3_table() {
 /// `negative_prompt`, and `text_layout`".
 /// @see <https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash.md> (2026-11-03)
 /// @see <https://www.recraft.ai/docs/api-reference/pricing.md> (2026-11-03)
+///
+/// Recraft V4.1 Flash V2 (2026-11-16) "Replaced V4.1 Flash" with the same
+/// contract and price ("Not supported by Flash V2: `style`, `style_id`, …";
+/// "\$0.007"), so both rows hold it; the old one is deprecated in its favour.
+/// @see <https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash-v2.md> (2026-11-16)
+/// @see <https://www.recraft.ai/docs/api-reference/models.md> (2026-11-16)
 #[test]
 fn recraft_v4_1_flash_is_carried_with_its_documented_contract() {
     use litegen::capabilities::schema::SizeSpec;
     let reg = registry();
-    let flash = reg.get("recraft/recraftv4_1_flash").expect("recraftv4_1_flash missing");
     let v41 = reg.get("recraft/recraftv4_1").expect("recraftv4_1 missing");
-    assert!((flash.pricing.base_cost_usd - 0.007).abs() < 1e-9);
-    assert!(flash.capabilities.text_to_image && !flash.capabilities.image_to_image, "generate image only");
-    assert_eq!(flash.prompt.max_length, Some(10000));
-    for k in ["style", "negative_prompt"] {
-        assert!(!flash.params.contains_key(k), "Flash takes no {k}");
+    for id in ["recraft/recraftv4_1_flash", "recraft/recraftv4_1_flash_v2"] {
+        let flash = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!((flash.pricing.base_cost_usd - 0.007).abs() < 1e-9, "{id}");
+        assert!(flash.capabilities.text_to_image && !flash.capabilities.image_to_image, "{id}: generate image only");
+        assert_eq!(flash.prompt.max_length, Some(10000), "{id}");
+        for k in ["style", "negative_prompt"] {
+            assert!(!flash.params.contains_key(k), "{id} takes no {k}");
+        }
+        assert_eq!(flash.extra_allowlist, ["controls"], "{id}: no style_id on Flash");
+        assert!(matches!(flash.params.get("seed"), Some(ParamSpec::Seed(_))) && flash.params.contains_key("palette"), "{id}");
+        match (flash.params.get("size"), v41.params.get("size")) {
+            (Some(ParamSpec::Size(SizeSpec::Enum(a))), Some(ParamSpec::Size(SizeSpec::Enum(b)))) => assert_eq!(a.values, b.values, "{id}: the 1K table"),
+            other => panic!("{id}: {other:?}"),
+        }
     }
-    assert_eq!(flash.extra_allowlist, ["controls"], "no style_id on Flash");
-    assert!(matches!(flash.params.get("seed"), Some(ParamSpec::Seed(_))) && flash.params.contains_key("palette"));
-    match (flash.params.get("size"), v41.params.get("size")) {
-        (Some(ParamSpec::Size(SizeSpec::Enum(a))), Some(ParamSpec::Size(SizeSpec::Enum(b)))) => assert_eq!(a.values, b.values, "the 1K table"),
-        other => panic!("{other:?}"),
-    }
+    let old = reg.get("recraft/recraftv4_1_flash").unwrap();
+    assert_eq!(old.replaced_by.as_deref(), Some("recraft/recraftv4_1_flash_v2"), "Recraft replaced V4.1 Flash with Flash V2");
+    assert!(old.deprecated_at.is_some(), "the replaced row is marked deprecated");
 }
 
 /// Every Recraft generation model takes an aspect ratio as `size: "w:h"`, the
@@ -1611,10 +1760,15 @@ fn safety_tolerance_is_typed_as_each_vendor_takes_it() {
     for m in reg.all().filter(|m| m.provider != "mock" && m.extra_allowlist.iter().any(|k| k == "safety_tolerance")) {
         let t = serde_json::to_value(m).unwrap()["extra_params"]["safety_tolerance"].clone();
         let want = match m.id.as_str() {
-            "fal/flux-pro" | "fal/flux-kontext-pro" | "fal/flux-kontext-max" => serde_json::json!({ "kind": "string", "enum_values": ["1", "2", "3", "4", "5", "6"], "default": "2" }),
+            // FLUX1.1 [pro] ultra, its Redux twins and FLUX.1 [pro] Fill: the same "1"-"6"
+            // enum in each endpoint's queue spec (model-drift review, 2026-11-16).
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1-ultra> (2026-11-16)
+            "fal/flux-pro" | "fal/flux-kontext-pro" | "fal/flux-kontext-max" | "fal/flux-pro-1.1-ultra" | "fal/flux-pro-1.1-redux"
+            | "fal/flux-pro-1.1-ultra-redux" | "fal/flux-pro-fill" => {
+                serde_json::json!({ "kind": "string", "enum_values": ["1", "2", "3", "4", "5", "6"], "default": "2" })
+            }
             "fal/flux-2-pro" | "fal/flux-2-max" | "fal/flux-2-flex" => serde_json::json!({ "kind": "string", "enum_values": ["1", "2", "3", "4", "5"], "default": "2" }),
             id if id.starts_with("fal/flux-3-") => serde_json::json!({ "kind": "int", "min": 0, "max": 4, "default": 2 }),
-            id if id.starts_with("fal/") => serde_json::json!({ "kind": "string" }),
             "bfl/flux-2-pro" | "bfl/flux-2-max" | "bfl/flux-2-klein-9b" | "bfl/flux-2-flex" | "bfl/flux-3-image" | "bfl/flux-3-image-klein" => {
                 serde_json::json!({ "kind": "int", "min": 0, "max": 7, "default": 2 })
             }
@@ -1669,7 +1823,12 @@ fn every_allowlisted_extra_is_typed_or_named_untyped() {
         }
     }
     assert!(missing.is_empty(), "allowlisted with no type:\n{}", missing.join("\n"));
-    assert_eq!((typed, untyped), (208 + 3, 47), "typed and untyped allowlist entries");
+    // 2026-11-16: −2 typed for the retired minimax/T2V-01-Director and
+    // minimax/S2V-01 (prompt_optimizer each); +10 typed for the drift run's
+    // openai/gpt-image-2.6-sunburst and -flare (complexity, moderation,
+    // output_compression, safety_identifier and user each); +1 untyped for its
+    // recraft/recraftv4_1_flash_v2 (controls).
+    assert_eq!((typed, untyped), (208 + 3 - 2 + 10, 47 + 1), "typed and untyped allowlist entries");
 }
 
 /// D2: a param description is a whole sentence. In a YAML flow mapping a
@@ -1711,6 +1870,17 @@ fn every_vidu_row_takes_whole_seconds() {
     for m in &vidu {
         assert!(matches!(m.params.get("duration_seconds"), Some(ParamSpec::Int(_))), "{}: {:?}", m.id, m.params.get("duration_seconds"));
     }
+}
+
+/// vidu2.0 sends a lone first frame to img2video, whose page says "Note 1:
+/// Maximum length of **2000 characters**" for `prompt` (model-drift review,
+/// 2026-11-16; the row allowed 5000).
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-2-0/image-to-video.md> (2026-11-16)
+#[test]
+fn vidu_2_0_prompt_is_capped_at_img2video_2000() {
+    let reg = registry();
+    let m = reg.get("vidu/vidu2.0").expect("vidu/vidu2.0 missing");
+    assert_eq!(m.prompt.max_length, Some(2000), "img2video caps the vidu2.0 prompt at 2000");
 }
 
 #[test]
@@ -2105,35 +2275,6 @@ fn fal_fast_sdxl_steps_match_the_endpoint() {
     }
 }
 
-/// `fal-ai/stable-diffusion-v35-medium` `num_inference_steps` defaults to 40;
-/// the catalog said 28.
-/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/stable-diffusion-v35-medium> (2026-09-11)
-#[test]
-fn fal_sd35_medium_steps_default_is_the_endpoint_default() {
-    let reg = registry();
-    let schema = reg.get("fal/sd35-medium").expect("fal/sd35-medium missing");
-    match schema.params.get("steps") {
-        Some(ParamSpec::Int(i)) => {
-            assert_eq!(
-                i.default,
-                Some(40),
-                "fal-ai/stable-diffusion-v35-medium defaults to 40 steps"
-            );
-            assert!(
-                i.min.is_some_and(|m| m >= 1),
-                "steps min {:?} is below fal's 1",
-                i.min
-            );
-            assert!(
-                i.max.is_some_and(|m| m <= 50),
-                "steps max {:?} is above fal's 50",
-                i.max
-            );
-        }
-        other => panic!("fal/sd35-medium steps is {other:?}, expected Int"),
-    }
-}
-
 /// Recraft V3 on fal caps `prompt` at 1000 characters (`maxLength: 1000`, on
 /// both `fal-ai/recraft-v3` and its successor id
 /// `fal-ai/recraft/v3/text-to-image`). The catalog allowed 5000.
@@ -2147,31 +2288,6 @@ fn fal_recraft_v3_prompt_limit_is_1000_characters() {
         Some(1000),
         "fal's Recraft V3 prompt maxLength is 1000"
     );
-}
-
-/// `fal-ai/aura-flow` `num_inference_steps` is 20-50 with default 50. The
-/// catalog allowed 10-19 (rejected) and defaulted to 25.
-/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow> (2026-09-11)
-#[test]
-fn fal_aura_flow_steps_match_the_endpoint() {
-    let reg = registry();
-    let schema = reg.get("fal/auraflow").expect("fal/auraflow missing");
-    match schema.params.get("steps") {
-        Some(ParamSpec::Int(i)) => {
-            assert!(
-                i.min.is_some_and(|m| m >= 20),
-                "steps min {:?} is below fal's 20",
-                i.min
-            );
-            assert!(
-                i.max.is_some_and(|m| m <= 50),
-                "steps max {:?} is above fal's 50",
-                i.max
-            );
-            assert_eq!(i.default, Some(50), "fal-ai/aura-flow defaults to 50 steps");
-        }
-        other => panic!("fal/auraflow steps is {other:?}, expected Int"),
-    }
 }
 
 /// `fal/video` runs `fal-ai/ltx-video` (text) or `fal-ai/ltx-video/image-to-video`
@@ -3269,6 +3385,37 @@ fn openai_gpt_image_2_5_models_advertise_xhigh_and_max_quality() {
     }
 }
 
+/// GPT Image 2.6 Sunburst and Flare (model-drift run, 2026-11-16): both pages
+/// list images/generations and images/edits "Supported" and no "Supported
+/// features" (the 2.5 pages list inpainting), so they edit with images but no
+/// mask; quality "`low`, `medium`, `high`, `xhigh`, and `max`" (and the
+/// reference's `auto`); `complexity` "`low`, `medium`, and `high`"; and the
+/// calculator's 2.6 medium image at 1024x1024 is 1,449 output tokens at "$30
+/// per million billable tokens" = $0.04347.
+/// @see <https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst.md> (2026-11-16)
+/// @see <https://developers.openai.com/api/docs/models/gpt-image-2.6-flare.md> (2026-11-16)
+/// @see <https://developers.openai.com/api/docs/guides/image-generation.md> (2026-11-16)
+#[test]
+fn openai_gpt_image_2_6_models_are_carried_with_their_documented_contract() {
+    let reg = registry();
+    for id in ["openai/gpt-image-2.6-sunburst", "openai/gpt-image-2.6-flare"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+        assert!(schema.capabilities.text_to_image && schema.capabilities.image_to_image, "{id}: generations and edits");
+        assert!(!schema.capabilities.inpainting, "{id}: no mask is documented for 2.6");
+        assert_eq!(enum_values(&reg, id, "quality"), ["auto", "low", "medium", "high", "xhigh", "max"], "{id}");
+        assert_eq!(enum_values(&reg, id, "output_format"), ["png", "webp", "jpeg"], "{id}: raster formats only");
+        assert!(!schema.params.contains_key("background"), "{id}: background is documented for 2.5 and gpt-image-2 only");
+        let ri = schema.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+        assert!(!ri.roles.contains_key("mask"), "{id}: no mask role");
+        assert_eq!((ri.max_total, ri.roles.get("reference").map(|r| r.max_count)), (16, Some(15)), "{id}: 16 images");
+        let served = serde_json::to_value(schema).unwrap();
+        assert_eq!(served["extra_params"]["complexity"]["enum_values"], serde_json::json!(["low", "medium", "high"]), "{id}");
+        assert!(schema.extra_allowlist.iter().any(|k| k == "complexity"), "{id}: complexity passes through");
+        assert!((schema.pricing.base_cost_usd - 0.0435).abs() < 1e-9, "{id}: 1,449 tokens x $30/1M");
+        assert_eq!(schema.prompt.max_length, Some(32000), "{id}");
+    }
+}
+
 // ─── bfl: 2026-09-11 drift decisions applied ────────────────────────────────
 
 /// FLUX.2 [max] (`POST /v1/flux-2-max`) takes the same `Flux2Inputs` body as
@@ -3445,10 +3592,11 @@ fn ideogram_4_5_is_carried_with_its_documented_contract() {
 /// model served versionless): `images` ("Up to 10 reference images"),
 /// `resolution` 768sq … 4k (default 1k), 15 aspect ratios or auto,
 /// `output_format` webp / jpg / png, `grounding`, `safety_tolerance` 0–4,
-/// `output_quality`; no width/height, no seed. "$0.0205 per output image …
-/// when target resolution equals 768sq", $0.024 at 1k, $0.035 at 1.5k, $0.05
-/// at 2k, $0.3035 at 4k.
-/// @see <https://replicate.com/black-forest-labs/flux-3-image/api/schema> (2026-11-03)
+/// `output_quality`; no width/height, no seed. Replicate doubled every tier by
+/// 2026-11-16: "$0.048 per output image [image_output_count] when target
+/// resolution equals 1k", $0.041 at 768sq, $0.07 at 1.5k, $0.10 at 2k, $0.607
+/// at 4k (BFL's own rates for FLUX 3 Image).
+/// @see <https://replicate.com/black-forest-labs/flux-3-image/api/schema> (2026-11-16)
 #[test]
 fn replicate_flux_3_image_is_carried_with_its_documented_contract() {
     let reg = registry();
@@ -3456,8 +3604,8 @@ fn replicate_flux_3_image_is_carried_with_its_documented_contract() {
     let m = reg.get(id).expect("replicate/flux-3-image missing");
     assert_eq!(m.docs_url.as_deref(), Some("https://replicate.com/black-forest-labs/flux-3-image/api/schema"));
     assert!(m.capabilities.text_to_image && m.capabilities.image_to_image);
-    assert!((m.pricing.base_cost_usd - 0.024).abs() < 1e-9, "1k");
-    for (tier, usd) in [("0.75K", 0.0205), ("1.5K", 0.035), ("2K", 0.05), ("4K", 0.3035)] {
+    assert!((m.pricing.base_cost_usd - 0.048).abs() < 1e-9, "1k");
+    for (tier, usd) in [("0.75K", 0.041), ("1.5K", 0.07), ("2K", 0.10), ("4K", 0.607)] {
         let rule = m.pricing.variable_pricing.iter().find(|r| r.when.get("resolution") == Some(&serde_json::json!(tier)));
         assert!(rule.and_then(|r| r.usd).is_some_and(|p| (p - usd).abs() < 1e-9), "{tier} is ${usd}");
     }
@@ -3947,19 +4095,20 @@ fn kling_image_3_0_matches_the_image_3_0_contract() {
 ///   `first_frame`" (no last frame); its prompt item "cannot exceed 2500
 ///   characters"; no `settings.audio` (priced only "With Native Audio").
 /// - Kling 4.0: duration `3` … `30` (default 10), resolution `720p`, `1080p`
-///   (default 1080p), aspect ratio `21:9`, `16:9`, `9:16`, `1:1`, frames
-///   first / middle / last (the middle frame is not carried), a prompt of "up
-///   to 11,000 characters" for non-English input; no `settings.audio`.
+///   (default 1080p), aspect ratio `21:9`, `16:9`, `9:16`, `1:1`, and since
+///   2026-11-16 `4:3`, `3:4`, frames first / middle / last (the middle frame
+///   is not carried), a prompt of "up to 11,000 characters" for non-English
+///   input; no `settings.audio`.
 ///
 /// @see <https://kling.ai/document-api/api/video/3-0-turbo/text-to-video.md> (2026-11-03)
-/// @see <https://kling.ai/document-api/api/video/4-0/text-to-video.md> (2026-11-03)
+/// @see <https://kling.ai/document-api/api/video/4-0/text-to-video.md> (2026-11-16)
 /// @see <https://kling.ai/document-api/pricing/base/video.md> (2026-11-03)
 #[test]
 fn kling_3_0_turbo_and_4_0_are_carried_with_their_documented_contract() {
     let reg = registry();
     for (id, (min, max, default), res, res_default, ratios, roles, prompt, price) in [
         ("kling/video-kling-v3-turbo", (3, 15, 5), &["1080p", "720p"][..], "720p", &["16:9", "1:1", "9:16"][..], &["first_frame"][..], 2500, 0.56),
-        ("kling/video-kling-v4", (3, 30, 10), &["1080p", "720p"][..], "1080p", &["16:9", "1:1", "21:9", "9:16"][..], &["first_frame", "last_frame"][..], 11000, 2.35),
+        ("kling/video-kling-v4", (3, 30, 10), &["1080p", "720p"][..], "1080p", &["16:9", "1:1", "21:9", "3:4", "4:3", "9:16"][..], &["first_frame", "last_frame"][..], 11000, 2.35),
     ] {
         let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video, "{id}");
@@ -4728,14 +4877,12 @@ fn fal_flux_schnell_takes_up_to_twelve_steps_and_a_guidance_scale() {
 /// F15: each row promises its endpoint's own bounds.
 /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux/dev> (2026-10-30)
 /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/fast-sdxl> (2026-10-30)
-/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/stable-diffusion-v35-medium> (2026-10-30)
 #[test]
 fn fal_image_rows_take_their_endpoints_whole_ranges() {
     let reg = registry();
     for (id, steps, guidance) in [
         ("fal/flux-dev", (1, 50), (1.0, 20.0)),
         ("fal/sdxl", (1, 50), (0.0, 20.0)),
-        ("fal/sd35-medium", (1, 50), (0.0, 20.0)),
     ] {
         let s = reg.get(id).expect(id);
         match (s.params.get("steps"), s.params.get("guidance_scale")) {
@@ -5934,6 +6081,13 @@ fn fal_flux_3_klein_base_is_carried_with_fals_contract() {
     assert!(m.params.contains_key("seed") && !m.params.contains_key("resolution"));
     assert_eq!(m.ref_inputs.as_ref().map(|r| r.max_total), Some(10));
     assert!(!m.extra_allowlist.iter().any(|k| k == "loras"), "litegen takes no LoRA input: {:?}", m.extra_allowlist);
+    // Both /lora queue specs list guidance_scale (0-20, default 3.5),
+    // num_inference_steps (4-50, default 50) and negative_prompt, which fal.rs
+    // forwards (model-drift review, 2026-11-16; the "Same inputs" line undersold them).
+    // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=blackforestlabs/flux-3/klein/base/text-to-image/lora> (2026-11-16)
+    for k in ["guidance_scale", "steps", "negative_prompt"] {
+        assert!(m.params.contains_key(k), "{id} declares {k}");
+    }
     let price = |size: Option<&str>| {
         let mut req = serde_json::json!({ "model": id, "prompt": "x" });
         if let Some(s) = size {
@@ -6275,9 +6429,9 @@ fn fal_flux_2_rows_are_carried_with_fals_contract() {
 ///   field. "$0.06 per second of generated draft video (720p)".
 /// - `fal/flux-3-max-video`: `blackforestlabs/flux-3-max/{text,image,keyframes}-to-video`,
 ///   720p | 1080p, a seed, and the last frame as image-to-video's
-///   `end_image_url`. It bills the list price, "after which 720p is
-///   $0.17/second and 1080p is $0.29/second", because the 75 % off promotion
-///   ends 2026-11-07.
+///   `end_image_url`. It bills the list price, "Regular rates of $0.17 per
+///   second at 720p and $0.29 per second at 1080p resume on November 23, 2026"
+///   (all three pages, 2026-11-16), because the 50 % off promotion ends 2026-11-22.
 ///
 /// Keyframes are "a position at 24 fps", at most 10.
 /// @see <https://fal.ai/models/blackforestlabs/flux-3/text-to-video/llms.txt> (2026-11-04)
@@ -6357,19 +6511,6 @@ fn replicate_animatediff_seed_stops_at_the_versions_maximum() {
     match schema.params.get("seed") {
         Some(ParamSpec::Seed(s)) => assert_eq!(s.max, 2_147_483_647, "AnimateDiff seed maximum"),
         other => panic!("replicate/video seed is {other:?}"),
-    }
-}
-
-/// fal's `AuraFlowInput.guidance_scale`: "minimum": 0, "maximum": 20,
-/// "default": 3.5.
-/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow> (2026-11-09)
-#[test]
-fn fal_auraflow_guidance_reaches_the_schema_maximum() {
-    let reg = registry();
-    let schema = reg.get("fal/auraflow").expect("fal/auraflow missing");
-    match schema.params.get("guidance_scale") {
-        Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max, f.default), (Some(0.0), Some(20.0), Some(3.5)), "AuraFlow guidance_scale"),
-        other => panic!("fal/auraflow guidance_scale is {other:?}"),
     }
 }
 
@@ -6477,4 +6618,1036 @@ fn every_row_whose_frames_set_the_shape_declares_it() {
         missing.len(),
         expected.len()
     );
+}
+
+// ─── TokenHub: what a row takes, tokenhub.rs sends ───────────────────────────
+
+/// What tokenhub.rs refuses where its row takes the request: a rule of
+/// TokenHub's tables across two of the request's fields (or a field and the
+/// images), which the catalog has no way to say. Its `preflight` refuses it,
+/// which the quote and the generation run before anything is quoted or
+/// reserved (they used to quote and reserve it, then refuse it at submit).
+/// Each entry: the row, its images' roles (`+`-joined; `text` for none, `*`
+/// for any) and the adapter's words.
+/// @see <https://cloud.tencent.com/document/product/1823/135742> (Kling, 2026-11-09)
+/// @see <https://cloud.tencent.com/document/product/1823/135737> (MiniMax, 2026-11-09)
+/// @see <https://cloud.tencent.com/document/product/1823/135325> (PixVerse, 2026-11-09)
+/// @see <https://cloud.tencent.com/document/product/1823/135756> (Vidu, 2026-11-09)
+const TOKENHUB_CROSS_FIELD_RULES: &[(&str, &str, &str)] = &[
+    // "V2.5 Turbo 使用首尾帧生成时仅支持 1080p" (the row's default is 720p).
+    ("tokenhub/kling-video-v2.5-turbo", "first_frame+last_frame", "first and last frames need resolution 1080p"),
+    // "V2.6 使用首尾帧生成时仅支持 720p、audio=native 时仅支持 1080p".
+    ("tokenhub/kling-video-v2.6", "first_frame+last_frame", "first and last frames need resolution 720p"),
+    ("tokenhub/kling-video-v2.6", "*", "native audio needs resolution 1080p, and no last frame"),
+    // "O1 仅用首帧且无其他参考时仅支持 5 / 10".
+    ("tokenhub/kling-video-o1", "first_frame", "a first frame alone makes 5 or 10 s on Kling O1"),
+    // "768P：6 或 10；1080P：仅 6".
+    ("tokenhub/minimax-video-v2.3", "*", "makes 1080P only at 6 s"),
+    ("tokenhub/minimax-video-v2.3-fast", "*", "makes 1080P only at 6 s"),
+    // "v5.6：5/8/10（1080p 不支持 10）".
+    ("tokenhub/pixverse-video-v5.6", "*", "10 s is not made at 1080p"),
+    // "首尾帧生视频 | … q2 系列 … 1 ~ 8"; "audio … 仅 q3 系列支持".
+    ("tokenhub/vidu-video-q2-pro", "first_frame+last_frame", "a first/last-frame clip is at most 8 s on Vidu Q2"),
+    ("tokenhub/vidu-video-q2-pro", "first_frame+last_frame", "no sound on first/last-frame clips"),
+    ("tokenhub/vidu-video-q2-turbo", "first_frame+last_frame", "a first/last-frame clip is at most 8 s on Vidu Q2"),
+    ("tokenhub/vidu-video-q2-turbo", "first_frame+last_frame", "no sound on first/last-frame clips"),
+    // "非主体调用时仅 q3 支持" (sound with reference images).
+    ("tokenhub/vidu-video-q2-pro", "reference", "no sound with reference images"),
+    ("tokenhub/vidu-video-q3-turbo", "reference", "no sound with reference images"),
+    ("tokenhub/vidu-video-q4-preview", "reference", "no sound with reference images"),
+    // "直接参考方式 ≤ 2000 字符" (the rows take 5000 without references).
+    ("tokenhub/vidu-video-q2", "reference", "a prompt with reference images is at most 2000 characters"),
+    ("tokenhub/vidu-video-q2-pro", "reference", "a prompt with reference images is at most 2000 characters"),
+    ("tokenhub/vidu-video-q3-turbo", "reference", "a prompt with reference images is at most 2000 characters"),
+    ("tokenhub/vidu-video-q4-preview", "reference", "a prompt with reference images is at most 2000 characters"),
+];
+
+/// One request of the TokenHub sweep: its name, its images' roles, its
+/// prompt and the fields it sets.
+type SweepCase<'a> = (String, Vec<&'a str>, String, Vec<(String, serde_json::Value)>);
+
+/// The request fields a TokenHub sweep sets a param through (each has the
+/// param's own name).
+const SWEPT_REQUEST_FIELDS: [&str; 9] = ["aspect_ratio", "audio", "camera", "duration_seconds", "fps", "loop", "negative_prompt", "resolution", "seed"];
+
+/// The values a sweep sends for a param: an int or float range's ends and
+/// default (or its list), every enum value and aspect ratio, both bools, a
+/// seed's ends, a free string's sample; `None` for a kind it doesn't send.
+fn sweep_values(spec: &ParamSpec) -> Option<Vec<serde_json::Value>> {
+    use serde_json::json;
+    let mut values: Vec<serde_json::Value> = match spec {
+        ParamSpec::Int(s) => s.min.into_iter().chain(s.default).chain(s.max).chain(s.values.iter().copied()).map(|v| json!(v)).collect(),
+        ParamSpec::Float(s) => s.min.into_iter().chain(s.default).chain(s.max).chain(s.values.iter().copied()).map(|v| json!(v)).collect(),
+        ParamSpec::String(s) if s.enum_values.is_empty() => vec![json!("litegen-sample")],
+        ParamSpec::String(s) => s.enum_values.iter().map(|v| json!(v)).collect(),
+        ParamSpec::AspectRatio(a) => a.allowed.iter().map(|v| json!(v)).collect(),
+        ParamSpec::Bool(_) => vec![json!(true), json!(false)],
+        ParamSpec::Seed(s) => vec![json!(s.min), json!(s.max)],
+        _ => return None,
+    };
+    let mut seen = Vec::new();
+    values.retain(|v| {
+        let new = !seen.contains(v);
+        if new {
+            seen.push(v.clone());
+        }
+        new
+    });
+    Some(values)
+}
+
+/// catalog-rules (the 11-11 review: "TokenHub has no adapter-versus-catalog
+/// guard like Runway's"): every request a TokenHub video row lets through
+/// validation, tokenhub.rs sends to TokenHub, so a row can't promise what
+/// the adapter refuses after the quote. For each row, each combination of
+/// its roles (one image each; a role that takes more, also at its most) is
+/// sent at the row's defaults, without a prompt, with the longest prompt,
+/// with each value of each param and allowlisted extra, and with each pair
+/// of param values, to a mock TokenHub that takes every submit. A request
+/// `validate_video` refuses goes nowhere (/cost refuses it too); every other
+/// one must reach TokenHub with every image on the wire and every string
+/// value as sent, and two values of one param or extra must go out as two
+/// different requests (an adapter that drops a field sends the same one).
+/// The adapter's `preflight`, which the quote runs, refuses exactly what its
+/// submit refuses, in the same words: TokenHub's own rules across two fields,
+/// TOKENHUB_CROSS_FIELD_RULES. A new one fails until it is listed, and a
+/// listed one that stops happening fails too.
+#[tokio::test]
+async fn every_request_a_tokenhub_video_row_takes_reaches_tokenhub() {
+    use base64::Engine;
+    use litegen::providers::video::tokenhub::TokenHubVideoProvider;
+    use litegen::providers::{ProviderError, ProviderInstanceConfig, VideoProvider};
+    use litegen::proxy::materializer::{Cleanup, MaterializedRef, MaterializedRefForm, MaterializedRequest};
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    // One answer every submit shape reads as taken: `task_id` (Hy, MiniMax,
+    // Vidu), `id` (WAND-Vega, YouTu), Kling's `{code: 0, data: {id}}`,
+    // PixVerse's `{ErrCode: 0, Resp: {video_id}}`, MiniMax v2.3's `base_resp`.
+    let server = MockServer::builder().disable_request_recording().start().await;
+    let bodies: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    let seen = bodies.clone();
+    let answer = json!({
+        "task_id": "t1", "id": "t1", "code": 0, "message": "SUCCEED", "data": { "id": "t1", "status": "submitted" },
+        "ErrCode": 0, "Resp": { "video_id": "t1" }, "base_resp": { "status_code": 0 },
+    });
+    Mock::given(method("POST"))
+        .respond_with(move |r: &wiremock::Request| {
+            seen.lock().unwrap().push(r.body.clone());
+            ResponseTemplate::new(200).set_body_json(answer.clone())
+        })
+        .mount(&server)
+        .await;
+    let mut provider = TokenHubVideoProvider::new();
+    provider.configure(ProviderInstanceConfig {
+        api_base: Some(server.uri()),
+        api_keys: vec![litegen::types::ApiKeyEntry { key: "th-conformance".into(), weight: 1, label: None }],
+        ..Default::default()
+    });
+    let payload = |i: usize| base64::engine::general_purpose::STANDARD.encode(format!("litegen-ref-{i:02}"));
+
+    let reg = registry();
+    let mut rows: Vec<&litegen::capabilities::ModelSchema> =
+        reg.all().filter(|m| m.provider == "tokenhub" && m.media_type == MediaType::Video).collect();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut wrong: Vec<String> = Vec::new();
+    // (row, mode, case, the adapter's words)
+    let mut refused: Vec<(String, String, String, String)> = Vec::new();
+    let mut sent = 0usize;
+    for m in &rows {
+        let mut roles: Vec<(&str, u32)> =
+            m.ref_inputs.as_ref().map(|r| r.roles.iter().map(|(k, s)| (k.as_str(), s.max_count)).collect()).unwrap_or_default();
+        roles.sort();
+        let mut names: Vec<&String> = m.params.keys().collect();
+        names.sort();
+        let mut params: Vec<(String, Vec<Value>)> = Vec::new();
+        for name in names {
+            let spec = &m.params[name];
+            match sweep_values(spec).filter(|_| SWEPT_REQUEST_FIELDS.contains(&name.as_str())) {
+                Some(values) => params.push((name.clone(), values)),
+                None => wrong.push(format!("{}: param {name} ({}) is not swept: say how a request sets it", m.id, spec.kind())),
+            }
+        }
+        let extras: Vec<(String, Vec<Value>)> = m
+            .extra_allowlist
+            .iter()
+            .map(|k| (format!("extra.{k}"), m.extra_params.get(k).and_then(sweep_values).unwrap_or_else(|| vec![json!("litegen-sample")])))
+            .collect();
+        let mut row_sent = 0usize;
+        for mask in 0u32..(1 << roles.len()) {
+            let combo: Vec<(&str, u32)> = roles.iter().enumerate().filter(|(i, _)| mask & (1u32 << *i) != 0).map(|(_, r)| *r).collect();
+            let mode = if combo.is_empty() { "text".to_string() } else { combo.iter().map(|(r, _)| *r).collect::<Vec<_>>().join("+") };
+            let one_each: Vec<&str> = combo.iter().map(|(r, _)| *r).collect();
+            let mut cases: Vec<SweepCase<'_>> = Vec::new();
+            let prompt = "a lighthouse at dusk".to_string();
+            cases.push(("defaults".into(), one_each.clone(), prompt.clone(), vec![]));
+            for (role, max) in combo.iter().filter(|(_, max)| *max > 1) {
+                let mut images: Vec<&str> = one_each.iter().copied().filter(|r| r != role).collect();
+                images.extend(std::iter::repeat_n(*role, *max as usize));
+                cases.push((format!("{max} {role} images"), images, prompt.clone(), vec![]));
+            }
+            cases.push(("no prompt".into(), one_each.clone(), String::new(), vec![]));
+            if let Some(n) = m.prompt.max_length {
+                cases.push((format!("a {n}-character prompt"), one_each.clone(), "a".repeat(n), vec![]));
+            }
+            for (field, values) in params.iter().chain(&extras) {
+                for v in values {
+                    cases.push((format!("{field}={v}"), one_each.clone(), prompt.clone(), vec![(field.clone(), v.clone())]));
+                }
+            }
+            for (i, (f1, values1)) in params.iter().enumerate() {
+                for (f2, values2) in &params[i + 1..] {
+                    for v1 in values1 {
+                        for v2 in values2 {
+                            let fields = vec![(f1.clone(), v1.clone()), (f2.clone(), v2.clone())];
+                            cases.push((format!("{f1}={v1}, {f2}={v2}"), one_each.clone(), prompt.clone(), fields));
+                        }
+                    }
+                }
+            }
+            // What one field's values sent, for the comparison below.
+            let mut by_field: BTreeMap<String, Vec<(Value, String)>> = BTreeMap::new();
+            for (case, images, prompt, fields) in cases {
+                let mut body = json!({
+                    "model": m.id, "prompt": prompt, "strict": true,
+                    "reference_images": images.iter().enumerate().map(|(i, role)| json!({ "type": "base64", "value": payload(i), "role": role })).collect::<Vec<_>>(),
+                });
+                for (field, v) in &fields {
+                    match field.strip_prefix("extra.") {
+                        Some(key) => body["extra"][key] = v.clone(),
+                        None => body[field.as_str()] = v.clone(),
+                    }
+                }
+                let req: litegen::types::VideoGenerationRequest = serde_json::from_value(body).unwrap();
+                // Refused at validation: never quoted, reserved or sent.
+                let Ok(valid) = litegen::api::middleware::validator::validate_video(m, req) else { continue };
+                let r = valid.request;
+                // As the quote and the generation build them.
+                let extras = litegen::api::middleware::validator::video_extras(m, &r);
+                let materialized = MaterializedRequest {
+                    refs: r
+                        .base
+                        .reference_images
+                        .iter()
+                        .map(|i| MaterializedRef { role: i.role.clone().unwrap_or_default(), form: MaterializedRefForm::Base64(i.value.clone()), time_s: i.time_s })
+                        .collect(),
+                    cleanup: Cleanup::empty(),
+                };
+                // What the quote (and the generation, before it reserves) asks the adapter.
+                let roles: Vec<&str> = r.base.reference_images.iter().filter_map(|i| i.role.as_deref()).collect();
+                let quoted = match provider.preflight(m, &r.base, &extras, &roles) {
+                    Ok(()) => None,
+                    Err(ProviderError::InvalidRequest(words)) => Some(words),
+                    Err(e) => {
+                        wrong.push(format!("{} {mode}, {case}: the preflight answered {e:?}", m.id));
+                        continue;
+                    }
+                };
+                bodies.lock().unwrap().clear();
+                let out = provider.generate(m, &r.base, &extras, &materialized).await;
+                let wire = bodies.lock().unwrap().pop().map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+                if let (Some(words), Ok(_)) = (&quoted, &out) {
+                    wrong.push(format!("{} {mode}, {case}: refused at the quote, sent at submit: {words}", m.id));
+                }
+                match out {
+                    Err(ProviderError::InvalidRequest(words)) if quoted.as_ref() == Some(&words) => refused.push((m.id.clone(), mode.clone(), case, words)),
+                    Err(ProviderError::InvalidRequest(words)) => {
+                        wrong.push(format!("{} {mode}, {case}: refused at submit, not at the quote ({quoted:?}): {words}", m.id));
+                    }
+                    Err(e) => wrong.push(format!("{} {mode}, {case}: {e:?}", m.id)),
+                    Ok(_) => {
+                        sent += 1;
+                        row_sent += 1;
+                        for (i, role) in images.iter().enumerate() {
+                            if !wire.contains(&payload(i)) {
+                                wrong.push(format!("{} {mode}, {case}: image {i} ({role}) never reached TokenHub", m.id));
+                            }
+                        }
+                        for (field, v) in &fields {
+                            let shown = match field.strip_prefix("extra.") {
+                                Some(key) => wire.contains(&format!("\"{key}\"")),
+                                None => v.as_str().is_none_or(|s| wire.contains(s)),
+                            };
+                            if !shown {
+                                wrong.push(format!("{} {mode}, {case}: {field} never reached TokenHub", m.id));
+                            }
+                        }
+                        if let [(field, v)] = fields.as_slice() {
+                            by_field.entry(field.clone()).or_default().push((v.clone(), wire));
+                        }
+                    }
+                }
+            }
+            for (field, sends) in &by_field {
+                for (i, (v1, w1)) in sends.iter().enumerate() {
+                    if let Some((v2, _)) = sends[i + 1..].iter().find(|(_, w2)| w2 == w1) {
+                        wrong.push(format!("{} {mode}: {field} {v1} and {v2} go out as the same request: the adapter drops {field}", m.id));
+                    }
+                }
+            }
+        }
+        if row_sent == 0 {
+            wrong.push(format!("{}: no request reached TokenHub", m.id));
+        }
+    }
+    let mut listed = vec![false; TOKENHUB_CROSS_FIELD_RULES.len()];
+    for (row, mode, case, words) in &refused {
+        match TOKENHUB_CROSS_FIELD_RULES.iter().position(|(r, md, w)| r == row && (*md == "*" || md == mode) && words.contains(w)) {
+            Some(i) => listed[i] = true,
+            None => wrong.push(format!("{row} {mode}, {case}: the row takes it, tokenhub.rs refuses it: {words}")),
+        }
+    }
+    for (rule, _) in TOKENHUB_CROSS_FIELD_RULES.iter().zip(&listed).filter(|(_, hit)| !**hit) {
+        wrong.push(format!("{rule:?}: listed, but tokenhub.rs refuses no request its row takes with those words"));
+    }
+    assert!(rows.len() > 20 && sent > 1000, "{} rows, {sent} requests sent", rows.len());
+    wrong.sort();
+    assert!(wrong.is_empty(), "{} findings over {} rows ({sent} requests sent):\n{}", wrong.len(), rows.len(), wrong.join("\n"));
+}
+
+// ─── Direct video adapters: refused at the quote, or sent ───────────────────
+
+/// What a direct video adapter refuses where its row takes the request: a
+/// vendor rule across the request's fields, or of the endpoint its images
+/// choose, which the catalog has no way to say. The adapter's `preflight`
+/// refuses it, which the quote and the generation run before anything is
+/// quoted or reserved. Each entry: the row, its images' roles (`+`-joined;
+/// `text` for none, `*` for any) and the adapter's words. The vendors' own
+/// words are at each adapter's `preflight`.
+const DIRECT_VIDEO_RULES: &[(&str, &str, &str)] = &[
+    // Ray 2, direct and on Bedrock: "Loop is not supported for keyframes".
+    ("bedrock/luma.ray-v2:0", "*", "a loop can't end on a last frame"),
+    ("luma/dream-machine", "*", "a loop cannot have a last frame"),
+    ("luma/ray-2", "*", "a loop cannot have a last frame"),
+    ("luma/ray-flash-2", "*", "a loop cannot have a last frame"),
+    // FLUX 3 on fal: keyframes go to their own endpoint, which has no first
+    // or last frame, on a 24 fps clock; fal prices FLUX 3's first-last and
+    // keyframe endpoints "at 720p, and … at 1080p" only.
+    ("fal/flux-3-max-video", "*", "keyframes don't mix with a first or last frame"),
+    ("fal/flux-3-video", "*", "keyframes don't mix with a first or last frame"),
+    ("fal/flux-3-video-draft", "*", "keyframes don't mix with a first or last frame"),
+    ("fal/flux-3-max-video", "keyframe", "two keyframes fall on frame"),
+    ("fal/flux-3-video", "keyframe", "two keyframes fall on frame"),
+    ("fal/flux-3-video-draft", "keyframe", "two keyframes fall on frame"),
+    ("fal/flux-3-video", "*", "fal prices first-last and keyframe videos at 720p and 1080p only"),
+    // MiniMax H3 through Ideogram: `prompt_expansion_mode` is in its
+    // reference-to-video schema only.
+    ("ideogram/minimax-h3", "*", "`prompt_expansion_mode` is taken by reference-to-video only"),
+    // Kling 2.5 Turbo and 2.6: first-last "Only supports 1080P"; 2.6's native
+    // audio "only 1080P".
+    ("kling/video-kling-v2-5-turbo", "first_frame+last_frame", "first and last frames need resolution 1080p"),
+    ("kling/video-kling-v2-6", "first_frame+last_frame", "first and last frames need resolution 1080p"),
+    ("kling/video-kling-v2-6", "*", "native audio needs resolution 1080p, and no last frame"),
+    // Hailuo 02 and 2.3: 6 or 10 s at 768P, 6 s at 1080P.
+    ("minimax/MiniMax-Hailuo-02", "*", "makes 6 or 10 s, and only 6 s at 1080P"),
+    ("minimax/MiniMax-Hailuo-2.3", "*", "makes 6 or 10 s, and only 6 s at 1080P"),
+    ("minimax/MiniMax-Hailuo-2.3-Fast", "*", "makes 6 or 10 s, and only 6 s at 1080P"),
+    // PixVerse v3.5: no 8 s clip at 1080p.
+    ("pixverse/v3.5", "*", "8 s is not a length it makes at 1080p"),
+    // vidu2.0 makes only the lengths Vidu prices on each endpoint; an audio
+    // switch is on some endpoints of a model only.
+    ("vidu/vidu2.0", "*", "vidu2.0 makes no"),
+    ("vidu/viduq1", "*", "has no audio switch on"),
+    ("vidu/viduq1-classic", "first_frame+last_frame", "has no audio switch on start-end2video"),
+    ("vidu/viduq2-pro", "*", "has no audio switch on"),
+    ("vidu/viduq2-turbo", "first_frame+last_frame", "has no audio switch on start-end2video"),
+];
+
+/// One request of the direct video sweep: its images' roles (the mode), its
+/// name, its images as (role, time_s), its prompt and the fields it sets.
+type DirectCase<'a> = (String, String, Vec<(&'a str, Option<f64>)>, String, Vec<(String, serde_json::Value)>);
+
+/// The vendors whose video adapters [`a_direct_video_adapter_refuses_at_submit_only_what_its_preflight_refuses`]
+/// leaves to another guard, and why.
+const DIRECT_VIDEO_SWEEP_SKIPS: &[(&str, &str)] = &[
+    ("tokenhub", "every_request_a_tokenhub_video_row_takes_reaches_tokenhub sweeps it"),
+    ("mock", "not a vendor: it makes its clip in-process"),
+];
+
+/// round 3 (catalog-rules): a direct video adapter refuses at submit only
+/// what its `preflight` refuses, in the same words, so nothing the quote
+/// takes is refused after the reservation for a reason the request alone
+/// shows. Every `generate` row of every direct vendor is sent as the TokenHub
+/// sweep sends its rows (each combination of roles, at the defaults, without
+/// and with the longest prompt, with each value of each param and extra, and
+/// each pair of param values; keyframes a 0.5 s apart, and two on one frame
+/// of a 24 fps clock) to a mock vendor that answers every call. A request
+/// `validate_video` refuses goes nowhere; every other one is refused by the
+/// preflight and by the submit alike, before any call, or reaches the
+/// vendor. The rules seen are DIRECT_VIDEO_RULES: a new one fails until it
+/// is listed, and a listed one that stops happening fails too.
+#[tokio::test]
+async fn a_direct_video_adapter_refuses_at_submit_only_what_its_preflight_refuses() {
+    use base64::Engine;
+    use litegen::capabilities::{KeyframeTiming, RefProviderFormat};
+    use litegen::providers::video::{
+        bedrock::BedrockVideoProvider, bytedance::ByteDanceVideoProvider, fal::FalVideoProvider, hunyuan::HunyuanVideoProvider,
+        ideogram::IdeogramVideoProvider, kling::KlingVideoProvider, leonardo::LeonardoVideoProvider, luma::LumaProvider,
+        minimax::MiniMaxVideoProvider, pixverse::PixverseProvider, replicate::ReplicateVideoProvider, runway::RunwayProvider,
+        vidu::ViduProvider,
+    };
+    use litegen::providers::{ProviderError, ProviderInstanceConfig, VideoProvider};
+    use litegen::proxy::materializer::{Cleanup, MaterializedRef, MaterializedRefForm, MaterializedRequest};
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+
+    /// Each image's time: keyframes `step` apart from 0 s, where the row
+    /// takes times (an `even` row's are spaced by the validator).
+    fn with_times(images: Vec<&str>, timed: bool, step: f64) -> Vec<(&str, Option<f64>)> {
+        let mut k = 0;
+        images
+            .into_iter()
+            .map(|role| match role {
+                "keyframe" if timed => {
+                    k += 1;
+                    (role, Some(step * (k - 1) as f64))
+                }
+                _ => (role, None),
+            })
+            .collect()
+    }
+
+    // Every call is answered; what an adapter makes of the answer doesn't
+    // matter here, only whether it called.
+    let server = MockServer::builder().disable_request_recording().start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let answer = json!({
+        "id": "t1", "task_id": "t1", "request_id": "t1", "generation_id": "t1", "invocationArn": "arn:aws:bedrock:t1",
+        "code": 0, "data": { "task_id": "t1", "id": "t1" }, "ErrCode": 0, "Resp": { "video_id": 1 },
+        "base_resp": { "status_code": 0 }, "Response": { "JobId": "t1" },
+    });
+    Mock::given(any())
+        .respond_with(move |_: &wiremock::Request| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(answer.clone())
+        })
+        .mount(&server)
+        .await;
+    let adapter = |vendor: &str| -> Option<Box<dyn VideoProvider>> {
+        let mut a: Box<dyn VideoProvider> = match vendor {
+            "bedrock" => Box::new(BedrockVideoProvider::new()),
+            "bytedance" => Box::new(ByteDanceVideoProvider::new()),
+            "fal" => Box::new(FalVideoProvider::new()),
+            "hunyuan" => Box::new(HunyuanVideoProvider::new()),
+            "ideogram" => Box::new(IdeogramVideoProvider::new()),
+            "kling" => Box::new(KlingVideoProvider::new()),
+            "leonardo" => Box::new(LeonardoVideoProvider::new()),
+            "luma" => Box::new(LumaProvider::new()),
+            "minimax" => Box::new(MiniMaxVideoProvider::new()),
+            "pixverse" => Box::new(PixverseProvider::new()),
+            "replicate" => Box::new(ReplicateVideoProvider::new()),
+            "runway" => Box::new(RunwayProvider::new()),
+            "vidu" => Box::new(ViduProvider::new()),
+            _ => return None,
+        };
+        let mut cfg = ProviderInstanceConfig {
+            api_key: "conformance-key".into(),
+            api_keys: vec![litegen::types::ApiKeyEntry { key: "conformance-key".into(), weight: 1, label: None }],
+            api_base: Some(server.uri()),
+            ..Default::default()
+        };
+        cfg.credentials.api_key = Some("conformance-key".into());
+        cfg.credentials.key_id = Some("AKIDconformance".into());
+        cfg.credentials.key_secret = Some("conformance-secret".into());
+        cfg.credentials.region = Some("us-east-1".into());
+        if vendor == "bedrock" {
+            cfg.options = Some(json!({ "s3_api_base": server.uri(), "s3_output_uri": "s3://conformance/out/" }));
+        }
+        a.configure(cfg);
+        Some(a)
+    };
+    // A real PNG: an adapter that reads the bytes' type (Bedrock's keyframes,
+    // Leonardo's uploads) refuses anything else, rightly, at submit.
+    let mut png = Vec::new();
+    image::RgbaImage::new(8, 8).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let png_b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+
+    let reg = registry();
+    let mut rows: Vec<&litegen::capabilities::ModelSchema> = reg
+        .all()
+        .filter(|m| m.media_type == MediaType::Video && m.task == litegen::capabilities::ModelTask::Generate)
+        .filter(|m| !DIRECT_VIDEO_SWEEP_SKIPS.iter().any(|(vendor, _)| *vendor == m.provider))
+        .collect();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut wrong: Vec<String> = Vec::new();
+    // (row, mode, case, the adapter's words)
+    let mut refused: Vec<(String, String, String, String)> = Vec::new();
+    let mut sent = 0usize;
+    for m in &rows {
+        let Some(provider) = adapter(&m.provider) else {
+            wrong.push(format!("{}: say how this test builds the {} adapter, or why it is skipped", m.id, m.provider));
+            continue;
+        };
+        let ri = m.ref_inputs.as_ref();
+        let mut roles: Vec<(&str, u32)> = ri.map(|r| r.roles.iter().map(|(k, s)| (k.as_str(), s.max_count)).collect()).unwrap_or_default();
+        roles.sort();
+        let keyframe_spec = ri.and_then(|r| r.roles.get("keyframe"));
+        let timed = keyframe_spec.is_some_and(|s| s.timing != Some(KeyframeTiming::Even));
+        let step = keyframe_spec.and_then(|s| s.time_step_s).unwrap_or(0.5);
+        let mut names: Vec<&String> = m.params.keys().collect();
+        names.sort();
+        let mut params: Vec<(String, Vec<Value>)> = Vec::new();
+        for name in names {
+            let spec = &m.params[name];
+            match sweep_values(spec).filter(|_| SWEPT_REQUEST_FIELDS.contains(&name.as_str())) {
+                Some(values) => params.push((name.clone(), values)),
+                None => wrong.push(format!("{}: param {name} ({}) is not swept: say how a request sets it", m.id, spec.kind())),
+            }
+        }
+        let extras: Vec<(String, Vec<Value>)> = m
+            .extra_allowlist
+            .iter()
+            .map(|k| (format!("extra.{k}"), m.extra_params.get(k).and_then(sweep_values).unwrap_or_else(|| vec![json!("litegen-sample")])))
+            .collect();
+        let prompt = "a lighthouse at dusk".to_string();
+        let mut cases: Vec<DirectCase<'_>> = Vec::new();
+        for mask in 0u32..(1 << roles.len()) {
+            let combo: Vec<(&str, u32)> = roles.iter().enumerate().filter(|(i, _)| mask & (1u32 << *i) != 0).map(|(_, r)| *r).collect();
+            let mode = if combo.is_empty() { "text".to_string() } else { combo.iter().map(|(r, _)| *r).collect::<Vec<_>>().join("+") };
+            let one_each: Vec<&str> = combo.iter().map(|(r, _)| *r).collect();
+            cases.push((mode.clone(), "defaults".into(), with_times(one_each.clone(), timed, step), prompt.clone(), vec![]));
+            for (role, max) in combo.iter().filter(|(_, max)| *max > 1) {
+                let mut images: Vec<&str> = one_each.iter().copied().filter(|r| r != role).collect();
+                images.extend(std::iter::repeat_n(*role, *max as usize));
+                cases.push((mode.clone(), format!("{max} {role} images"), with_times(images, timed, step), prompt.clone(), vec![]));
+            }
+            cases.push((mode.clone(), "no prompt".into(), with_times(one_each.clone(), timed, step), String::new(), vec![]));
+            if let Some(n) = m.prompt.max_length {
+                cases.push((mode.clone(), format!("a {n}-character prompt"), with_times(one_each.clone(), timed, step), "a".repeat(n), vec![]));
+            }
+            for (field, values) in params.iter().chain(&extras) {
+                for v in values {
+                    cases.push((mode.clone(), format!("{field}={v}"), with_times(one_each.clone(), timed, step), prompt.clone(), vec![(field.clone(), v.clone())]));
+                }
+            }
+            for (i, (f1, values1)) in params.iter().enumerate() {
+                for (f2, values2) in &params[i + 1..] {
+                    for v1 in values1 {
+                        for v2 in values2 {
+                            let fields = vec![(f1.clone(), v1.clone()), (f2.clone(), v2.clone())];
+                            cases.push((mode.clone(), format!("{f1}={v1}, {f2}={v2}"), with_times(one_each.clone(), timed, step), prompt.clone(), fields));
+                        }
+                    }
+                }
+            }
+        }
+        if timed && keyframe_spec.is_some_and(|s| s.time_step_s.is_none() && s.max_count > 1) {
+            cases.push(("keyframe".into(), "two keyframes 0.01 s apart".into(), vec![("keyframe", Some(0.0)), ("keyframe", Some(0.01))], prompt.clone(), vec![]));
+        }
+        let format = ri.map(|r| &r.provider_format);
+        let mut row_sent = 0usize;
+        for (mode, case, images, prompt, fields) in cases {
+            let mut body = json!({
+                "model": m.id, "prompt": prompt, "strict": true,
+                "reference_images": images
+                    .iter()
+                    .map(|(role, at)| {
+                        let mut r = json!({ "type": "base64", "value": png_b64, "role": role });
+                        if let Some(at) = at {
+                            r["time_s"] = json!(at);
+                        }
+                        r
+                    })
+                    .collect::<Vec<_>>(),
+            });
+            for (field, v) in &fields {
+                match field.strip_prefix("extra.") {
+                    Some(key) => body["extra"][key] = v.clone(),
+                    None => body[field.as_str()] = v.clone(),
+                }
+            }
+            let req: litegen::types::VideoGenerationRequest = serde_json::from_value(body).unwrap();
+            // Refused at validation: never quoted, reserved or sent.
+            let Ok(valid) = litegen::api::middleware::validator::validate_video(m, req) else { continue };
+            let r = valid.request;
+            // As the quote and the generation build them.
+            let extras = litegen::api::middleware::validator::video_extras(m, &r);
+            // Each image in the form the materializer hands this row's adapter.
+            let materialized = MaterializedRequest {
+                refs: r
+                    .base
+                    .reference_images
+                    .iter()
+                    .enumerate()
+                    .map(|(i, img)| {
+                        let role = img.role.clone().unwrap_or_default();
+                        let form = match format {
+                            Some(RefProviderFormat::Url) => MaterializedRefForm::Url(format!("{}/refs/{i}.png", server.uri())),
+                            Some(RefProviderFormat::Multipart(f)) => MaterializedRefForm::MultipartField {
+                                field_name: f.field_map.get(&role).cloned().unwrap_or_else(|| role.clone()),
+                                bytes: png.clone().into(),
+                                content_type: "image/png".into(),
+                            },
+                            _ => MaterializedRefForm::Base64(img.value.clone()),
+                        };
+                        MaterializedRef { role, form, time_s: img.time_s }
+                    })
+                    .collect(),
+                cleanup: Cleanup::empty(),
+            };
+            // What the quote (and the generation, before it reserves) asks the adapter.
+            let roles: Vec<&str> = r.base.reference_images.iter().filter_map(|i| i.role.as_deref()).collect();
+            let quoted = match provider.preflight(m, &r.base, &extras, &roles) {
+                Ok(()) => None,
+                Err(ProviderError::InvalidRequest(words)) => Some(words),
+                Err(e) => {
+                    wrong.push(format!("{} {mode}, {case}: the preflight answered {e:?}", m.id));
+                    continue;
+                }
+            };
+            calls.store(0, Ordering::SeqCst);
+            let out = provider.generate(m, &r.base, &extras, &materialized).await;
+            let called = calls.load(Ordering::SeqCst) > 0;
+            match (out, called) {
+                (Err(ProviderError::InvalidRequest(words)), false) => match &quoted {
+                    Some(q) if *q == words => refused.push((m.id.clone(), mode.clone(), case, words)),
+                    _ => wrong.push(format!("{} {mode}, {case}: refused at submit, not at the quote ({quoted:?}): {words}", m.id)),
+                },
+                (Err(e), false) => wrong.push(format!("{} {mode}, {case}: never called the vendor: {e:?}", m.id)),
+                (Err(ProviderError::InvalidRequest(words)), true) => {
+                    wrong.push(format!("{} {mode}, {case}: refused after calling the vendor: {words}", m.id));
+                }
+                (_, true) | (Ok(_), false) => match &quoted {
+                    Some(words) => wrong.push(format!("{} {mode}, {case}: refused at the quote, sent at submit: {words}", m.id)),
+                    None => {
+                        sent += 1;
+                        row_sent += 1;
+                    }
+                },
+            }
+        }
+        if row_sent == 0 {
+            wrong.push(format!("{}: no request reached {}", m.id, m.provider));
+        }
+    }
+    let mut listed = vec![false; DIRECT_VIDEO_RULES.len()];
+    for (row, mode, case, words) in &refused {
+        match DIRECT_VIDEO_RULES.iter().position(|(r, md, w)| r == row && (*md == "*" || md == mode) && words.contains(w)) {
+            Some(i) => listed[i] = true,
+            None => wrong.push(format!("{row} {mode}, {case}: the row takes it, the adapter refuses it: {words}")),
+        }
+    }
+    for (rule, _) in DIRECT_VIDEO_RULES.iter().zip(&listed).filter(|(_, hit)| !**hit) {
+        wrong.push(format!("{rule:?}: listed, but its adapter refuses no request its row takes with those words"));
+    }
+    let vendors: std::collections::BTreeSet<&str> = rows.iter().map(|m| m.provider.as_str()).collect();
+    assert!(vendors.len() >= 12 && sent > 2000, "{} rows of {vendors:?}, {sent} requests sent", rows.len());
+    wrong.sort();
+    assert!(wrong.is_empty(), "{} findings over {} rows ({sent} requests sent):\n{}", wrong.len(), rows.len(), wrong.join("\n"));
+}
+
+// ─── Image adapters: refused at the quote, or sent ──────────────────────────
+
+/// What an image adapter refuses where its row takes the request: a vendor
+/// rule across the request's fields, or of the images it carries, which the
+/// catalog has no way to say. The adapter's `preflight` refuses it, which the
+/// quote and the generation run before anything is quoted or reserved. Each
+/// entry: the row, its images' roles (`+`-joined; `text` for none, `*` for
+/// any) and the adapter's words. The vendors' own words are at each
+/// adapter's `preflight`.
+const IMAGE_RULES: &[(&str, &str, &str)] = &[
+    // FLUX 3 Image: "at most 16822272 pixels, and at most 4194304 with
+    // reference images" (the row's one size list serves both).
+    ("bfl/flux-3-image", "*", "makes at most 4194304 pixels with reference images"),
+    // FLUX.1 Fill and erase on fal need `mask_url`: a mask, or a region
+    // litegen draws as one.
+    ("fal/flux-pro-erase", "*", "send a mask, or a region to edit"),
+    ("fal/flux-pro-fill", "*", "send a mask, or a region to edit"),
+    // Hunyuan image with a reference image: four sizes, and prompt expansion
+    // stays on, so a seed has no effect.
+    ("hunyuan/hunyuan-image", "*", "with a reference image the size is"),
+    ("hunyuan/hunyuan-image", "*", "a seed has no effect with a reference image"),
+    // Ideogram 4.5: `very_low` needs source images; with a mask (or a region
+    // drawn as one) the output is the source's size, beside at most three
+    // other images.
+    ("ideogram/ideogram-4-5", "*", "quality very_low needs a source image"),
+    ("ideogram/ideogram-4-5", "*", "with a mask the output is the source image's size; send no size"),
+    ("ideogram/ideogram-4-5", "*", "takes at most 3 other images beside a mask"),
+    // Kling's image API, direct and on TokenHub: no negative prompt with an image.
+    ("kling/kling-v2-1", "*", "a negative_prompt cannot go with a reference image"),
+    ("kling/kling-v3", "*", "a negative_prompt cannot go with a reference image"),
+    ("tokenhub/kling-image-v3", "*", "a negative_prompt cannot go with a reference image"),
+    // Runway's resold models: an editing switch or `very_low` needs a
+    // reference image; Bria FIBO Edit keeps one image's framing.
+    ("runway/bria_fibo_edit_1_5", "*", "keeps a single image's framing: an aspect_ratio needs at least 2 images"),
+    ("runway/grok_imagine_image_2", "*", "`edit` needs a reference image"),
+    ("runway/ideogram_4_5", "*", "`preciseEdit` needs a reference image"),
+    ("runway/ideogram_4_5", "*", "quality very_low needs a reference image and no preciseEdit"),
+    // Stability: inpaint edits a mask (or a region drawn as one);
+    // search-and-replace finds what `mask_prompt` names.
+    ("stability/inpaint", "*", "edits a masked area: send a mask or a region"),
+    ("stability/search-and-replace", "*", "search-and-replace needs `mask_prompt`"),
+    // TokenHub: Hy-Image takes a size, or a tier and/or a ratio; Seedream a
+    // tier or a size ("不可混用").
+    ("tokenhub/hy-image-v3.5-preview", "*", "send an exact size, or resolution and/or aspect_ratio"),
+    ("tokenhub/seedream-image-v5.0-flash", "*", "Seedream takes a resolution tier or an exact size, not both"),
+    ("tokenhub/seedream-image-v5.0-pro", "*", "Seedream takes a resolution tier or an exact size, not both"),
+];
+
+/// The vendors whose image adapters [`an_image_adapter_refuses_at_submit_only_what_its_preflight_refuses`]
+/// leaves out, and why.
+const IMAGE_SWEEP_SKIPS: &[(&str, &str)] = &[
+    ("mock", "not a vendor: it makes its image in-process, and some of its rows wait or fail on purpose (mock/slow-image waits a day)"),
+];
+
+/// The image params the image sweep doesn't send, and why.
+const IMAGE_SWEEP_UNSENT: &[(&str, &str)] = &[("layout", "boxes checked against the canvas they go on")];
+
+/// The values the image sweep sends for a param: [`sweep_values`]', and a
+/// size list's sizes or a freeform size's corners, middle and half its most,
+/// each view alone and the default set, one `expand`, one palette, one
+/// region inside the init image.
+fn image_sweep_values(spec: &ParamSpec) -> Option<Vec<serde_json::Value>> {
+    use litegen::capabilities::schema::SizeSpec;
+    use serde_json::json;
+    Some(match spec {
+        ParamSpec::Size(SizeSpec::Enum(e)) => e.values.iter().map(|(w, h)| json!(format!("{w}x{h}"))).collect(),
+        ParamSpec::Size(SizeSpec::Freeform(f)) => {
+            let half = |n: u32| (n / 2).max(1).div_ceil(f.multiple_of.unwrap_or(1).max(1)) * f.multiple_of.unwrap_or(1).max(1);
+            [(f.min_width, f.min_height), (1024, 1024), (1536, 1024), (half(f.max_width), half(f.max_height)), (f.max_width, f.max_height)]
+                .iter()
+                .map(|(w, h)| json!(format!("{w}x{h}")))
+                .collect()
+        }
+        ParamSpec::Region(_) => vec![json!({ "x": 0, "y": 0, "w": 64, "h": 64 })],
+        ParamSpec::StringArray(s) => {
+            let mut v: Vec<serde_json::Value> = s.enum_values.iter().map(|e| json!([e])).collect();
+            v.push(json!(if s.default.is_empty() { &s.enum_values } else { &s.default }));
+            v
+        }
+        ParamSpec::Expand(_) => vec![json!({ "left": 64, "top": 0, "right": 64, "bottom": 0 })],
+        ParamSpec::Palette(_) => vec![json!(["#000000", "#ffffff"])],
+        other => return sweep_values(other),
+    })
+}
+
+/// round 3 (catalog-rules): an image adapter refuses at submit only what
+/// its `preflight` refuses, in the same words, so nothing the quote takes
+/// (the Playground quotes before it generates) is refused after the
+/// reservation for a reason the request alone shows. Every row
+/// `/v1/images/generations` serves is sent as the video sweeps send theirs
+/// (each combination of roles, at the defaults, without and with the
+/// longest prompt, with each value of each param and extra, and each pair of
+/// param values) to a mock vendor that answers every call. A request
+/// `validate_image` refuses goes nowhere; every other one is refused by the
+/// preflight and by the submit alike, before any call, or reaches the
+/// vendor. The rules seen are
+/// IMAGE_RULES: a new one fails until it is listed, and a listed one that
+/// stops happening fails too.
+#[tokio::test]
+async fn an_image_adapter_refuses_at_submit_only_what_its_preflight_refuses() {
+    use base64::Engine;
+    use litegen::capabilities::RefProviderFormat;
+    use litegen::providers::image::{
+        bedrock::BedrockImageProvider, bfl::BflProvider, bytedance::ByteDanceImageProvider, fal::FalProvider, google::GoogleProvider,
+        hunyuan::HunyuanImageProvider, ideogram::IdeogramProvider, kling::KlingImageProvider, leonardo::LeonardoImageProvider,
+        luma::LumaImageProvider, minimax::MiniMaxImageProvider, openai::OpenAiProvider, pixellab::PixelLabProvider,
+        recraft::RecraftProvider, replicate::ReplicateProvider, runway::RunwayImageProvider, stability::StabilityProvider,
+        tokenhub::TokenHubImageProvider, tripo::TripoImageProvider,
+    };
+    use litegen::providers::{ImageProvider, ProviderError, ProviderInstanceConfig};
+    use litegen::proxy::materializer::{Cleanup, MaterializedRef, MaterializedRefForm, MaterializedRequest};
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+
+    // Every call is answered 503, so no adapter waits on a job: only
+    // whether it called matters here.
+    let server = MockServer::builder().disable_request_recording().start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    Mock::given(any())
+        .respond_with(move |_: &wiremock::Request| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(503).set_body_json(json!({ "error": "conformance" }))
+        })
+        .mount(&server)
+        .await;
+    let adapter = |vendor: &str| -> Option<Box<dyn ImageProvider>> {
+        let mut a: Box<dyn ImageProvider> = match vendor {
+            "bedrock" => Box::new(BedrockImageProvider::new()),
+            "bfl" => Box::new(BflProvider::new()),
+            "bytedance" => Box::new(ByteDanceImageProvider::new()),
+            "fal" => Box::new(FalProvider::new()),
+            "google" => Box::new(GoogleProvider::new()),
+            "hunyuan" => Box::new(HunyuanImageProvider::new()),
+            "ideogram" => Box::new(IdeogramProvider::new()),
+            "kling" => Box::new(KlingImageProvider::new()),
+            "leonardo" => Box::new(LeonardoImageProvider::new()),
+            "luma" => Box::new(LumaImageProvider::new()),
+            "minimax" => Box::new(MiniMaxImageProvider::new()),
+            "openai" => Box::new(OpenAiProvider::new()),
+            "pixellab" => Box::new(PixelLabProvider::new()),
+            "recraft" => Box::new(RecraftProvider::new()),
+            "replicate" => Box::new(ReplicateProvider::new()),
+            "runway" => Box::new(RunwayImageProvider::new()),
+            "stability" => Box::new(StabilityProvider::new()),
+            "tokenhub" => Box::new(TokenHubImageProvider::new()),
+            "tripo" => Box::new(TripoImageProvider::new()),
+            _ => return None,
+        };
+        let mut cfg = ProviderInstanceConfig {
+            api_key: "conformance-key".into(),
+            api_keys: vec![litegen::types::ApiKeyEntry { key: "conformance-key".into(), weight: 1, label: None }],
+            api_base: Some(server.uri()),
+            ..Default::default()
+        };
+        cfg.credentials.api_key = Some("conformance-key".into());
+        cfg.credentials.key_id = Some("AKIDconformance".into());
+        cfg.credentials.key_secret = Some("conformance-secret".into());
+        cfg.credentials.region = Some("us-east-1".into());
+        a.configure(cfg);
+        Some(a)
+    };
+    // A real PNG, so a rule that reads the bytes (rightly at submit) isn't met.
+    let mut png = Vec::new();
+    image::RgbaImage::new(512, 512).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let png_b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+
+    let reg = registry();
+    let mut rows: Vec<&litegen::capabilities::ModelSchema> = reg
+        .all()
+        .filter(|m| m.media_type == MediaType::Image && m.task != litegen::capabilities::ModelTask::Segment)
+        .filter(|m| !IMAGE_SWEEP_SKIPS.iter().any(|(vendor, _)| *vendor == m.provider))
+        .collect();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut wrong: Vec<String> = Vec::new();
+    // (row, mode, case, the adapter's words)
+    let mut refused: Vec<(String, String, String, String)> = Vec::new();
+    let mut sent = 0usize;
+    for m in &rows {
+        let Some(provider) = adapter(&m.provider) else {
+            wrong.push(format!("{}: say how this test builds the {} adapter", m.id, m.provider));
+            continue;
+        };
+        let ri = m.ref_inputs.as_ref();
+        let mut roles: Vec<(&str, u32)> = ri.map(|r| r.roles.iter().map(|(k, s)| (k.as_str(), s.max_count)).collect()).unwrap_or_default();
+        roles.sort();
+        let mut names: Vec<&String> = m.params.keys().collect();
+        names.sort();
+        let mut params: Vec<(String, Vec<Value>)> = Vec::new();
+        for name in names {
+            if IMAGE_SWEEP_UNSENT.iter().any(|(unsent, _)| unsent == name) {
+                continue;
+            }
+            match image_sweep_values(&m.params[name]) {
+                Some(values) => params.push((name.clone(), values)),
+                None => wrong.push(format!("{}: param {name} ({}) is not swept: say how a request sets it", m.id, m.params[name].kind())),
+            }
+        }
+        let extras: Vec<(String, Vec<Value>)> = m
+            .extra_allowlist
+            .iter()
+            .map(|k| (format!("extra.{k}"), m.extra_params.get(k).and_then(sweep_values).unwrap_or_else(|| vec![json!("litegen-sample")])))
+            .collect();
+        // A row that takes no prompt (`max_length: 0`) is sent none.
+        let prompt = if m.prompt.max_length == Some(0) { String::new() } else { "a lighthouse at dusk".to_string() };
+        let mut cases: Vec<SweepCase<'_>> = Vec::new();
+        let mut modes: Vec<String> = Vec::new();
+        for mask in 0u32..(1 << roles.len()) {
+            let combo: Vec<(&str, u32)> = roles.iter().enumerate().filter(|(i, _)| mask & (1u32 << *i) != 0).map(|(_, r)| *r).collect();
+            let mode = if combo.is_empty() { "text".to_string() } else { combo.iter().map(|(r, _)| *r).collect::<Vec<_>>().join("+") };
+            let one_each: Vec<&str> = combo.iter().map(|(r, _)| *r).collect();
+            let mut add = |case: String, images, prompt: String, fields| {
+                cases.push((case, images, prompt, fields));
+                modes.push(mode.clone());
+            };
+            add("defaults".into(), one_each.clone(), prompt.clone(), vec![]);
+            for (role, max) in combo.iter().filter(|(_, max)| *max > 1) {
+                let mut images: Vec<&str> = one_each.iter().copied().filter(|r| r != role).collect();
+                images.extend(std::iter::repeat_n(*role, *max as usize));
+                add(format!("{max} {role} images"), images, prompt.clone(), vec![]);
+            }
+            add("no prompt".into(), one_each.clone(), String::new(), vec![]);
+            if let Some(n) = m.prompt.max_length {
+                add(format!("a {n}-character prompt"), one_each.clone(), "a".repeat(n), vec![]);
+            }
+            for (field, values) in params.iter().chain(&extras) {
+                for v in values {
+                    add(format!("{field}={v}"), one_each.clone(), prompt.clone(), vec![(field.clone(), v.clone())]);
+                }
+            }
+            for (i, (f1, values1)) in params.iter().enumerate() {
+                for (f2, values2) in &params[i + 1..] {
+                    for v1 in values1 {
+                        for v2 in values2 {
+                            let fields = vec![(f1.clone(), v1.clone()), (f2.clone(), v2.clone())];
+                            add(format!("{f1}={v1}, {f2}={v2}"), one_each.clone(), prompt.clone(), fields);
+                        }
+                    }
+                }
+            }
+        }
+        let format = ri.map(|r| &r.provider_format);
+        let mut row_sent = 0usize;
+        for ((case, images, prompt, fields), mode) in cases.into_iter().zip(modes) {
+            let mut body = json!({
+                "model": m.id, "prompt": prompt, "strict": true,
+                "reference_images": images.iter().map(|role| json!({ "type": "base64", "value": png_b64, "role": role })).collect::<Vec<_>>(),
+            });
+            for (field, v) in &fields {
+                match field.strip_prefix("extra.") {
+                    Some(key) => body["extra"][key] = v.clone(),
+                    None => body[field.as_str()] = v.clone(),
+                }
+            }
+            let Ok(req) = serde_json::from_value::<litegen::types::ImageGenerationRequest>(body) else {
+                wrong.push(format!("{} {mode}, {case}: the request doesn't parse", m.id));
+                continue;
+            };
+            // Refused at validation: never quoted, reserved or sent.
+            let Ok(valid) = litegen::api::middleware::validator::validate_image(m, req) else { continue };
+            let r = valid.request;
+            // As the quote and the generation build them.
+            let extras = litegen::api::middleware::validator::image_extras(m, &r);
+            let roles = litegen::api::middleware::validator::image_roles(m, &r);
+            // Each image in the form the materializer hands this row's adapter,
+            // and the mask litegen draws from a region on a row that takes the
+            // region as a mask (`apply_image_edit`).
+            let form = |i: usize, role: &str| match format {
+                Some(RefProviderFormat::Url) => MaterializedRefForm::Url(format!("{}/refs/{i}.png", server.uri())),
+                Some(RefProviderFormat::Multipart(f)) => MaterializedRefForm::MultipartField {
+                    field_name: f.field_map.get(role).cloned().unwrap_or_else(|| role.to_string()),
+                    bytes: png.clone().into(),
+                    content_type: "image/png".into(),
+                },
+                _ => MaterializedRefForm::Base64(png_b64.clone()),
+            };
+            let mut refs: Vec<MaterializedRef> = r
+                .base
+                .reference_images
+                .iter()
+                .enumerate()
+                .map(|(i, img)| {
+                    let role = img.role.clone().unwrap_or_default();
+                    MaterializedRef { form: form(i, &role), role, time_s: None }
+                })
+                .collect();
+            if roles.contains(&"mask") && !refs.iter().any(|r| r.role == "mask") {
+                refs.push(MaterializedRef { form: form(refs.len(), "mask"), role: "mask".into(), time_s: None });
+            }
+            let materialized = MaterializedRequest { refs, cleanup: Cleanup::empty() };
+            let quoted = match provider.preflight(m, &r.base, &extras, &roles) {
+                Ok(()) => None,
+                Err(ProviderError::InvalidRequest(words)) => Some(words),
+                Err(e) => {
+                    wrong.push(format!("{} {mode}, {case}: the preflight answered {e:?}", m.id));
+                    continue;
+                }
+            };
+            calls.store(0, Ordering::SeqCst);
+            let out = provider.generate(m, &r.base, &extras, &materialized).await;
+            let called = calls.load(Ordering::SeqCst) > 0;
+            match (out, called) {
+                (Err(ProviderError::InvalidRequest(words)), false) => match &quoted {
+                    Some(q) if *q == words => refused.push((m.id.clone(), mode.clone(), case, words)),
+                    _ => wrong.push(format!("{} {mode}, {case}: refused at submit, not at the quote ({quoted:?}): {words}", m.id)),
+                },
+                (Err(e), false) => wrong.push(format!("{} {mode}, {case}: never called the vendor: {e:?}", m.id)),
+                (Err(ProviderError::InvalidRequest(words)), true) => {
+                    wrong.push(format!("{} {mode}, {case}: refused after calling the vendor: {words}", m.id));
+                }
+                (_, true) | (Ok(_), false) => match &quoted {
+                    Some(words) => wrong.push(format!("{} {mode}, {case}: refused at the quote, sent at submit: {words}", m.id)),
+                    None => {
+                        sent += 1;
+                        row_sent += 1;
+                    }
+                },
+            }
+        }
+        if row_sent == 0 {
+            wrong.push(format!("{}: no request reached {}", m.id, m.provider));
+        }
+    }
+    let mut listed = vec![false; IMAGE_RULES.len()];
+    for (row, mode, case, words) in &refused {
+        match IMAGE_RULES.iter().position(|(r, md, w)| r == row && (*md == "*" || md == mode) && words.contains(w)) {
+            Some(i) => listed[i] = true,
+            None => wrong.push(format!("{row} {mode}, {case}: the row takes it, the adapter refuses it: {words}")),
+        }
+    }
+    for (rule, _) in IMAGE_RULES.iter().zip(&listed).filter(|(_, hit)| !**hit) {
+        wrong.push(format!("{rule:?}: listed, but its adapter refuses no request its row takes with those words"));
+    }
+    let vendors: std::collections::BTreeSet<&str> = rows.iter().map(|m| m.provider.as_str()).collect();
+    assert!(vendors.len() >= 18 && sent > 2000, "{} rows of {vendors:?}, {sent} requests sent", rows.len());
+    wrong.sort();
+    assert!(wrong.is_empty(), "{} findings over {} rows ({sent} requests sent):\n{}", wrong.len(), rows.len(), wrong.join("\n"));
+}
+
+// ─── Outpaint rows: an expand the adapter needs is required ─────────────────
+
+/// round 3: an image row whose adapter refuses a request without `expand`
+/// (an outpaint endpoint that needs its sides) says so (`expand.required`),
+/// so the validator refuses that request before the quote and the
+/// reservation; and a row that says so has an adapter that refuses it. Each
+/// row with an `expand` param is sent its init image and no `expand` against
+/// a mock vendor that answers 503: refused before any call, or sent.
+#[tokio::test]
+async fn every_row_whose_adapter_needs_an_expand_requires_one() {
+    use base64::Engine;
+    use litegen::capabilities::RefProviderFormat;
+    use litegen::providers::image::{fal::FalProvider, mock::MockProvider, stability::StabilityProvider};
+    use litegen::providers::{ImageExtras, ImageProvider, ProviderError, ProviderInstanceConfig};
+    use litegen::proxy::materializer::{Cleanup, MaterializedRef, MaterializedRefForm, MaterializedRequest};
+    use serde_json::json;
+    use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(any()).respond_with(ResponseTemplate::new(503).set_body_json(json!({ "error": "conformance" }))).mount(&server).await;
+    let mut png = Vec::new();
+    image::RgbaImage::new(8, 8).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let reg = registry();
+    let mut rows: Vec<&litegen::capabilities::ModelSchema> = reg.all().filter(|m| matches!(m.params.get("expand"), Some(ParamSpec::Expand(_)))).collect();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut wrong = Vec::new();
+    for m in &rows {
+        let mut adapter: Box<dyn ImageProvider> = match m.provider.as_str() {
+            "fal" => Box::new(FalProvider::new()),
+            "stability" => Box::new(StabilityProvider::new()),
+            "mock" => Box::new(MockProvider::new()),
+            other => {
+                wrong.push(format!("{}: say how this test builds the {other} adapter", m.id));
+                continue;
+            }
+        };
+        adapter.configure(ProviderInstanceConfig { api_key: "conformance-key".into(), api_base: Some(server.uri()), ..Default::default() });
+        let form = match m.ref_inputs.as_ref().map(|r| &r.provider_format) {
+            Some(RefProviderFormat::Url) => MaterializedRefForm::Url(format!("{}/init.png", server.uri())),
+            Some(RefProviderFormat::Multipart(f)) => MaterializedRefForm::MultipartField {
+                field_name: f.field_map.get("init").cloned().unwrap_or_else(|| "image".into()),
+                bytes: png.clone().into(),
+                content_type: "image/png".into(),
+            },
+            _ => MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(&png)),
+        };
+        let materialized = MaterializedRequest { refs: vec![MaterializedRef { role: "init".into(), form, time_s: None }], cleanup: Cleanup::empty() };
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(json!({ "prompt": "", "model": m.id })).unwrap();
+        let extras = ImageExtras {
+            vendor_job: Default::default(),
+            size: None, resolution: None, aspect_ratio: None, quality: None, style: None, steps: None,
+            guidance_scale: None, strength: None, response_format: "b64_json".to_string(),
+            edit: None, views: Vec::new(), extra: None, output_format: None, background: None,
+            expand: None,
+            layout: None, mask_prompt: None, preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
+        };
+        let out = adapter.generate(m, &base, &extras, &materialized).await;
+        let refused = matches!(&out, Err(ProviderError::InvalidRequest(_)));
+        let required = matches!(m.params.get("expand"), Some(ParamSpec::Expand(e)) if e.required);
+        if refused != required {
+            let answer = out.as_ref().err().map(|e| format!("{e:?}")).unwrap_or_else(|| "it was made".into());
+            wrong.push(format!("{}: expand.required is {required}, but the adapter {} a request without expand ({answer})", m.id, if refused { "refuses" } else { "sends" }));
+        }
+    }
+    let ids: Vec<&str> = rows.iter().map(|m| m.id.as_str()).collect();
+    assert!(ids.len() >= 3, "{ids:?}");
+    assert!(wrong.is_empty(), "{} of {} rows:\n{}", wrong.len(), ids.len(), wrong.join("\n"));
 }

@@ -85,6 +85,11 @@ pub struct AuthRequest {
     pub code_hash: Option<String>,
     pub decided_at: Option<DateTime<Utc>>,
     pub consumed_at: Option<DateTime<Utc>>,
+    /// The approving person's sign-in epoch, taken from the session that
+    /// approved it (review round 4, finding 2): a reset, a deactivation or a
+    /// password change since then moves the person's epoch on, and the code
+    /// no longer redeems. `None` until approved.
+    pub sign_in_epoch: Option<i64>,
 }
 
 /// A person's decision on a pending request.
@@ -99,6 +104,8 @@ pub enum Decision {
         /// When the code stops being redeemable.
         code_expires_at: DateTime<Utc>,
         at: DateTime<Utc>,
+        /// The approving session's sign-in epoch.
+        sign_in_epoch: i64,
     },
     Deny {
         at: DateTime<Utc>,
@@ -118,6 +125,10 @@ pub struct Grant {
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The person's sign-in epoch the grant was made under (its code's):
+    /// the grant and its tokens work only while the person's epoch is still
+    /// this one (review round 4, finding 2).
+    pub sign_in_epoch: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +208,10 @@ pub trait McpOAuthStore: Send + Sync {
     /// The unrevoked grant for `grant`'s client, person, org, app and
     /// endpoint, now holding `grant`'s scopes: the one there already, else
     /// `grant` itself, inserted. Two claims at once end with one grant.
-    async fn claim_grant(&self, grant: &Grant) -> Result<Grant, sqlx::Error>;
+    /// `None`: the claim is stale (made under a sign-in epoch older than the
+    /// person's, or than the live grant's), and it changed nothing (review
+    /// round 5, finding 5).
+    async fn claim_grant(&self, grant: &Grant) -> Result<Option<Grant>, sqlx::Error>;
     async fn get_grant(&self, id: &str) -> Result<Option<Grant>, sqlx::Error>;
     /// The unrevoked grant for this client, person, tenant and endpoint.
     async fn find_active_grant(

@@ -159,7 +159,41 @@ pub(crate) fn actor_label(ctx: &KeyContext) -> String {
         .unwrap_or_else(|| "master-key".to_string())
 }
 
-/// Record a management mutation in the audit log (fire-and-forget).
+/// An audit entry as every writer builds one: a fresh id, the time now, and
+/// the actor, action, target, details and org given (review round 7,
+/// cleanup: one builder).
+pub(crate) fn audit_entry(
+    (actor_key_id, actor_label): (Option<String>, String),
+    org_id: Option<String>,
+    action: &str,
+    target_type: &str,
+    target_id: &str,
+    after: Option<serde_json::Value>,
+) -> crate::types::AuditLogEntry {
+    crate::types::AuditLogEntry {
+        id: format!("audit-{}", uuid::Uuid::new_v4()),
+        actor_key_id,
+        actor_label,
+        action: action.to_string(),
+        target_type: target_type.to_string(),
+        target_id: target_id.to_string(),
+        before_json: None,
+        after_json: after.map(|v| v.to_string()),
+        created_at: chrono::Utc::now(),
+        org_id,
+    }
+}
+
+/// The actor of `ctx` for [`audit_entry`]: its key's id, if any, and its
+/// [`actor_label`].
+pub(crate) fn actor(ctx: &KeyContext) -> (Option<String>, String) {
+    (ctx.key_id.map(|k| k.to_string()), actor_label(ctx))
+}
+
+/// Record a management mutation in the audit log (fire-and-forget), under
+/// `org_id` (the target's org), else the caller's; with neither, as
+/// `api::audit::audit_org` files it (a gateway change by the hosted master
+/// key: no org).
 pub(crate) fn audit(
     state: &AppState,
     ctx: &KeyContext,
@@ -170,18 +204,8 @@ pub(crate) fn audit(
     after: Option<serde_json::Value>,
 ) {
     let db = state.db.clone();
-    let entry = crate::types::AuditLogEntry {
-        id: format!("audit-{}", uuid::Uuid::new_v4()),
-        actor_key_id: ctx.key_id.map(|k| k.to_string()),
-        actor_label: actor_label(ctx),
-        action: action.to_string(),
-        target_type: target_type.to_string(),
-        target_id: target_id.to_string(),
-        before_json: None,
-        after_json: after.map(|v| v.to_string()),
-        created_at: chrono::Utc::now(),
-        org_id: org_id.map(str::to_string).or_else(|| ctx.org_id.clone()),
-    };
+    let org = crate::api::audit::audit_org(state.mode, org_id.map(str::to_string).or_else(|| ctx.org_id.clone()));
+    let entry = audit_entry(actor(ctx), org, action, target_type, target_id, after);
     tokio::spawn(async move {
         if let Err(e) = db.insert_audit_log(&entry).await {
             tracing::warn!(error = %e, "failed to audit management action");
@@ -248,7 +272,7 @@ pub fn routes(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         .route("/v1/admin/providers", get(admin::list_providers))
         .route(
             "/v1/admin/providers/{name}",
-            get(admin::get_provider).put(admin::put_provider).delete(admin::delete_provider),
+            get(admin::get_provider).put(admin::put_provider).patch(admin::patch_provider).delete(admin::delete_provider),
         )
         .route("/v1/admin/routes", get(admin::get_routes).put(admin::put_routes).delete(admin::delete_routes))
         .route("/v1/admin/settings", get(admin::get_settings).put(admin::put_settings))

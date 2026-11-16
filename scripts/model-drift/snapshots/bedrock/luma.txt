@@ -1,1 +1,10 @@
-luma.ray-v2:0
++ **prompt** – (string) The content needed in the output video. The request field accepts 1–5,000 characters. The model input is also limited to 300 tokens, so the prompt must satisfy both limits.
++ **aspect\_ratio** – (enum) The aspect ratio of the output video ("1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21").
++ **loop** – (boolean) Whether to loop the output video.
++ **duration** – (enum) - The duration of the output video ("5s", "9s").
++ **resolution** – (enum) The resolution of the output video ("540p", "720p").
++ **keyframes** – (object) Define start (frame0) and/or end (frame1) keyframes
++ **frame0** – Starting keyframe image
++ **frame1** – Ending keyframe image
++ **type** – Must be "image"
++ **source** – Image source

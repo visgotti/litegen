@@ -709,6 +709,8 @@ mod tests {
         assert_eq!(one("LITEGEN__BACKPRESSURE__MAX_IN_FLIGHT", "7").backpressure.max_in_flight, 7);
         assert_eq!(one("LITEGEN__MODE", "hosted").mode, crate::config::Mode::Hosted);
         assert!(one("LITEGEN__DEV__EXPOSE_INVITE_TOKENS", "true").dev.expose_invite_tokens);
+        assert!(one("LITEGEN__DEV__EXPOSE_RESET_TOKENS", "true").dev.expose_reset_tokens);
+        assert_eq!(one("LITEGEN__OWNER_EMAIL", "owner@example.com").owner_email.as_deref(), Some("owner@example.com"));
         assert!(one("LITEGEN__OBSERVABILITY__JSON_LOGS", "true").observability.json_logs);
         assert!(!one("LITEGEN__OBSERVABILITY__METRICS_ENABLED", "false").observability.metrics_enabled);
         assert!(one("LITEGEN__OBSERVABILITY__METRICS_REQUIRE_AUTH", "true").observability.metrics_require_auth);

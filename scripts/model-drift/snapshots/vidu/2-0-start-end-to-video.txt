@@ -1,0 +1,17 @@
+POST /ent/v2/start-end2video · vidu2.0
+Body parameters
+model | string | Required | vidu2.0
+images | string | Required | 0.8 1.25 1:4 4:1 50 10
+prompt | string | Optional | 5000
+duration | integer | Optional | 4s 4 8
+seed | integer | Optional | 
+resolution | string | Optional | 4s 360p 360p 720p 1080p 8s 720p 720p
+movement_amplitude | string | Optional | auto auto small medium large
+bgm | boolean | Optional | 
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false true false 48
+watermark | boolean | Optional | 
+wm_position | integer | Optional | 1 2 3 4 3
+wm_url | string | Optional | 
+meta_data | string | Optional | 
+callback_url | string | Optional | callback_url processing success failed

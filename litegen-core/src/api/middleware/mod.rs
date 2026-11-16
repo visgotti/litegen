@@ -86,7 +86,9 @@ pub struct KeyContext {
     pub user: Option<UserContext>,
     /// Role-derived permissions (populated for cookie-auth sessions).
     pub permissions: Vec<Permission>,
-    /// Session ID for CSRF lookup (Some only when cookie auth was used).
+    /// The session's stored id (`sessions.id`, the hash of its cookie, never
+    /// the cookie), for the CSRF lookup and the session methods. Some only
+    /// when cookie auth was used.
     pub session_id: Option<String>,
     /// Active organization id for this request (tenant context).
     /// None for platform-admin (hosted master key) until a tenant is selected.
@@ -150,6 +152,21 @@ pub async fn check_grant_scope(request: Request, next: Next) -> Response {
 /// which is harmless — that context already carries all permissions.)
 pub(crate) fn is_platform_admin(ctx: &KeyContext) -> bool {
     ctx.user.is_none() && ctx.key_id.is_none() && ctx.session_id.is_none()
+}
+
+/// The sign-in `ctx` acts under, for a write that must land only while it is
+/// live (review round 6, finding 2): its session, or its app's OAuth grant;
+/// for the master key (and dev mode) none to check, so the write is
+/// unconditional. `None` for a principal that names no sign-in: an API key,
+/// which the routes that ask refuse before they write.
+pub(crate) fn sign_in_of(ctx: &KeyContext) -> Option<crate::db::SignIn<'_>> {
+    use crate::db::SignIn;
+    match (ctx.session_id.as_deref(), ctx.oauth_grant_id.as_deref()) {
+        (Some(session), _) => Some(SignIn::Session(session)),
+        (None, Some(grant)) => Some(SignIn::Grant(grant)),
+        (None, None) if is_platform_admin(ctx) => Some(SignIn::MasterKey),
+        (None, None) => None,
+    }
 }
 
 /// Whether `ctx` may read what concerns the whole deployment rather than one
@@ -356,11 +373,13 @@ pub async fn auth_middleware(
     }
 
     // Try session cookie auth
-    if let Some(sid) = cookie_value(request.headers(), "litegen_session") {
-        // The session and its user in one read (review 2026-11-11, P14).
-        if let Ok(Some((sess, user))) = state.db.get_session_with_user(&sid).await {
+    if let Some(cookie) = cookie_value(request.headers(), "litegen_session") {
+        // The session and its user in one read (review 2026-11-11, P14),
+        // found by the cookie's hash. From here on the session goes by its
+        // stored id, `sess.id`, never the cookie (migration 044).
+        if let Ok(Some((sess, user))) = state.db.get_session_with_user(&cookie).await {
             if sess.expires_at < chrono::Utc::now() {
-                let _ = state.db.delete_session(&sid).await;
+                let _ = state.db.delete_session(&sess.id).await;
                 return unauthorized_response("Session expired");
             }
             if let Some(user) = user {
@@ -370,7 +389,7 @@ pub async fn auth_middleware(
                 // Bump expiry if within 24h of expiring
                 if sess.expires_at < chrono::Utc::now() + chrono::Duration::hours(24) {
                     let new_exp = chrono::Utc::now() + chrono::Duration::days(7);
-                    let _ = state.db.bump_session_expiry(&sid, new_exp).await;
+                    let _ = state.db.bump_session_expiry(&sess.id, new_exp).await;
                 }
 
                 // TODO(perf): this issues up to ~2 extra DB queries per session request; cache the active tenant per session if it becomes hot.
@@ -395,9 +414,9 @@ pub async fn auth_middleware(
                             (Some(org.id), Some(role))
                         }
                         // No membership: the person acts in no org. Hosted:
-                        // their last org was deleted, they were removed from
-                        // it or left it, or their signup failed after making
-                        // the account. Single-tenant: every account joins the
+                        // their last org was deleted, or they were removed
+                        // from it or left it (a signup that fails makes no
+                        // account). Single-tenant: every account joins the
                         // default org at signup or invitation, so having none
                         // means its member was removed.
                         Ok(_) => (None, None),
@@ -458,7 +477,7 @@ pub async fn auth_middleware(
                         role: user.role,
                     }),
                     permissions: perms,
-                    session_id: Some(sid),
+                    session_id: Some(sess.id),
                     org_id,
                     app_id,
                     oauth_grant_id: None,
@@ -1056,6 +1075,36 @@ pub async fn create_session_cookies(
         csrf_token: csrf_token.clone(),
     };
     db.create_session(&sess).await?;
+    let (sc, cc) = make_session_cookies(&session_token, &csrf_token);
+    Ok((session_token, csrf_token, sc, cc))
+}
+
+/// [`create_session_cookies`] for a sign-in that began under `epoch` (the
+/// account's sign-in epoch read when it began): the session is refused if a
+/// reset, deactivation or password change committed meanwhile (review round
+/// 4, finding 2).
+pub async fn create_session_cookies_at(
+    db: &Arc<dyn crate::db::DatabaseStore>,
+    user_id: &str,
+    ip: Option<String>,
+    user_agent: Option<String>,
+    epoch: i64,
+) -> Result<(String, String, axum::http::HeaderValue, axum::http::HeaderValue), sqlx::Error> {
+    use crate::auth::tokens::{generate_session_token, generate_csrf_token};
+    use crate::types::Session;
+
+    let session_token = generate_session_token();
+    let csrf_token = generate_csrf_token();
+    let sess = Session {
+        id: session_token.clone(),
+        user_id: user_id.to_string(),
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+        ip,
+        user_agent,
+        csrf_token: csrf_token.clone(),
+    };
+    db.create_session_at_epoch(&sess, epoch).await?;
     let (sc, cc) = make_session_cookies(&session_token, &csrf_token);
     Ok((session_token, csrf_token, sc, cc))
 }

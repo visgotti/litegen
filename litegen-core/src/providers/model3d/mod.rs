@@ -46,7 +46,9 @@
 //! adapters ask the vendor for ONE container, and litegen derives the rest
 //! locally (`proxy::model3d_convert`). A vendor's own format field matters for
 //! what litegen cannot derive, and for `prefers_vendor_native` containers
-//! (fbx, usdz) whose vendor exports carry more than a conversion would.
+//! (fbx, usdz) whose vendor exports carry more than a conversion would,
+//! unless the request's `format_source: glb` has them made from the glb
+//! (`asks_vendor_for`).
 //!
 //! # Adding a vendor
 //!

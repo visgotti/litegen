@@ -106,7 +106,7 @@ async fn a_routes_ttl_expires_its_entries() {
 async fn turning_the_cache_off_live_empties_it_and_resizing_rebuilds_it() {
     let app = app(|_| {}).await;
     let view = put_settings(&app, json!({ "cache_enabled": true })).await;
-    assert_eq!(view["effective_cache"], json!({ "enabled": true, "ttl_seconds": 3600, "max_items": 10000, "max_bytes": 268435456 }), "{view}");
+    assert_eq!(view["effective_cache"], json!({ "enabled": true, "ttl_seconds": 3600, "max_items": 10000, "max_bytes": 268435456, "charge_hits": true }), "{view}");
     assert_eq!(image(&app, "a newt", &[]).await, "miss");
     assert_eq!(image(&app, "a newt", &[]).await, "hit");
 
@@ -142,6 +142,50 @@ async fn a_cache_max_bytes_outside_its_range_is_refused() {
     }
     let view = put_settings(&app, json!({ "cache_enabled": true, "cache_max_bytes": 1_048_576 })).await;
     assert_eq!(view["effective_cache"]["max_bytes"], 1_048_576, "{view}");
+}
+
+/// Round 3 (2026-11-15): the view says the range each numeric setting takes
+/// (`limits`), so a client such as the dashboard's Gateway form reads it
+/// instead of keeping a copy, and the PUT holds every setting to exactly
+/// that range: both ends are taken, one past either end is a 400 that names
+/// the setting.
+#[tokio::test]
+async fn the_settings_view_says_the_range_each_setting_takes() {
+    let app = app(|_| {}).await;
+    let (status, _, view) = send(&app, "GET", "/v1/admin/settings", &[], None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    let limits = view["limits"].as_object().cloned().unwrap_or_default();
+    let mut named: Vec<&str> = limits.keys().map(String::as_str).collect();
+    named.sort_unstable();
+    assert_eq!(
+        named,
+        [
+            "cache_max_bytes", "cache_max_items", "cache_ttl_seconds", "circuit_breaker_open_for_seconds",
+            "circuit_breaker_threshold", "cost_markup_percent", "retry_backoff_ms", "retry_max_backoff_ms",
+            "retry_max_retries", "storage_access_retention_days", "storage_access_signed_url_ttl_seconds",
+            "vendor_timeout_seconds",
+        ],
+        "{view}"
+    );
+    for (field, range) in &limits {
+        let (min, max) = (range["min"].as_u64().expect("a whole min"), range["max"].as_u64().expect("a whole max"));
+        let setting = |v: u64| {
+            let mut body = json!({});
+            body[field.as_str()] = json!(v);
+            body
+        };
+        for taken in [min, max] {
+            let (status, _, body) = send(&app, "PUT", "/v1/admin/settings", &[], Some(setting(taken))).await;
+            assert_eq!(status, StatusCode::OK, "{field} {taken}: {body}");
+        }
+        for refused in [Some(max + 1), min.checked_sub(1)].into_iter().flatten() {
+            let (status, _, body) = send(&app, "PUT", "/v1/admin/settings", &[], Some(setting(refused))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{field} {refused}: {body}");
+            let message = body["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains(field.as_str()), "{field} {refused}: {message}");
+        }
+    }
+    assert_eq!(put_settings(&app, json!({})).await["limits"], view["limits"], "the PUT's answer says them too");
 }
 
 /// P7: a new `cache_max_bytes` is a new, empty cache, as a new `max_items` is.
@@ -426,6 +470,120 @@ async fn a_provider_config_saved_on_one_instance_reaches_another() {
     assert!(litegen::management::runtime::refresh(&b_state).await.unwrap());
     let (_, _, view) = send(&b, "GET", "/v1/admin/providers/openai", &[], None).await;
     assert_eq!(view["active"], false, "{view}");
+}
+
+/// provider-secrets (2026-11-15): an api_base from `litegen.yaml` or the
+/// environment shows `[redacted]` for its user info too, and a save that
+/// sends it back as shown (the dashboard's Configure form, before any
+/// runtime config exists) keeps the whole URL in force.
+#[tokio::test]
+async fn a_configured_api_base_sent_back_as_shown_keeps_its_user_info() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let db = std::sync::Arc::new(litegen::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite"));
+    let base = "https://proxy-user:proxy-pass-4410@gateway.example/v1";
+    let (app, state) = harness::app_and_state_over_with(db, &dir, |c| {
+        let openai = json!({ "api_key": "sk-env-key-4410", "api_base": base, "enabled": true });
+        c.providers.insert("openai".into(), serde_json::from_value(openai).expect("openai config"));
+    })
+    .await;
+    let (_, _, view) = send(&app, "GET", "/v1/admin/providers/openai", &[], None).await;
+    assert_eq!(view["api_base"], "https://[redacted]@gateway.example/v1", "{view}");
+    let (s, _, put) = send(&app, "PUT", "/v1/admin/providers/openai", &[], Some(json!({ "api_base": view["api_base"], "enabled": true }))).await;
+    assert_eq!(s, StatusCode::OK, "{put}");
+    assert_eq!(state.router.registry.registered_config("openai").await.unwrap().api_base.as_deref(), Some(base));
+}
+
+/// A provider row's `settings_json`, read from the database.
+async fn stored_settings(state: &litegen::api::middleware::AppState, provider: &str) -> Value {
+    let row = state.db.management().expect("a management store").get_provider_config(provider).await.unwrap().expect("a stored row");
+    serde_json::from_str(&row.settings_json).unwrap()
+}
+
+/// provider-config (2026-11-15): `encrypt_provider_credentials` is one setting
+/// for every replica, stored with the gateway settings. Turned on on one
+/// instance, it encrypts the stored rows there. Another instance's save is
+/// stored encrypted before that instance has even refreshed (a save reads the
+/// stored setting after its write), and it reads the values from the rows
+/// the first one encrypted. Turned off on the second, every row is stored as
+/// versions before 2026-11-15 read it again.
+#[tokio::test]
+async fn the_credential_encryption_switch_holds_on_every_instance() {
+    let (a, a_state, b, b_state) = two_instances().await;
+    let (s, _, put) = send(&a, "PUT", "/v1/admin/providers/openai", &[], Some(json!({ "api_key": "sk-test-123456", "extra_headers": { "cf-aig-authorization": "Bearer cf-aig-token-9904" } }))).await;
+    assert_eq!(s, StatusCode::OK, "{put}");
+    put_settings(&a, json!({ "encrypt_provider_credentials": true })).await;
+    assert_eq!(stored_settings(&a_state, "openai").await["extra_headers"], json!({ "cf-aig-authorization": "[redacted]" }));
+
+    let (s, _, put) = send(&b, "PUT", "/v1/admin/providers/mock", &[], Some(json!({ "extra_headers": { "Helicone-Auth": "Bearer helicone-token-9904" } }))).await;
+    assert_eq!(s, StatusCode::OK, "{put}");
+    assert_eq!(stored_settings(&b_state, "mock").await["extra_headers"], json!({ "Helicone-Auth": "[redacted]" }), "B's save follows the stored setting");
+    assert!(litegen::management::runtime::refresh(&b_state).await.unwrap(), "B found A's changes");
+    let openai = b_state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!(openai.extra_headers.get("cf-aig-authorization").map(String::as_str), Some("Bearer cf-aig-token-9904"), "B sends the value A encrypted");
+
+    put_settings(&b, json!({ "encrypt_provider_credentials": null })).await;
+    assert_eq!(stored_settings(&a_state, "openai").await["extra_headers"], json!({ "cf-aig-authorization": "Bearer cf-aig-token-9904" }));
+    assert_eq!(stored_settings(&a_state, "mock").await["extra_headers"], json!({ "Helicone-Auth": "Bearer helicone-token-9904" }));
+}
+
+/// provider-config (2026-11-15, a customer's bug): the dashboard's Configure
+/// form saves only the key, the api_base and the enabled flag. Sent as a PUT,
+/// that dropped the headers, model mapping, options and region set through
+/// the API; sent as a PATCH, as the form sends it (a blank key is `null`), it
+/// keeps them, and the key from the environment stays in force.
+#[tokio::test]
+async fn a_dashboard_save_keeps_the_settings_set_through_the_api() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let db = std::sync::Arc::new(litegen::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite"));
+    let (app, state) = harness::app_and_state_over_with(db, &dir, |c| {
+        c.secrets_key = Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [5u8; 32]));
+        let openai = json!({ "api_key": "sk-env-key-7731", "enabled": true });
+        c.providers.insert("openai".into(), serde_json::from_value(openai).expect("openai config"));
+    })
+    .await;
+    let set = json!({
+        "extra_headers": { "OpenAI-Organization": "org-7731" },
+        "model_mapping": { "openai/gpt-image-2": "my-deployment" },
+        "region": "eu-west-1",
+    });
+    let (s, _, put) = send(&app, "PUT", "/v1/admin/providers/openai", &[], Some(set)).await;
+    assert_eq!(s, StatusCode::OK, "{put}");
+    let (_, _, view) = send(&app, "GET", "/v1/admin/providers/openai", &[], None).await;
+    let form = json!({ "api_key": null, "api_base": "https://gateway.example/v1", "enabled": view["enabled"] });
+    let (s, _, saved) = send(&app, "PATCH", "/v1/admin/providers/openai", &[], Some(form)).await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    assert_eq!(
+        (&saved["extra_header_names"], &saved["model_mapping"], &saved["region"], &saved["api_base"]),
+        (&json!(["OpenAI-Organization"]), &json!({ "openai/gpt-image-2": "my-deployment" }), &json!("eu-west-1"), &json!("https://gateway.example/v1")),
+        "{saved}"
+    );
+    let live = state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!((live.api_key.as_str(), live.extra_headers.get("OpenAI-Organization").map(String::as_str)), ("sk-env-key-7731", Some("org-7731")));
+}
+
+/// provider-config follow-up (2026-11-15): a key saved through the API over
+/// the environment's could only go with the whole runtime config. A PATCH
+/// that sends it as `""` removes that key alone: the environment's key is in
+/// force again, and the rest of the runtime config stays.
+#[tokio::test]
+async fn a_key_a_patch_removes_falls_back_to_the_environments() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let db = std::sync::Arc::new(litegen::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory sqlite"));
+    let (app, state) = harness::app_and_state_over_with(db, &dir, |c| {
+        c.secrets_key = Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [5u8; 32]));
+        let openai = json!({ "api_key": "sk-env-key-5520", "enabled": true });
+        c.providers.insert("openai".into(), serde_json::from_value(openai).expect("openai config"));
+    })
+    .await;
+    let set = json!({ "api_key": "sk-runtime-key-6631", "extra_headers": { "OpenAI-Organization": "org-5520" } });
+    let (s, _, put) = send(&app, "PUT", "/v1/admin/providers/openai", &[], Some(set)).await;
+    assert_eq!(s, StatusCode::OK, "{put}");
+    assert_eq!(state.router.registry.registered_config("openai").await.unwrap().api_key, "sk-runtime-key-6631");
+
+    let (s, _, saved) = send(&app, "PATCH", "/v1/admin/providers/openai", &[], Some(json!({ "api_key": "" }))).await;
+    assert_eq!((s, &saved["key_hint"]), (StatusCode::OK, &json!("…5520")), "{saved}");
+    let live = state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!((live.api_key.as_str(), live.extra_headers.get("OpenAI-Organization").map(String::as_str)), ("sk-env-key-5520", Some("org-5520")));
 }
 
 #[tokio::test]

@@ -71,6 +71,13 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
 
   // ─── Gateway: provider config (api_base only, no secret) then reset ───────
   await feature('Gateway — a provider\'s base URL set at runtime, then reset');
+  // Settings the form has no field for, set through the API: a save from the
+  // form changes only what the form shows, so they survive it.
+  const viaApi = await request.put(`${API_BASE}/v1/admin/providers/openai`, {
+    headers: auth,
+    data: { extra_headers: { 'X-E2E-Gateway': 'e2e-token' }, model_mapping: { 'gpt-image-1': 'e2e-mapped-model' }, region: 'e2e-region', options: { e2e: true } },
+  });
+  expect(viaApi.status(), 'the API took the settings').toBe(200);
   await page.getByTestId('gateway-tab-providers').click();
   await page.getByTestId('gateway-provider-edit-openai').click();
   await page.getByTestId('gateway-provider-base').fill('https://openai-proxy.e2e.invalid/v1');
@@ -80,6 +87,12 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   await expect(openai).toContainText('runtime');
   const providerCfg = await (await request.get(`${API_BASE}/v1/admin/providers/openai`, { headers: auth })).json();
   expect(JSON.stringify(providerCfg), 'the server holds the base URL').toContain('openai-proxy.e2e.invalid');
+  expect(providerCfg, 'and every setting the form does not show').toMatchObject({
+    extra_header_names: ['X-E2E-Gateway'],
+    model_mapping: { 'gpt-image-1': 'e2e-mapped-model' },
+    region: 'e2e-region',
+    options: { e2e: true },
+  });
   await page.getByTestId('gateway-provider-reset-openai').click();
   await expect(openai).not.toContainText('openai-proxy.e2e.invalid');
   const resetCfg = await (await request.get(`${API_BASE}/v1/admin/providers/openai`, { headers: auth })).json();
@@ -114,6 +127,16 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   await page.getByTestId('gateway-eu-duration').fill('');
   await page.getByTestId('gateway-settings-save').click();
   await expect(page.getByTestId('gateway-effective-markup')).toContainText('0%');
+  // Sealing provider credentials at rest needs a secrets key, which this
+  // backend has not: the server says so, in its words.
+  await page.getByTestId('gateway-encrypt-credentials').selectOption('on');
+  const sealRefused = nextCall(page, 'PUT', /^\/v1\/admin\/settings$/);
+  await page.getByTestId('gateway-settings-save').click();
+  const sealAnswer = await sealRefused;
+  expect(sealAnswer.status()).toBe(400);
+  const sealSaid = ((await sealAnswer.json()) as { error: { message: string } }).error.message;
+  await expect(page.getByTestId('gateway-settings-error')).toContainText(sealSaid);
+  await page.getByTestId('gateway-encrypt-credentials').selectOption('');
 
   // ─── Budgets: a key budget set through the page is enforced ───────────────
   await feature('Budgets — a key budget set on the page is enforced by the gateway');
@@ -201,6 +224,100 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   await expect(page.getByTestId(`gateway-model-${MODEL}`)).toHaveCount(0);
   await request.delete(`${API_BASE}/v1/keys/${keyId}`, { headers: auth });
   await request.delete(`${API_BASE}/v1/end-users/${END_USER}`, { headers: auth });
+});
+
+test('Logs, the trace and Generations show a charge with every digit it has', async ({ page, request }) => {
+  await feature('Costs — a sub-cent charge shown whole in Logs, the trace and Generations');
+  // Every mock model costs $0 or at least half a cent, so the server's real
+  // answers come back with a vendor's sub-cent charge put in (fal flux-2-klein
+  // at 256x256 is $0.00033), which four fixed decimals showed as "$0.0003".
+  const PRICE = 0.00033;
+  const made = await request.post(`${API_BASE}/v1/videos/generations`, {
+    headers: auth,
+    data: { model: 'mock/video-gen', prompt: 'a sub-cent clip' },
+  });
+  expect(made.status(), await made.text()).toBe(200);
+  const { id } = (await made.json()) as { id: string };
+  const priced = (rows: Array<{ cost_usd?: number | null }>) => rows.forEach(r => { r.cost_usd = PRICE; });
+  await page.route(/\/v1\/(logs|generations)\?/, async route => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { data?: Array<{ cost_usd?: number | null }> };
+    if (response.ok() && Array.isArray(body.data)) priced(body.data);
+    await route.fulfill({ response, json: body });
+  });
+
+  await openAsMaster(page, '/logs');
+  const row = page.locator('[data-testid^="logs-row-"]').first();
+  await expect(row).toContainText('$0.00033', { timeout: 10_000 });
+  await row.click();
+  await page.getByTestId('trace-tab-params').click();
+  await expect(page.getByTestId('trace-panel')).toContainText('$0.00033');
+  await page.getByTestId('trace-panel-close').click();
+
+  await page.goto('/generations');
+  await expect(page.getByTestId(`gen-row-${id}`)).toContainText('$0.00033', { timeout: 10_000 });
+});
+
+test('the Overview shows its total and its per-provider cost with every digit they have', async ({ page, request }) => {
+  await feature('Overview — a sub-cent total and provider cost shown whole');
+  // As above: the server's real answers with a vendor's sub-cent charge put in.
+  const PRICE = 0.00033;
+  expect((await request.post(`${API_BASE}/v1/images/generations`, {
+    headers: auth,
+    data: { model: 'mock/image-gen', prompt: 'a sub-cent picture' },
+  })).status()).toBe(200);
+  await page.route(/\/v1\/stats(\?.*)?$/, async route => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { total_cost_usd: number; providers_used: Array<{ cost_usd: number }> };
+    if (response.ok()) {
+      body.total_cost_usd = PRICE;
+      body.providers_used.forEach(p => { p.cost_usd = PRICE; });
+    }
+    await route.fulfill({ response, json: body });
+  });
+
+  await openAsMaster(page, '/');
+  await expect(page.locator('.stat-card').filter({ hasText: 'Total Cost' }).locator('.value')).toHaveText('$0.00033', { timeout: 10_000 });
+  await expect(page.locator('.chart-container').filter({ hasText: 'Cost by Provider' })).toContainText(': $0.00033');
+});
+
+test("clearing a key's quota, RPM limit and webhook on the Keys page clears them", async ({ page, request }) => {
+  await feature('Keys — a quota, an RPM limit and a webhook cleared in the edit form');
+  const created = await request.post(`${API_BASE}/v1/keys`, {
+    headers: auth,
+    data: { name: `e2e-clear-${RUN}`, token_quota: 100, rpm_limit: 60, webhook_url: 'https://hooks.example.com/e2e-clear' },
+  });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+  try {
+    await openAsMaster(page, '/keys');
+    // The quota is a USD budget cap (`token_quota`), what the key spent USD too.
+    await expect(page.getByTestId(`key-quota-${id}`)).toHaveText('$0.00 / $100.00', { timeout: 10_000 });
+    await expect(page.getByTestId(`key-rpm-${id}`)).toHaveText('60');
+    await expect(page.getByTestId(`key-test-webhook-${id}`)).toBeVisible();
+
+    await page.getByTestId(`edit-key-${id}`).click();
+    await page.getByTestId('edit-token-quota').fill('');
+    await page.getByTestId('edit-rpm-limit').fill('');
+    await page.getByTestId('edit-webhook-url').fill('');
+    const saved = nextCall(page, 'PATCH', new RegExp(`^/v1/keys/${id}$`));
+    await page.getByTestId('save-edit-btn').click();
+    const answer = await saved;
+    expect(answer.request().postDataJSON()).toMatchObject({ token_quota: null, rpm_limit: null, webhook_url: null });
+    expect(answer.status()).toBe(200);
+    await expect(page.getByTestId(`edit-row-${id}`)).toHaveCount(0);
+
+    // The row shows what the server now holds: no quota, no limit, no hook.
+    await expect(page.getByTestId(`key-quota-${id}`)).toHaveText('—', { timeout: 10_000 });
+    await expect(page.getByTestId(`key-rpm-${id}`)).toHaveText('—');
+    await expect(page.getByTestId(`key-test-webhook-${id}`)).toHaveCount(0);
+    const stored = (await (await request.get(`${API_BASE}/v1/keys/${id}`, { headers: auth })).json()) as Record<string, unknown>;
+    expect(stored.token_quota ?? null, 'the quota is gone on the server').toBeNull();
+    expect(stored.rpm_limit ?? null, 'the RPM limit too').toBeNull();
+    expect(stored.webhook_url ?? null, 'and the webhook').toBeNull();
+  } finally {
+    await request.delete(`${API_BASE}/v1/keys/${id}`, { headers: auth });
+  }
 });
 
 test("opening the Users page keeps the master key's login", async ({ page }) => {

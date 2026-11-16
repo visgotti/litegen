@@ -29,6 +29,54 @@ test("fal's carried snapshot keeps an endpoint's heading as it is while fal give
   assert.match(r.snapshot, /^## fal-ai\/aura-flow — deprecated text-to-image$/m);
 });
 
+test("fal's carried source asks endpoint by endpoint when fal refuses the whole call for one unknown id, and that id reads as gone", async () => {
+  // Seen 2026-11-16: GET …/v1/models?endpoint_id=fal-ai%2Faura-flow&…&expand=openapi-3.0 answers
+  // 404 {"error":{"type":"not_found","message":"Endpoint(s) not found"}} for the whole chunk
+  // once one id has left the registry; the other ids still answer 200 one at a time.
+  const ids = new URL(source.url).searchParams.getAll('endpoint_id');
+  const gone = ids[1];
+  const notFound = { status: 404, contentType: 'application/json', body: '{"error":{"type":"not_found","message":"Endpoint(s) not found"}}' };
+  const seen = [];
+  const get = async (url) => {
+    seen.push(url);
+    const asked = new URL(url).searchParams.getAll('endpoint_id');
+    if (asked.length !== 1 || asked[0] === gone) return notFound;
+    return answer([{ endpoint_id: asked[0], metadata: { status: 'active', category: 'text-to-image' } }]);
+  };
+  const response = await source.fetch(source.url, get);
+  assert.equal(seen.length, 1 + ids.length, 'one call for the chunk, then one per id');
+  for (const url of seen.slice(1)) assert.match(url, /expand=openapi-3\.0/);
+  const r = evaluateSource(source, response, { ours });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(r.ids, ids.filter((id) => id !== gone).map((id) => id.toLowerCase()).sort());
+  // Gone, so `missing upstream` even while a catalog page still lists it (as
+  // fal's did for fal-ai/stable-diffusion-v35-medium on 2026-11-16).
+  assert.deepEqual(r.gone, [gone.toLowerCase()]);
+  assert.match(r.snapshot, new RegExp(`^## ${gone.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')} — not in the model registry$`, 'm'));
+});
+
+test("fal's carried chunk whose every endpoint has left the registry reads as gone, not as a broken source", async () => {
+  // Every id 404s, alone and together: fal answered (it knows none of them), so
+  // the ids are missing upstream. Extracting no active or deprecated id must not
+  // fail the source, or the run would re-fetch it and report a broken fetcher.
+  const ids = new URL(source.url).searchParams.getAll('endpoint_id');
+  const notFound = { status: 404, contentType: 'application/json', body: '{"error":{"type":"not_found","message":"Endpoint(s) not found"}}' };
+  const response = await source.fetch(source.url, async () => notFound);
+  const r = evaluateSource(source, response, { ours });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(r.ids, []);
+  assert.deepEqual(r.deprecated, []);
+  assert.deepEqual(r.gone, ids.map((id) => id.toLowerCase()).sort());
+});
+
+test("fal's carried source passes any other answer through untouched, a 404 that is not fal's unknown-endpoint error included", async () => {
+  const moved = { status: 404, contentType: 'text/html', body: '<html>moved</html>' };
+  let calls = 0;
+  const response = await source.fetch(source.url, async () => { calls++; return moved; });
+  assert.equal(calls, 1);
+  assert.equal(response, moved);
+});
+
 test("fal's carried snapshot shows a shutdown date and a replacement once fal announces them", () => {
   // Under the drift lifecycle a deprecated_at row's `deprecated` entry is dropped,
   // so a later shutdown date can only surface as this snapshot changing. The

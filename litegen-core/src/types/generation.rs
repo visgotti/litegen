@@ -94,7 +94,9 @@ pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model
 /// Every stored file of a generation, in order. A 3D row goes through the
 /// same guards its `GET /v1/models3d/{id}` answer does, so a generation that
 /// failed (or never delivered a promised container) lists nothing; any other
-/// row lists what it recorded once `completed`.
+/// row lists what it recorded once `completed`. A file litegen did not keep
+/// (`keep_outputs: false`) is listed `kept: false`, so the file route streams
+/// it from the vendor and retention leaves it alone.
 pub(crate) fn generation_assets(gen: &crate::types::Generation) -> Vec<crate::types::GenerationAsset> {
     use crate::types::GenerationAsset;
     if gen.media_type == "model3d" {
@@ -115,7 +117,7 @@ pub(crate) fn generation_assets(gen: &crate::types::Generation) -> Vec<crate::ty
                 duration_s: None,
                 fps: None,
                 has_audio: None,
-                kept: true,
+                kept: a.kept,
             })
             .collect();
     }

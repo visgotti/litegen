@@ -1,0 +1,3 @@
+endpoint: image-to-multiview
+fields: input, output.generate_multiview_image
+views: front_view_url, left_view_url, back_view_url, right_view_url

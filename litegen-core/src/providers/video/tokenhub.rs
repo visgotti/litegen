@@ -162,10 +162,6 @@ fn hy_video_body(native: &str, base: &BaseGenerationRequest, extras: &VideoExtra
     // "携带 image（Base64）或 image_url（图片 URL）即为图生视频".
     let image = materialized.refs.iter().find(|r| r.role == "first_frame").and_then(|r| image_of(&r.form));
     let prompt = base.prompt.trim();
-    // "prompt | 条件必选 | … 文生视频必选；图生视频可选".
-    if prompt.is_empty() && image.is_none() {
-        return Err(ProviderError::InvalidRequest("tokenhub: text-to-video needs a prompt; attach a first_frame to animate an image".into()));
-    }
     let mut body = json!({ "model": native });
     if !prompt.is_empty() {
         body["prompt"] = json!(prompt);
@@ -194,20 +190,7 @@ fn hy_video_body(native: &str, base: &BaseGenerationRequest, extras: &VideoExtra
 /// (768P when none is asked: the guide gives no default), `ratio`, an
 /// integer `duration` ("4 ~ 15 的整数").
 fn wand_body(native: &str, base: &BaseGenerationRequest, extras: &VideoExtras, materialized: &MaterializedRequest) -> Result<Value, ProviderError> {
-    let has = |role: &str| materialized.refs.iter().any(|r| r.role == role);
-    let frames = has("first_frame") || has("last_frame");
-    // "三种生成形态（文生、首尾帧生、参考生）": one at a time.
-    if frames && has("reference") {
-        return Err(ProviderError::InvalidRequest("tokenhub: WAND-Vega takes first/last frames or reference images, not both".into()));
-    }
-    if has("last_frame") && !has("first_frame") {
-        return Err(ProviderError::InvalidRequest("tokenhub: a last_frame needs a first_frame".into()));
-    }
     let prompt = base.prompt.trim();
-    // "type=text 时必填且不可为空串".
-    if prompt.is_empty() {
-        return Err(ProviderError::InvalidRequest("tokenhub: WAND-Vega needs a prompt".into()));
-    }
     let mut content = vec![json!({ "type": "text", "text": prompt })];
     for role in ["first_frame", "last_frame", "reference"] {
         for r in materialized.refs.iter().filter(|r| r.role == role) {
@@ -233,18 +216,9 @@ fn wand_body(native: &str, base: &BaseGenerationRequest, extras: &VideoExtras, m
 fn minimax_flat_body(native: &str, base: &BaseGenerationRequest, extras: &VideoExtras, materialized: &MaterializedRequest) -> Result<Value, ProviderError> {
     let frame = |role: &str| materialized.refs.iter().find(|r| r.role == role).and_then(|r| image_of(&r.form));
     let (first, last) = (frame("first_frame"), frame("last_frame"));
-    if last.is_some() && first.is_none() {
-        return Err(ProviderError::InvalidRequest("tokenhub: a last_frame needs a first_frame".into()));
-    }
     let prompt = base.prompt.trim();
-    if prompt.is_empty() && first.is_none() {
-        return Err(ProviderError::InvalidRequest("tokenhub: text-to-video needs a prompt; attach a first_frame to animate an image".into()));
-    }
     let resolution = extras.resolution.as_deref().unwrap_or("768P");
     let duration = extras.duration_seconds.round() as i64;
-    if resolution == "1080P" && duration != 6 {
-        return Err(ProviderError::InvalidRequest(format!("tokenhub: {native} makes 1080P only at 6 s (\"1080P：仅 6\")")));
-    }
     let mut body = json!({ "model": native, "duration": duration, "resolution": resolution });
     if !prompt.is_empty() {
         body["prompt"] = json!(prompt);
@@ -265,12 +239,6 @@ fn minimax_flat_body(native: &str, base: &BaseGenerationRequest, extras: &VideoE
 /// `extra.prompt_expansion_mode`.
 fn minimax_content_body(native: &str, base: &BaseGenerationRequest, extras: &VideoExtras, materialized: &MaterializedRequest) -> Result<Value, ProviderError> {
     let has = |role: &str| materialized.refs.iter().any(|r| r.role == role);
-    if (has("first_frame") || has("last_frame")) && has("reference") {
-        return Err(ProviderError::InvalidRequest("tokenhub: MiniMax H3 takes first/last frames or reference images, not both".into()));
-    }
-    if has("last_frame") && !has("first_frame") {
-        return Err(ProviderError::InvalidRequest("tokenhub: a last_frame needs a first_frame".into()));
-    }
     let mut content = vec![json!({ "type": "text", "text": base.prompt })];
     for (role, wire) in [("first_frame", "first_frame"), ("last_frame", "last_frame"), ("reference", "reference_image")] {
         for r in materialized.refs.iter().filter(|r| r.role == role) {
@@ -296,6 +264,22 @@ fn minimax_content_body(native: &str, base: &BaseGenerationRequest, extras: &Vid
         body["extra"] = json!({ "prompt_expansion_mode": mode });
     }
     Ok(body)
+}
+
+/// The Vidu endpoint a request's images go to, as video/vidu.rs picks it:
+/// references → reference-to-video, first + last → start-end-to-video, a
+/// first frame → image-to-video, none → text-to-video where the row has it;
+/// `None` for none on a row without text-to-video.
+fn vidu_kind(text_to_video: bool, has: impl Fn(&str) -> bool) -> Option<&'static str> {
+    if has("reference") {
+        Some("reference-to-video")
+    } else if has("last_frame") {
+        Some("start-end-to-video")
+    } else if has("first_frame") {
+        Some("image-to-video")
+    } else {
+        text_to_video.then_some("text-to-video")
+    }
 }
 
 /// PixVerse's poll answer: "Resp.status | integer | 视频状态：1 成功 / 5 生成中 / 6 已删除 /
@@ -412,30 +396,8 @@ impl TokenHubVideoProvider {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
+        // TokenHub's tables were checked by `preflight`.
         let (first, tail) = super::kling::kling_frames(materialized, true);
-        // TokenHub's tables, refused before any call: "注意：V2.6 使用首尾帧生成时仅支持
-        // 720p、audio=native 时仅支持 1080p；V2.5 Turbo 使用首尾帧生成时仅支持 1080p".
-        // @see <https://cloud.tencent.com/document/product/1823/135742> (2026-11-09)
-        let refuse = |why: &str| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
-        let resolution = extras.resolution.as_deref().or(match route.native {
-            "kling-video-v4" => Some("1080p"),
-            _ => Some("720p"),
-        });
-        if tail.is_some() && first.is_none() {
-            return refuse("a last_frame needs a first_frame");
-        }
-        match route.native {
-            "kling-video-v2.5-turbo" if tail.is_some() && resolution != Some("1080p") => return refuse("first and last frames need resolution 1080p"),
-            "kling-video-v2.6" if tail.is_some() && resolution != Some("720p") => return refuse("first and last frames need resolution 720p"),
-            "kling-video-v2.6" if extras.audio == Some(true) && (resolution != Some("1080p") || tail.is_some()) => {
-                return refuse("native audio needs resolution 1080p, and no last frame");
-            }
-            _ => {}
-        }
-        // "O1 仅用首帧且无其他参考时仅支持 5 / 10"
-        if route.native == "kling-video-o1" && first.is_some() && tail.is_none() && ![5.0, 10.0].contains(&extras.duration_seconds) {
-            return refuse("a first frame alone makes 5 or 10 s on Kling O1");
-        }
         let creds = self.creds()?;
         let image = first.is_some();
         let settings = super::kling::kling_settings(model, extras, image);
@@ -486,21 +448,11 @@ impl TokenHubVideoProvider {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
-        let refuse = |why: &str| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        // What PixVerse can't make was refused by `preflight`.
         let of = |role: &str| materialized.refs.iter().filter(|r| r.role == role).filter_map(|r| image_of(&r.form)).collect::<Vec<_>>();
         let (first, last, references) = (of("first_frame"), of("last_frame"), of("reference"));
-        if (!first.is_empty() || !last.is_empty()) && !references.is_empty() {
-            return refuse("first/last frames or reference images, not both");
-        }
-        if !last.is_empty() && first.is_empty() {
-            return refuse("a last_frame needs a first_frame");
-        }
         let quality = extras.resolution.as_deref().unwrap_or("540p");
         let duration = extras.duration_seconds.round() as i64;
-        // "v5.6：5/8/10（1080p 不支持 10）"
-        if route.native == "pixverse-video-v5.6" && quality == "1080p" && duration == 10 {
-            return refuse("10 s is not made at 1080p (\"1080p 不支持 10\")");
-        }
         let creds = self.creds()?;
         let mut body = json!({ "model": native, "prompt": base.prompt, "duration": duration, "quality": quality });
         let kind = match (first.first(), last.first(), references.is_empty()) {
@@ -586,45 +538,17 @@ impl TokenHubVideoProvider {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
-        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        // What a Vidu endpoint can't take was refused by `preflight`.
         let of = |role: &str| materialized.refs.iter().filter(|r| r.role == role).filter_map(|r| image_of(&r.form)).collect::<Vec<_>>();
         let (first, last, references) = (of("first_frame"), of("last_frame"), of("reference"));
-        if (!first.is_empty() || !last.is_empty()) && !references.is_empty() {
-            return refuse("first/last frames or reference images, not both".into());
-        }
-        if !last.is_empty() && first.is_empty() {
-            return refuse("a last_frame needs a first_frame".into());
-        }
-        let kind = if !references.is_empty() {
-            "reference-to-video"
-        } else if !last.is_empty() {
-            "start-end-to-video"
-        } else if !first.is_empty() {
-            "image-to-video"
-        } else if model.capabilities.text_to_video {
-            "text-to-video"
-        } else {
-            return refuse("no text-to-video mode; attach a first_frame or reference images".into());
+        let has = |role: &str| match role {
+            "first_frame" => !first.is_empty(),
+            "last_frame" => !last.is_empty(),
+            "reference" => !references.is_empty(),
+            _ => false,
         };
-        if kind == "start-end-to-video" {
-            // "首尾帧生视频 | … q2 系列 … 1 ~ 8"; "audio … 仅 q3 系列支持".
-            if route.native.starts_with("vidu-video-q2") && extras.duration_seconds > 8.0 {
-                return refuse("a first/last-frame clip is at most 8 s on Vidu Q2".into());
-            }
-            if extras.audio == Some(true) && !route.native.starts_with("vidu-video-q3") {
-                return refuse("no sound on first/last-frame clips on this model (only the Q3 series has it); ask without audio".into());
-            }
-        }
-        if kind == "reference-to-video" {
-            // "直接参考方式 ≤ 2000 字符"
-            if base.prompt.chars().count() > 2000 {
-                return refuse("a prompt with reference images is at most 2000 characters".into());
-            }
-            // "非主体调用时仅 q3 支持" (audio on references without `subjects`).
-            if extras.audio == Some(true) && route.native != "vidu-video-q3" {
-                return refuse("no sound with reference images on this model (only vidu-video-q3 has it); ask without audio".into());
-            }
-        }
+        let kind = vidu_kind(model.capabilities.text_to_video, has)
+            .ok_or_else(|| ProviderError::InvalidRequest(format!("{}: no Vidu endpoint takes these images", model.id)))?;
         let row_default = match model.params.get("resolution") {
             Some(crate::capabilities::ParamSpec::String(s)) => s.default.clone(),
             _ => None,
@@ -696,8 +620,9 @@ impl TokenHubVideoProvider {
             MaterializedRefForm::Url(u) => Some(json!({ "url": u })),
             MaterializedRefForm::MultipartField { .. } => None,
         });
+        // `preflight` refused a request without a first_frame; this is its form.
         let Some(image) = image else {
-            return Err(ProviderError::InvalidRequest(format!("{}: attach a first_frame (image-to-video only)", model.id)));
+            return Err(ProviderError::InvalidRequest(format!("{}: the first_frame is not an image TokenHub takes", model.id)));
         };
         let mut body = json!({ "model": native, "image": image, "resolution": extras.resolution.as_deref().unwrap_or("720p") });
         if !base.prompt.trim().is_empty() {
@@ -755,6 +680,113 @@ impl VideoProvider for TokenHubVideoProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What TokenHub refuses, before anything is quoted, reserved or sent:
+    /// the frame and reference rules its endpoints keep (the catalog says
+    /// them too), and the rules of its tables across two fields, which the
+    /// catalog can't say.
+    /// @see <https://cloud.tencent.com/document/product/1823/135742> (Kling: "注意：V2.6 使用首尾帧生成时仅支持
+    ///   720p、audio=native 时仅支持 1080p；V2.5 Turbo 使用首尾帧生成时仅支持 1080p"; "O1 仅用首帧且无其他参考时仅支持 5 / 10")
+    /// @see <https://cloud.tencent.com/document/product/1823/135737> (MiniMax v2.3: "768P：6 或 10；1080P：仅 6")
+    /// @see <https://cloud.tencent.com/document/product/1823/135325> (PixVerse: "v5.6：5/8/10（1080p 不支持 10）")
+    /// @see <https://cloud.tencent.com/document/product/1823/135756> (Vidu: "首尾帧生视频 | … q2 系列 … 1 ~ 8";
+    ///   "audio … 仅 q3 系列支持"; "直接参考方式 ≤ 2000 字符"; "非主体调用时仅 q3 支持")
+    fn preflight(&self, model: &ModelSchema, base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(route) = route(&model.id) else { return Ok(()) };
+        let has = |role: &str| roles.contains(&role);
+        let invalid = |why: String| Err(ProviderError::InvalidRequest(why));
+        let refuse = |why: &str| invalid(format!("{}: {why}", model.id));
+        let frames = has("first_frame") || has("last_frame");
+        let last_alone = has("last_frame") && !has("first_frame");
+        match route.shape {
+            // "prompt | 条件必选 | … 文生视频必选；图生视频可选".
+            Shape::HyVideo if base.prompt.trim().is_empty() && !has("first_frame") => {
+                invalid("tokenhub: text-to-video needs a prompt; attach a first_frame to animate an image".into())
+            }
+            Shape::HyVideo => Ok(()),
+            // "三种生成形态（文生、首尾帧生、参考生）": one at a time; "type=text 时必填且不可为空串".
+            Shape::WandVega if frames && has("reference") => invalid("tokenhub: WAND-Vega takes first/last frames or reference images, not both".into()),
+            Shape::WandVega if last_alone => invalid("tokenhub: a last_frame needs a first_frame".into()),
+            Shape::WandVega if base.prompt.trim().is_empty() => invalid("tokenhub: WAND-Vega needs a prompt".into()),
+            Shape::WandVega => Ok(()),
+            Shape::MiniMaxFlat => {
+                if last_alone {
+                    return invalid("tokenhub: a last_frame needs a first_frame".into());
+                }
+                if base.prompt.trim().is_empty() && !has("first_frame") {
+                    return invalid("tokenhub: text-to-video needs a prompt; attach a first_frame to animate an image".into());
+                }
+                if extras.resolution.as_deref().unwrap_or("768P") == "1080P" && extras.duration_seconds.round() as i64 != 6 {
+                    let native = crate::providers::wire_model(self.config.as_ref(), &model.id, route.native);
+                    return invalid(format!("tokenhub: {native} makes 1080P only at 6 s (\"1080P：仅 6\")"));
+                }
+                Ok(())
+            }
+            Shape::MiniMaxContent if frames && has("reference") => invalid("tokenhub: MiniMax H3 takes first/last frames or reference images, not both".into()),
+            Shape::MiniMaxContent if last_alone => invalid("tokenhub: a last_frame needs a first_frame".into()),
+            Shape::MiniMaxContent => Ok(()),
+            Shape::Kling => {
+                // As `kling_frames` reads them: any image but a last frame starts the clip.
+                let (first, tail) = (roles.iter().any(|r| *r != "last_frame"), has("last_frame"));
+                let resolution = extras.resolution.as_deref().or(match route.native {
+                    "kling-video-v4" => Some("1080p"),
+                    _ => Some("720p"),
+                });
+                if tail && !first {
+                    return refuse("a last_frame needs a first_frame");
+                }
+                match route.native {
+                    "kling-video-v2.5-turbo" if tail && resolution != Some("1080p") => return refuse("first and last frames need resolution 1080p"),
+                    "kling-video-v2.6" if tail && resolution != Some("720p") => return refuse("first and last frames need resolution 720p"),
+                    "kling-video-v2.6" if extras.audio == Some(true) && (resolution != Some("1080p") || tail) => {
+                        return refuse("native audio needs resolution 1080p, and no last frame");
+                    }
+                    _ => {}
+                }
+                if route.native == "kling-video-o1" && first && !tail && ![5.0, 10.0].contains(&extras.duration_seconds) {
+                    return refuse("a first frame alone makes 5 or 10 s on Kling O1");
+                }
+                Ok(())
+            }
+            Shape::PixVerse => {
+                if frames && has("reference") {
+                    return refuse("first/last frames or reference images, not both");
+                }
+                if last_alone {
+                    return refuse("a last_frame needs a first_frame");
+                }
+                let quality = extras.resolution.as_deref().unwrap_or("540p");
+                if route.native == "pixverse-video-v5.6" && quality == "1080p" && extras.duration_seconds.round() as i64 == 10 {
+                    return refuse("10 s is not made at 1080p (\"1080p 不支持 10\")");
+                }
+                Ok(())
+            }
+            Shape::Vidu => {
+                if frames && has("reference") {
+                    return refuse("first/last frames or reference images, not both");
+                }
+                if last_alone {
+                    return refuse("a last_frame needs a first_frame");
+                }
+                match vidu_kind(model.capabilities.text_to_video, has) {
+                    None => refuse("no text-to-video mode; attach a first_frame or reference images"),
+                    Some("start-end-to-video") if route.native.starts_with("vidu-video-q2") && extras.duration_seconds > 8.0 => {
+                        refuse("a first/last-frame clip is at most 8 s on Vidu Q2")
+                    }
+                    Some("start-end-to-video") if extras.audio == Some(true) && !route.native.starts_with("vidu-video-q3") => {
+                        refuse("no sound on first/last-frame clips on this model (only the Q3 series has it); ask without audio")
+                    }
+                    Some("reference-to-video") if base.prompt.chars().count() > 2000 => refuse("a prompt with reference images is at most 2000 characters"),
+                    Some("reference-to-video") if extras.audio == Some(true) && route.native != "vidu-video-q3" => {
+                        refuse("no sound with reference images on this model (only vidu-video-q3 has it); ask without audio")
+                    }
+                    Some(_) => Ok(()),
+                }
+            }
+            Shape::YtVideo if !has("first_frame") => refuse("attach a first_frame (image-to-video only)"),
+            Shape::YtVideo => Ok(()),
+        }
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -766,6 +798,9 @@ impl VideoProvider for TokenHubVideoProvider {
             model: model.id.clone(),
             provider: "tokenhub".into(),
         })?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let native = crate::providers::wire_model(self.config.as_ref(), &model.id, route.native).to_string();
         if route.shape == Shape::Kling {
             return self.kling_submit(model, route, &native, base, extras, materialized).await;

@@ -1,0 +1,5 @@
+1 credit = $0.01 USD
+Rig Check: Free
+Auto Rig: 25
+Animation Retarget: 10 / animation
+Image to Multiview: 10

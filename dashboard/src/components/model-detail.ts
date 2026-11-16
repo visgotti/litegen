@@ -252,10 +252,17 @@ function decimalsOf(x: number): number {
 }
 
 /**
- * A model's catalog price as the API serves it (website N3): never rounded,
- * every digit it has and at least two (`$0.2113536`, `$3.20`), and what it
+ * A dollar amount as the API serves it, a quote or a charge: never rounded,
+ * every digit it has and at least two (`$0.00033`, `$0.2113536`, `$3.20`).
+ */
+export function formatCost(usd: number): string {
+  return `$${usd.toFixed(Math.max(2, decimalsOf(usd)))}`;
+}
+
+/**
+ * A model's catalog price as the API serves it (website N3), with what it
  * buys: `base_cost_usd` is the vendor's price for the model's default request.
  */
 export function formatPrice(usd: number): string {
-  return `$${usd.toFixed(Math.max(2, decimalsOf(usd)))} / request`;
+  return `${formatCost(usd)} / request`;
 }

@@ -1,3 +1,7 @@
+/docs/api-reference/image-generation-h3-context-ir.md
+/docs/api-reference/image-generation-h3-edits.md
+/docs/api-reference/image-generation-h3-generations.md
+/docs/api-reference/image-generation-h3-streaming.md
 /docs/api-reference/image-generation-i2i.md
 /docs/api-reference/image-generation-t2i.md
 /docs/api-reference/video-agent-create.md

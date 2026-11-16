@@ -1451,3 +1451,61 @@ async fn the_usdz_root_and_usd_clips_parameters_are_in_the_openapi_spec() {
     assert!(from["schema"].to_string().contains("Model3dFormat"), "{from}");
     assert!(from["description"].as_str().unwrap_or_default().contains("`usdc`"), "{from}");
 }
+
+// ─── Draco: the server's switch and limits (`mesh.draco`) ───────────────────
+
+/// A GLB whose one primitive is Draco-compressed and requires
+/// `KHR_draco_mesh_compression`: the mesh library's skinned fixture through
+/// glTF-Transform's `draco` (`mock/draco-3d`'s vendor file;
+/// `mock_data/README.md`). Its stream's header declares 768 faces over 425
+/// vertices.
+fn draco_glb() -> Vec<u8> {
+    include_bytes!("../src/providers/model3d/mock_data/skinned.draco.glb").to_vec()
+}
+
+/// A refusal's status, code and message (empty for an answer that is no
+/// refusal, such as a converted file).
+async fn refusal_of(resp: axum::response::Response) -> (StatusCode, String, String) {
+    let status = resp.status();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap_or_default();
+    (status, body["error"]["code"].as_str().unwrap_or_default().to_string(), body["error"]["message"].as_str().unwrap_or_default().to_string())
+}
+
+/// `mesh.draco.enabled: false`: a Draco GLB is refused, 422
+/// `mesh_unsupported`, and the message names the setting and its variable,
+/// so whoever reads it knows what to change. A GLB without Draco converts as
+/// ever, and under the default config the same Draco GLB converts.
+#[tokio::test]
+async fn a_draco_glb_is_refused_naming_the_setting_while_the_server_turns_draco_off() {
+    let assets = tempfile::tempdir().unwrap();
+    let (off, _db) = harness::app_with(assets.path(), |c| c.mesh.draco.enabled = false).await;
+    let (status, code, message) = refusal_of(convert(&off, "?from=glb&to=obj", draco_glb()).await).await;
+    assert_eq!((status, code.as_str()), (StatusCode::UNPROCESSABLE_ENTITY, "mesh_unsupported"), "{message}");
+    assert!(
+        message.contains("is Draco-compressed (KHR_draco_mesh_compression)") && message.contains("mesh.draco.enabled") && message.contains("LITEGEN__MESH__DRACO__ENABLED"),
+        "{message}"
+    );
+    assert_eq!(convert(&off, "?from=glb&to=obj", cube_glb()).await.status(), StatusCode::OK, "a GLB without Draco");
+    let (on, _db) = harness::app_with_mock_3d().await;
+    assert_eq!(convert(&on, "?from=glb&to=obj", draco_glb()).await.status(), StatusCode::OK, "Draco on, the default");
+}
+
+/// A lowered `mesh.draco` limit reaches the converter: the Draco GLB's
+/// header declares 768 faces over 425 vertices, so `max_faces: 767` refuses
+/// it, and so does `max_faces_per_point: 1` (768 faces past 425 × 1), each
+/// 422 `mesh_unsupported` naming the counts and the limit.
+#[tokio::test]
+async fn a_draco_glb_past_a_lowered_limit_is_refused_naming_the_limit() {
+    type Tweak = fn(&mut litegen::config::AppConfig);
+    let cases: [(Tweak, &str); 2] = [
+        (|c| c.mesh.draco.max_faces = 767, "declares 768 faces, past this reader's limit of 767"),
+        (|c| c.mesh.draco.max_faces_per_point = 1, "declares 768 faces over 425 points (1.8 a point), past this reader's limit of 1 face a point"),
+    ];
+    for (tweak, says) in cases {
+        let assets = tempfile::tempdir().unwrap();
+        let (app, _db) = harness::app_with(assets.path(), tweak).await;
+        let (status, code, message) = refusal_of(convert(&app, "?from=glb&to=obj", draco_glb()).await).await;
+        assert_eq!((status, code.as_str()), (StatusCode::UNPROCESSABLE_ENTITY, "mesh_unsupported"), "{says}: {message}");
+        assert!(message.contains("KHR_draco_mesh_compression") && message.contains(says), "{message}");
+    }
+}

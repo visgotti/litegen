@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use config::{hooks_in_config_file, HookConfig, OnError, ResolvedHook, Runtime};
+pub use config::{hooks_in_config_file, HookConfig, OnError, ResolvedHook, RouteGroup, Runtime};
 pub use layer::{file_access, post_call_layer, pre_call_layer};
 
 use process::{HookFn, HookProcess};
@@ -34,6 +34,8 @@ pub struct HookSet {
     /// a body may take to arrive (`api::middleware::body`). A body read here
     /// is not charged again by the routes behind.
     pub(crate) body: crate::api::middleware::body::BodyBudget,
+    /// What litegen says at startup about hook entries it runs anyway.
+    warnings: Vec<String>,
 }
 
 pub(crate) struct Hook {
@@ -43,13 +45,16 @@ pub(crate) struct Hook {
     pub pre_policy: OnError,
     pub post_policy: OnError,
     pub file_policy: OnError,
+    /// The route groups whose requests reach its `pre_call` and `post_call`.
+    pub routes: std::collections::BTreeSet<RouteGroup>,
 }
 
 impl HookSet {
-    /// Start every hook, or fail naming the first that can't start. No hooks
-    /// configured is `None`. `max_buffered` bounds the bodies the hook layer
-    /// holds at once (litegen passes `backpressure.max_in_flight`), and each
-    /// body gets `body_timeout` to arrive (`server.request_body_timeout_secs`).
+    /// Start every hook, or fail naming the first that can't start by its
+    /// entry (`hooks[1] (hooks/auth.py): ...`). No hooks configured is `None`.
+    /// `max_buffered` bounds the bodies the hook layer holds at once (litegen
+    /// passes `backpressure.max_in_flight`), and each body gets `body_timeout`
+    /// to arrive (`server.request_body_timeout_secs`).
     pub async fn start(
         configs: &[HookConfig],
         base_dir: &Path,
@@ -60,9 +65,19 @@ impl HookSet {
             return Ok(None);
         }
         let mut hooks = Vec::with_capacity(configs.len());
-        for config in configs {
-            let resolved = config.resolve(base_dir).map_err(|e| format!("hook {}: {e}", config.path))?;
-            let process = HookProcess::start(&resolved).await?;
+        let mut warnings = Vec::new();
+        for (index, config) in configs.iter().enumerate() {
+            let entry = config::entry_name(index, Some(&config.path));
+            let resolved = config.resolve(base_dir).map_err(|e| format!("{entry}: {e}"))?;
+            let process = HookProcess::start(&resolved).await.map_err(|e| format!("{entry}: {e}"))?;
+            // `routes` limits pre_call and post_call only (file_access runs
+            // wherever a stored file is read): on a file with neither, it
+            // does nothing, and the operator should know.
+            if config.routes.is_some() && !process.defines(HookFn::PreCall) && !process.defines(HookFn::PostCall) {
+                warnings.push(format!(
+                    "{entry}: routes has no effect: the file defines only file_access, and routes limits only pre_call and post_call"
+                ));
+            }
             hooks.push(Hook {
                 name: resolved.name.clone(),
                 process,
@@ -70,6 +85,7 @@ impl HookSet {
                 pre_policy: resolved.pre_policy,
                 post_policy: resolved.post_policy,
                 file_policy: resolved.file_policy,
+                routes: resolved.routes,
             });
         }
         let permits = max_buffered.max(1);
@@ -78,6 +94,7 @@ impl HookSet {
             buffering: Arc::new(tokio::sync::Semaphore::new(permits)),
             post_buffering: Arc::new(tokio::sync::Semaphore::new(permits)),
             body: crate::api::middleware::body::BodyBudget::new(permits, request::MAX_BODY_BYTES, body_timeout),
+            warnings,
         })))
     }
 
@@ -86,11 +103,26 @@ impl HookSet {
         self.hooks.iter().map(|h| h.name.as_str()).collect()
     }
 
+    /// The startup warnings about the hook entries, for litegen's log.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
     pub(crate) fn defines(&self, f: HookFn) -> bool {
         self.hooks.iter().any(|h| h.process.defines(f))
     }
 
     pub(crate) fn with(&self, f: HookFn) -> impl Iterator<Item = &Hook> {
         self.hooks.iter().filter(move |h| h.process.defines(f))
+    }
+
+    /// Whether a hook that runs on `group` (its `routes:`) defines `f`.
+    pub(crate) fn defines_on(&self, f: HookFn, group: RouteGroup) -> bool {
+        self.on(f, group).next().is_some()
+    }
+
+    /// The hooks that define `f` and run on `group`, in order.
+    pub(crate) fn on(&self, f: HookFn, group: RouteGroup) -> impl Iterator<Item = &Hook> {
+        self.with(f).filter(move |h| h.routes.contains(&group))
     }
 }

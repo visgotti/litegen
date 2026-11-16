@@ -230,6 +230,39 @@ impl ImageProvider for StabilityProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
+    /// What Stability's endpoints can't take, refused before anything is
+    /// quoted, reserved or sent; `generate` asks it first (Stability refuses
+    /// each, after the call):
+    /// - outpaint: `expand` with a side above 0;
+    /// - search-and-replace: a `mask_prompt`, what to find;
+    /// - inpaint: a mask, or a region litegen draws as one (without one it
+    ///   would read the image's alpha, which litegen never relies on);
+    /// - v1 masking: `required: ["text_prompts","init_image","mask_source"]`, so
+    ///   a mask needs an init image.
+    /// @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-a-mask.md> (2026-11-09)
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let model_name = self.resolve_model(&model.id);
+        let has = |role: &str| roles.contains(&role);
+        if !Self::is_v2(&model_name) {
+            if has("mask") && !has("init") {
+                return Err(ProviderError::InvalidRequest(format!("'{}' masks an image: send an init image with the mask", model.id)));
+            }
+            return Ok(());
+        }
+        match Self::v2_endpoint(&model_name) {
+            Some("edit/outpaint") if extras.expand.is_none_or(|e| e.left == 0 && e.top == 0 && e.right == 0 && e.bottom == 0) => {
+                Err(ProviderError::InvalidRequest("outpaint needs `expand` with at least one side above 0".into()))
+            }
+            Some("edit/search-and-replace") if extras.mask_prompt.as_deref().is_none_or(|p| p.trim().is_empty()) => {
+                Err(ProviderError::InvalidRequest("search-and-replace needs `mask_prompt`: what to find and replace".into()))
+            }
+            Some("edit/inpaint") if !has("mask") => {
+                Err(ProviderError::InvalidRequest(format!("'{}' edits a masked area: send a mask or a region", model.id)))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Generate an image. V2 models (SD3/Core/Ultra) POST a multipart form to
     /// `/v2beta/stable-image/generate/{endpoint}`; V1 engines (SDXL, SD 1.6)
     /// POST JSON to `/v1/generation/{engine}/text-to-image`.
@@ -247,6 +280,9 @@ impl ImageProvider for StabilityProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let model_name = self.resolve_model(&model.id);
 
         if Self::is_v2(&model_name) {
@@ -264,18 +300,6 @@ impl ImageProvider for StabilityProvider {
 
             // Search and Replace (3D doc §4) finds the area `mask_prompt` names.
             let search = route == "edit/search-and-replace";
-            // Stability refuses an outpaint with no side above 0 and a search
-            // with nothing to find; refuse first, before anything is sent.
-            if outpaint && extras.expand.is_none_or(|e| e.left == 0 && e.top == 0 && e.right == 0 && e.bottom == 0) {
-                return Err(ProviderError::InvalidRequest(
-                    "outpaint needs `expand` with at least one side above 0".into(),
-                ));
-            }
-            if search && extras.mask_prompt.as_deref().is_none_or(|p| p.trim().is_empty()) {
-                return Err(ProviderError::InvalidRequest(
-                    "search-and-replace needs `mask_prompt`: what to find and replace".into(),
-                ));
-            }
 
             let mut form = reqwest::multipart::Form::new();
             if !matting && !(outpaint && base.prompt.trim().is_empty()) {
@@ -301,16 +325,6 @@ impl ImageProvider for StabilityProvider {
             }
 
             if inpaint {
-                // Inpaint edits where its mask is white; without one it would
-                // read the image's alpha, which litegen never relies on.
-                let has_mask = materialized.refs.iter().any(|r| {
-                    matches!(&r.form, MaterializedRefForm::MultipartField { field_name, .. } if field_name == "mask")
-                });
-                if !has_mask {
-                    return Err(ProviderError::InvalidRequest(format!(
-                        "'{}' edits a masked area: send a mask or a region", model.id
-                    )));
-                }
                 // Explicit, even 0: Stability's default grows the mask by 5.
                 // @see <https://api.stability.ai/v2alpha/openapi> — grow_mask "default": 5
                 let grow = extras.edit.as_ref().and_then(|e| e.vendor_grow_px).unwrap_or(0);
@@ -479,11 +493,6 @@ impl ImageProvider for StabilityProvider {
                         _ => {}
                     }
                 }
-            }
-            // Masking is `required: ["text_prompts","init_image","mask_source"]`.
-            // @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-a-mask.md> (2026-11-09)
-            if has_mask && !has_init {
-                return Err(ProviderError::InvalidRequest(format!("'{}' masks an image: send an init image with the mask", model.id)));
             }
             let use_multipart = has_init || has_mask;
             // What litegen itself sends on v1; `extra` cannot replace it.

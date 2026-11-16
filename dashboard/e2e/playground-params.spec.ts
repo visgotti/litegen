@@ -86,9 +86,24 @@ test.describe('Playground: structured params', () => {
     await openModel(page, 'mock/region-image');
     await page.getByTestId('playground-prompt').fill('a brass key');
     await upload(page, 'init');
-    for (const [k, v] of Object.entries({ x: '64', y: '64', w: '128', h: '128' })) {
+    // A typed region goes as typed, never dropped (N4): pixels are whole and
+    // not negative, and that is the server's to say, in its words.
+    for (const [k, v] of Object.entries({ y: '64', w: '128', h: '128' })) {
       await page.getByTestId(`pg-param-region-${k}`).fill(v);
     }
+    const regionX = (x: number) => (body: Record<string, unknown>) => (body.region as { x?: number } | undefined)?.x === x;
+    let quoted = checkOf(page, 'images', regionX(-8));
+    await page.getByTestId('pg-param-region-x').fill('-8');
+    const refusal = await quoted;
+    expect(refusal.status()).toBe(400);
+    const said = ((await refusal.json()) as { error: { message: string } }).error.message;
+    await expect(page.getByTestId('playground-problems')).toContainText(said);
+    await expect(page.getByTestId('playground-generate')).toBeDisabled();
+    quoted = checkOf(page, 'images', regionX(64));
+    await page.getByTestId('pg-param-region-x').fill('64');
+    expect((await quoted).status()).toBe(200);
+    await checked(page);
+    await expect(page.getByTestId('playground-problems')).toHaveCount(0);
     await page.getByTestId('pg-param-mask_grow_px').fill('8');
     await page.getByTestId('pg-param-preserve_unmasked').check();
     const { wire, answer } = await generateAndCapture(page, IMAGES);
@@ -118,8 +133,20 @@ test.describe('Playground: structured params', () => {
     await feature('Expand — sides that grow');
     await openModel(page, 'mock/expand-image');
     await upload(page, 'init');
+    // A typed expand goes as typed, a blank side as 0 (N4): one that adds
+    // nothing is the server's to refuse, in its words.
+    const leftOf = (left: number) => (body: Record<string, unknown>) => (body.expand as { left?: number } | undefined)?.left === left;
+    let quoted = checkOf(page, 'images', leftOf(0));
+    await page.getByTestId('pg-param-expand-left').fill('0');
+    const refusal = await quoted;
+    expect(refusal.status()).toBe(400);
+    const said = ((await refusal.json()) as { error: { message: string } }).error.message;
+    await expect(page.getByTestId('playground-problems')).toContainText(said);
+    await expect(page.getByTestId('playground-generate')).toBeDisabled();
+    quoted = checkOf(page, 'images', leftOf(64));
     await page.getByTestId('pg-param-expand-left').fill('64');
     await page.getByTestId('pg-param-expand-right').fill('64');
+    expect((await quoted).status()).toBe(200);
     const { wire, answer } = await generateAndCapture(page, IMAGES);
     expect(wire.expand).toEqual({ left: 64, top: 0, right: 64, bottom: 0 });
 
@@ -431,9 +458,19 @@ test.describe('Playground: segmentation', () => {
     expect((await refused).status()).toBe(400);
     await expect(page.locator('.alert-error')).toContainText('cannot be mixed with point or box prompts');
     await page.getByTestId('pg-param-prompts-type-1').selectOption('box');
-    for (const [k, v] of Object.entries({ x: '96', y: '96', w: '64', h: '64' })) {
+    // A box goes as typed once its four numbers are (N4): one with no area
+    // is the server's to refuse, in its words, not the page's to drop.
+    for (const [k, v] of Object.entries({ x: '96', y: '96', w: '0', h: '64' })) {
       await page.getByTestId(`pg-param-prompts-1-${k}`).fill(v);
     }
+    const empty = nextCall(page, 'POST', /^\/v1\/images\/segmentations$/);
+    await page.getByTestId('playground-generate').click();
+    const emptyAnswer = await empty;
+    expect(emptyAnswer.request().postDataJSON().prompts[1]).toEqual({ type: 'box', x: 96, y: 96, w: 0, h: 64 });
+    expect(emptyAnswer.status()).toBe(400);
+    const said = ((await emptyAnswer.json()) as { error: { message: string } }).error.message;
+    await expect(page.locator('.alert-error')).toContainText(said);
+    await page.getByTestId('pg-param-prompts-1-w').fill('64');
     const { wire, answer } = await generateAndCapture(page, /^\/v1\/images\/segmentations$/);
     expect(wire.prompts).toEqual([{ type: 'point', x: 128, y: 128 }, { type: 'box', x: 96, y: 96, w: 64, h: 64 }]);
     expect(wire.image, 'the uploaded image itself, not a URL').toBe(FIXTURE_DATA_URI);

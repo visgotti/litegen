@@ -1,0 +1,2 @@
+fields: input, riggable, rig_type, Check
+rig_type: biped, quadruped, hexapod, octopod, avian, serpentine, aquatic

@@ -110,9 +110,11 @@ const looksLikeHtml = (body) => /^\s*(<!doctype html|<html)/i.test(body);
  *
  * A source may also say which models it lists as deprecated but still served
  * (`deprecated`, such as fal's registry status): those come back normalized as
- * `deprecated`, apart from `ids`, and count as listed.
+ * `deprecated`, apart from `ids`, and count as listed. Ids it asked the vendor
+ * about and heard are unknown (`gone`) come back as `gone`; a source with only
+ * deprecated or only gone ids is still a usable answer.
  *
- * @param source {{key, expect: 'json'|'text'|'html', extract: RegExp | (parsed, body) => string[], deprecated?: (parsed, body) => string[], snapshot?: (parsed, body, ctx) => string}}
+ * @param source {{key, expect: 'json'|'text'|'html', extract: RegExp | (parsed, body) => string[], deprecated?: (parsed, body) => string[], gone?: (parsed, body) => string[], snapshot?: (parsed, body, ctx) => string}}
  * @param response {{status?, contentType?, body?, error?}}
  * @param ctx {{ours?: string[]}} our carried vendor ids, for snapshots scoped to them
  */
@@ -149,17 +151,28 @@ export function evaluateSource(source, response, ctx = { ours: [] }) {
   } catch (e) {
     return fail(`deprecated threw: ${e.message}`);
   }
+  let goneRaw = [];
+  try {
+    if (source.gone) goneRaw = source.gone(parsed, body);
+  } catch (e) {
+    return fail(`gone threw: ${e.message}`);
+  }
   const ids = normalizeIds(raw ?? []);
   const deprecated = normalizeIds(deprecatedRaw ?? []);
+  const gone = normalizeIds(goneRaw ?? []);
   // A source whose models are all deprecated still lists them: they are served.
-  if (ids.length === 0 && deprecated.length === 0) return fail('no model ids extracted — the page structure or the vendor id naming changed');
+  // One whose models are all gone still answered (fal's find mode for a chunk
+  // that left the registry): those ids are missing upstream, not a broken source.
+  if (ids.length === 0 && deprecated.length === 0 && gone.length === 0) {
+    return fail('no model ids extracted — the page structure or the vendor id naming changed');
+  }
   let snapshot;
   try {
     snapshot = source.snapshot ? String(source.snapshot(parsed, body, ctx)) : ids.join('\n');
   } catch (e) {
     return fail(`snapshot threw: ${e.message}`);
   }
-  return { key: source.key, ok: true, index: Boolean(source.index), ids, deprecated, snapshot: snapshot.replace(/\s+$/, '') + '\n' };
+  return { key: source.key, ok: true, index: Boolean(source.index), ids, deprecated, gone, snapshot: snapshot.replace(/\s+$/, '') + '\n' };
 }
 
 // ─── One provider ────────────────────────────────────────────────────────────
@@ -179,6 +192,9 @@ export function evaluateSource(source, response, ctx = { ours: [] }) {
  *            models/*.yaml does not already record.
  * - failed:  failed sources, plus a canary failure when sources returned ids
  *            but none of ours (the source is wrong, so new/missing would be noise)
+ * An id a source reports `gone` (asked about directly, unknown to the vendor)
+ * counts as absent even where another source lists it: missing if carried,
+ * never new.
  * Index sources (lists of docs pages or endpoints) only feed snapshots: a new
  * page surfaces as a changed snapshot, not as a model id.
  */
@@ -186,9 +202,13 @@ export function classify(def, results) {
   const lc = (s) => s.toLowerCase();
   const failed = results.filter((r) => !r.ok).map((r) => ({ source: r.key, error: r.error }));
   const succeeded = results.filter((r) => r.ok && !r.index);
-  const upstream = new Set(succeeded.flatMap((r) => r.ids));
+  // Gone: a source that asked the vendor about this id directly heard it is
+  // unknown (fal's find mode 404s an endpoint its catalog page still lists).
+  // That answer outranks a listing elsewhere, so the id is neither new nor present.
+  const gone = new Set(succeeded.flatMap((r) => r.gone ?? []));
+  const upstream = new Set(succeeded.flatMap((r) => r.ids).filter((id) => !gone.has(id)));
   // Deprecated and nowhere active: still served, so neither new nor gone.
-  const upstreamDeprecated = new Set(succeeded.flatMap((r) => r.deprecated ?? []).filter((id) => !upstream.has(id)));
+  const upstreamDeprecated = new Set(succeeded.flatMap((r) => r.deprecated ?? []).filter((id) => !upstream.has(id) && !gone.has(id)));
   const listed = (id) => upstream.has(id) || upstreamDeprecated.has(id);
   const carried = Object.entries(def.models).map(([model, v]) => ({ model, vendorIds: [v].flat() }));
   const ours = new Set(carried.flatMap((c) => c.vendorIds.map(lc)));
@@ -347,6 +367,25 @@ async function fetchSource(source, fetchImpl) {
 }
 
 /**
+ * A source's response. One GET of its url, unless the source brings its own
+ * `fetch(url, get)`: for a vendor API that needs more than one request to
+ * answer (fal's find mode refuses a whole batch for one unknown id, so the
+ * source asks id by id). `get(url)` answers like a plain fetch of the source
+ * — `{status, contentType, body}` or `{error}` — with its headers, timeout
+ * and retries; the hook returns the same shape. A hook that throws fails its
+ * source, naming the error, like an extractor that throws.
+ */
+async function fetchFor(source, fetchImpl) {
+  if (!source.fetch) return fetchSource(source, fetchImpl);
+  const get = (url) => fetchSource({ ...source, url }, fetchImpl);
+  try {
+    return await source.fetch(source.url, get);
+  } catch (e) {
+    return { error: `fetch threw: ${e.message}` };
+  }
+}
+
+/**
  * A source's fetch URL. `discover: { url, pattern }` finds a content-hashed
  * asset (a docs bundle renamed on every deploy) by matching the page that
  * links it, so the source survives redeploys but still fails loudly — with
@@ -379,6 +418,22 @@ async function mapLimit(items, limit, fn) {
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 /**
+ * The providers a run checks, sorted: every one in models/*.yaml or with a
+ * definition, or only those `only` names. A filter that names none (it would
+ * report a clean run over zero providers) or names one neither knows is a bad
+ * command line, not a broken check: the error carries `usage: true`, so a CLI
+ * can refuse it with exit 2 before anything is fetched or written.
+ */
+export function selectProviders(registry, definitions, only) {
+  const usage = (message) => Object.assign(new Error(message), { usage: true });
+  if (only && only.length === 0) throw usage('empty provider filter: name one or more providers, or pass no filter to check every provider');
+  const known = [...new Set([...registry.keys(), ...definitions.map((d) => d.provider)])].sort();
+  const unknown = (only ?? []).filter((p) => !known.includes(p));
+  if (unknown.length) throw usage(`unknown provider(s): ${unknown.join(', ')} — known: ${known.join(', ')}`);
+  return known.filter((p) => !only || only.includes(p));
+}
+
+/**
  * Check every provider. Exit code: 0 clean · 1 drift (new / missing / deprecated
  * upstream and not recorded in models/*.yaml / changed snapshot / a snapshot
  * with no baseline) · 2 something needs investigating (a
@@ -392,15 +447,10 @@ async function mapLimit(items, limit, fn) {
  * compared, so its first snapshot needs a whole-file review.
  */
 export async function run({ modelsDir, definitions, snapshotsDir, fetchImpl = httpFetch, write = true, only, concurrency = 4 }) {
-  // An empty filter matches nothing and would report a clean run over zero providers.
-  if (only && only.length === 0) throw new Error('empty provider filter: name one or more providers, or pass no filter to check every provider');
   const registry = loadRegistry(modelsDir);
+  const names = selectProviders(registry, definitions, only);
   const lifecycle = loadLifecycle(modelsDir);
   const defs = new Map(definitions.map((d) => [d.provider, d]));
-  const known = [...new Set([...registry.keys(), ...defs.keys()])].sort();
-  const unknown = (only ?? []).filter((p) => !known.includes(p));
-  if (unknown.length) throw new Error(`unknown provider(s): ${unknown.join(', ')} — known: ${known.join(', ')}`);
-  const names = known.filter((p) => !only || only.includes(p));
 
   const problems = validateDefinitions(registry, definitions);
 
@@ -415,13 +465,13 @@ export async function run({ modelsDir, definitions, snapshotsDir, fetchImpl = ht
       const target = await resolveUrl(source, fetchImpl);
       urls.set(source.key, target.url ?? source.discover?.url);
       const at = { ...source, url: target.url };
-      const response = target.error ? { error: target.error } : await fetchSource(at, fetchImpl);
+      const response = target.error ? { error: target.error } : await fetchFor(at, fetchImpl);
       let result = evaluateSource(source, response, { ours });
       // A 2xx that fails extraction is sometimes a CDN serving a stray shell;
       // one re-fetch keeps that from paging anyone. HTTP errors were already
       // retried by the fetcher, so they are not.
       if (!result.ok && !response.error && response.status < 400) {
-        result = evaluateSource(source, await fetchSource(at, fetchImpl), { ours });
+        result = evaluateSource(source, await fetchFor(at, fetchImpl), { ours });
       }
       results.push(result);
     }
@@ -502,6 +552,8 @@ export async function loadDefinitions(dir) {
       if (!(s.extract instanceof RegExp) && typeof s.extract !== 'function') throw bad(`source "${s.key}" needs extract (RegExp or function)`);
       if (s.typings !== undefined && typeof s.typings !== 'boolean') throw bad(`source "${s.key}" has typings ${JSON.stringify(s.typings)} — use true or false`);
       if (s.deprecated !== undefined && typeof s.deprecated !== 'function') throw bad(`source "${s.key}" has a deprecated that is not a function (parsed, body) => ids`);
+      if (s.fetch !== undefined && typeof s.fetch !== 'function') throw bad(`source "${s.key}" has a fetch that is not a function (url, get) => response`);
+      if (s.gone !== undefined && typeof s.gone !== 'function') throw bad(`source "${s.key}" has a gone that is not a function (parsed, body) => ids`);
     }
     defs.push(def);
   }
@@ -547,5 +599,42 @@ export function formatReport({ exitCode, providers }) {
     else clean.push(p.provider);
   }
   if (clean.length) lines.push('', `clean: ${clean.join(', ')}`);
+  const repair = repairSteps(providers);
+  if (repair.length) lines.push('', ...repair);
   return lines.join('\n') + '\n';
+}
+
+/**
+ * What to do about each FAILED item, as commands: the repair is part of the
+ * run, not a separate investigation. A source that broke (HTTP error, an HTML
+ * shell, no ids, a canary) gets its url to reproduce and where to look for
+ * the move; `(config)` and `(typings)` get the definition change they need.
+ * Then one verify line for every provider with a failure: two passes into one
+ * fresh folder, and the node tests. (.claude/skills/model-drift/SKILL.md,
+ * "Repairing a failed source".)
+ */
+export function repairSteps(providers) {
+  const broken = providers.filter((p) => p.failed.length > 0);
+  if (!broken.length) return [];
+  const out = ['Repair first: a FAILED item is a broken fetcher or definition, and the drift above means nothing for its provider until it is fixed.'];
+  for (const p of broken) {
+    const file = `scripts/model-drift/providers/${p.provider}.mjs`;
+    for (const f of p.failed) {
+      out.push(`  ${p.provider} · ${f.source} (${f.error.length > 120 ? `${f.error.slice(0, 120)}…` : f.error})`);
+      if (f.source === '(config)') {
+        out.push(`    map the model in ${file} the way the adapter resolves it (litegen-core/src/providers/<family>/${p.provider}.rs), as a quoted string literal`);
+      } else if (f.source === '(typings)') {
+        out.push(`    add or re-scope a typings source in ${file} whose snapshot holds that model's request schema (\`untyped\`, with the reason, only when the vendor publishes none)`);
+      } else {
+        const url = (p.sources ?? []).find((s) => s.key === f.source)?.url;
+        if (url) out.push(`    1. reproduce: curl -sIL -m 30 '${url}'`);
+        out.push("    2. find where it moved: the vendor's llms.txt, the adapter's @see URLs, the docs sitemap or changelog, then a web search");
+        out.push(`    3. fix ${file}: prefer an OpenAPI/JSON spec or a .md twin, and keep the extract scoped to the endpoints the adapter calls`);
+      }
+    }
+  }
+  const names = broken.map((p) => p.provider).sort().join(',');
+  out.push(`  verify: D="$(mktemp -d)"; node scripts/model-drift/check.mjs --provider ${names} --snapshots "$D"   # twice: pass 1 no FAILED, pass 2 no changed / no baseline`);
+  out.push("  then:   node --test 'scripts/model-drift/test/*.test.mjs'");
+  return out;
 }

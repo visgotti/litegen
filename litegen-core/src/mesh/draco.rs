@@ -22,6 +22,10 @@
 //!   draco-core reads on. draco-core itself checks a point count only in a
 //!   point cloud's header, and a sequential mesh's faces only after decoding
 //!   their index symbols;
+//! - the same counts are held to the faces-per-point limit, the face count
+//!   over the point count, before draco-core reads on (Ruling B39).
+//!   draco-core itself refuses only counts no manifold mesh can have (more
+//!   than V(V − 1)/3 faces over V EdgeBreaker vertices), once it is decoding;
 //! - draco-core refuses decoded attribute bytes past the bytes limit as each
 //!   attribute is declared, at the width the stream types it. Its working
 //!   buffers are wider for a narrow type (up to four bytes a value, its own
@@ -30,8 +34,8 @@
 //!   EdgeBreaker mesh's attribute seams may split its vertices into more
 //!   points (at most three a face, which draco-core checks before sizing
 //!   anything), and a stream with metadata has no counts at a place the
-//!   header gives, so it is held by the bytes limit until these checks
-//!   (accepted, Ruling B37a).
+//!   header gives, so it is held by the bytes limit until these checks,
+//!   its faces per point among them (accepted, Ruling B37a).
 //!
 //! What the decoder spends, measured in release (peak resident set,
 //! `/usr/bin/time -l`, mesh-gaps item 2 Task 4 fix round 1, Ruling B38): it
@@ -57,9 +61,12 @@
 //! The worst measured, over these strips and grids, is 1,494 MB, under the
 //! ~1.7 GB a conversion is given. Memory grows with the faces as well as the
 //! points (about 18 bytes a point and 22 a face, an attribute), so a mesh
-//! with many more faces a point than a grid sits outside what was measured;
-//! the faces-per-point pre-check that would hold it is open (Ruling B39,
-//! parked under B41). At twice
+//! with many more faces a point than a grid sits outside what was measured.
+//! The faces-per-point pre-check bounds how far: faces × attributes stays
+//! under the limit × the bytes ceiling. At the default, 5
+//! ([`MAX_FACES_PER_POINT`]), that extrapolates by the measured per-face
+//! cost to about 3.1 GB, which nothing measured; 3 to about 2.0 GB; a limit
+//! of 2 holds a decode to what was measured. At twice
 //! the ceiling, 48,000,000, the square EdgeBreaker streams reached 2,035 MB
 //! (37 attributes) and 2,974 MB (48), and at the earlier 192,000,000 a
 //! 37-attribute stream of 4,000,000 points reached 5,682 MB.
@@ -68,9 +75,9 @@
 //! refused, Unsupported, naming the ceiling. That's past 500,000 points with
 //! POSITION, NORMAL, TEXCOORD_0 and TANGENT (48 bytes a point), 750,000
 //! without TANGENT, and 2,000,000 with POSITION alone. A stream whose
-//! header declares more points or faces than the limits (one without
-//! metadata, above) is refused from it in microseconds, before anything
-//! decodes.
+//! header declares more points or faces than the limits, or more faces a
+//! point (one without metadata, above), is refused from it in microseconds,
+//! before anything decodes.
 //!
 //! @see <https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_draco_mesh_compression/README.md>
 //! (fetched 2026-11-06 into item 2's ledger, `task4/khronos/`)
@@ -126,6 +133,27 @@ fn declared_counts(stream: &[u8]) -> Option<(u64, u64)> {
     };
     let (first, second) = (varint()?, varint()?);
     Some(if method == SEQUENTIAL { (first, second) } else { (second, first) })
+}
+
+/// `faces` over `points` as a refusal says them: "12 faces over 8 points (1.5
+/// a point)", or "over no points".
+fn faces_over(faces: u64, points: u64) -> String {
+    let faces_noun = if faces == 1 { "face" } else { "faces" };
+    if points == 0 {
+        return format!("{faces} {faces_noun} over no points");
+    }
+    let points_noun = if points == 1 { "point" } else { "points" };
+    format!("{faces} {faces_noun} over {points} {points_noun} ({:.1} a point)", faces as f64 / points as f64)
+}
+
+/// The faces-per-point limit as a refusal says it: "5 faces a point".
+fn faces_a_point(limit: usize) -> String {
+    format!("{limit} {} a point", if limit == 1 { "face" } else { "faces" })
+}
+
+/// Whether `faces` over `points` is past `limit` faces a point.
+fn past_faces_per_point(faces: u64, points: u64, limit: usize) -> bool {
+    faces > points.saturating_mul(limit as u64)
 }
 
 fn malformed(detail: impl Into<String>) -> MeshError {
@@ -185,9 +213,9 @@ fn refusal(e: &DracoError, limits: Limits) -> MeshError {
 /// - **So the ceiling bounds points × attributes,** and with it the decode's
 ///   memory on the shapes measured, strips and grids: 24,000,000 bytes
 ///   holds that product at 24,000,000, about 24M × 62 B ≈ 1.5 GB per
-///   decode at a grid's two faces a point. A mesh with many more faces a
-///   point costs more than that per point, and the faces-per-point
-///   pre-check that would hold it is open (Ruling B39).
+///   decode at a grid's two faces a point. A mesh with more faces a point
+///   costs more than that per point, up to what [`MAX_FACES_PER_POINT`]
+///   lets through.
 /// - **That fits one conversion's ~1.7 GB:** 48,000,000, the ruling's first
 ///   figure, measured up to 2,974 MB. 24M is the largest round value under
 ///   that with margin: the worst measured at it, over strips and grids, is
@@ -195,6 +223,35 @@ fn refusal(e: &DracoError, limits: Limits) -> MeshError {
 ///
 /// The measured peaks are in this module's doc.
 pub const MAX_DECODED_BYTES: usize = 24_000_000;
+
+/// The faces a point a caller should pass as
+/// [`Limits::max_faces_per_point`]: 5, a face a point above a double-sided
+/// mesh that shares its vertices, which extrapolates to about 3.1 GB per
+/// decode (raised from 3 on the 2026-11-16 code review: a double-sided file
+/// refused after a vendor has billed for it is a loss to its caller).
+///
+/// - **What real meshes declare:** a closed triangle mesh has about two
+///   faces a vertex (Euler: F = 2V − 4 + 4g for genus g), an open one or a
+///   strip fewer, a triangle soup a third, and a double-sided mesh that
+///   shares its vertices about four. Every stream in this module's
+///   testdata whose header states its counts (423 of the reference corpus's
+///   445, and the Khronos samples' and ours as they ship) declares at most
+///   1.96 (RiggedSimple, 188 faces over 96 vertices), and
+///   `every_real_stream_declares_a_face_a_point_fewer_than_the_default`
+///   holds that. A file past 5 (a high-genus lattice, duplicated faces) is
+///   refused by name, and the caller can raise the limit.
+/// - **What it bounds:** the decode's memory grows with faces as well as
+///   points (about 18 bytes a point and 22 a face, for each attribute, as
+///   measured on strips and grids, Ruling B38), and the bytes limit bounds
+///   only points × attributes. Faces per point bound the rest:
+///   faces × attributes ≤ this × [`MAX_DECODED_BYTES`]. At two faces a point
+///   that is the measured worst, 1,494 MB; each face a point more adds about
+///   0.53 GB by the same per-face cost, so 5 allows about 3.1 GB by
+///   extrapolation, which nothing measured, and 16 would allow about 8.9 GB.
+///   A caller that reads uploads from untrusted users on shared hardware can
+///   pass 3 (about 2.0 GB worst case, extrapolated) at the cost of
+///   double-sided meshes.
+pub const MAX_FACES_PER_POINT: usize = 5;
 
 /// Ceilings on one decode, each absolute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +261,10 @@ pub struct Limits {
     /// Every decoded attribute value, at the width the stream types it, in
     /// bytes.
     pub max_bytes: usize,
+    /// Faces a point the stream may declare: its header's face count over
+    /// its point count (an EdgeBreaker stream's, its connectivity's
+    /// vertices). Checked before the decode, with the counts.
+    pub max_faces_per_point: usize,
 }
 
 /// How a decoded attribute's components are stored.
@@ -265,6 +326,8 @@ pub struct DecodedPrimitive {
 /// stream, and an id the stream lacks, or two names on one id, is refused
 /// rather than guessed at.
 pub fn decode_primitive(stream: &[u8], attributes: &[(String, u32)], limits: Limits) -> Result<DecodedPrimitive, MeshError> {
+    // The counts the header states, where it states them before any data.
+    let mut declared = None;
     // The header says what the stream is, so what this build doesn't decode
     // is refused by name before draco-core reads on.
     if stream.len() > 7 && stream.starts_with(MAGIC) {
@@ -288,8 +351,11 @@ pub fn decode_primitive(stream: &[u8], attributes: &[(String, u32)], limits: Lim
         // B37a). An EdgeBreaker stream's count is its connectivity's
         // vertices, which attribute seams may split into more points (Box's
         // 8 into 24), at most three a face: those are checked after the
-        // decode, below.
-        if let Some((faces, points)) = declared_counts(stream) {
+        // decode, below. The same counts are held to the faces-per-point
+        // limit (Ruling B39): the decode's memory grows with faces as well
+        // as points, and the bytes limit bounds only points × attributes.
+        declared = declared_counts(stream);
+        if let Some((faces, points)) = declared {
             if points > limits.max_points as u64 {
                 return Err(unsupported(format!(
                     "the Draco stream declares {points} points, past this reader's limit of {}",
@@ -300,6 +366,13 @@ pub fn decode_primitive(stream: &[u8], attributes: &[(String, u32)], limits: Lim
                 return Err(unsupported(format!(
                     "the Draco stream declares {faces} faces, past this reader's limit of {}",
                     limits.max_faces
+                )));
+            }
+            if past_faces_per_point(faces, points, limits.max_faces_per_point) {
+                return Err(unsupported(format!(
+                    "the Draco stream declares {}, past this reader's limit of {}",
+                    faces_over(faces, points),
+                    faces_a_point(limits.max_faces_per_point)
                 )));
             }
         }
@@ -314,6 +387,8 @@ pub fn decode_primitive(stream: &[u8], attributes: &[(String, u32)], limits: Lim
         .with_max_faces(limits.max_faces as u64)
         .with_max_decoded_bytes(limits.max_bytes as u64);
     let mut mesh = Mesh::new();
+    #[cfg(test)]
+    tests::DECODER_CALLS.with(|n| n.set(n.get() + 1));
     MeshDecoder::new().decode(&mut DecoderBuffer::new(stream).with_limits(ceiling), &mut mesh).map_err(|e| refusal(&e, limits))?;
     // Again on what decoded: an EdgeBreaker mesh's points, which its seams
     // may have split past its declared vertices, and any stream with
@@ -328,6 +403,15 @@ pub fn decode_primitive(stream: &[u8], attributes: &[(String, u32)], limits: Lim
     let faces = mesh.num_faces();
     if faces > limits.max_faces {
         return Err(unsupported(format!("the Draco stream decodes {faces} faces, past this reader's limit of {}", limits.max_faces)));
+    }
+    // A stream whose header gave no counts (one with metadata) is held to
+    // the faces-per-point limit on what it decoded, as to the other two.
+    if declared.is_none() && past_faces_per_point(faces as u64, points as u64, limits.max_faces_per_point) {
+        return Err(unsupported(format!(
+            "the Draco stream decodes {}, past this reader's limit of {}",
+            faces_over(faces as u64, points as u64),
+            faces_a_point(limits.max_faces_per_point)
+        )));
     }
     let mut indices = Vec::with_capacity(faces * 3);
     for f in 0..faces {
@@ -398,6 +482,21 @@ fn values(a: &PointAttribute, points: usize, name: &str, max_bytes: usize) -> Re
 mod tests {
     use super::*;
 
+    thread_local! {
+        /// How many times this thread has handed a stream to draco-core's
+        /// decoder ([`decode_primitive`] counts each call). Each test runs on
+        /// a thread of its own, so a test reads its own calls: a refusal that
+        /// leaves it unchanged came before any decoding.
+        pub(super) static DECODER_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// [`decode_primitive`]'s result, and whether it reached the decoder.
+    fn decode_counted(stream: &[u8], names: &[(String, u32)], limits: Limits) -> (Result<DecodedPrimitive, MeshError>, bool) {
+        let before = DECODER_CALLS.with(|n| n.get());
+        let result = decode_primitive(stream, names, limits);
+        (result, DECODER_CALLS.with(|n| n.get()) > before)
+    }
+
     /// Box (glTF-Sample-Assets 8f492390ddc7, by Cesium, CC-BY-4.0;
     /// `testdata/gltf/draco/README.md`): its glTF-Draco variant's one stream,
     /// bufferView 0, the first 118 bytes of Box.bin. Standard EdgeBreaker, 24
@@ -414,8 +513,9 @@ mod tests {
     }
 
     /// Exactly what Box decodes to: 24 points, 12 faces, and two attributes
-    /// of 24 × 3 floats, 576 bytes (draco-core's own count).
-    const BOX_NEEDS: Limits = Limits { max_points: 24, max_faces: 12, max_bytes: 576 };
+    /// of 24 × 3 floats, 576 bytes (draco-core's own count); its header
+    /// declares 12 faces over 8 vertices, 1.5 a vertex, which 2 holds.
+    const BOX_NEEDS: Limits = Limits { max_points: 24, max_faces: 12, max_bytes: 576, max_faces_per_point: 2 };
 
     fn floats(a: &DecodedAttribute) -> Vec<[f32; 3]> {
         assert_eq!((a.kind, a.components), (ValueKind::F32, 3));
@@ -534,7 +634,7 @@ mod tests {
     /// away, so no decode reads the stream's data.
     #[test]
     fn a_narrow_stream_declaring_past_the_point_limit_is_refused_before_decoding() {
-        let limits = Limits { max_points: 999, max_faces: 1, max_bytes: 1 << 20 };
+        let limits = Limits { max_points: 999, max_faces: 1, max_bytes: 1 << 20, max_faces_per_point: MAX_FACES_PER_POINT };
         assert_eq!((NARROW[11], &NARROW[12..14]), (1, &[0xe8, 0x07][..]), "one face, 1,000 points");
         for (what, stream) in [("the stream", NARROW), ("its header alone", &NARROW[..14])] {
             match refusal(stream, &[("_NARROW".to_string(), 0)], limits) {
@@ -570,7 +670,7 @@ mod tests {
     fn a_sequential_stream_declaring_past_the_face_limit_is_refused_before_decoding() {
         let morph = &MORPH_BIN[360..670];
         let names = [("NORMAL".to_string(), 0), ("POSITION".to_string(), 1), ("TEXCOORD_0".to_string(), 2)];
-        let limits = Limits { max_points: 21, max_faces: 23, max_bytes: 1 << 20 };
+        let limits = Limits { max_points: 21, max_faces: 23, max_bytes: 1 << 20, max_faces_per_point: MAX_FACES_PER_POINT };
         assert_eq!((morph[8], morph[11], morph[12]), (0, 24, 21), "sequential, 24 faces, 21 points");
         for (what, stream) in [("the stream", morph), ("its header alone", &morph[..13])] {
             match refusal(stream, &names, limits) {
@@ -579,6 +679,129 @@ mod tests {
             }
         }
         assert!(decode_primitive(morph, &names, Limits { max_faces: 24, ..limits }).is_ok(), "at the limit it decodes");
+    }
+
+    /// The header's counts are held to the faces-per-point limit before
+    /// anything decodes (Ruling B39), at the default of 5. Real streams with
+    /// only their declared counts edited: Box (EdgeBreaker) declaring 41 faces
+    /// over its 8 vertices, 5.1 a vertex, just past the default; Box declaring
+    /// 200 faces, 25 a vertex (the face count's varint grows a byte, so the
+    /// data after it moves along); Box declaring its 12 faces over no
+    /// vertices; and MorphPrimitivesTest's first stream (sequential)
+    /// declaring its 24 faces over 1 point. Each is refused as Unsupported,
+    /// naming its counts and the limit, without reaching the decoder, the
+    /// stream and its header alone alike.
+    #[test]
+    fn a_stream_declaring_more_faces_a_point_than_the_limit_is_refused_before_decoding() {
+        let defaults = super::super::DracoOptions::default().decode_limits();
+        assert_eq!(defaults.max_faces_per_point, 5, "the default");
+        let boxed = box_stream();
+        assert_eq!((boxed[8], boxed[12], boxed[13]), (1, 8, 12), "EdgeBreaker: 8 vertices, then 12 faces");
+        let mut box_41 = boxed.clone();
+        box_41[13] = 41;
+        let mut box_200 = boxed[..13].to_vec();
+        box_200.extend_from_slice(&[0xc8, 0x01]); // 200, as a LEB128 varint
+        box_200.extend_from_slice(&boxed[14..]);
+        let mut box_none = boxed.clone();
+        box_none[12] = 0;
+        let mut morph = MORPH_BIN[360..670].to_vec();
+        assert_eq!((morph[8], morph[11], morph[12]), (0, 24, 21), "sequential: 24 faces, then 21 points");
+        morph[12] = 1;
+        let (box_names, morph_names) = (box_names(), vec![("NORMAL".to_string(), 0), ("POSITION".to_string(), 1), ("TEXCOORD_0".to_string(), 2)]);
+        for (what, stream, header, names, says) in [
+            ("Box declaring 41 faces", &box_41[..], 14, &box_names, "declares 41 faces over 8 points (5.1 a point)"),
+            ("Box declaring 200 faces", &box_200[..], 15, &box_names, "declares 200 faces over 8 points (25.0 a point)"),
+            ("Box declaring no vertices", &box_none[..], 14, &box_names, "declares 12 faces over no points"),
+            ("MorphPrimitivesTest declaring 1 point", &morph[..], 13, &morph_names, "declares 24 faces over 1 point (24.0 a point)"),
+        ] {
+            for (part, bytes) in [("the stream", stream), ("its header alone", &stream[..header])] {
+                let (result, decoded) = decode_counted(bytes, names, defaults);
+                match result {
+                    Err(MeshError::Unsupported(m)) => assert!(m.contains(says) && m.contains("limit of 5 faces a point"), "{what}, {part}: {m}"),
+                    other => panic!("{what}, {part}: {other:?}"),
+                }
+                assert!(!decoded, "{what}, {part}: refused before the decoder");
+            }
+        }
+    }
+
+    /// What the default lets through: a double-sided mesh that shares its
+    /// vertices declares about 4 faces a point, so the pre-check passes 4
+    /// under the default. Box declaring 32 faces over its 8 vertices, 4.0 a
+    /// vertex, reaches the decoder. A default of 3 refused it from the header.
+    /// draco-core then refuses the edited counts, since no manifold mesh has 32
+    /// faces over 8 vertices, but not for faces per point.
+    #[test]
+    fn a_stream_declaring_four_faces_a_point_passes_the_pre_check_under_the_default() {
+        let defaults = super::super::DracoOptions::default().decode_limits();
+        let mut box_32 = box_stream();
+        assert_eq!((box_32[8], box_32[12], box_32[13]), (1, 8, 12), "EdgeBreaker: 8 vertices, then 12 faces");
+        box_32[13] = 32;
+        let (result, decoded) = decode_counted(&box_32, &box_names(), defaults);
+        assert!(decoded, "4 faces a point reaches the decoder under the default: {result:?}");
+        assert!(!matches!(&result, Err(MeshError::Unsupported(m)) if m.contains(" a point")), "not refused for its faces a point: {result:?}");
+    }
+
+    /// The faces-per-point limit is the caller's: Box's header declares 12
+    /// faces over 8 vertices, 1.5 a vertex, so it decodes under 2 (its exact
+    /// needs) and is refused under 1, before the decoder, its header alone
+    /// too.
+    #[test]
+    fn the_faces_per_point_limit_reaches_the_pre_check() {
+        let stream = box_stream();
+        let (result, decoded) = decode_counted(&stream, &box_names(), BOX_NEEDS);
+        assert!(result.is_ok() && decoded, "2 faces a point holds Box: {result:?}");
+        let one = Limits { max_faces_per_point: 1, ..BOX_NEEDS };
+        for (part, bytes) in [("the stream", &stream[..]), ("its header alone", &stream[..14])] {
+            let (result, decoded) = decode_counted(bytes, &box_names(), one);
+            match result {
+                Err(MeshError::Unsupported(m)) => {
+                    assert!(m.contains("declares 12 faces over 8 points (1.5 a point)") && m.contains("limit of 1 face a point"), "{part}: {m}")
+                }
+                other => panic!("{part}: {other:?}"),
+            }
+            assert!(!decoded, "{part}: refused before the decoder");
+        }
+    }
+
+    /// [`MAX_FACES_PER_POINT`]'s reason, held: every stream of the reference
+    /// corpus whose header gives its counts (423 of 445: our fixtures and
+    /// the Khronos samples, at every setting; the rest carry metadata)
+    /// declares at most two faces a point, the most a closed mesh of genus 0
+    /// or 1 has, so the default leaves at least a whole face a point above
+    /// the worst real stream here: RiggedSimple's 188 faces over 96
+    /// vertices.
+    #[test]
+    fn every_real_stream_declares_a_face_a_point_fewer_than_the_default() {
+        let declared: Vec<(&str, u64, u64)> =
+            REFERENCE_STREAMS.iter().filter_map(|(file, stream)| declared_counts(stream).map(|(faces, points)| (*file, faces, points))).collect();
+        assert_eq!(declared.len(), 423, "the reference streams whose header gives their counts");
+        let (file, faces, points) = declared.iter().copied().max_by(|a, b| (a.1 * b.2).cmp(&(b.1 * a.2))).unwrap();
+        let worst = faces as f64 / points as f64;
+        assert_eq!((faces, points), (188, 96), "the worst real stream, {file}");
+        assert!(worst <= 2.0, "{file} declares {faces} faces over {points} points");
+        assert!(MAX_FACES_PER_POINT as f64 >= worst + 1.0, "the default, {MAX_FACES_PER_POINT}, leaves a face a point above {worst:.3} ({file})");
+    }
+
+    /// A stream with metadata gives no counts at a place its header fixes,
+    /// so no pre-check reads them (Ruling B37a): it is decoded, and its
+    /// decoded counts are held to the faces-per-point limit then, as they
+    /// are to the point and face limits. The reference corpus's cube with
+    /// metadata (EdgeBreaker, 12 faces over 8 points as decoded) decodes
+    /// under 2 faces a point and is refused under 1, after the decoder ran.
+    #[test]
+    fn a_stream_with_metadata_is_held_to_the_faces_per_point_limit_after_decoding() {
+        let (_, stream) = REFERENCE_STREAMS.iter().find(|(file, _)| *file == "fixture-cube.meta-qp11.drc").expect("the cube with metadata");
+        assert_eq!(declared_counts(stream), None, "its header carries metadata");
+        let limits = Limits { max_points: 8, max_faces: 12, max_bytes: 1 << 20, max_faces_per_point: 2 };
+        let (result, decoded) = decode_counted(stream, &[], limits);
+        assert!(result.is_ok() && decoded, "2 faces a point holds the cube: {result:?}");
+        let (result, decoded) = decode_counted(stream, &[], Limits { max_faces_per_point: 1, ..limits });
+        match result {
+            Err(MeshError::Unsupported(m)) => assert!(m.contains("decodes 12 faces over 8 points (1.5 a point)") && m.contains("limit of 1 face a point"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(decoded, "a stream with metadata is held after its decode");
     }
 
     /// Bytes that aren't a whole Draco stream are Malformed: no magic, the
@@ -778,7 +1001,9 @@ mod tests {
             }
         }
 
-        let limits = Limits { max_points: 1 << 20, max_faces: 1 << 20, max_bytes: MAX_DECODED_BYTES };
+        // The limits a read gets by default, the faces-per-point pre-check's
+        // included: every stream here is a real mesh, and decodes under them.
+        let limits = super::super::DracoOptions::default().decode_limits();
         let mut failures = Vec::new();
         let mut decoded_attributes = 0;
         for s in &expected {

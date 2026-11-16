@@ -191,6 +191,21 @@ impl ImageProvider for KlingImageProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What Kling's image API can't take, refused before anything is
+    /// quoted, reserved or sent; `generate` asks it first: "In the
+    /// Image-to-Image scenario (when the "image" field is not empty),
+    /// negative prompts are not supported", and a tier Kling names.
+    /// @see <https://kling.ai/document-api/api/image/2-1/image-generation.md>
+    fn preflight(&self, model: &ModelSchema, base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if base.negative_prompt.is_some() && !roles.is_empty() {
+            return Err(ProviderError::InvalidRequest(format!("{}: a negative_prompt cannot go with a reference image", model.id)));
+        }
+        if let Some(tier) = extras.resolution.as_deref().filter(|t| kling_resolution(t).is_none()) {
+            return Err(ProviderError::InvalidRequest(format!("{}: Kling has no image resolution {tier}", model.id)));
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -201,13 +216,9 @@ impl ImageProvider for KlingImageProvider {
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);
         let url = format!("{}/v1/images/generations", self.api_base());
-
-        // "In the Image-to-Image scenario (when the "image" field is not empty),
-        // negative prompts are not supported."
-        // @see <https://kling.ai/document-api/api/image/2-1/image-generation.md>
-        if base.negative_prompt.is_some() && !materialized.refs.is_empty() {
-            return Err(ProviderError::InvalidRequest(format!("{}: a negative_prompt cannot go with a reference image", model.id)));
-        }
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         // One image: litegen returns and bills one, whatever `n` was.
         let mut body = json!({
             "model_name": crate::providers::wire_model(self.config.as_ref(), &model.id, native),
@@ -220,8 +231,7 @@ impl ImageProvider for KlingImageProvider {
         if let Some(ar) = extras.aspect_ratio.as_deref() {
             body["aspect_ratio"] = Value::String(ar.to_string());
         }
-        if let Some(tier) = extras.resolution.as_deref() {
-            let r = kling_resolution(tier).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: Kling has no image resolution {tier}", model.id)))?;
+        if let Some(r) = extras.resolution.as_deref().and_then(kling_resolution) {
             body["resolution"] = Value::String(r.into());
         }
         // Reference image as base64 (no data: prefix) or URL. A `subject` is

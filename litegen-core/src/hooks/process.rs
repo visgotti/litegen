@@ -137,14 +137,16 @@ pub struct HookProcess {
 }
 
 impl HookProcess {
-    /// Start `hook`'s runner and wait for it to load the file.
+    /// Start `hook`'s runner and wait for it to load the file. An error says
+    /// what went wrong; the caller names the hook (`HookSet::start`, by its
+    /// entry in `hooks:`).
     pub async fn start(hook: &ResolvedHook) -> Result<Arc<HookProcess>, String> {
-        let runner_dir = private_dir().map_err(|e| format!("{}: cannot write its runner: {e}", hook.name))?;
+        let runner_dir = private_dir().map_err(|e| format!("cannot write its runner: {e}"))?;
         let runner = match write_runner(&runner_dir, hook.runtime) {
             Ok(r) => r,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&runner_dir);
-                return Err(format!("{}: cannot write its runner: {e}", hook.name));
+                return Err(format!("cannot write its runner: {e}"));
             }
         };
         let shared = Arc::new(Shared {
@@ -292,7 +294,7 @@ async fn spawn(hook: &ResolvedHook, runner: &Path, shared: &Arc<Shared>) -> Resu
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("{}: cannot start {}: {e}", hook.name, hook.program))?;
+        .map_err(|e| format!("cannot start {}: {e}", hook.program))?;
     let stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
@@ -301,19 +303,19 @@ async fn spawn(hook: &ResolvedHook, runner: &Path, shared: &Arc<Shared>) -> Resu
 
     let mut lines = BufReader::new(stdout).lines();
     let first = match tokio::time::timeout(READY_TIMEOUT, lines.next_line()).await {
-        Err(_) => return Err(format!("{}: did not load within {} s", hook.name, READY_TIMEOUT.as_secs())),
-        Ok(Err(e)) => return Err(format!("{}: unreadable startup: {e}", hook.name)),
+        Err(_) => return Err(format!("did not load within {} s", READY_TIMEOUT.as_secs())),
+        Ok(Err(e)) => return Err(format!("unreadable startup: {e}")),
         Ok(Ok(None)) => {
             let status = child.wait().await.map(|s| s.to_string()).unwrap_or_default();
             // Let the stderr forwarder catch up before quoting it.
             tokio::time::sleep(Duration::from_millis(50)).await;
-            return Err(format!("{}: exited while loading ({status}){}", hook.name, shared.tail()));
+            return Err(format!("exited while loading ({status}){}", shared.tail()));
         }
         Ok(Ok(Some(line))) => line,
     };
-    let ready: Ready = serde_json::from_str(&first).map_err(|e| format!("{}: sent {first:?} instead of ready: {e}", hook.name))?;
+    let ready: Ready = serde_json::from_str(&first).map_err(|e| format!("sent {first:?} instead of ready: {e}"))?;
     if !ready.ready {
-        return Err(format!("{}: {}", hook.name, ready.error.unwrap_or_else(|| "failed to load".into())));
+        return Err(ready.error.unwrap_or_else(|| "failed to load".into()));
     }
 
     let (tx, rx) = mpsc::unbounded_channel::<String>();

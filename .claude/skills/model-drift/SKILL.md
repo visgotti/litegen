@@ -15,18 +15,34 @@ Details: `scripts/model-drift/README.md`.
 
 ## Run
 
+One command runs the whole pipeline, on a copy of the snapshots:
+
 ```bash
-node scripts/model-drift/check.mjs --json > "$TMPDIR/drift.json"; echo "exit=$?"
+node scripts/model-drift/pipeline.mjs; echo "exit=$?"
 ```
 
-Exit codes: 0 means clean. 1 means drift: a `new`, `missing` or `deprecated
-upstream` model, a `changed` snapshot, or a source with `no baseline`. 2
-means a source or definition is broken, or the command line is (a bad flag
-or value is refused before anything is fetched or written). The run rewrites
-`scripts/model-drift/snapshots/`. Handle every exit-2 item first, then
-re-run. Drift results from a broken provider mean nothing. In `--json`, each
-provider lists `noBaseline` (source keys) and `deprecated`
-(`[{ model, vendorIds }]`) beside `new`, `missing` and `changed`.
+It never writes `scripts/model-drift/snapshots/` (other sessions may have
+edits there): it copies them into `<out>/snapshots`, checks there, and writes
+into `<out>` (default `.superpowers/sdd/<date>-drift/run-<time>/`):
+
+- `report.txt` / `drift.json`: the check (what `check.mjs --json` gives; each
+  provider lists `noBaseline` and `deprecated` beside `new`, `missing` and
+  `changed`);
+- `review.md`: only the snapshot sections that changed, as JSON paths, plus
+  the never-reviewed sections to read whole (`review.mjs`). Read this, not a
+  raw diff: it leaves out sections that only moved between files;
+- `quotes.txt` / `quotes.json`: every quoted vendor string in models/*.yaml
+  checked against the pages its comment block cites (`quotes.mjs`): a quote no
+  longer on its page means the vendor changed a price or a rule; a page that
+  failed means the citation died;
+- `summary.txt` (also printed): what to do next, in order, ending with the
+  `cp`/`rm` lines that adopt each reviewed snapshot.
+
+Exit codes: 0 clean. 1 drift or a changed quote. 2 a source, definition or
+cited page is broken, or the command line is. 3 the pipeline itself crashed:
+a bug in scripts/model-drift (fix it, run the node tests, rerun). Repair every
+exit-2 item first, then rerun: drift from a broken provider means nothing.
+`--provider a,b` narrows a rerun; `--no-quotes` skips the page fetches.
 
 ## Who decides what
 
@@ -41,6 +57,9 @@ provider lists `noBaseline` (source keys) and `deprecated`
 | `missing` | Confirm it in the vendor changelog or deprecations page. A model a source lists as deprecated is reported as `deprecated upstream`, not `missing` | Remove or replace |
 | `deprecated upstream: <model> (<ids>)` | The vendor still serves it but marks it deprecated. Confirm it, then set the row's `deprecated_at` (and `replaced_by` when the vendor's successor is a catalog model), or its `retires_at` plus the `SCHEDULED_SHUTDOWNS` entry once there is a date | Whether to move callers to the successor |
 | Our `pricing` differs from the vendor's published price | Note both prices, with the pricing URL | Update or keep |
+| A quote in `quotes.txt` is no longer on its page | Re-read the page; fix the row (price, bound, enum) and the quote, with today's date | A price change on a carried model |
+| A cited page failed in `quotes.txt` | Find where it moved and fix the `@see` (and the quote) | — |
+| A quote a script can't verify (script-rendered page, login wall, not the vendor's words) | Add it to `scripts/model-drift/quotes-known.txt` with the reason | — |
 
 A wrong typing on a model we carry is a bug. Fix it; don't just report it.
 
@@ -56,6 +75,12 @@ new direct-route skip; its `PENDING` list names the definitions still being
 reversed.
 
 ## Repairing a failed source
+
+Repair is a step of every run, not a separate job: the report ends with a
+"Repair first" block that prints, for each FAILED item, its URL to reproduce,
+where to look, the definition to edit and the verify line. Follow it, then
+rerun the pipeline. A cited page that died in `quotes.txt` gets the same
+treatment in the row's `@see`.
 
 1. Reproduce: `curl -sIL -m 30 <url>`.
 2. Find where it moved. Look in the vendor's `llms.txt` first, then the adapter's
@@ -74,14 +99,17 @@ If several providers failed, dispatch one subagent per provider, in parallel.
 
 ## Typings recipe
 
-1. Read the whole file of every snapshot the report lists under
-   `no baseline` (the folder the run used had none before it, `--snapshots`
-   runs included). Then run `git status --porcelain scripts/model-drift/snapshots/`:
-   an untracked (`??`) snapshot, which an earlier run wrote and nobody
-   committed, has never been reviewed either, so read it whole too. A
-   modified one needs only its `git diff`. For each model we carry, compare
-   the vendor schema against `models/<p>.yaml`: enums, min and max bounds,
-   capabilities, and prompt limits.
+1. Read `<out>/review.md`. Its "new, read whole" sections are every section
+   with no reviewed baseline (a `no baseline` source, or an endpoint that
+   moved into a chunk file with no earlier version anywhere); its "changed"
+   sections give only the paths that changed. Then run
+   `git status --porcelain scripts/model-drift/snapshots/`: an untracked
+   (`??`) snapshot, which an earlier run wrote and nobody committed, has never
+   been reviewed either, so read it whole too. For each model we carry,
+   compare the vendor schema against `models/<p>.yaml`: enums, min and max
+   bounds, capabilities, and prompt limits. For a big run, split the packet by
+   provider (`review.mjs --fresh <out>/snapshots --provider a,b`) across
+   parallel reviewers.
 2. For each mismatch, first update the matching fact in
    `litegen-core/tests/catalog_conformance.rs` and watch it fail. Then fix the
    yaml.
@@ -93,10 +121,11 @@ If several providers failed, dispatch one subagent per provider, in parallel.
 
 ## Finish
 
-1. Commit only your own paths. Other sessions share this working tree:
+1. Adopt the reviewed snapshots with the `cp`/`rm` lines the summary prints,
+   one file at a time, only for files you reviewed. Then, when the user asks
+   for a commit, commit only your own paths (other sessions share this tree):
    `git add <paths> && git commit -m "chore(model-drift): weekly run YYYY-MM-DD" -- <paths>`.
-   Then push. The snapshots are next week's baseline, so they must be
-   committed.
+   The snapshots are next week's baseline, so they must be committed.
 2. Report in this shape:
    1. **Fixed:** each repaired source and each corrected typing, one line each
       with the vendor evidence (URL).

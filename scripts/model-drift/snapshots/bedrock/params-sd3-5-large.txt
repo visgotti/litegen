@@ -1,0 +1,17 @@
++ **prompt** – (string) Text description of the desired output image. Maximum 10,000 characters.
++ **seeds** – (string) List of seeds used to generate images for the model.
++ **finish\_reasons** – Enum indicating whether the request was filtered or not. `null` will indicate that the request was successful. Current possible values: `"Filter reason: prompt", "Filter reason: output image", "Filter reason: input image", "Inference error", null`.
++ **images** – A list of generated images in base64 string format.
++ **prompt** (string) – Text description of the desired output image. Maximum 10,000 characters.
++ **aspect\_ratio** (string) – Controls the aspect ratio of the generated image. Valid for text-to-image requests only. Enum: 16:9, 1:1, 21:9, 2:3, 3:2, 4:5, 5:4, 9:16, 9:21. Default 1:1.
++ **mode** (string) (GenerationMode) - Default: text-to-image. Enum: image-to-image or text-to-image. Controls whether this is a text-to-image or image-to-image generation, which affects which parameters are required:
++ **seed** (number) – Value to control randomness in generation. Range 0 to 4294967294. Default 0 (random seed).
++ **negative\_prompt** (string) – Text describing elements to exclude from the output image. Maximum 10,000 characters.
++ **output\_format** (string) – Output image format. Enum: jpeg, png, webp. Default png.
++ **prompt** (string) – Text description of the desired output image. Maximum 10,000 characters.
++ **image** (string) – Base64-encoded input image. Minimum 64 pixels per side. Supported formats: jpeg, png, webp.
++ **mode** (string) (GenerationMode) - Default: text-to-image. Enum: image-to-image or text-to-image. Controls whether this is a text-to-image or image-to-image generation, which affects which parameters are required:
++ **strength** (number) – Controls influence of the input image on the output. Range 0 to 1. Value of 0 preserves the input image, value of 1 ignores the input image.
++ **seed** (number) – Value to control randomness in generation. Range 0 to 4294967294. Default 0 (random seed).
++ **negative\_prompt** (string) – Text describing elements to exclude from the output image. Maximum 10,000 characters.
++ **output\_format** (string) – Output image format. Enum: jpeg, png, webp. Default png.

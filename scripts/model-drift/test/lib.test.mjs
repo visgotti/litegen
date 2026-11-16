@@ -192,6 +192,30 @@ test('classify counts a carried id the source lists as deprecated as present, no
   assert.deepEqual(r.deprecated, [{ model: 'acme/alpha-1', vendorIds: ['alpha-1'] }]);
 });
 
+test('classify reports a carried id a source says is gone as missing, even while another source still lists it', () => {
+  // fal, 2026-11-16: the catalog page lists fal-ai/stable-diffusion-v35-medium as
+  // active while find mode, its OpenAPI and its model page all answer 404.
+  const r = classify(def, [ok('list', ['alpha-1', 'beta-2', 'beta-2-i2v']), { key: 'find', ok: true, ids: ['alpha-1'], gone: ['beta-2-i2v'] }]);
+  assert.deepEqual(r.missing, [{ model: 'acme/beta_2', vendorIds: ['beta-2', 'beta-2-i2v'], absent: ['beta-2-i2v'] }]);
+  assert.deepEqual(r.new, []);
+});
+
+test('classify never reports an id a source says is gone as new', () => {
+  const r = classify(def, [ok('list', ['alpha-1', 'beta-2', 'beta-2-i2v', 'gamma-3']), { key: 'find', ok: true, ids: ['alpha-1'], gone: ['gamma-3'] }]);
+  assert.deepEqual(r.new, []);
+  assert.deepEqual(r.missing, []);
+});
+
+test('evaluateSource returns the ids a source says the vendor no longer knows as gone, apart from its ids', () => {
+  const r = evaluateSource(
+    { key: 's', expect: 'json', extract: (d) => d.live, gone: (d) => d.dead },
+    { status: 200, contentType: 'application/json', body: JSON.stringify({ live: ['Alpha-1'], dead: ['Beta-2'] }) },
+  );
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(r.ids, ['alpha-1']);
+  assert.deepEqual(r.gone, ['beta-2']);
+});
+
 test('classify fails the provider when sources return ids but none of ours, suppressing new/missing noise', () => {
   const r = classify(def, [ok('a', ['totally', 'unrelated', 'ids'])]);
   assert.deepEqual(r.new, []);
@@ -543,6 +567,67 @@ test('run does not re-fetch an HTTP error (the fetcher already retried transient
   });
   assert.equal(calls, 1);
   assert.equal(res.exitCode, 2);
+});
+
+test('run reports the ids of a source that heard every one is gone as missing upstream, not as a broken source to re-fetch', async () => {
+  // fal, 2026-11-16: a find-mode chunk whose every endpoint has left the
+  // registry extracts no active and no deprecated id, but fal did answer.
+  const list = 'https://acme.test/llms.txt';
+  const find = 'https://acme.test/find';
+  const def = acmeDef(list);
+  def.sources.push({ key: 'find', url: find, expect: 'json', extract: (d) => d.live, gone: (d) => d.dead });
+  const seen = [];
+  const res = await run({
+    modelsDir: FIXTURE_MODELS,
+    definitions: [def],
+    snapshotsDir: baselineDir(),
+    fetchImpl: async (u) => {
+      seen.push(u);
+      if (u === find) return { status: 200, contentType: 'application/json', body: JSON.stringify({ live: [], dead: ['beta-2'] }) };
+      return { status: 200, contentType: 'text/plain', body: 'alpha-1 beta-2' };
+    },
+  });
+  const p = res.providers[0];
+  assert.deepEqual(p.failed, []);
+  assert.deepEqual(p.missing, [{ model: 'acme/beta_2', vendorIds: ['beta-2'], absent: ['beta-2'] }]);
+  assert.deepEqual(p.new, []);
+  assert.deepEqual(seen.filter((u) => u === find), [find], 'an answer is not a stray shell: no re-fetch');
+  assert.equal(res.exitCode, 1);
+});
+
+test("run takes a source's response from its own fetch, which may ask several urls through get", async () => {
+  const snapDir = baselineDir();
+  const url = 'https://acme.test/llms.txt';
+  const def = acmeDef(url);
+  def.sources[0] = {
+    ...def.sources[0],
+    fetch: async (u, get) => {
+      const first = await get(u);
+      const second = await get('https://acme.test/more');
+      return { status: 200, contentType: 'text/plain', body: `${first.body} ${second.body}` };
+    },
+  };
+  const seen = [];
+  const res = await run({
+    modelsDir: FIXTURE_MODELS,
+    definitions: [def],
+    snapshotsDir: snapDir,
+    fetchImpl: async (u) => {
+      seen.push(u);
+      return { status: 200, contentType: 'text/plain', body: u.endsWith('/more') ? 'beta-2' : 'alpha-1' };
+    },
+  });
+  assert.deepEqual(seen, [url, 'https://acme.test/more']);
+  assert.equal(res.exitCode, 0);
+});
+
+test("run fails a source whose own fetch throws, naming the error, instead of crashing the run", async () => {
+  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  const def = acmeDef('https://acme.test/llms.txt');
+  def.sources[0] = { ...def.sources[0], fetch: async () => { throw new Error('boom'); } };
+  const res = await run({ modelsDir: FIXTURE_MODELS, definitions: [def], snapshotsDir: snapDir, fetchImpl: fakeFetch({}) });
+  assert.equal(res.exitCode, 2);
+  assert.match(res.providers[0].failed[0].error, /fetch threw: boom/);
 });
 
 test('run resolves a source url through its discover page, for content-hashed assets', async () => {

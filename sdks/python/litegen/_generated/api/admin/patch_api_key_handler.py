@@ -83,7 +83,11 @@ def sync_detailed(
 
     Args:
         id (UUID):
-        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}.
+        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}, a JSON merge patch: a
+            field left
+            out stays as it is, `null` clears `token_quota`, `rpm_limit`,
+            `webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and
+            `is_active` can't be cleared: `null` leaves them as they are.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -117,7 +121,11 @@ def sync(
 
     Args:
         id (UUID):
-        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}.
+        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}, a JSON merge patch: a
+            field left
+            out stays as it is, `null` clears `token_quota`, `rpm_limit`,
+            `webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and
+            `is_active` can't be cleared: `null` leaves them as they are.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -146,7 +154,11 @@ async def asyncio_detailed(
 
     Args:
         id (UUID):
-        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}.
+        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}, a JSON merge patch: a
+            field left
+            out stays as it is, `null` clears `token_quota`, `rpm_limit`,
+            `webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and
+            `is_active` can't be cleared: `null` leaves them as they are.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -178,7 +190,11 @@ async def asyncio(
 
     Args:
         id (UUID):
-        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}.
+        body (UpdateApiKeyRequest): Request body for PATCH /v1/keys/{id}, a JSON merge patch: a
+            field left
+            out stays as it is, `null` clears `token_quota`, `rpm_limit`,
+            `webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and
+            `is_active` can't be cleared: `null` leaves them as they are.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

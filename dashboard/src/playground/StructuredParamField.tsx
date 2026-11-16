@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { X, Plus, RefreshCw } from 'lucide-react';
-import { layoutBox, wireValue } from './params';
+import { boxOf, wireValue } from './params';
 import { useRecentGenerations } from './useRecentGenerations';
 
 type AnySpec = { kind: string; [k: string]: unknown };
@@ -164,7 +164,7 @@ function LayoutControl({ tid, spec, value, onChange }: Props) {
             </div>
             <NumberFields tid={`${tid}-${i}`} keys={['x', 'y', 'w', 'h']} draft={d} step="0.05" max={1}
               onChange={next => rows.set(i, next)} />
-            {!layoutBox(d) && (
+            {!boxOf(d) && (
               <span className="pg-structured-note" data-testid={`${tid}-unsent-${i}`}>
                 Not sent: a box needs its x, y, w and h.
               </span>

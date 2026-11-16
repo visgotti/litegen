@@ -163,6 +163,7 @@ pub async fn authorize(State(shared): State<Arc<OAuthShared>>, query: Result<Que
         code_hash: None,
         decided_at: None,
         consumed_at: None,
+        sign_in_epoch: None,
     };
     if let Err(e) = store.insert_request(&request).await {
         tracing::error!(error = %e, "storing an OAuth authorization request failed");
@@ -521,6 +522,14 @@ pub async fn approve_request(
     Json(body): Json<ApproveOAuthRequest>,
 ) -> Result<Json<OAuthRedirect>, ConsentError> {
     let user_id = browser_user(&ctx)?;
+    // The approving session's sign-in epoch, recorded with the code: a reset,
+    // deactivation or password change that commits while this approval
+    // decides leaves the code refused at its redemption (review round 4,
+    // finding 2).
+    let sign_in_epoch = match ctx.session_id.as_deref() {
+        Some(sid) => state.db.session_epoch(sid).await?.ok_or(ConsentError::SessionRequired)?,
+        None => return Err(ConsentError::SessionRequired),
+    };
     let (store, request) = pending(&state, &id).await?;
     let role = state.db.get_membership(&body.org_id, user_id).await?.ok_or(ConsentError::NotAMember)?;
     if let Some(app_id) = &body.app_id {
@@ -548,6 +557,7 @@ pub async fn approve_request(
         code_hash: sha256_hex(&code),
         code_expires_at: now + CODE_TTL,
         at: now,
+        sign_in_epoch,
     };
     if !store.decide_request(&id, decision).await? {
         return Err(ConsentError::Decided);

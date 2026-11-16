@@ -1,0 +1,19 @@
+POST /ent/v2/img2video · vidu2.0
+Body parameters
+model | string | Required | vidu2.0
+images | string | Required | 1 1:4 4:1 50 10
+prompt | string | Optional | 2000
+audio | boolean | Optional | 
+voice_id | string | Optional | 
+is_rec | boolean | Optional | true 1 false 10
+duration | integer | Optional | 4 4 8
+seed | integer | Optional | 0
+resolution | string | Optional | 4s 360p 360p 720p 1080p 8s 720p 720p
+movement_amplitude | string | Optional | auto auto small medium large
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false truefalse true false 48
+watermark | boolean | Optional | true false
+wm_position | integer | Optional | 1 2 3 4 3
+wm_url | string | Optional | 
+meta_data | string | Optional | 
+callback_url | string | Optional | callback_url

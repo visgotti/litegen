@@ -107,6 +107,7 @@ async fn seed_user(db: &SqliteDatabase, email: &str) -> Sess {
         updated_at: chrono::Utc::now(),
         last_login_at: None,
         is_active: true,
+        sign_in_epoch: 0,
     };
     db.create_user(&user).await.unwrap();
     let token = generate_session_token();
@@ -1090,6 +1091,82 @@ async fn provider_configs_store_encrypted_secrets_and_never_return_them() {
     assert_eq!(send(&fx.app, "DELETE", "/v1/admin/providers/openai", Auth::Bearer(MASTER), None, &[]).await.0, StatusCode::NOT_FOUND);
 }
 
+/// N1 (leftovers 2026-11-14): a provider's extra headers carry a gateway's
+/// own auth (`cf-aig-authorization`), and the provider view shows only their
+/// names. The `provider.configure` audit entry kept their values, and the
+/// audit log is read more widely than the providers are: until item 11
+/// (2026-11-15) the default org's Owners and Admins read the hosted master
+/// key's entries, and backups and CSV exports keep them. The entry keeps each
+/// header's name and never its value, in the JSON list and the CSV export
+/// that the master key reads in hosted mode.
+#[tokio::test]
+async fn the_audit_log_keeps_provider_header_names_but_never_their_values() {
+    let fx = fixture().await;
+    let token = "cf-aig-token-5521-very-secret";
+    let headers = json!({ "cf-aig-authorization": format!("Bearer {token}"), "x-team": "growth" });
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(json!({ "extra_headers": headers, "api_base": "https://gateway.example/v1" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // The entry is written in the background.
+    let mut entry = Value::Null;
+    for _ in 0..200 {
+        let (s, page) = send(&fx.app, "GET", "/v1/audit?action=provider.configure", Auth::Bearer(MASTER), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{page}");
+        if page["total"] == 1 {
+            entry = page["data"][0].clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(entry["target_id"], "mock", "the master key reads its entry: {entry}");
+    let after: Value = serde_json::from_str(entry["after_json"].as_str().expect("the entry records the settings")).unwrap();
+    assert_eq!(after["extra_headers"], json!({ "cf-aig-authorization": "[redacted]", "x-team": "[redacted]" }), "{entry}");
+    assert_eq!(after["api_base"], "https://gateway.example/v1", "the rest of the settings stay as they are");
+
+    let (s, csv) = send(&fx.app, "GET", "/v1/audit?format=csv", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    let csv = csv.as_str().expect("a CSV body");
+    assert!(csv.contains("provider.configure") && csv.contains("cf-aig-authorization"), "{csv}");
+    assert!(!csv.contains(token) && !csv.contains("growth"), "no header value in the export: {csv}");
+}
+
+/// N1 follow-up (2026-11-14): an alert webhook URL can carry its secret in
+/// the path (Slack, Discord) or in the host (Pipedream, an AWS Lambda
+/// function URL). `GET /v1/admin/settings` shows it to the gateway's admins
+/// only, but the `settings.update` audit entry is read more widely: until
+/// item 11 (2026-11-15) by the default org's Owners and Admins, and by
+/// whoever holds a backup or a CSV export. The entry says the URL was set,
+/// as `[redacted]`, and keeps none of it.
+#[tokio::test]
+async fn the_audit_log_never_keeps_the_alert_webhook_url() {
+    let fx = fixture().await;
+    let secret = "eo3secret77";
+    let url = format!("https://{secret}.m.pipedream.net/hook?token=abc");
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "alert_webhook_url": url, "cost_markup_percent": 12.5 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // The entry is written in the background.
+    let mut entry = Value::Null;
+    for _ in 0..200 {
+        let (s, page) = send(&fx.app, "GET", "/v1/audit?action=settings.update", Auth::Bearer(MASTER), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{page}");
+        if page["total"] == 1 {
+            entry = page["data"][0].clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let after: Value = serde_json::from_str(entry["after_json"].as_str().expect("the entry records the settings")).unwrap();
+    assert_eq!(after["alert_webhook_url"], "[redacted]", "{entry}");
+    assert_eq!(after["cost_markup_percent"], 12.5, "the rest of the settings stay as they are");
+
+    let (s, csv) = send(&fx.app, "GET", "/v1/audit?format=csv", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    let csv = csv.as_str().expect("a CSV body");
+    assert!(csv.contains("settings.update") && csv.contains("[redacted]"), "{csv}");
+    assert!(!csv.contains(secret) && !csv.contains("pipedream"), "no part of the URL in the export: {csv}");
+}
+
 #[tokio::test]
 async fn provider_config_validation_and_enable_switch() {
     let fx = fixture().await; // no secrets key
@@ -1112,6 +1189,623 @@ async fn provider_config_validation_and_enable_switch() {
     let (_, v) = send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(json!({ "enabled": true })), &[]).await;
     assert_eq!(v["active"], true);
     assert_eq!(generate(&fx.app, &fx.gen_key.raw, FREE, &[]).await.0, StatusCode::OK);
+}
+
+/// provider-secrets (2026-11-15): today's PUT rule, held once the header
+/// values are kept with the encrypted keys. Each PUT replaces the settings
+/// whole: sent, `extra_headers` replaces the whole map; left out, the runtime
+/// headers are gone (the env/YAML ones apply again). Only the keys, left out,
+/// keep their stored value.
+#[tokio::test]
+async fn a_put_replaces_the_extra_headers_and_one_without_them_drops_them() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let put = |body: Value| send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(body), &[]);
+    let (s, v) = put(json!({ "api_key": "sk-provider-key-5521", "extra_headers": { "x-a": "1", "x-b": "2" } })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    let (s, v) = put(json!({ "extra_headers": { "x-b": "3" } })).await;
+    assert_eq!((s, &v["extra_header_names"]), (StatusCode::OK, &json!(["x-b"])), "sent, the map is replaced: {v}");
+    let live = fx.state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), vec![("x-b".to_string(), "3".to_string())]);
+    assert_eq!(live.api_key, "sk-provider-key-5521", "the key, left out, is kept");
+
+    let (s, v) = put(json!({ "api_base": "https://gateway.example/v1" })).await;
+    assert_eq!((s, &v["extra_header_names"]), (StatusCode::OK, &json!([])), "left out, the runtime headers are gone: {v}");
+    assert!(fx.state.router.registry.registered_config("openai").await.unwrap().extra_headers.is_empty());
+}
+
+/// provider-secrets (2026-11-15): an extra header's value can be a gateway's
+/// own auth (`cf-aig-authorization`, `Helicone-Auth`), but it was stored in
+/// plain text in `provider_configs.settings_json` while the keys beside it
+/// were encrypted, so a database dump, a backup or a read replica held it.
+/// With a secrets key set and `encrypt_provider_credentials` on (since
+/// provider-config, the key alone no longer does it), the row keeps each
+/// header's name with `[redacted]`, and the provider still sends the value,
+/// after a restart too.
+#[tokio::test]
+async fn with_encryption_on_extra_header_values_are_stored_encrypted() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    let token = "cf-aig-token-8842-very-secret";
+    let headers = json!({ "cf-aig-authorization": format!("Bearer {token}"), "x-team": "growth" });
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(json!({ "api_key": "sk-provider-key-8842", "extra_headers": headers })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["extra_header_names"], json!(["cf-aig-authorization", "x-team"]));
+
+    let row = fx.db.management().unwrap().get_provider_config("openai").await.unwrap().unwrap();
+    let stored: Value = serde_json::from_str(&row.settings_json).unwrap();
+    assert_eq!(stored["extra_headers"], json!({ "cf-aig-authorization": "[redacted]", "x-team": "[redacted]" }), "{}", row.settings_json);
+
+    let sent = vec![("cf-aig-authorization".to_string(), format!("Bearer {token}")), ("x-team".to_string(), "growth".to_string())];
+    let live = fx.state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), sent, "the provider sends the values");
+    let restarted = build_state(fx.db.clone(), Mode::Hosted, Some([7u8; 32])).await;
+    crate::management::runtime::apply_at_boot(&restarted).await.unwrap();
+    let live = restarted.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), sent, "and does after a restart");
+}
+
+/// What this thread logs, at every level, while the guard lives (a
+/// `#[tokio::test]` runs on one thread), with the process-wide subscriber held
+/// first so no callsite a test wants is off (`util::test_logs`).
+#[derive(Clone, Default)]
+struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Logs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for Logs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+    type Writer = Logs;
+    fn make_writer(&'a self) -> Logs {
+        self.clone()
+    }
+}
+
+fn capture_logs() -> (Logs, tracing::subscriber::DefaultGuard) {
+    crate::util::test_logs::hold_process_subscriber();
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
+    (logs, tracing::subscriber::set_default(subscriber))
+}
+
+/// provider-secrets (2026-11-15): without a secrets key, the admin API takes
+/// extra headers as before and stores their values as set, in plain text,
+/// and the provider sends them. Each start names the configs that keep
+/// values in plain text and the variable that changes it, never a value.
+#[tokio::test]
+async fn without_a_secrets_key_header_values_stay_as_set_and_each_start_warns() {
+    let fx = fixture().await; // no secrets key
+    let headers = json!({ "Helicone-Auth": "Bearer plain-token-3317" });
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(json!({ "extra_headers": headers })), &[]).await;
+    assert_eq!((s, &v["extra_header_names"]), (StatusCode::OK, &json!(["Helicone-Auth"])), "{v}");
+    let row = fx.db.management().unwrap().get_provider_config("mock").await.unwrap().unwrap();
+    assert_eq!((row.ciphertext, serde_json::from_str::<Value>(&row.settings_json).unwrap()), (None, json!({ "extra_headers": headers })));
+
+    let (logs, _guard) = capture_logs();
+    let restarted = build_state(fx.db.clone(), Mode::Hosted, None).await;
+    crate::management::runtime::apply_at_boot(&restarted).await.unwrap();
+    let text = logs.text();
+    let warning = text.lines().find(|l| l.contains("WARN") && l.contains("LITEGEN__SECRETS_KEY")).unwrap_or_else(|| panic!("no warning names LITEGEN__SECRETS_KEY: {text}"));
+    assert!(warning.contains("mock") && warning.contains("plain text"), "it names the provider: {warning}");
+    assert!(!text.contains("plain-token-3317"), "and never a value: {text}");
+    let live = restarted.router.registry.registered_config("mock").await.unwrap();
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), vec![("Helicone-Auth".to_string(), "Bearer plain-token-3317".to_string())]);
+}
+
+/// provider-secrets (2026-11-15): an api_base can carry a credential in its
+/// user info (`https://user:pass@proxy`, a proxy's basic auth). The provider
+/// view showed it whole; it shows `[redacted]` in its place, and the
+/// provider still calls the whole URL.
+#[tokio::test]
+async fn the_provider_view_shows_an_api_bases_user_info_as_redacted() {
+    let fx = fixture().await;
+    let base = "https://proxy-user:proxy-pass-4410@gateway.example/v1";
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(json!({ "api_base": base })), &[]).await;
+    assert_eq!((s, v["api_base"].as_str()), (StatusCode::OK, Some("https://[redacted]@gateway.example/v1")), "{v}");
+    let (_, list) = send(&fx.app, "GET", "/v1/admin/providers", Auth::Bearer(MASTER), None, &[]).await;
+    let text = list.to_string();
+    assert!(!text.contains("proxy-pass-4410") && !text.contains("proxy-user"), "{text}");
+    let live = fx.state.router.registry.registered_config("mock").await.unwrap();
+    assert_eq!(live.api_base.as_deref(), Some(base), "the provider calls the whole URL");
+}
+
+/// provider-secrets (2026-11-15): the dashboard's Configure form fills its
+/// API base field from the view and sends it back with every save. Sent back
+/// as shown, with `[redacted]` for the user info, the api_base in force stays
+/// whole; any other api_base is taken as sent.
+#[tokio::test]
+async fn an_api_base_sent_back_as_shown_keeps_its_user_info() {
+    let fx = fixture().await;
+    let put = |body: Value| send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]);
+    let api_base = || async { fx.state.router.registry.registered_config("mock").await.unwrap().api_base };
+    let base = "https://proxy-user:proxy-pass-4410@gateway.example/v1";
+    assert_eq!(put(json!({ "api_base": base })).await.0, StatusCode::OK);
+    let (s, v) = put(json!({ "api_base": "https://[redacted]@gateway.example/v1", "enabled": true })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(api_base().await.as_deref(), Some(base), "sent back as shown, the URL in force stays");
+    assert_eq!(put(json!({ "api_base": "https://gateway.example/v2" })).await.0, StatusCode::OK);
+    assert_eq!(api_base().await.as_deref(), Some("https://gateway.example/v2"), "another api_base is taken as sent");
+}
+
+/// provider-secrets (2026-11-15): an api_base that keeps the view's
+/// `[redacted]` for its user info but isn't the one in force (a path edited
+/// on the dashboard) would send `[redacted]` to the proxy as the user name.
+/// It is refused, naming the field, and the URL in force stays.
+#[tokio::test]
+async fn an_edited_api_base_that_keeps_redacted_user_info_is_refused() {
+    let fx = fixture().await;
+    let put = |body: Value| send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]);
+    let base = "https://proxy-user:proxy-pass-4410@gateway.example/v1";
+    assert_eq!(put(json!({ "api_base": base })).await.0, StatusCode::OK);
+    let (s, b) = put(json!({ "api_base": "https://[redacted]@gateway.example/v2" })).await;
+    assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "invalid_provider_config"), "{b}");
+    assert!(b["error"]["message"].as_str().unwrap_or("").contains("api_base"), "{b}");
+    assert_eq!(fx.state.router.registry.registered_config("mock").await.unwrap().api_base.as_deref(), Some(base), "the URL in force stays");
+}
+
+/// provider-config (2026-11-15): a URL in `options` (fal's
+/// `platform_api_base`, Bedrock's `s3_api_base`) can carry a credential in
+/// its user info as an api_base can, and the provider view showed it whole.
+/// It shows `[redacted]` in its place, and the provider still calls the
+/// whole URL.
+#[tokio::test]
+async fn the_provider_view_shows_the_user_info_of_option_urls_as_redacted() {
+    let fx = fixture().await;
+    let url = "https://fal-user:fal-pass-5562@proxy.example/fal-platform";
+    let body = json!({ "options": { "platform_api_base": url, "retries": 2 } });
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]).await;
+    assert_eq!((s, &v["options"]), (StatusCode::OK, &json!({ "platform_api_base": "https://[redacted]@proxy.example/fal-platform", "retries": 2 })), "{v}");
+    let (_, list) = send(&fx.app, "GET", "/v1/admin/providers", Auth::Bearer(MASTER), None, &[]).await;
+    assert!(!list.to_string().contains("fal-pass-5562"), "{list}");
+    let live = fx.state.router.registry.registered_config("mock").await.unwrap();
+    assert_eq!(live.options.map(|o| o["platform_api_base"].clone()), Some(json!(url)), "the provider calls the whole URL");
+}
+
+/// provider-config (2026-11-15): options sent back as the view shows them
+/// keep each URL in force, user info included, as an api_base does; an
+/// option URL that keeps `[redacted]` for its user info but isn't the one in
+/// force is refused, naming the option.
+#[tokio::test]
+async fn an_option_url_sent_back_as_shown_keeps_its_user_info_and_an_edited_one_is_refused() {
+    let fx = fixture().await;
+    let put = |body: Value| send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]);
+    let url = "https://fal-user:fal-pass-5562@proxy.example/fal-platform";
+    let option = || async { fx.state.router.registry.registered_config("mock").await.unwrap().options.map(|o| o["platform_api_base"].clone()) };
+    assert_eq!(put(json!({ "options": { "platform_api_base": url } })).await.0, StatusCode::OK);
+    let (s, v) = put(json!({ "options": { "platform_api_base": "https://[redacted]@proxy.example/fal-platform" } })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(option().await, Some(json!(url)), "sent back as shown, the URL in force stays");
+    let (s, b) = put(json!({ "options": { "platform_api_base": "https://[redacted]@other.example/fal-platform" } })).await;
+    assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "invalid_provider_config"), "{b}");
+    assert!(b["error"]["message"].as_str().unwrap_or("").contains("options.platform_api_base"), "{b}");
+    assert_eq!(option().await, Some(json!(url)), "the URL in force stays");
+}
+
+// ─── Gateway admin: provider credentials at rest ────────────────────────────
+
+/// Turn `encrypt_provider_credentials` on or off with a save of the gateway
+/// settings, as an operator does.
+async fn switch_encryption(fx: &Fx, on: bool) -> (StatusCode, Value) {
+    send(&fx.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "encrypt_provider_credentials": on })), &[]).await
+}
+
+/// A row as versions before 2026-11-15 read it (dfdfda7's `decrypt_secrets`
+/// and `parse_settings`): its ciphertext decrypted, which they parse as the
+/// keys, and `settings_json` as stored.
+fn as_older_versions_read(row: &StoredProviderConfig) -> (Option<String>, Value) {
+    let keys = row.ciphertext.as_deref().zip(row.nonce.as_deref()).map(|(ct, nonce)| {
+        String::from_utf8(crate::auth::secrets::decrypt(&[7u8; 32], ct, nonce).expect("the row's secrets decrypt")).unwrap()
+    });
+    (keys, serde_json::from_str(&row.settings_json).expect("settings_json is JSON"))
+}
+
+/// What a version before 2026-11-15 encrypts for an API key alone.
+fn keys_alone(api_key: &str) -> Option<String> {
+    Some(serde_json::to_string(&ProviderSecrets { api_key: Some(api_key.to_string()), ..Default::default() }).unwrap())
+}
+
+/// Settings with one credential of each kind, which a version before
+/// 2026-11-15 reads from `settings_json` and sends: a header's value, an
+/// api_base's user info and an option URL's.
+fn credentials_6631() -> Value {
+    json!({
+        "api_base": "https://proxy-user:proxy-pass-6631@gateway.example/v1",
+        "extra_headers": { "cf-aig-authorization": "Bearer cf-aig-token-6631" },
+        "options": { "platform_api_base": "https://fal-user:fal-pass-6631@proxy.example/fal-platform" },
+    })
+}
+
+/// A stored provider row's provider, ciphertext, nonce, settings_json and updated_at.
+type RowColumns = (String, Option<String>, Option<String>, String, chrono::DateTime<chrono::Utc>);
+
+/// Every stored provider row's columns, by provider, to show what a step rewrote.
+async fn provider_rows(fx: &Fx) -> Vec<RowColumns> {
+    let rows = fx.db.management().unwrap().list_provider_configs().await.unwrap();
+    let mut rows: Vec<_> = rows.into_iter().map(|r| (r.provider, r.ciphertext, r.nonce, r.settings_json, r.updated_at)).collect();
+    rows.sort();
+    rows
+}
+
+/// provider-config (2026-11-15, review #1): with `encrypt_provider_credentials`
+/// off, the default, a save stores the row exactly as versions before
+/// 2026-11-15 did, so an older replica (a rolling upgrade, a rollback) reads
+/// it whole: the ciphertext holds the keys alone and `settings_json` the
+/// settings as set. Under provider-secrets' rule a secrets key alone
+/// encrypted the header values, and an older replica then sent `[redacted]`.
+#[tokio::test]
+async fn with_encryption_off_a_save_stores_the_row_as_older_versions_read_it() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let settings = credentials_6631();
+    let mut body = settings.clone();
+    body["api_key"] = json!("sk-provider-key-6631");
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(body), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let row = fx.db.management().unwrap().get_provider_config("openai").await.unwrap().unwrap();
+    assert_eq!(as_older_versions_read(&row), (keys_alone("sk-provider-key-6631"), settings));
+}
+
+/// provider-config (2026-11-15): turning `encrypt_provider_credentials` on
+/// encrypts the credentials of every stored row once, on the replica that
+/// takes the save: each header's value and the user info of api_base and of
+/// option URLs go into the ciphertext, and the row keeps `[redacted]` in
+/// their place and its `updated_at` (the config is the same). The provider
+/// still sends the values, after a restart too. Saving the settings again
+/// finds nothing to change and rewrites nothing.
+#[tokio::test]
+async fn turning_encryption_on_encrypts_the_stored_credentials_once() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let mut openai = credentials_6631();
+    openai["api_key"] = json!("sk-provider-key-6631");
+    for (name, body) in [("openai", openai), ("mock", json!({ "extra_headers": { "Helicone-Auth": "Bearer helicone-token-6631" } }))] {
+        let (s, v) = send(&fx.app, "PUT", &format!("/v1/admin/providers/{name}"), Auth::Bearer(MASTER), Some(body), &[]).await;
+        assert_eq!(s, StatusCode::OK, "{name}: {v}");
+    }
+    let plain = provider_rows(&fx).await;
+
+    let (s, v) = switch_encryption(&fx, true).await;
+    assert_eq!((s, &v["settings"]["encrypt_provider_credentials"]), (StatusCode::OK, &json!(true)), "{v}");
+    let sealed = provider_rows(&fx).await;
+    for ((name, _, _, settings_json, updated_at), (_, _, _, _, was)) in sealed.iter().zip(&plain) {
+        for secret in ["cf-aig-token-6631", "proxy-pass-6631", "fal-pass-6631", "helicone-token-6631"] {
+            assert!(!settings_json.contains(secret), "{name}: {settings_json}");
+        }
+        assert!(settings_json.contains("[redacted]"), "{name} keeps each name: {settings_json}");
+        assert_eq!(updated_at, was, "{name}: the config itself is unchanged");
+    }
+    let openai_row: Value = serde_json::from_str(&sealed.iter().find(|r| r.0 == "openai").unwrap().3).unwrap();
+    assert_eq!(openai_row["api_base"], "https://[redacted]@gateway.example/v1");
+    assert_eq!(openai_row["options"]["platform_api_base"], "https://[redacted]@proxy.example/fal-platform");
+
+    let sends_the_values = |state: Arc<AppState>| async move {
+        let openai = state.router.registry.registered_config("openai").await.unwrap();
+        assert_eq!(crate::management::runtime::sorted(&openai.extra_headers), vec![("cf-aig-authorization".to_string(), "Bearer cf-aig-token-6631".to_string())]);
+        assert_eq!(openai.api_base.as_deref(), Some("https://proxy-user:proxy-pass-6631@gateway.example/v1"));
+        assert_eq!(openai.options.as_ref().map(|o| o["platform_api_base"].clone()), Some(json!("https://fal-user:fal-pass-6631@proxy.example/fal-platform")));
+        assert_eq!(openai.api_key, "sk-provider-key-6631");
+        let mock = state.router.registry.registered_config("mock").await.unwrap();
+        assert_eq!(crate::management::runtime::sorted(&mock.extra_headers), vec![("Helicone-Auth".to_string(), "Bearer helicone-token-6631".to_string())]);
+    };
+    sends_the_values(fx.state.clone()).await;
+    let restarted = build_state(fx.db.clone(), Mode::Hosted, Some([7u8; 32])).await;
+    crate::management::runtime::apply_at_boot(&restarted).await.unwrap();
+    sends_the_values(restarted).await;
+
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    assert_eq!(provider_rows(&fx).await, sealed, "a second save rewrote a row (encrypting again draws a new nonce)");
+}
+
+/// provider-config (2026-11-15): turning `encrypt_provider_credentials` off,
+/// here with a save of the settings that leaves it out, stores every row as
+/// versions before 2026-11-15 read them, the step before a rollback: the
+/// values back in `settings_json`, the keys alone in the ciphertext,
+/// `updated_at` kept. The provider goes on sending the same values.
+#[tokio::test]
+async fn turning_encryption_off_stores_the_rows_as_older_versions_read_them() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    let settings = credentials_6631();
+    let mut body = settings.clone();
+    body["api_key"] = json!("sk-provider-key-6631");
+    assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(body), &[]).await.0, StatusCode::OK);
+    let sealed = fx.db.management().unwrap().get_provider_config("openai").await.unwrap().unwrap();
+    assert!(!sealed.settings_json.contains("cf-aig-token-6631"), "stored encrypted first: {}", sealed.settings_json);
+
+    // As the dashboard turns it off: `null`.
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cost_markup_percent": 5.0, "encrypt_provider_credentials": null })), &[]).await;
+    assert_eq!((s, &v["settings"]["encrypt_provider_credentials"]), (StatusCode::OK, &Value::Null), "{v}");
+    let row = fx.db.management().unwrap().get_provider_config("openai").await.unwrap().unwrap();
+    assert_eq!(as_older_versions_read(&row), (keys_alone("sk-provider-key-6631"), settings));
+    assert_eq!(row.updated_at, sealed.updated_at, "the config itself is unchanged");
+    let live = fx.state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), vec![("cf-aig-authorization".to_string(), "Bearer cf-aig-token-6631".to_string())]);
+}
+
+/// provider-config follow-up (2026-11-15): unlike the other gateway settings,
+/// `encrypt_provider_credentials` left out of a save keeps its stored value.
+/// A client written before the field existed saves the settings without it,
+/// and that save turned the encryption off and stored every credential in
+/// plain text again, without a word. Only `null` or `false` turns it off.
+#[tokio::test]
+async fn a_settings_save_that_leaves_the_encryption_out_keeps_it() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    let body = json!({ "extra_headers": { "Helicone-Auth": "Bearer helicone-token-7302" } });
+    assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]).await.0, StatusCode::OK);
+    let sealed = provider_rows(&fx).await;
+
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cost_markup_percent": 5.0 })), &[]).await;
+    assert_eq!((s, &v["settings"]["encrypt_provider_credentials"]), (StatusCode::OK, &json!(true)), "{v}");
+    assert_eq!(provider_rows(&fx).await, sealed, "the rows stay encrypted");
+}
+
+/// provider-config (2026-11-15): with the credentials encrypted, the row
+/// keeps `https://[redacted]@host/v1` for an api_base with user info, so the
+/// URL in force is the one the ciphertext holds. A dashboard save that sends
+/// the shown api_base back keeps that URL whole, and the provider goes on
+/// calling it.
+#[tokio::test]
+async fn with_encryption_on_an_api_base_sent_back_as_shown_keeps_its_user_info() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    let put = |body: Value| send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]);
+    let base = "https://proxy-user:proxy-pass-2290@gateway.example/v1";
+    assert_eq!(put(json!({ "api_base": base })).await.0, StatusCode::OK);
+    let (s, v) = put(json!({ "api_base": "https://[redacted]@gateway.example/v1", "enabled": true })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(fx.state.router.registry.registered_config("mock").await.unwrap().api_base.as_deref(), Some(base), "the URL in force stays");
+    let row = fx.db.management().unwrap().get_provider_config("mock").await.unwrap().unwrap();
+    assert!(!row.settings_json.contains("proxy-pass-2290"), "and stays encrypted: {}", row.settings_json);
+}
+
+/// provider-config (2026-11-15): a save on a replica that hasn't heard of a
+/// switch yet still ends as the stored setting says. The switch's pass may
+/// have read the rows before this save wrote its own, so the save reads the
+/// setting again after its write and stores its row again when the setting
+/// changed meanwhile. Otherwise a save racing a switch to off would leave an
+/// encrypted row behind for a rollback.
+#[tokio::test]
+async fn a_save_that_races_the_switch_ends_as_the_stored_setting_says() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let store = fx.db.management().unwrap();
+    let stored_headers = || async { serde_json::from_str::<Value>(&store.get_provider_config("mock").await.unwrap().unwrap().settings_json).unwrap()["extra_headers"].clone() };
+    let headers = json!({ "Helicone-Auth": "Bearer race-token-3301" });
+    let put = || send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(json!({ "extra_headers": headers })), &[]);
+
+    // This replica still holds "on"; another one has just stored "off".
+    fx.state.router.update_overrides(|o| o.gateway.encrypt_provider_credentials = Some(Some(true)));
+    store.set_setting(crate::management::runtime::SETTINGS_KEY, "{}").await.unwrap();
+    assert_eq!(put().await.0, StatusCode::OK);
+    assert_eq!(stored_headers().await, headers, "stored as older versions read it");
+
+    // The other way round: this replica still holds "off"; the stored setting is "on".
+    fx.state.router.update_overrides(|o| o.gateway.encrypt_provider_credentials = None);
+    store.set_setting(crate::management::runtime::SETTINGS_KEY, r#"{"encrypt_provider_credentials":true}"#).await.unwrap();
+    assert_eq!(put().await.0, StatusCode::OK);
+    assert_eq!(stored_headers().await, json!({ "Helicone-Auth": "[redacted]" }), "stored encrypted");
+    let live = fx.state.router.registry.registered_config("mock").await.unwrap();
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), vec![("Helicone-Auth".to_string(), "Bearer race-token-3301".to_string())]);
+}
+
+/// provider-config (2026-11-15): two saves of the settings that switch the
+/// encryption opposite ways at once. Each stores the rows after it stored its
+/// setting, and the later pass may be the one whose setting lost, which left
+/// the rows otherwise than the setting that stands, encrypted while it is off
+/// in the worst case, which an older version can't read. So a pass reads the
+/// setting again when it ends and passes again for the one that stands. Here
+/// this save stored "on" and another one has since stored "off": the rows end
+/// as older versions read them.
+#[tokio::test]
+async fn after_two_saves_at_once_the_rows_follow_the_setting_that_stands() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let headers = json!({ "Helicone-Auth": "Bearer helicone-token-6120" });
+    assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(json!({ "extra_headers": headers })), &[]).await.0, StatusCode::OK);
+    let store = fx.db.management().unwrap();
+    store.set_setting(crate::management::runtime::SETTINGS_KEY, "{}").await.unwrap();
+
+    let (stored, _) = crate::management::runtime::store_configs_after_save(&fx.state, store, true).await.unwrap();
+    let row = store.get_provider_config("mock").await.unwrap().unwrap();
+    assert_eq!((stored, serde_json::from_str::<Value>(&row.settings_json).unwrap()["extra_headers"].clone()), (false, headers));
+}
+
+/// provider-config (2026-11-15): encrypting provider credentials needs the
+/// secrets key, so turning it on without one is refused and nothing is
+/// stored.
+#[tokio::test]
+async fn encrypting_provider_credentials_needs_a_secrets_key() {
+    let fx = fixture().await; // no secrets key
+    let (s, b) = switch_encryption(&fx, true).await;
+    assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "secrets_key_missing"), "{b}");
+    assert!(b["error"]["message"].as_str().unwrap_or("").contains("LITEGEN__SECRETS_KEY"), "{b}");
+    let (_, v) = send(&fx.app, "GET", "/v1/admin/settings", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(v["settings"]["encrypt_provider_credentials"], Value::Null, "{v}");
+}
+
+/// provider-config (2026-11-15): a save that switches the encryption logs one
+/// line and writes one audit entry saying how many configs it stored again,
+/// and which, never a value.
+#[tokio::test]
+async fn switching_encryption_logs_and_audits_how_many_configs_were_stored_again() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    for name in ["mock", "openai"] {
+        let body = json!({ "api_key": "sk-provider-key-4471", "extra_headers": { "x-gateway-token": "token-4471" } });
+        assert_eq!(send(&fx.app, "PUT", &format!("/v1/admin/providers/{name}"), Auth::Bearer(MASTER), Some(body), &[]).await.0, StatusCode::OK);
+    }
+    let (logs, _guard) = capture_logs();
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    let entry = wait_for_audit(&fx.db, "provider.encrypt_credentials").await;
+    let after: Value = serde_json::from_str(entry.after_json.as_deref().expect("the entry says what was done")).unwrap();
+    assert_eq!(after, json!({ "encrypt_provider_credentials": true, "configs_stored_again": 2, "providers": ["mock", "openai"] }));
+    let text = logs.text();
+    let line = text.lines().find(|l| l.contains("encrypt_provider_credentials") && l.contains("stored again")).unwrap_or_else(|| panic!("no line says what the switch did: {text}"));
+    assert!(line.contains("configs_stored_again=2"), "{line}");
+    assert!(!text.contains("token-4471"), "never a value: {text}");
+
+    assert_eq!(switch_encryption(&fx, false).await.0, StatusCode::OK);
+    let entry = wait_for_audit(&fx.db, "provider.decrypt_credentials").await;
+    let after: Value = serde_json::from_str(entry.after_json.as_deref().expect("the entry says what was done")).unwrap();
+    assert_eq!(after, json!({ "encrypt_provider_credentials": false, "configs_stored_again": 2, "providers": ["mock", "openai"] }));
+}
+
+// ─── Gateway admin: PATCH a provider ────────────────────────────────────────
+
+async fn patch_provider(fx: &Fx, name: &str, body: Value) -> (StatusCode, Value) {
+    send(&fx.app, "PATCH", &format!("/v1/admin/providers/{name}"), Auth::Bearer(MASTER), Some(body), &[]).await
+}
+
+/// provider-config (2026-11-15, a customer's bug): the dashboard's Configure
+/// form sends only the key, the api_base and the enabled flag, and a PUT
+/// replaces the settings whole, so each dashboard save dropped the
+/// extra_headers, model_mapping, options and region set through the API.
+/// A PATCH sets what it sends and keeps every field it leaves out, and its
+/// audit entry records the config it leaves, header values redacted.
+#[tokio::test]
+async fn a_patch_keeps_what_it_does_not_send() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let full = json!({
+        "api_key": "sk-provider-key-1180",
+        "api_base": "https://gateway.example/v1",
+        "model_mapping": { "openai/gpt-image-2": "my-deployment" },
+        "extra_headers": { "cf-aig-authorization": "Bearer cf-aig-token-1180" },
+        "options": { "platform_api_base": "https://gateway.example/platform" },
+        "region": "eu-west-1",
+    });
+    assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(full), &[]).await.0, StatusCode::OK);
+
+    // As the dashboard's Configure form saves: a new key, the api_base, enabled.
+    let (s, v) = patch_provider(&fx, "openai", json!({ "api_key": "sk-provider-key-2290", "api_base": "https://gateway.example/v2", "enabled": true })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["api_base"].as_str(), v["region"].as_str(), &v["extra_header_names"], &v["model_mapping"], &v["options"]),
+        (
+            Some("https://gateway.example/v2"),
+            Some("eu-west-1"),
+            &json!(["cf-aig-authorization"]),
+            &json!({ "openai/gpt-image-2": "my-deployment" }),
+            &json!({ "platform_api_base": "https://gateway.example/platform" })
+        ),
+        "{v}"
+    );
+    let live = fx.state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!(live.api_key, "sk-provider-key-2290");
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), vec![("cf-aig-authorization".to_string(), "Bearer cf-aig-token-1180".to_string())]);
+    assert_eq!(live.credentials.region.as_deref(), Some("eu-west-1"));
+
+    let mut audited = Vec::new();
+    for _ in 0..200 {
+        let (_, page) = send(&fx.app, "GET", "/v1/audit?action=provider.configure", Auth::Bearer(MASTER), None, &[]).await;
+        audited = page["data"].as_array().cloned().unwrap_or_default();
+        if audited.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let after: Value = audited
+        .iter()
+        .filter_map(|e| serde_json::from_str::<Value>(e["after_json"].as_str()?).ok())
+        .find(|a| a["api_base"] == "https://gateway.example/v2")
+        .unwrap_or_else(|| panic!("no entry for the PATCH: {audited:?}"));
+    assert_eq!((&after["region"], &after["extra_headers"]), (&json!("eu-west-1"), &json!({ "cf-aig-authorization": "[redacted]" })), "{after}");
+}
+
+/// provider-config (2026-11-15): in a PATCH, `null` clears a field, so it
+/// falls back to the env/YAML config, and a field sent with a value replaces
+/// the stored one whole, a map too. A key sent as `null` keeps its stored
+/// value.
+#[tokio::test]
+async fn a_patch_clears_a_field_sent_as_null_and_keeps_a_key_sent_null() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let full = json!({
+        "api_key": "sk-provider-key-3370",
+        "region": "eu-west-1",
+        "model_mapping": { "openai/gpt-image-2": "my-deployment" },
+        "extra_headers": { "x-a": "1", "x-b": "2" },
+    });
+    assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(full), &[]).await.0, StatusCode::OK);
+    let (s, v) = patch_provider(&fx, "openai", json!({ "region": null, "extra_headers": { "x-c": "3" }, "api_key": null })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((&v["region"], &v["extra_header_names"], &v["model_mapping"]), (&Value::Null, &json!(["x-c"]), &json!({ "openai/gpt-image-2": "my-deployment" })), "{v}");
+    let live = fx.state.router.registry.registered_config("openai").await.unwrap();
+    assert_eq!(live.api_key, "sk-provider-key-3370", "a key sent null keeps its value");
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), vec![("x-c".to_string(), "3".to_string())]);
+    assert_eq!(live.credentials.region, None);
+}
+
+/// provider-config follow-up (2026-11-15): a stored key could only go with the
+/// whole runtime config (DELETE). In a PATCH, a key sent as `""` removes that
+/// key alone, so the env/YAML one applies again (here there is none, so the
+/// provider has no key and is out of service); the row keeps no ciphertext
+/// once no key is left. A PUT keeps a key sent as `""`, as before.
+#[tokio::test]
+async fn a_patch_removes_a_key_sent_as_an_empty_string_and_a_put_keeps_it() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let put = |body: Value| send(&fx.app, "PUT", "/v1/admin/providers/openai", Auth::Bearer(MASTER), Some(body), &[]);
+    assert_eq!(put(json!({ "api_key": "sk-provider-key-4410" })).await.0, StatusCode::OK);
+    let (s, v) = put(json!({ "api_key": "", "region": "eu-west-1" })).await;
+    assert_eq!((s, v["key_hint"].as_str()), (StatusCode::OK, Some("…4410")), "a PUT keeps a key sent as \"\": {v}");
+
+    let (s, v) = patch_provider(&fx, "openai", json!({ "api_key": "" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["has_secret"].as_bool(), &v["key_hint"], v["active"].as_bool(), v["region"].as_str()), (Some(false), &Value::Null, Some(false), Some("eu-west-1")), "{v}");
+    let row = fx.db.management().unwrap().get_provider_config("openai").await.unwrap().unwrap();
+    assert_eq!((row.ciphertext, row.display_hint), (None, None), "no key is left");
+    assert!(fx.state.router.registry.registered_config("openai").await.is_none(), "no key, no provider");
+}
+
+/// provider-config (2026-11-15): a PATCH of a provider with no runtime config
+/// creates one from the fields it sends, and makes PUT's checks: an unknown
+/// provider is a 404; an api_base that isn't http(s), a header litegen can't
+/// send, or an edited api_base that keeps `[redacted]` for its user info is a
+/// 400; a key with no secrets key to encrypt it is refused.
+#[tokio::test]
+async fn a_patch_creates_a_runtime_config_and_makes_the_checks_a_put_makes() {
+    let fx = fixture().await; // no secrets key
+    let (s, v) = patch_provider(&fx, "mock", json!({ "extra_headers": { "x-team": "growth" } })).await;
+    assert_eq!((s, v["source"].as_str(), &v["extra_header_names"]), (StatusCode::OK, Some("runtime"), &json!(["x-team"])), "{v}");
+    assert_eq!(patch_provider(&fx, "acme-ai", json!({})).await.0, StatusCode::NOT_FOUND);
+    for body in [
+        json!({ "api_base": "ftp://nope" }),
+        json!({ "extra_headers": { "Host": "evil.example" } }),
+        json!({ "api_base": "https://[redacted]@gateway.example/v2" }),
+    ] {
+        let (s, b) = patch_provider(&fx, "mock", body.clone()).await;
+        assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "invalid_provider_config"), "{body}: {b}");
+    }
+    let (s, b) = patch_provider(&fx, "openai", json!({ "api_key": "sk-123456789" })).await;
+    assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "secrets_key_missing"), "{b}");
+    assert_eq!(fx.state.router.registry.registered_config("mock").await.unwrap().extra_headers.get("x-team").map(String::as_str), Some("growth"), "the refused PATCHes changed nothing");
+}
+
+/// provider-config (2026-11-15): a PATCH stores its row as
+/// `encrypt_provider_credentials` says, like a PUT, the credentials it keeps
+/// included, and takes an api_base sent back as the view shows it as the
+/// one in force: the dashboard's save with the setting on.
+#[tokio::test]
+async fn a_patch_with_encryption_on_encrypts_what_it_stores() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    let base = "https://proxy-user:proxy-pass-8813@gateway.example/v1";
+    let body = json!({ "api_base": base, "extra_headers": { "Helicone-Auth": "Bearer helicone-token-8813" } });
+    assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]).await.0, StatusCode::OK);
+    let (s, v) = patch_provider(&fx, "mock", json!({ "api_base": "https://[redacted]@gateway.example/v1", "enabled": true })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let row = fx.db.management().unwrap().get_provider_config("mock").await.unwrap().unwrap();
+    assert!(!row.settings_json.contains("helicone-token-8813") && !row.settings_json.contains("proxy-pass-8813"), "{}", row.settings_json);
+    let live = fx.state.router.registry.registered_config("mock").await.unwrap();
+    assert_eq!(live.api_base.as_deref(), Some(base));
+    assert_eq!(crate::management::runtime::sorted(&live.extra_headers), vec![("Helicone-Auth".to_string(), "Bearer helicone-token-8813".to_string())]);
 }
 
 // ─── Gateway admin: routes and settings ─────────────────────────────────────
@@ -1174,6 +1868,78 @@ async fn everything_stored_is_reapplied_at_boot() {
     assert_eq!(fresh.router.cost_markup_percent(), 25.0);
     assert_eq!(fresh.router.model_routes().len(), 1);
     assert_eq!(fresh.router.registry.registered_config("openai").await.unwrap().api_key, "sk-boot-123456");
+}
+
+/// provider-config (2026-11-15, review #1): a start neither encrypts nor
+/// decrypts the stored rows; it follows the stored setting. This inverts
+/// provider-secrets' `boot_moves_header_values_an_older_version_stored_in_plain_text`:
+/// each start with a secrets key encrypted the header values stored in plain
+/// text, so an older replica that reloaded afterwards (a rolling upgrade, a
+/// rollback) sent `[redacted]` to the gateway. With the key set and
+/// `encrypt_provider_credentials` off, a start says to turn it on once every
+/// replica runs this version, naming the configs that keep credentials in
+/// plain text, never a value.
+#[tokio::test]
+async fn a_start_leaves_the_stored_rows_as_they_are_and_says_how_to_encrypt_them() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    let store = fx.db.management().unwrap();
+    let key = [7u8; 32];
+    let at = chrono::Utc::now() - chrono::Duration::days(3);
+    // As a version before 2026-11-15 stored them: the keys encrypted, the headers as set.
+    let (ciphertext, nonce) = crate::auth::secrets::encrypt(&key, br#"{"api_key":"sk-legacy-key-7781"}"#).unwrap();
+    for (provider, ciphertext, nonce, settings) in [
+        ("openai", Some(ciphertext), Some(nonce), json!({ "api_base": "https://gateway.example/v1", "extra_headers": { "cf-aig-authorization": "Bearer legacy-token-openai" } })),
+        // Headers and no key: the mock adapter needs none.
+        ("mock", None, None, json!({ "extra_headers": { "Helicone-Auth": "Bearer legacy-token-mock" } })),
+    ] {
+        let row = StoredProviderConfig { provider: provider.into(), ciphertext, nonce, display_hint: None, settings_json: settings.to_string(), created_at: at, updated_at: at };
+        store.upsert_provider_config(&row).await.unwrap();
+    }
+    let before = provider_rows(&fx).await;
+
+    let (logs, _guard) = capture_logs();
+    let booted = build_state(fx.db.clone(), Mode::Hosted, Some(key)).await;
+    crate::management::runtime::apply_at_boot(&booted).await.unwrap();
+    assert_eq!(provider_rows(&fx).await, before, "the start rewrote a row");
+    let headers = |c: crate::providers::ProviderInstanceConfig| crate::management::runtime::sorted(&c.extra_headers);
+    assert_eq!(headers(booted.router.registry.registered_config("openai").await.unwrap()), vec![("cf-aig-authorization".to_string(), "Bearer legacy-token-openai".to_string())]);
+    assert_eq!(booted.router.registry.registered_config("openai").await.unwrap().api_key, "sk-legacy-key-7781");
+    assert_eq!(headers(booted.router.registry.registered_config("mock").await.unwrap()), vec![("Helicone-Auth".to_string(), "Bearer legacy-token-mock".to_string())]);
+
+    let text = logs.text();
+    let notice = text.lines().find(|l| l.contains("encrypt_provider_credentials")).unwrap_or_else(|| panic!("no notice names encrypt_provider_credentials: {text}"));
+    assert!(notice.contains("every replica") && notice.contains("openai") && notice.contains("mock"), "{notice}");
+    assert!(!text.contains("legacy-token"), "and never a value: {text}");
+}
+
+/// provider-config (2026-11-15): rows that keep encrypted credentials while
+/// `encrypt_provider_credentials` is off (it went off without the save that
+/// stores the rows again, say a row written directly) are rows an older
+/// version can't read: it would send `[redacted]`. A start names them and
+/// says how to store them as older versions read them before a rollback,
+/// and rewrites nothing itself.
+#[tokio::test]
+async fn a_start_names_the_configs_an_older_version_could_not_read() {
+    let fx = fixture_with(Mode::Hosted, true).await;
+    assert_eq!(switch_encryption(&fx, true).await.0, StatusCode::OK);
+    let body = json!({ "extra_headers": { "Helicone-Auth": "Bearer sealed-token-5150" } });
+    assert_eq!(send(&fx.app, "PUT", "/v1/admin/providers/mock", Auth::Bearer(MASTER), Some(body), &[]).await.0, StatusCode::OK);
+    let store = fx.db.management().unwrap();
+    store.set_setting(crate::management::runtime::SETTINGS_KEY, "{}").await.unwrap();
+    let before = provider_rows(&fx).await;
+    assert!(before[0].3.contains("[redacted]"), "stored encrypted: {}", before[0].3);
+
+    let (logs, _guard) = capture_logs();
+    let booted = build_state(fx.db.clone(), Mode::Hosted, Some([7u8; 32])).await;
+    crate::management::runtime::apply_at_boot(&booted).await.unwrap();
+    assert_eq!(provider_rows(&fx).await, before, "the start rewrote a row");
+    let text = logs.text();
+    let warning = text
+        .lines()
+        .find(|l| l.contains("WARN") && l.contains("mock") && l.contains("rollback"))
+        .unwrap_or_else(|| panic!("no warning names the config an older version can't read: {text}"));
+    assert!(warning.contains("PUT /v1/admin/settings"), "it says how to store them again: {warning}");
+    assert!(!text.contains("sealed-token-5150"), "never a value: {text}");
 }
 
 // ─── Refresh: a second replica over the same database ───────────────────────
@@ -1803,6 +2569,205 @@ async fn single_tenant_the_users_page_leaves_the_default_orgs_owner_alone() {
     let (s, v) = send(&d.app, "PATCH", &format!("/v1/users/{}", d.owner.user.id), Auth::Session(&admin, None), Some(json!({ "role": "viewer" })), &[]).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     assert_eq!(d.db.get_membership(DEFAULT_ORG_ID, &d.owner.user.id).await.unwrap(), Some(Role::Owner));
+}
+
+// ─── Audit log: where an entry is filed, who reads it ───────────────────────
+//
+// Item 11 (2026-11-15). An org's Owners and Admins read the entries filed
+// under it. In hosted mode the master key acts in no org, and
+// `insert_audit_log` filed what it did there under the default org, whose
+// members read it: the gateway's providers, settings, routes and models, and
+// the accounts it changed. Those entries concern no org: they are filed
+// under none, and only the master key reads them.
+
+/// Audit entries are written in the background: wait until one for `action`
+/// is stored, wherever it is filed.
+async fn wait_for_audit(db: &SqliteDatabase, action: &str) -> crate::types::AuditLogEntry {
+    let filter = crate::types::AuditLogFilter { action: Some(action.to_string()), ..Default::default() };
+    for _ in 0..200 {
+        if let Some(entry) = db.list_audit_log(&filter, 1, 1).await.unwrap().0.pop() {
+            return entry;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("no {action} audit entry was written");
+}
+
+#[tokio::test]
+async fn hosted_the_master_keys_gateway_and_account_changes_are_not_in_the_default_orgs_log() {
+    let fx = fixture().await;
+    let reader = seed_user(&fx.db, "owner@default.test").await;
+    fx.db.add_org_member(DEFAULT_ORG_ID, &reader.user.id, Role::Owner).await.unwrap();
+    let someone = seed_user(&fx.db, "someone@else.test").await;
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cost_markup_percent": 3.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = send(&fx.app, "PATCH", &format!("/v1/users/{}", someone.user.id), Auth::Bearer(MASTER), Some(json!({ "role": "viewer" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let written = [wait_for_audit(&fx.db, "settings.update").await, wait_for_audit(&fx.db, "user.update").await];
+
+    let (s, page) = send(&fx.app, "GET", "/v1/audit", Auth::Session(&reader, Some(DEFAULT_ORG_ID)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(page["total"], 0, "the default org's Owner reads none of them: {page}");
+    let (s, csv) = send(&fx.app, "GET", "/v1/audit?format=csv", Auth::Session(&reader, Some(DEFAULT_ORG_ID)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    let csv = csv.as_str().expect("a CSV body");
+    assert!(!csv.contains("settings.update") && !csv.contains("user.update"), "nor does the export: {csv}");
+    for entry in written {
+        assert_eq!(entry.org_id, None, "{}: filed under no org", entry.action);
+    }
+}
+
+/// A hosted account that belongs to no org acts in none: its password
+/// change was filed under the default org too, naming it to that org's
+/// Owners and Admins. It is filed under no org.
+#[tokio::test]
+async fn hosted_an_account_change_by_a_person_in_no_org_is_not_in_the_default_orgs_log() {
+    let fx = fixture().await;
+    let reader = seed_user(&fx.db, "owner@default.test").await;
+    fx.db.add_org_member(DEFAULT_ORG_ID, &reader.user.id, Role::Owner).await.unwrap();
+    let loner = seed_user(&fx.db, "loner@nowhere.test").await;
+    let hash = crate::auth::password::hash_password("old-password-123").unwrap();
+    fx.db.update_user(&loner.user.id, None, None, Some(&hash)).await.unwrap();
+    let body = json!({ "current_password": "old-password-123", "new_password": "new-password-456" });
+    let (s, v) = send(&fx.app, "PATCH", "/v1/account", Auth::Session(&loner, None), Some(body), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let written = wait_for_audit(&fx.db, "account.change_password").await;
+
+    let (s, page) = send(&fx.app, "GET", "/v1/audit", Auth::Session(&reader, Some(DEFAULT_ORG_ID)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(page["total"], 0, "the default org's Owner reads none of it: {page}");
+    assert_eq!(written.org_id, None, "filed under no org");
+}
+
+/// Single-tenant: the default org is the deployment, and its Owners and
+/// Admins are the operator's people, so the master key's entries stay in its
+/// log, and the master key reads them there.
+#[tokio::test]
+async fn single_tenant_the_master_keys_gateway_changes_stay_in_the_default_orgs_log() {
+    let d = deployment().await;
+    let (s, v) = send(&d.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cost_markup_percent": 3.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let written = wait_for_audit(&d.db, "settings.update").await;
+    assert_eq!(written.org_id.as_deref(), Some(DEFAULT_ORG_ID));
+    for (who, auth) in [("the owner", Auth::Session(&d.owner, Some(DEFAULT_ORG_ID))), ("the master key", Auth::Bearer(MASTER))] {
+        let (s, page) = send(&d.app, "GET", "/v1/audit?action=settings.update", auth, None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{who}: {page}");
+        assert_eq!(page["total"], 1, "{who}: {page}");
+    }
+    let (s, csv) = send(&d.app, "GET", "/v1/audit?format=csv", Auth::Session(&d.owner, Some(DEFAULT_ORG_ID)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(csv.as_str().expect("a CSV body").contains("settings.update"), "{csv}");
+}
+
+/// The master key reads what is filed under no org, in the JSON list and the
+/// CSV export, and never an org's own entries. Anyone else who acts in no
+/// org reads none of it.
+#[tokio::test]
+async fn hosted_the_master_key_reads_the_entries_filed_under_no_org() {
+    let fx = fixture().await;
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cost_markup_percent": 3.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // An entry of the org's own: its owner sets its budget.
+    let (s, v) = send(&fx.app, "PUT", &format!("/v1/orgs/{}/limits", fx.org), Auth::Session(&fx.owner, Some(&fx.org)), Some(json!({ "max_budget_usd": 7.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    wait_for_audit(&fx.db, "settings.update").await;
+    wait_for_audit(&fx.db, "limits.update").await;
+
+    let (s, page) = send(&fx.app, "GET", "/v1/audit", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    let actions: Vec<&str> = page["data"].as_array().expect("entries").iter().map(|e| e["action"].as_str().unwrap_or("")).collect();
+    assert_eq!(actions, ["settings.update"], "only what is filed under no org: {page}");
+    assert!(page["data"][0].get("org_id").is_none(), "{page}");
+    let (s, csv) = send(&fx.app, "GET", "/v1/audit?format=csv", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    let csv = csv.as_str().expect("a CSV body");
+    assert!(csv.contains("settings.update") && !csv.contains("limits.update"), "{csv}");
+
+    let loner = seed_user(&fx.db, "loner@nowhere.test").await;
+    let (s, v) = send(&fx.app, "GET", "/v1/audit", Auth::Session(&loner, None), None, &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a person in no org: {v}");
+}
+
+/// An entry about an org's object is filed under that org, whoever made the
+/// change: its Owners read the master key's change to their budget next to
+/// their own key's changes, and the default org's Owner reads neither.
+#[tokio::test]
+async fn hosted_an_orgs_owner_reads_the_master_keys_changes_to_its_objects() {
+    let fx = fixture().await;
+    let reader = seed_user(&fx.db, "owner@default.test").await;
+    fx.db.add_org_member(DEFAULT_ORG_ID, &reader.user.id, Role::Owner).await.unwrap();
+    let (s, v) = send(&fx.app, "PUT", &format!("/v1/orgs/{}/limits", fx.org), Auth::Bearer(MASTER), Some(json!({ "max_budget_usd": 7.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = send(&fx.app, "POST", &format!("/v1/keys/{}/block", fx.gen_key.id), Auth::Bearer(&fx.admin_key.raw), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(wait_for_audit(&fx.db, "limits.update").await.org_id.as_deref(), Some(fx.org.as_str()));
+    wait_for_audit(&fx.db, "key.block").await;
+
+    let (s, page) = send(&fx.app, "GET", "/v1/audit", Auth::Session(&fx.owner, Some(&fx.org)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    let mut actions: Vec<&str> = page["data"].as_array().expect("entries").iter().map(|e| e["action"].as_str().unwrap_or("")).collect();
+    actions.sort();
+    assert_eq!(actions, ["key.block", "limits.update"], "{page}");
+    let by_master = page["data"].as_array().unwrap().iter().find(|e| e["action"] == "limits.update").unwrap();
+    assert_eq!(by_master["actor_label"], "master-key", "{page}");
+    let (s, page) = send(&fx.app, "GET", "/v1/audit", Auth::Session(&reader, Some(DEFAULT_ORG_ID)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(page["total"], 0, "{page}");
+}
+
+/// The audit actions on a page of `GET /v1/audit`.
+fn audit_actions(page: &Value) -> Vec<String> {
+    page["data"].as_array().expect("entries").iter().map(|e| e["action"].as_str().unwrap_or("").to_string()).collect()
+}
+
+/// Hosted: the master key reads one org's log with `?org_id=` (the spend
+/// endpoints' rule), in JSON and CSV; without it, what is filed under no
+/// org. Anyone else may name only the org they act in.
+#[tokio::test]
+async fn hosted_the_master_key_reads_one_orgs_log_with_org_id() {
+    let fx = fixture().await;
+    let (other_org, _) = seed_org(&fx.db, "Other").await;
+    let (s, v) = send(&fx.app, "PUT", &format!("/v1/orgs/{}/limits", fx.org), Auth::Session(&fx.owner, Some(&fx.org)), Some(json!({ "max_budget_usd": 7.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = send(&fx.app, "PUT", "/v1/admin/settings", Auth::Bearer(MASTER), Some(json!({ "cost_markup_percent": 3.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    wait_for_audit(&fx.db, "limits.update").await;
+    wait_for_audit(&fx.db, "settings.update").await;
+
+    let (s, page) = send(&fx.app, "GET", &format!("/v1/audit?org_id={}", fx.org), Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(audit_actions(&page), ["limits.update"], "the org's own: {page}");
+    let (s, csv) = send(&fx.app, "GET", &format!("/v1/audit?org_id={}&format=csv", fx.org), Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    let csv = csv.as_str().expect("a CSV body");
+    assert!(csv.contains("limits.update") && !csv.contains("settings.update"), "{csv}");
+    let (s, page) = send(&fx.app, "GET", &format!("/v1/audit?org_id={other_org}"), Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!((s, page["total"].clone()), (StatusCode::OK, json!(0)), "{page}");
+    let (_, page) = send(&fx.app, "GET", "/v1/audit", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(audit_actions(&page), ["settings.update"], "without org_id, what is filed under no org: {page}");
+
+    let (s, page) = send(&fx.app, "GET", &format!("/v1/audit?org_id={}", fx.org), Auth::Session(&fx.owner, Some(&fx.org)), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "naming one's own org: {page}");
+    assert_eq!(audit_actions(&page), ["limits.update"]);
+    for (who, auth) in [("the org's owner", Auth::Session(&fx.owner, Some(&fx.org))), ("its admin key", Auth::Bearer(&fx.admin_key.raw))] {
+        let (s, v) = send(&fx.app, "GET", &format!("/v1/audit?org_id={other_org}"), auth, None, &[]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{who} names another org: {v}");
+    }
+}
+
+/// Single-tenant: the master key acts in the default org, and reads any
+/// other org's log with `?org_id=`.
+#[tokio::test]
+async fn single_tenant_the_master_key_reads_another_orgs_log_with_org_id() {
+    let fx = fixture_with(Mode::SingleTenant, false).await;
+    let (s, v) = send(&fx.app, "PUT", &format!("/v1/orgs/{}/limits", fx.org), Auth::Session(&fx.owner, Some(&fx.org)), Some(json!({ "max_budget_usd": 7.0 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    wait_for_audit(&fx.db, "limits.update").await;
+    let (s, page) = send(&fx.app, "GET", &format!("/v1/audit?org_id={}", fx.org), Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(audit_actions(&page), ["limits.update"], "{page}");
+    let (_, page) = send(&fx.app, "GET", "/v1/audit", Auth::Bearer(MASTER), None, &[]).await;
+    assert_eq!(page["total"], 0, "without org_id, the default org's: {page}");
 }
 
 // ─── Request artifacts follow generation read rights ────────────────────────

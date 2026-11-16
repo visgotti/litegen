@@ -1,0 +1,782 @@
+## fal-ai/recraft/upscale/creative — active image-to-image
+{
+  "POST /fal-ai/recraft/upscale/creative (application/json)": {
+    "properties": {
+      "enable_safety_checker": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image_url": {
+        "_fal_ui_field": "image",
+        "type": "string"
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/recraft/upscale/crisp — active image-to-image
+{
+  "POST /fal-ai/recraft/upscale/crisp (application/json)": {
+    "properties": {
+      "enable_safety_checker": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image_url": {
+        "_fal_ui_field": "image",
+        "type": "string"
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/recraft/vectorize — active image-to-image
+{
+  "POST /fal-ai/recraft/vectorize (application/json)": {
+    "properties": {
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_url": {
+        "_fal_ui_field": "image",
+        "type": "string"
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## recraft/v4.1/flash/text-to-image — active text-to-image (spec written for fal-ai/recraft/v4.1/flash/text-to-image)
+{
+  "POST /fal-ai/recraft/v4.1/flash/text-to-image (application/json)": {
+    "properties": {
+      "background_color": {
+        "anyOf": [
+          {
+            "properties": {
+              "b": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "g": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "r": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "colors": {
+        "default": [],
+        "items": {
+          "properties": {
+            "b": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "g": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## recraft/v4/style/pro/text-to-image — active text-to-image (spec written for fal-ai/recraft/v4/style/pro/text-to-image)
+{
+  "POST /fal-ai/recraft/v4/style/pro/text-to-image (application/json)": {
+    "properties": {
+      "background_color": {
+        "anyOf": [
+          {
+            "properties": {
+              "b": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "g": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "r": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "colors": {
+        "default": [],
+        "items": {
+          "properties": {
+            "b": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "g": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "image_urls": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "style_id": {
+        "anyOf": [
+          {
+            "format": "uuid4",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "style_match": {
+        "anyOf": [
+          {
+            "enum": [
+              "precise",
+              "flexible"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## recraft/v4/style/pro/text-to-vector — active text-to-image (spec written for fal-ai/recraft/v4/style/pro/text-to-vector)
+{
+  "POST /fal-ai/recraft/v4/style/pro/text-to-vector (application/json)": {
+    "properties": {
+      "background_color": {
+        "anyOf": [
+          {
+            "properties": {
+              "b": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "g": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "r": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "colors": {
+        "default": [],
+        "items": {
+          "properties": {
+            "b": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "g": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "image_urls": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "style_id": {
+        "anyOf": [
+          {
+            "format": "uuid4",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "style_match": {
+        "anyOf": [
+          {
+            "enum": [
+              "precise",
+              "flexible"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## recraft/v4/style/text-to-image — active text-to-image (spec written for fal-ai/recraft/v4/style/text-to-image)
+{
+  "POST /fal-ai/recraft/v4/style/text-to-image (application/json)": {
+    "properties": {
+      "background_color": {
+        "anyOf": [
+          {
+            "properties": {
+              "b": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "g": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "r": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "colors": {
+        "default": [],
+        "items": {
+          "properties": {
+            "b": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "g": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "image_urls": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "style_id": {
+        "anyOf": [
+          {
+            "format": "uuid4",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "style_match": {
+        "anyOf": [
+          {
+            "enum": [
+              "precise",
+              "flexible"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## recraft/v4/style/text-to-vector — active text-to-image (spec written for fal-ai/recraft/v4/style/text-to-vector)
+{
+  "POST /fal-ai/recraft/v4/style/text-to-vector (application/json)": {
+    "properties": {
+      "background_color": {
+        "anyOf": [
+          {
+            "properties": {
+              "b": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "g": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "r": {
+                "default": 0,
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "colors": {
+        "default": [],
+        "items": {
+          "properties": {
+            "b": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "g": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "image_urls": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "style_id": {
+        "anyOf": [
+          {
+            "format": "uuid4",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "style_match": {
+        "anyOf": [
+          {
+            "enum": [
+              "precise",
+              "flexible"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}

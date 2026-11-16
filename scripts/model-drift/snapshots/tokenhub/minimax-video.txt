@@ -1,0 +1,133 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值 | 支持能力 | 视频时长（秒） | 清晰度档位 | 传参方式 | 选型建议 |
+| MiniMax-Video-v2.3 | minimax-video-v2.3 | 文生 / 图生 | 6 / 10（768P）；6（1080P） | 768P / 1080P | 扁平参数 | 旗舰款：物理表现与指令遵循强，支持运镜指令。 |
+| MiniMax-Video-v2.3-fast | minimax-video-v2.3-fast | 图生 | 6 / 10（768P）；6（1080P） | 768P / 1080P | 扁平参数 | v2.3 快速版，生成更快、批量创作成本更低；仅支持图生。 |
+| MiniMax-Video-H3 | minimax-video-h3 | 文生 / 图生（首尾帧）/ 多模态参考生 | 4 ~ 15 | 768P / 2K（传入 1080P 降级为 768P，4K 降级为 2K） | content 数组 | 最新旗舰：2K 直出、多模态参考（图/视频/音频）、原生立体声。 |
+| MiniMax-Video-H3-Max | minimax-video-h3-max | 文生 / 图生（首帧 / 尾帧）/ 多模态参考生 | 5 ~ 15（不支持 4 秒） | 480P / 768P（不支持 2K；传入 1080P / 2K / 4K 会静默降级为 768P） | content 数组 | H3 极速版：出片更快、成本更低；不支持 2K，支持 extra.prompt_expansion_mode 提示词扩写。 |
+
+## 文生视频 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/minimax-video/generation
+POST https://tokenhub.tencentmaas.com/v1/wand/minimax-video-v2/generation
+
+## 文生视频 › 2. 输入参数 › v2.3（扁平参数）：
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型名称。取值：minimax-video-v2.3 |
+| prompt | 是 | string | 文本提示词，≤ 2000 字符。支持 [指令] 运镜语法（如 [推进]、[左摇]）。 |
+| prompt_optimizer | 否 | boolean | 是否自动优化 prompt。默认值：true；设为 false 可进行更精确的控制。 |
+| fast_pretreatment | 否 | boolean | 是否缩短 prompt_optimizer 的优化耗时。默认值：false。 |
+| duration | 否 | integer | 视频时长（秒）。768P：6 或 10；1080P：仅 6。默认值：6。 |
+| resolution | 否 | string | 视频分辨率。可选：768P（默认）/ 1080P。 |
+| aigc_watermark | 否 | boolean | 是否在生成视频中添加 AIGC 标识水印。默认值：false。 |
+
+## 文生视频 › 2. 输入参数 › h3 / h3-max（content 数组）：
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型名称。取值：minimax-video-h3、minimax-video-h3-max |
+| content | 是 | array[object] | 多模态输入数组，文生视频仅含一个 text 元素。子字段：type（text）、text（提示词）。text 必须非空，最多 7000 个字符。 |
+| resolution | 是 | string | 视频分辨率。 h3：768P / 2K（传入 1080P 降级为 768P，4K 降级为 2K）。 h3-max：仅 480P / 768P，不支持 2K（传入 1080P / 2K / 4K 会静默降级为 768P）。 |
+| duration | 是 | integer | 视频时长（秒）。 h3：4 ~ 15 的整数。 h3-max：5 ~ 15 的整数（不支持 4 秒）。传入区间外的值不会报错，会静默回落为 5 秒。 |
+| ratio | 是 | string | 画面宽高比。文生视频必填且不能为 adaptive（传 adaptive 会按 16:9 处理）。可选：21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16。 |
+| aigc_watermark | 否 | boolean | 是否添加 AIGC 标识水印。默认值：false。 |
+| extra.prompt_expansion_mode | 否 | string | 仅 minimax-video-h3-max 生效，minimax-video-h3 传入会被忽略。提示词扩写模式。disabled 表示关闭提示词扩写；balanced 表示均衡扩写且为默认值；quality 表示质量优先扩写。 可用选项：disabled, balanced, quality 不传 extra 或不传此属性时，使用 balanced。不要传 balance、空字符串、布尔值或其他未声明字段。 |
+
+## 文生视频 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| task_id | string | 生成任务的任务 ID，用于轮询查询任务状态。 |
+| base_resp | object | 请求状态对象。 |
+| base_resp.status_code | integer | 请求状态码，0 表示提交成功。 |
+| base_resp.status_msg | string | 请求状态描述，成功为 success。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+| 字段 | 类型 | 说明 |
+| task_id | string | 生成任务的任务 ID，用于轮询查询任务状态。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+
+## 图生视频（首帧 / 首尾帧） › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/minimax-video/generation
+POST https://tokenhub.tencentmaas.com/v1/wand/minimax-video-v2/generation
+
+## 图生视频（首帧 / 首尾帧） › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型名称。取值：minimax-video-v2.3、minimax-video-v2.3-fast |
+| first_frame_image | 是 | string | 图片 first_frame_image：首帧图片，支持 URL 和 Base64格式，图片格式：jpg/jpeg/png/webp，短边>300px，宽高比 2：5~5：2；单张图片大小≤20MB； 1. Base64：所有图片大小和<=48MB，转为 Base64大小和<=64MB；格式要求：data:image/<图片格式>;base64,。注：图片为 jpg 时图片格式填 jpeg。 2. URL：需要公网可访问（http/https） |
+| last_frame_image | 否 | string | 首尾帧生视频时条件必选。将指定图片作为视频的结束帧。支持公网 URL 或 Base64 编码的 Data URL (data:image/jpeg;base64,...) 图片要求： 格式：JPG, JPEG, PNG, WebP 体积：小于 20MB 尺寸：短边像素大于 300px，长宽比在 2:5 和 5:2 之间 注意： 生成视频尺寸遵循首帧图片，当首帧和尾帧的图片尺寸不一致时，模型将参考首帧对尾帧图片进行裁剪。 |
+| prompt | 否 | string | 文本提示词，≤ 2000 字符。支持 [指令] 运镜语法。 |
+| prompt_optimizer | 否 | boolean | 是否自动优化 prompt。默认值：true。 |
+| fast_pretreatment | 否 | boolean | 是否缩短优化耗时。默认值：false。 |
+| duration | 否 | integer | 视频时长（秒）。768P：6 或 10；1080P：仅 6。默认值：6。 |
+| resolution | 否 | string | 视频分辨率。可选：768P（默认）/ 1080P。 |
+| aigc_watermark | 否 | boolean | 是否添加 AIGC 标识水印。默认值：false。 |
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型名称。取值：minimax-video-h3、minimax-video-h3-max |
+| content | 是 | array[object] | 多模态输入数组：1 个 text + 1~2 张 image_url（role 为 first_frame / last_frame。 图片 content[].image_url：支持首帧/尾帧图片（role=first_frame/last_frame），支持 URL 或 Base64格式，图片格式：jpg/jpeg/png/webp/heic/heif，宽高[256，5760]px，宽高比[0.4，2.5]，首帧 ≤ 1 张、尾帧 ≤ 1 张；单张图片大小 <=30MB； 1. Base64：图片转为 Base64 后计入请求体，请求体总大小 <=64MB（Base64 会放大约 33%，大图请用公网 URL）；格式要求：data:image/<图片格式>;base64, 。注：图片为 jpg 时图片格式填 jpeg。 2. URL：需要公网可访问（http/https）。 |
+| resolution | 是 | string | 视频分辨率。h3：768P / 2K（传入 1080P 降级为 768P，4K 降级为 2K）；h3-max：仅 480P / 768P，不支持 2K（传入 1080P / 2K / 4K 会静默降级为 768P）。 |
+| duration | 是 | integer | 视频时长（秒）。h3：4 ~ 15 的整数；h3-max：5 ~ 15 的整数（不支持 4 秒）。传入区间外的值不会报错，会静默回落为 5 秒。 |
+| ratio | 否 | string | 画面宽高比。图生视频恒为 adaptive（宽高比由输入图片决定）；显式传入 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 不会报错，但会被忽略并按 adaptive 处理。 |
+| aigc_watermark | 否 | boolean | 是否添加 AIGC 标识水印。默认值：false。 |
+| extra.prompt_expansion_mode | 否 | string | 仅 minimax-video-h3-max 生效，minimax-video-h3 传入会被忽略。提示词扩写模式。disabled 表示关闭提示词扩写；balanced 表示均衡扩写且为默认值；quality 表示质量优先扩写。 可用选项: disabled, balanced, quality 不传 extra 或不传此属性时，使用 balanced。不要传 balance、空字符串、布尔值或其他未声明字段。 |
+
+## 多模态参考生视频（H3 / H3-Max） › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/minimax-video-v2/generation
+
+## 多模态参考生视频（H3 / H3-Max） › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型名称。取值：minimax-video-h3、minimax-video-h3-max |
+| content | 是 | array[object] | 多模态输入数组：1 个 text + 参考素材（role 为 reference_image / reference_video / reference_audio）。参考图 ≤ 9 张、参考视频 ≤ 3 段、参考音频 ≤ 3 段，素材合计 ≤ 12 个。子字段与素材约束见下表。 图片 content[].image_url：支持0张-9张参考图输入（role=reference_image），支持 URL 或 Base64格式，JPG/JPEG/PNG/WEBP/HEIC/HEIF；宽高[256，5760]px，宽高比[0.4，2.5]；单个文件大小<=30MB； 1. Base64：图片转为 Base64 后计入请求体，请求体总大小 <=64MB（Base64 会放大约 33%，大图请用公网 URL）；格式要求：data:image/<图片格式>;base64,。 2. URL：需要公网可访问（http/https）。 视频 content[].video_url：支持0个-3个参考视频（role=reference_video），视频格式：mp4/mov，支持 URL 或 Base64格式，单段参考视频时长2~15 秒，所有参考视频时长总和≤15 秒；单个视频大小 <=50MB 1. Base64：所有参考视频的 Base64大小和<=64MB；格式要求：data:video/<视频格式>;base64,。 注：视频为 mov 时视频格式填 quicktime。 2. URL：需要公网可访问（http/https）。 音频 content[].audio_url：支持0段-3段参考音频（role=reference_audio），支持 URL 或 Base64格式，音频格式：wav/mp3，单段 2~15 秒，所有参考音频时长总和 ≤15 秒；单个音频大小 <=15MB 1. Base64：音频转为 Base64 后计入请求体，请求体总大小 <=64MB；格式要求：data:audio/<音频格式>;base64,。 注：音频为 mp3 时音频格式填 mpeg。 2. URL：需要公网可访问（http/https）。 |
+| resolution | 是 | string | 视频分辨率。h3：768P / 2K；h3-max：仅 480P / 768P（不支持 2K，传入 1080P / 2K / 4K 会静默降级为 768P）。 |
+| duration | 是 | integer | 视频时长（秒）。h3：4 ~ 15 的整数；h3-max：5 ~ 15 的整数（不支持 4 秒）。传入区间外的值不会报错，会静默回落为 5 秒。 |
+| ratio | 否 | string | 画面宽高比。默认 adaptive（自动）；可显式指定 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16。 |
+| aigc_watermark | 否 | boolean | 是否添加 AIGC 标识水印。默认值：false。 |
+| extra.prompt_expansion_mode | 否 | string | 仅 minimax-video-h3-max 生效，minimax-video-h3 传入会被忽略。提示词扩写模式。disabled 表示关闭提示词扩写；balanced 表示均衡扩写且为默认值；quality 表示质量优先扩写。 可用选项: disabled, balanced, quality 不传 extra 或不传此属性时，使用 balanced。不要传 balance、空字符串、布尔值或其他未声明字段。 |
+| 参数名 | 必选 | 类型 | 描述 |
+| type | 是 | string | 素材类型。枚举：text / image_url / video_url / audio_url。 |
+| text | 条件必选 | string | 文本提示词，type=text 时必选（每次请求必须包含一个非空 text 项），最多 7000 个字符。 |
+| image_url | 条件必选 | object | 图片素材，type=image_url 时必选。结构 { "url": "..." } |
+| video_url | 条件必选 | object | 视频素材，type=video_url 时必选。结构 { "url": "..." } |
+| audio_url | 条件必选 | object | 音频素材，type=audio_url 时必选。结构 { "url": "..." } |
+| role | 否 | string | 素材用途。枚举：first_frame / last_frame / reference_image / reference_video / reference_audio。 |
+
+## 查询任务结果 › 1. 接口描述
+GET https://tokenhub.tencentmaas.com/v1/wand/minimax-video/tasks/{task_id}
+GET https://tokenhub.tencentmaas.com/v1/wand/minimax-video-v2/tasks/{task_id}
+
+## 查询任务结果 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| task_id | 是 | string | 任务 ID（路径参数），即提交任务时返回的 task_id。 |
+
+## 查询任务结果 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| task_id | string | 任务 ID。 |
+| status | string | 任务状态：Processing / Success / Fail。 |
+| content | object | 任务生成结果内容，任务成功后返回。 |
+| content.url | string | 生成视频的下载地址，为临时地址，有效期 12 小时，请及时下载转存。 |
+| video_width | integer | 生成视频宽度（像素），任务成功后返回。 |
+| video_height | integer | 生成视频高度（像素），任务成功后返回。 |
+| base_resp | object | 本次查询请求的状态对象（与任务成败无关）。 |
+| base_resp.status_code | integer | 查询请求状态码，恒为 0。 |
+| base_resp.status_msg | string | 查询请求状态描述；status=Fail 时该字段承载任务失败原因。 |
+| tokenhub_usage | object | 用量消耗。 |
+| tokenhub_usage.total_tokens | integer | 本次任务消耗的 token 数，用于计费/对账。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+| 字段 | 类型 | 说明 |
+| task | object | 任务对象。 |
+| task.id | string | 任务 ID。 |
+| task.model | string | 使用的模型名称，例如 MiniMax-H3、MiniMax-H3-Max。 |
+| task.status | string | 任务状态：queued / running / succeeded / failed / cancelled。 |
+| task.task_type | string | 任务类型，例如 generation（视频生成）。 |
+| task.modality | string | 任务产出模态，例如 video。 |
+| task.created_at | integer | 任务创建时间，Unix 时间戳（秒）。 |
+| task.updated_at | integer | 任务更新时间，Unix 时间戳（秒）。 |
+| task.content | object | 任务生成结果内容，成功后返回。 |
+| task.content.url | string | 生成视频下载地址，临时 URL，有效期 12 小时，请及时下载保存。 |
+| task.error | object | 任务失败信息，status=failed 时返回。 |
+| task.error.code | string | 失败错误码。 |
+| task.error.message | string | 失败原因描述。 |
+| task.duration | integer | 视频时长，单位：秒。 |
+| task.resolution | string | 视频分辨率，例如 768P。 |
+| task.ratio | string | 视频宽高比例，例如 16:9。 |
+| task.usage | object | 任务视频用量信息。 |
+| task.usage.input_image_count | integer | 输入图片数量。 |
+| task.usage.input_seconds | integer | 输入视频时长，单位：秒。 |
+| task.usage.output_seconds | integer | 输出视频时长，单位：秒。 |
+| task.usage.total_seconds | integer | 总计视频时长，单位：秒。 |
+| tokenhub_usage | object | 本次请求用量消耗。 |
+| tokenhub_usage.total_tokens | integer | 本次任务消耗的 token 数，用于计费和对账。 |
+| request_id | string | 请求唯一标识，用于问题定位和排查。 |

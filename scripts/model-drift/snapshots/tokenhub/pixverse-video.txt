@@ -1,0 +1,137 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值 | 支持能力 | 视频时长（秒） | 清晰度档位 | 画面宽高比（文生/参考生） | 选型建议 |
+| PixVerse V6.0 | pixverse-video-v6.0 | 文生 / 图生 / 首尾帧 / 参考生 | 1 ~ 15 | 360p / 540p / 720p / 1080p | 16:9、4:3、1:1、3:4、9:16、2:3、3:2、21:9 | 通用场景推荐，支持多镜头（智能分镜）。 |
+| PixVerse C1 | pixverse-video-c1 | 文生 / 图生 / 首尾帧 / 参考生 | 1 ~ 15 | 360p / 540p / 720p / 1080p | 16:9、4:3、1:1、3:4、9:16、2:3、3:2、21:9 | 打斗、法术特效、高速运动等动态场景推荐；支持由提示词自动生成结构化分镜。 |
+| PixVerse V5.6 | pixverse-video-v5.6 | 文生 / 图生 / 首尾帧 / 参考生 | 5 / 8 / 10（1080p 不支持 10） | 360p / 540p / 720p / 1080p | 16:9、4:3、1:1、3:4、9:16 | 历史版本，新接入建议直接使用 V6.0。 |
+
+## 文生视频 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/pixverse/text-to-video
+
+## 文生视频 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| prompt | 是 | string | 文本提示词，描述期望生成的视频内容。取值范围：≤ 5000 字符。 |
+| model | 是 | string | 模型版本。取值范围：pixverse-video-v5.6、pixverse-video-v6.0、pixverse-video-c1 |
+| duration | 是 | integer | 视频时长（秒）。v5.6：5/8/10（1080p 不支持 10）；v6.0/c1：1~15。默认值：5。 |
+| quality | 是 | string | 视频清晰度。取值范围：360p / 540p / 720p / 1080p。 |
+| aspect_ratio | 否 | string | 画面宽高比。v5.6：16:9 / 4:3 / 1:1 / 3:4 / 9:16；v6.0/c1 额外支持 2:3 / 3:2 / 21:9。默认值：16:9。 |
+| camera_movement | 否 | string | 运镜方式，如 zoom_in 等（按需使用）。 |
+| seed | 否 | integer | 随机种子。取值范围：0 ~ 2147483647；不传或传 0 时使用随机数。 |
+| generate_audio_switch | 否 | boolean | 音频开关。true=有声（自动生成匹配的背景音乐或音效），false=静音。默认值：false。 |
+| generate_multi_clip_switch | 否 | boolean | 多镜头开关，仅 pixverse-video-v6.0 支持。true=多镜头（系统智能分镜），false=单镜头。默认值：false。 |
+
+## 文生视频 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| ErrCode | integer | 错误码；0 表示成功。 |
+| ErrMsg | string | 错误或提示信息。 |
+| Resp | object | 返回数据对象。 |
+| Resp.video_id | string | 任务 ID，用于轮询查询任务状态。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+
+## 图生视频 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/pixverse/image-to-video
+
+## 图生视频 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| img_id | 是 | string | 图片地址，传入公网可访问的图片 URL，或者 base64图片数据。单张图片小于20MB。 |
+| img_ids | 否 | array[string] | 多图模板专用图片 URL 数组，如 ["url1", "url2"]。 |
+| prompt | 是 | string | 文本提示词。取值范围：≤ 5000 字符。 |
+| model | 是 | string | 模型版本。取值范围：pixverse-video-v5.6、pixverse-video-v6.0、pixverse-video-c1 |
+| duration | 是 | integer | 视频时长（秒）。v5.6：5/8/10（1080p 不支持 10）；v6.0/c1：1~15。默认值：5。 |
+| quality | 是 | string | 视频清晰度。取值范围：360p / 540p / 720p / 1080p。 |
+| camera_movement | 否 | string | 运镜方式，如 zoom_in 等（按需使用）。 |
+| seed | 否 | integer | 随机种子。取值范围：0 ~ 2147483647；不传或传 0 时使用随机数。 |
+| generate_audio_switch | 否 | boolean | 音频开关。true=有声，false=静音。默认值：false。 |
+| generate_multi_clip_switch | 否 | boolean | 多镜头开关，仅 pixverse-video-v6.0 支持。true=多镜头，false=单镜头。默认值：false。 |
+
+## 图生视频 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| ErrCode | integer | 错误码；0 表示成功。 |
+| ErrMsg | string | 错误或提示信息。 |
+| Resp | object | 返回数据对象。 |
+| Resp.video_id | string | 生成任务的视频 ID，用于轮询查询任务状态。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+
+## 首尾帧生视频 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/pixverse/start-end-to-video
+
+## 首尾帧生视频 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| prompt | 是 | string | 文本提示词，描述过渡内容。取值范围：≤ 5000 字符。示例：“从首帧自然过渡到尾帧” |
+| first_frame_img | 是 | string | 首帧图片地址，传入公网可访问的图片 URL，或者 base64图片数据。单张图片小于20MB。 |
+| last_frame_img | 是 | string | 尾帧图片地址，传入公网可访问的图片 URL，或者 base64图片数据。单张图片小于20MB。 |
+| model | 是 | string | 模型版本。取值范围：pixverse-video-v5.6、pixverse-video-v6.0、pixverse-video-c1 |
+| duration | 是 | integer | 视频时长（秒）。v5.6：5/8/10（1080p 不支持 10）；v6.0/c1：1~15。默认值：5。 |
+| quality | 是 | string | 视频清晰度。取值范围：360p / 540p / 720p / 1080p。 |
+| seed | 否 | integer | 随机种子。取值范围：0 ~ 2147483647；不传或传 0 时使用随机数。 |
+| generate_audio_switch | 否 | boolean | 音频开关。true=有声，false=静音。默认值：false。 |
+
+## 首尾帧生视频 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| ErrCode | integer | 错误码；0 表示成功。 |
+| ErrMsg | string | 错误或提示信息。 |
+| Resp | object | 返回数据对象。 |
+| Resp.video_id | string | 任务 ID，用于轮询查询任务状态。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+
+## 参考生视频 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/pixverse/reference-to-video
+
+## 参考生视频 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| image_references | 是 | array[object] | 参考图数组，v5.6/v6.0/c1 最多支持 7 项。子字段见下表。 |
+| prompt | 是 | string | 文本提示词。取值范围：≤ 5000 字符。可用 @ref_name 指代参考图（@ 后接空格），如 "@dog plays at @room"。 |
+| model | 是 | string | 模型版本。取值范围：pixverse-video-v5.6、pixverse-video-v6.0、pixverse-video-c1 |
+| duration | 是 | integer | 视频时长（秒）。v5.6：5/8/10（1080p 不支持 10）；v6.0/c1：1~15。默认值：5。 |
+| quality | 是 | string | 视频清晰度。取值范围：360p / 540p / 720p / 1080p。 |
+| aspect_ratio | 否 | string | 画面宽高比。v5.6：16:9 / 4:3 / 1:1 / 3:4 / 9:16；v6.0/c1 额外支持 2:3 / 3:2 / 21:9。默认值：16:9。 |
+| generate_audio_switch | 否 | boolean | 音频开关。true=有声，false=静音。默认值：false。 |
+| seed | 否 | integer | 随机种子。取值范围：0 ~ 2147483647。 |
+| 参数名 | 必选 | 类型 | 描述 |
+| img_id | 是 | string | 参考图地址，传入公网可访问的图片 URL，或者 base64图片数据。 |
+| type | 否 | string | 参考图类型。取值：subject（主体）/ background（背景）。 |
+| ref_name | 否 | string | 参考图名称，≤ 30 字符；用于在 prompt 中以 @ref_name 引用。 |
+
+## 参考生视频 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| ErrCode | integer | 错误码；0 表示成功。 |
+| ErrMsg | string | 错误或提示信息。 |
+| Resp | object | 返回数据对象。 |
+| Resp.video_id | string | 任务 ID，用于轮询查询任务状态。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+
+## 查询任务结果 › 1. 接口描述
+GET https://tokenhub.tencentmaas.com/v1/wand/pixverse/tasks/{task_id}
+
+## 查询任务结果 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| task_id | 是 | string | 任务 ID（路径参数），即提交任务时返回的 Resp.video_id。 |
+
+## 查询任务结果 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| ErrCode | integer | 错误码；0 表示成功 |
+| ErrMsg | string | 错误或提示信息 |
+| Resp | object | 返回数据对象（任务详情） |
+| Resp.id | string | 视频 ID（即 video_id） |
+| Resp.status | integer | 视频状态：1 成功 / 5 生成中 / 6 已删除 / 7 审核失败 / 8 生成失败 |
+| Resp.url | string | 生成成功后的视频结果 URL |
+| Resp.prompt | string | 本次生成的提示词 |
+| Resp.negative_prompt | string | 负向提示词 |
+| Resp.seed | integer | 随机种子 |
+| Resp.style | string | 风格 |
+| Resp.resolution_ratio | integer | 视频清晰度 |
+| Resp.outputWidth | integer | 视频宽度 |
+| Resp.outputHeight | integer | 视频高度 |
+| Resp.size | integer | 视频文件大小 |
+| Resp.create_time | string | 任务创建时间 |
+| Resp.modify_time | string | 任务更新时间 |
+| tokenhub_usage | object | 用量消耗 |
+| tokenhub_usage.total_tokens | integer | 消耗的 token 数 |
+| request_id | string | 唯一请求标识，用于排查问题 |
+
+## 查询任务结果 › 6. 状态码
+| status | 含义 | 处理建议 |
+| 1 | 生成成功 | 从 Resp.url 获取结果视频。 |
+| 5 | 生成中 | 每 3~5 秒轮询一次，直至 status=1。 |
+| 6 | 已删除 | 任务结果已删除，需重新发起。 |
+| 7 | 内容审核失败 | 检查提示词/图片是否含违规内容，修改后重试。 |
+| 8 | 生成失败 | 服务端生成出错，请重试；持续失败请联系技术支持并附任务 ID。 |

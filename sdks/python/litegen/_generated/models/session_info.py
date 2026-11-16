@@ -10,12 +10,11 @@ T = TypeVar("T", bound="SessionInfo")
 
 @_attrs_define
 class SessionInfo:
-    """Public session info. `id` is a NON-secret SHA-256 fingerprint of the session
-    token — never the raw token. The session row's primary key IS the bearer
-    credential (it's the `litegen_session` cookie value), so returning it
-    verbatim would let any response-body capture (e.g. XSS — which HttpOnly is
-    meant to stop) harvest usable session tokens for all the user's devices.
-    Revocation resolves the fingerprint back to the row.
+    """Public session info. `id` is the SHA-256 hash of the session token, never
+    the token: it is all the database keeps of the session, and sent as the
+    `litegen_session` cookie it doesn't sign in. So neither a response body
+    (e.g. an XSS, which HttpOnly is meant to stop) nor a copy of the database
+    yields a working session. Revoking takes this id.
 
         Attributes:
             created_at (str):

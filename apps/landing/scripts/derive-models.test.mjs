@@ -382,7 +382,8 @@ test('a ratio a frame image overrides says which images set the shape', () => {
   assert.deepEqual(video('without_references', ['first_frame', 'last_frame']).aspectRatioFrames, {
     roles: ['first_frame', 'last_frame'], unlessReference: false, defaultRole: 'first_frame',
   });
-  // vidu/viduq1: a reference image beside the frame lifts it
+  // A reference image beside the frame lifts it (no shipped row today: frames-refs gave every reference that
+  // can't go with a frame a not_with, and the test below pins those rows)
   assert.deepEqual(video('without_references', ['first_frame', 'last_frame', 'reference']).aspectRatioFrames, {
     roles: ['first_frame', 'last_frame'], unlessReference: true, defaultRole: 'first_frame',
   });
@@ -416,6 +417,174 @@ test('every ratio a frame image sets in the catalog reaches the page', () => {
     .filter((row) => Object.keys(row.ref_inputs?.roles ?? {}).some((r) => ['first_frame', 'last_frame', 'init'].includes(r)))
     .filter((row) => deriveModel(row).aspectRatioFrames === undefined)
     .map((row) => row.id);
+  assert.deepEqual(missing, []);
+});
+
+// validator.rs `check_refs` (vidu-mix): an image whose role's `not_with` names
+// a role the request also has is refused, 400 `ref_role_conflict`, in either
+// mode and before anything is quoted or reserved. Vidu takes first/last frames
+// or reference images, never both.
+test('a role carries the roles it is never sent with', () => {
+  // vidu/viduq1
+  const e = deriveModel({
+    id: 'vidu/viduq1', provider: 'vidu', media_type: 'video',
+    ref_inputs: {
+      max_total: 7, default_role: 'first_frame',
+      roles: {
+        first_frame: { required: false, min_count: 0, max_count: 1 },
+        last_frame: { required: false, min_count: 0, max_count: 1 },
+        reference: { required: false, min_count: 0, max_count: 7, not_with: ['first_frame', 'last_frame'] },
+      },
+    },
+  });
+  // A role that names none gets no key for it.
+  assert.deepEqual(e.refRoles, [
+    { name: 'first_frame', required: false, min: 0, max: 1 },
+    { name: 'last_frame', required: false, min: 0, max: 1 },
+    { name: 'reference', required: false, min: 0, max: 7, notWith: ['first_frame', 'last_frame'] },
+  ]);
+});
+
+// check_refs runs before check_frame_shape, so on a `without_references` row a
+// reference image that is never sent with a frame can't lift the frame rule:
+// the mix is refused first.
+test('a reference image that is never sent with a frame lifts nothing', () => {
+  const video = (roles) => deriveModel({
+    id: 'x/y', provider: 'x', media_type: 'video',
+    params: { aspect_ratio: { kind: 'aspect_ratio', allowed: ['16:9', '9:16', '1:1'], frames_set_shape: 'without_references' } },
+    ref_inputs: { max_total: 9, default_role: 'first_frame', roles },
+  });
+  // vidu/viduq1
+  assert.deepEqual(
+    video({ first_frame: { max_count: 1 }, last_frame: { max_count: 1 }, reference: { max_count: 7, not_with: ['first_frame', 'last_frame'] } }).aspectRatioFrames,
+    { roles: ['first_frame', 'last_frame'], unlessReference: false, defaultRole: 'first_frame' },
+  );
+  // vidu/viduq4-preview: its one frame role
+  assert.deepEqual(
+    video({ first_frame: { max_count: 1 }, reference: { max_count: 15, not_with: ['first_frame'] } }).aspectRatioFrames,
+    { roles: ['first_frame'], unlessReference: false, defaultRole: 'first_frame' },
+  );
+  // The same rule named on the frame's side (check_refs reads both).
+  assert.deepEqual(
+    video({ first_frame: { max_count: 1, not_with: ['reference'] }, reference: { max_count: 7 } }).aspectRatioFrames,
+    { roles: ['first_frame'], unlessReference: false, defaultRole: 'first_frame' },
+  );
+  // A not_with that names no frame role leaves the lift as it was.
+  assert.deepEqual(
+    video({ first_frame: { max_count: 1 }, keyframe: { max_count: 4 }, reference: { max_count: 7, not_with: ['keyframe'] } }).aspectRatioFrames,
+    { roles: ['first_frame'], unlessReference: true, defaultRole: 'first_frame' },
+  );
+});
+
+test('a reference image sent with some frame images but not others stops the derivation', () => {
+  // The page says "unless a reference image goes with it" for every frame role or for none.
+  assert.throws(
+    () => deriveModel({
+      id: 'x/y', provider: 'x', media_type: 'video',
+      params: { aspect_ratio: { kind: 'aspect_ratio', allowed: ['16:9'], frames_set_shape: 'without_references' } },
+      ref_inputs: { max_total: 3, default_role: 'first_frame', roles: { first_frame: { max_count: 1 }, last_frame: { max_count: 1 }, reference: { max_count: 1, not_with: ['last_frame'] } } },
+    }),
+    /x\/y.*not_with/,
+  );
+});
+
+// schema.rs `ParamSpecStringArray.returned_together`: the containers one vendor
+// job returns together. A generation that keeps nothing (keep_outputs: false)
+// converts nothing, so it is promised only what its job returns
+// (`ModelSchema::keep_nothing_refusal`, 400 `format_needs_keeping`).
+test('a 3D format set says which containers one vendor job returns together', () => {
+  const formats = (spec) => deriveModel({ id: 'x/y', provider: 'x', media_type: 'model3d', task: 'rig', params: { output_formats: spec } })
+    .params.find((p) => p.name === 'output_formats');
+  // meshy/rig: one job names a glb and an fbx
+  assert.deepEqual(formats({ kind: 'string_array', enum_values: ['glb', 'fbx'], default: ['glb'], returned_together: ['glb', 'fbx'] }).returnedTogether, ['glb', 'fbx']);
+  // tripo/rig: a job returns the one container it is asked for
+  assert.equal('returnedTogether' in formats({ kind: 'string_array', enum_values: ['glb', 'fbx'], max_items: 1, default: ['glb'] }), false);
+});
+
+test('every not_with and returned_together in the catalog reaches the page', () => {
+  const missing = [];
+  for (const row of readCatalog()) {
+    const derived = deriveModel(row);
+    for (const [name, r] of Object.entries(row.ref_inputs?.roles ?? {})) {
+      const got = derived.refRoles.find((x) => x.name === name)?.notWith ?? [];
+      if (JSON.stringify(got) !== JSON.stringify(r?.not_with ?? [])) missing.push(`${row.id} ${name}.not_with`);
+    }
+    for (const [name, p] of Object.entries(row.params ?? {})) {
+      const got = derived.params.find((x) => x.name === name)?.returnedTogether ?? [];
+      if (JSON.stringify(got) !== JSON.stringify(p?.returned_together ?? [])) missing.push(`${row.id} ${name}.returned_together`);
+    }
+  }
+  assert.deepEqual(missing, []);
+  // The shipped rows whose reference image is never sent with a frame (vidu-mix's seven, frames-refs' 22): nothing
+  // lifts their frame rule (false), or a frame sets no shape there (null).
+  const lifts = Object.fromEntries(readCatalog().map(deriveModel).filter((m) => m.refRoles.some((r) => r.notWith)).map((m) => [m.id, m.aspectRatioFrames?.unlessReference ?? null]));
+  assert.deepEqual(lifts, {
+    'ideogram/minimax-h3': false,
+    'ideogram/seedance-2': null,
+    'ideogram/seedance-2-5': false,
+    'minimax/MiniMax-H3': false,
+    'minimax/MiniMax-H3-Highspeed': false,
+    'minimax/MiniMax-H3-Lite': false,
+    'minimax/MiniMax-H3-Max': false,
+    'runway/gemini_omni_flash_1.1': null,
+    'runway/gemini_omni_flash_1.2': null,
+    'runway/grok_imagine_1_5': false,
+    'runway/hailuo3': null,
+    'runway/seedance2': null,
+    'runway/seedance2_5': null,
+    'runway/seedance2_fast': null,
+    'runway/seedance2_mini': null,
+    'runway/wan3': null,
+    'runway/wan3_prime': null,
+    'tokenhub/minimax-video-h3': false,
+    'tokenhub/pixverse-video-c1': false,
+    'tokenhub/pixverse-video-v5.6': false,
+    'tokenhub/pixverse-video-v6.0': false,
+    'tokenhub/vidu-video-q2-pro': false,
+    'tokenhub/vidu-video-q3-turbo': false,
+    'tokenhub/vidu-video-q4-preview': false,
+    'tokenhub/wand-vega-video-1.0-lite': null,
+    'vidu/vidu2.0': false,
+    'vidu/viduq1': false,
+    'vidu/viduq2-pro': false,
+    'vidu/viduq4-preview': false,
+  });
+});
+
+// validator.rs `check_video_request` (FU-LASTFRAME): on a row whose last_frame
+// role sets `needs_first_frame`, a last_frame image sent without a first_frame
+// (or init) image is refused, 400 `ref_role_required`, before anything is
+// quoted or reserved. Its vendor ends a clip on a last frame only after a first.
+test('a last frame that needs a first frame says so', () => {
+  // ideogram/kling-3-standard
+  const e = deriveModel({
+    id: 'ideogram/kling-3-standard', provider: 'ideogram', media_type: 'video',
+    ref_inputs: {
+      max_total: 2, default_role: 'first_frame',
+      roles: {
+        first_frame: { required: false, min_count: 0, max_count: 1 },
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true },
+      },
+    },
+  });
+  // A role that sets none gets no key for it.
+  assert.deepEqual(e.refRoles, [
+    { name: 'first_frame', required: false, min: 0, max: 1 },
+    { name: 'last_frame', required: false, min: 0, max: 1, needsFirstFrame: true },
+  ]);
+});
+
+test('every needs_first_frame in the catalog reaches the page', () => {
+  const [missing, flagged] = [[], []];
+  for (const row of readCatalog()) {
+    const derived = deriveModel(row);
+    for (const [name, r] of Object.entries(row.ref_inputs?.roles ?? {})) {
+      const want = r?.needs_first_frame === true;
+      if (want) flagged.push(row.id);
+      if ((derived.refRoles.find((x) => x.name === name)?.needsFirstFrame === true) !== want) missing.push(`${row.id} ${name}.needs_first_frame`);
+    }
+  }
+  assert.ok(flagged.length > 0, 'some shipped row sets needs_first_frame');
   assert.deepEqual(missing, []);
 });
 
@@ -469,6 +638,28 @@ test('a palette, a segmentation, an expand and a layout keep their limits', () =
   assert.deepEqual(by('layout').enum, ['object', 'text']);
   const hint = deriveModel({ id: 'x/y', provider: 'x', media_type: 'image', params: { palette: { kind: 'palette', forced: false, max_colors: 5 } } }).params[0];
   assert.equal('forced' in hint, false);
+});
+
+// validator.rs `check_expand` refuses a request without `expand` to a row whose
+// expand says `required` (400 param_required, param expand, in either mode):
+// an outpaint row grows a canvas and nothing else.
+test('an expand the row requires says so, and an optional one says nothing', () => {
+  const expandOf = (spec) => deriveModel({ id: 'x/y', provider: 'x', media_type: 'image', params: { expand: spec } }).params[0];
+  assert.equal(expandOf({ kind: 'expand', max_px: 2000, required: true }).required, true);
+  assert.equal('required' in expandOf({ kind: 'expand', max_px: 2000 }), false);
+});
+
+test('every required expand in the catalog reaches the page', () => {
+  const missing = [];
+  const flagged = [];
+  for (const row of readCatalog()) {
+    const p = row.params?.expand;
+    if (!p) continue;
+    if (p.required === true) flagged.push(row.id);
+    if ((deriveModel(row).params.find((d) => d.name === 'expand')?.required === true) !== (p.required === true)) missing.push(row.id);
+  }
+  assert.deepEqual(missing, []);
+  assert.ok(flagged.length > 0, 'some shipped row requires its expand');
 });
 
 test('every values list in the catalog reaches the page', () => {

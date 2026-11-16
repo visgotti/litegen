@@ -1,4 +1,22 @@
-POST /ent/v2/reference2video · viduq2 (not carried)
+POST /ent/v2/reference2video · viduq2
+Body parameters
+model | string | Required | viduq2
+auto_subjects | boolean | Optional | 
+subjects | string | Required | 2.0 7
+subjects.name | string | Required | 
+subjects.images | array | Optional | 3 128 128 1:4 4:1 20
+subjects.videos | array | Optional | 5 5 128 128 1:4 4:1 20
+subjects.voice_id | string | Optional | 
+subjects.server_id | string | Optional | 
+prompt | string | Required | 5000 1 2
+audio | boolean | Optional | 
+duration | integer | Optional | viduq2 5 1-10
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 1:1 9:16 16:9 3:4 4:3
+resolution | string | Optional | viduq2 1-10s 720p 540p 720p 1080p
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | 48 2.0
+callback_url | string | Optional | 
 
 POST /ent/v2/reference2video · viduq2-pro
 Body parameters

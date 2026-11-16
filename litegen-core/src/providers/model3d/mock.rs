@@ -690,6 +690,7 @@ impl Model3dProvider for MockModel3dProvider {
                 height: None,
                 manifest: None,
                 source_url: Some(format!("https://example.com/mock-3d/{}/model.{format}", handle.provider_job_id)),
+                size_bytes: None,
             })
             .collect();
         files.push(Model3dFile {
@@ -702,6 +703,7 @@ impl Model3dProvider for MockModel3dProvider {
             height: Some(512),
             manifest: None,
             source_url: Some(format!("https://example.com/mock-3d/{}/preview.png", handle.provider_job_id)),
+            size_bytes: None,
         });
 
         Ok(Model3dGenerationPollResult {
@@ -713,6 +715,33 @@ impl Model3dProvider for MockModel3dProvider {
             error: None,
             metadata: meta,
         })
+    }
+
+    /// [`poll_status`](Self::poll_status), asking `gate` once a job finished
+    /// with files, as a real adapter does before it downloads them: standing
+    /// aside reports the job still processing, and for a job that keeps
+    /// nothing (links only) each file comes without its bytes, with the size
+    /// a check of its link would find.
+    async fn poll_status_gated(
+        &self,
+        handle: &Model3dGenerationHandle,
+        gate: &dyn crate::providers::FetchGate,
+    ) -> Result<Model3dGenerationPollResult, ProviderError> {
+        let mut poll = self.poll_status(handle).await?;
+        if poll.status != GenerationStatus::Completed || poll.files.is_empty() {
+            return Ok(poll);
+        }
+        match gate.ask().await {
+            crate::providers::Fetch::StandAside => crate::proxy::model3d_deliver::stand_aside(&mut poll),
+            crate::providers::Fetch::LinksOnly { .. } => {
+                for f in &mut poll.files {
+                    f.size_bytes = Some(f.bytes.len() as u64);
+                    f.bytes = Vec::new();
+                }
+            }
+            crate::providers::Fetch::Go { .. } => {}
+        }
+        Ok(poll)
     }
 
     async fn estimate_cost(

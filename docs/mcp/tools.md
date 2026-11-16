@@ -58,7 +58,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`get_current_user`](#get_current_user) | Get current user | `GET /v1/auth/me` | a signed-in user | yes | no |
 | [`get_my_limits`](#get_my_limits) | Get my limits | `GET /v1/limits/me` | any credential | yes | no |
 
-## `/admin/mcp`: the management API (98 tools)
+## `/admin/mcp`: the management API (102 tools)
 
 ### Toolset `keys`
 
@@ -69,6 +69,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`get_api_key`](#get_api_key) | Get API key | `GET /v1/keys/{id}` | the `admin` scope | yes | no |
 | [`list_api_keys`](#list_api_keys) | List API keys | `GET /v1/keys` | the `admin` scope | yes | no |
 | [`list_webhook_deliveries`](#list_webhook_deliveries) | List webhook deliveries | `GET /v1/keys/{id}/webhook-deliveries` | the `admin` scope | yes | no |
+| [`redeliver_webhook_delivery`](#redeliver_webhook_delivery) | Redeliver webhook delivery | `POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver` | the `admin` scope | no | no |
 | [`revoke_api_key`](#revoke_api_key) | Revoke API key | `DELETE /v1/keys/{id}` | the `admin` scope | no | yes |
 | [`rotate_api_key`](#rotate_api_key) | Rotate API key | `POST /v1/keys/{id}/rotate` | the `admin` scope | no | yes |
 | [`test_api_key_webhook`](#test_api_key_webhook) | Test API key webhook | `POST /v1/keys/{id}/test-webhook` | the `admin` scope | no | no |
@@ -154,8 +155,10 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
 | [`invite_member`](#invite_member) | Invite member | `POST /v1/orgs/{id}/members` | a signed-in member with `member:invite`, or the platform admin | no | no |
+| [`list_invitations`](#list_invitations) | List invitations | `GET /v1/orgs/{id}/invitations` | a signed-in member with `member:invite`, or the platform admin | yes | no |
 | [`list_members`](#list_members) | List members | `GET /v1/orgs/{id}/members` | a signed-in member with `member:read`, or the platform admin | yes | no |
 | [`remove_member`](#remove_member) | Remove member | `DELETE /v1/orgs/{id}/members/{user_id}` | a signed-in member with `member:remove`, or the platform admin | no | yes |
+| [`revoke_invitation`](#revoke_invitation) | Revoke invitation | `DELETE /v1/orgs/{id}/invitations/{invitation_id}` | a signed-in member with `invitation:revoke`, or the platform admin | no | yes |
 | [`update_member`](#update_member) | Update member | `PATCH /v1/orgs/{id}/members/{user_id}` | a signed-in member with `member:write`, or the platform admin | no | no |
 
 ### Toolset `apps`
@@ -181,7 +184,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
 | [`delete_user`](#delete_user) | Delete user | `DELETE /v1/users/{id}` | the platform admin (single-tenant: a user with `user:delete:any`) | no | yes |
-| [`invite_user`](#invite_user) | Invite user | `POST /v1/users` | a signed-in user with `invitation:send` | no | no |
+| [`invite_user`](#invite_user) | Invite user | `POST /v1/users` | a signed-in user with `invitation:send` (single-tenant: also the platform admin) | no | no |
 | [`list_users`](#list_users) | List users | `GET /v1/users` | the platform admin (single-tenant: a user with `user:read:any`) | yes | no |
 | [`transfer_platform_ownership`](#transfer_platform_ownership) | Transfer platform ownership | `POST /v1/users/transfer-owner` | the platform admin (single-tenant: a user with `system:transfer_owner`) | no | yes |
 | [`update_user`](#update_user) | Update user | `PATCH /v1/users/{id}` | the platform admin (single-tenant: a user with `user:write:any`) | no | no |
@@ -206,6 +209,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`set_gateway_routes`](#set_gateway_routes) | Set gateway routes | `PUT /v1/admin/routes` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
 | [`set_gateway_settings`](#set_gateway_settings) | Set gateway settings | `PUT /v1/admin/settings` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
 | [`update_gateway_model`](#update_gateway_model) | Update gateway model | `PATCH /v1/admin/models/{id}` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
+| [`update_gateway_provider`](#update_gateway_provider) | Update gateway provider | `PATCH /v1/admin/providers/{name}` | the platform admin (single-tenant: owners, admins and `admin` keys) | no | no |
 
 ### Toolset `system`
 
@@ -821,6 +825,7 @@ List audit log entries (admin scope required). Supports `?format=csv`.
 | `actor_key_id` | string | no | Filter by actor API key ID |
 | `format` | string | no | Set to `csv` for a CSV export |
 | `from` | string | no | ISO 8601 lower bound (inclusive) |
+| `org_id` | string | no | The master key only: the organization whose entries to read. |
 | `page` | integer | no | Page number (default 1) |
 | `per_page` | integer | no | Items per page (default 50) |
 | `to` | string | no | ISO 8601 upper bound (inclusive) |
@@ -1296,7 +1301,7 @@ No arguments.
 
 ### `set_gateway_provider`
 
-Set a provider's keys, api_base, model mapping, headers, options or enabled flag at runtime. Secret fields left out keep their stored value; every unset field falls back to env/YAML. In-flight jobs finish on the instance they started with.
+Set a provider's keys, api_base, model mapping, headers, options or enabled flag at runtime. Secret fields left out keep their stored value; every unset field falls back to env/YAML. In-flight jobs finish on the instance they started with. To change some fields and keep the rest, use PATCH.
 
 `PUT /v1/admin/providers/{name}` · on `/admin/mcp` · needs the platform admin (single-tenant: owners, admins and `admin` keys)
 
@@ -1327,13 +1332,14 @@ Replace every model route at runtime. Order matters: the first route whose patte
 
 ### `set_gateway_settings`
 
-Replace the gateway settings (markup, budget alert webhook, default end-user budget). An omitted field is cleared.
+Replace the gateway settings (markup, budget alert webhook, default end-user budget). An omitted field is cleared, except `encrypt_provider_credentials`, which keeps its stored value.
 
 `PUT /v1/admin/settings` · on `/admin/mcp` · needs the platform admin (single-tenant: owners, admins and `admin` keys)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `alert_webhook_url` | string | no | URL that receives budget alerts (soft budget crossed, hard budget hit). |
+| `cache_charge_hits` | boolean | no | Whether a cache hit is charged the cached answer's price (default true). |
 | `cache_enabled` | boolean | no | Whether image answers are cached. |
 | `cache_max_bytes` | integer | no | About how much memory the cached answers may take on each replica, in bytes, 1048576 to 68719476736. |
 | `cache_max_items` | integer | no | How many answers the cache holds, 1 to 1000000. |
@@ -1343,6 +1349,7 @@ Replace the gateway settings (markup, budget alert webhook, default end-user bud
 | `cost_markup_percent` | number | no | Percent added on top of provider cost when billing. |
 | `default_end_user_budget_duration` | string | no | Window for that default end-user budget. |
 | `default_end_user_max_budget_usd` | number | no | Default hard budget (USD) for an end user with no limits of its own. |
+| `encrypt_provider_credentials` | boolean | no | Encrypt the credentials inside runtime provider configs at rest (the keys are always encrypted): each `extra_headers` value, and the user info of `api_base` and of the URLs in `options`, are stored… |
 | `retry_backoff_ms` | integer | no | The longest first wait before a retry, 0 to 60000 ms. |
 | `retry_max_backoff_ms` | integer | no | The longest any wait may be, up to 60000 ms. |
 | `retry_max_retries` | integer | no | Tries after the first for a retryable vendor error, 0 to 5. |
@@ -1365,6 +1372,26 @@ Enable or disable any model platform-wide (LiteLLM `/model/block`). Disabled mod
 | `disabled` | boolean | yes |  |
 | `id` | string | yes | Model id (may contain slashes) may contain '/' (send it unescaped). |
 
+### `update_gateway_provider`
+
+Change some of a provider's runtime config and keep the rest. A field sent is set, `null` clears it (it falls back to env/YAML), and a field left out keeps its stored value. A key left out or `null` keeps its stored value, and one sent as `""` removes it (the env/YAML key applies again). A map (`model_mapping`, `extra_headers`) or `options` sent replaces the stored one whole. In-flight jobs finish on the instance they started with.
+
+`PATCH /v1/admin/providers/{name}` · on `/admin/mcp` · needs the platform admin (single-tenant: owners, admins and `admin` keys)
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Provider adapter name, e.g. |
+| `api_base` | string | no |  |
+| `api_key` | string | no |  |
+| `api_keys` | string | no |  |
+| `enabled` | boolean | no | False takes the provider out of service until re-enabled. |
+| `extra_headers` | object | no |  |
+| `key_id` | string | no |  |
+| `key_secret` | string | no |  |
+| `model_mapping` | object | no |  |
+| `options` | any | no |  |
+| `region` | string | no |  |
+
 ### `block_api_key`
 
 Refuse every request made with this key until unblocked.
@@ -1385,10 +1412,10 @@ Create a new API key.
 |---|---|---|---|
 | `name` | string | yes |  |
 | `expires_at` | string | no | Optional expiry; after this instant the key is rejected at auth. |
-| `rpm_limit` | integer | no | Requests-per-minute cap; None = unlimited. |
+| `rpm_limit` | integer | no | Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to stop a key, block it); None = unlimited. |
 | `scopes` | string | no | CSV of scopes (default: "generate,read"). |
 | `token_quota` | number | no | USD budget cap; None = unlimited. |
-| `webhook_url` | string | no | Webhook URL for async callbacks. |
+| `webhook_url` | string | no | Webhook URL for async callbacks; `""` or none sets no webhook. |
 
 ### `get_api_key`
 
@@ -1419,6 +1446,17 @@ List webhook deliveries for a key (admin scope).
 | `id` | string | yes | API key ID |
 | `page` | integer | no | Page number (default 1) |
 | `per_page` | integer | no | Items per page (default 50) |
+
+### `redeliver_webhook_delivery`
+
+Send one of the key's webhook deliveries again.
+
+`POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver` · on `/admin/mcp` · needs the `admin` scope
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `delivery_id` | string | yes | The delivery's id, `whd-` and a UUID: `delivery_id` in the list of the key's webhook deliveries |
+| `id` | string | yes | API key ID |
 
 ### `revoke_api_key`
 
@@ -1469,13 +1507,13 @@ Update an API key's quota/rpm/scopes/etc.
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | API key ID |
-| `expires_at` | string | no |  |
+| `expires_at` | string | no | When the key stops working; `null` removes the expiry (it never expires). |
 | `is_active` | boolean | no |  |
 | `name` | string | no |  |
-| `rpm_limit` | integer | no |  |
+| `rpm_limit` | integer | no | Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to stop a key, block it); `null` removes it (no limit). |
 | `scopes` | string | no | Replace the key's scopes: the same values and the same privilege check as on create (an unknown scope is a 400, one the caller may not grant a 403). |
-| `token_quota` | number | no |  |
-| `webhook_url` | string | no |  |
+| `token_quota` | number | no | USD budget cap; `null` removes it (no cap). |
+| `webhook_url` | string | no | The key's webhook URL, held to the same address rules as on create; `null` or `""` removes it (the key then shows `webhook_url: null`). |
 
 ### `get_request_log_artifact`
 
@@ -1522,6 +1560,16 @@ Invite a member to this org (requires member:invite).
 | `id` | string | yes | Organization ID |
 | `role` | one of `owner`, `admin`, `member`, `viewer` | yes |  |
 
+### `list_invitations`
+
+List an org's pending invitations (requires member:invite).
+
+`GET /v1/orgs/{id}/invitations` · on `/admin/mcp` · needs a signed-in member with `member:invite`, or the platform admin
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Organization ID |
+
 ### `list_members`
 
 List org members (requires member:read membership).
@@ -1542,6 +1590,17 @@ Remove a member (requires member:remove).
 |---|---|---|---|
 | `id` | string | yes | Organization ID |
 | `user_id` | string | yes | Member user ID |
+
+### `revoke_invitation`
+
+Revoke an invitation (requires invitation:revoke).
+
+`DELETE /v1/orgs/{id}/invitations/{invitation_id}` · on `/admin/mcp` · needs a signed-in member with `invitation:revoke`, or the platform admin
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Organization ID |
+| `invitation_id` | string | yes | Invitation ID |
 
 ### `update_member`
 
@@ -1735,7 +1794,7 @@ Soft-delete (deactivate) a user (requires user:delete:any).
 
 Invite a user (requires invitation:send).
 
-`POST /v1/users` · on `/admin/mcp` · needs a signed-in user with `invitation:send`
+`POST /v1/users` · on `/admin/mcp` · needs a signed-in user with `invitation:send` (single-tenant: also the platform admin)
 
 | Argument | Type | Required | Description |
 |---|---|---|---|

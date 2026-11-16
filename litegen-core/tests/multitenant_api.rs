@@ -1533,6 +1533,60 @@ async fn a_routed_video_job_records_the_account_its_deployment_ran_on() {
     );
 }
 
+// The image twin, for a late image (late-route, 2026-11-14): the poller asks
+// the vendor about a late job with the key of the account the row names, so it
+// must be the account of the credential the deployment ran on. The route sends
+// `replicate/flux-schnell` to the mock deployment, which litegen waits 0 s
+// for, so the job the mock takes is late at once.
+#[tokio::test]
+async fn a_late_routed_image_records_the_account_its_deployment_ran_on() {
+    let app = spawn_app_cfg_with(&[], Some([7u8; 32]), |c| {
+        c.model_routes = vec![litegen::config::ModelRouteConfig {
+            model: "replicate/flux-schnell".into(),
+            deployments: vec![litegen::config::DeploymentConfig { provider: "mock".into(), weight: 1, max_retries: 0, timeout_seconds: 0, rpm_limit: 0 }],
+            strategy: None,
+            cache: None,
+        }];
+    })
+    .await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "late-routed-account").await;
+    let org_id = first_org_id(&mut c).await;
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+    let h = [("authorization", auth.as_str())];
+    for (provider, expected) in [
+        // The org's key is for the model's own vendor only: the mock deployment
+        // runs on the gateway's account.
+        ("replicate", "platform".to_string()),
+        // With the org's key for the deployment's own vendor, on the org's.
+        ("mock", format!("org:{org_id}")),
+    ] {
+        let csrf = c.csrf().await;
+        let stored = c
+            .post_with(
+                &format!("/v1/orgs/{org_id}/provider-credentials"),
+                json!({ "provider": provider, "credentials": { "api_key": "ORG_KEY" } }),
+                &[("x-csrf-token", &csrf)],
+            )
+            .await;
+        assert_eq!(stored.status, 200, "store the org's {provider} key: {:?}", stored.body);
+        let late = bearer
+            .post_with("/v1/images/generations", json!({ "model": "replicate/flux-schnell", "prompt": "a lighthouse job_ms=100" }), &h)
+            .await;
+        assert_eq!(late.status, 504, "{:?}", late.body);
+        let id = late.body["error"]["generation_id"].as_str().expect("the 504 names the generation").to_string();
+        let row = bearer.get_with(&format!("/v1/generations/{id}"), &h).await;
+        assert_eq!(row.status, 200, "{:?}", row.body);
+        assert_eq!(row.body["provider"], "mock", "the deployment that took it: {:?}", row.body);
+        assert_eq!(
+            row.body["metadata"]["vendor_account"], expected.as_str(),
+            "after storing the org's {provider} key: {:?}",
+            row.body["metadata"]
+        );
+    }
+}
+
 // ─── FU-ROUTE (follow-ups 2026-11-13): a model route decides who serves ──────
 // A model route sends its models to its deployments only, so whether a
 // generation reaches a vendor is the deployments' to decide: served when one
@@ -2935,13 +2989,14 @@ async fn a_failed_job_is_refunded_and_a_vendor_without_a_cancel_says_so() {
 // it does may land in or act on the deployment's default org, which is the
 // operator's: in hosted mode no org is not the default org.
 
-/// The ways a hosted account comes to belong to no organization.
-const INTO_NO_ORG: [&str; 5] = [
+/// The ways a hosted account comes to belong to no organization. A signup
+/// whose org fails to be made is no longer one: since 2026-11-15 it leaves no
+/// account (`a_hosted_signup_that_fails_leaves_nothing_behind`).
+const INTO_NO_ORG: [&str; 4] = [
     "deleted its only org",
     "was removed from its only org",
     "left its only org (an admin removing themself)",
     "handed its org over, then was removed",
-    "signed up, but its org was never made",
 ];
 
 /// A second connection to the server's database file.
@@ -3014,21 +3069,6 @@ async fn in_no_org(app: &TestApp, how: &str) -> (Client, String) {
             assert_eq!(handed.status, 204, "{:?}", handed.body);
             remove_member(&mut admin, &org, &owner_id).await;
             (owner, owner_email)
-        }
-        "signed up, but its org was never made" => {
-            // Signup makes the account, then its org: an org that fails to be
-            // made (a broken table here; two signups racing for one slug in
-            // life) answers 500 and leaves the account.
-            let pool = db_file(app).await;
-            sqlx::query("ALTER TABLE organizations RENAME TO organizations_away").execute(&pool).await.expect("hide the table");
-            let failed = signup(&mut owner, &owner_email, "Never Made").await;
-            sqlx::query("ALTER TABLE organizations_away RENAME TO organizations").execute(&pool).await.expect("bring it back");
-            pool.close().await;
-            assert_eq!(failed.status, 500, "the org could not be made: {:?}", failed.body);
-            let mut c = Client::new(&app.base);
-            let login = c.post("/v1/auth/login", json!({ "email": owner_email, "password": PASSWORD })).await;
-            assert_eq!(login.status, 200, "the account was made all the same: {:?}", login.body);
-            (c, owner_email)
         }
         other => panic!("no such way into no org: {other}"),
     };

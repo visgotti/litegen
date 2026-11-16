@@ -132,6 +132,15 @@ async fn redeem_code(shared: &OAuthShared, store: &dyn McpOAuthStore, params: &P
     let (Some(user_id), Some(org_id), Some(scopes)) = (request.user_id, request.org_id, request.granted_scopes) else {
         return Err(TokenError::grant("the code was never approved"));
     };
+    // The code was approved under the person's sign-in epoch (a code from
+    // before migration 043 counts as epoch 0). A reset, a deactivation or a
+    // password change since then moved it on: the code redeems nothing, and
+    // the grant this makes carries the code's epoch (review round 4,
+    // finding 2).
+    let code_epoch = request.sign_in_epoch.unwrap_or(0);
+    if state.db.sign_in_epoch(&user_id).await? != Some(code_epoch) {
+        return Err(TokenError::grant("the person's sign-ins ended after the code was approved"));
+    }
 
     // One grant per client, person, org, app and endpoint: signing in again
     // updates it instead of piling up grants.
@@ -147,8 +156,10 @@ async fn redeem_code(shared: &OAuthShared, store: &dyn McpOAuthStore, params: &P
             created_at: now,
             last_used_at: None,
             revoked_at: None,
+            sign_in_epoch: code_epoch,
         })
-        .await?;
+        .await?
+        .ok_or_else(|| TokenError::grant("the person's sign-ins ended after the code was approved"))?;
     let (access, access_row) = mint(&grant.id, TokenKind::Access, now, access_ttl(state));
     store.insert_token(&access_row).await?;
     let refresh = if uses_refresh_tokens(&client) {
@@ -229,14 +240,27 @@ pub async fn live_member(state: &AppState, grant: &Grant) -> Result<Option<(User
     let Some(user) = state.db.get_user_by_id(&grant.user_id).await?.filter(|u| u.is_active) else {
         return Ok(None);
     };
+    // Made under a sign-in epoch the person has moved past: a redemption
+    // that straddled a reset, a deactivation or a password change (review
+    // round 4, finding 2). The epoch comes in the account's row (round 5).
+    if user.sign_in_epoch != grant.sign_in_epoch {
+        return Ok(None);
+    }
     Ok(state.db.get_membership(&grant.org_id, &grant.user_id).await?.map(|role| (user, role)))
 }
 
-/// Revoke the grant a replayed code's request led to, with its tokens.
+/// Revoke the grant a replayed code's request led to, with its tokens: the
+/// live grant for its client, person, org, app and endpoint, unless that
+/// grant is newer than the code's sign-in (review round 6, finding 4). A
+/// code approved before a reset, replayed by whoever kept it, then takes
+/// down nothing the person signed in to since. (A request approved before
+/// sign-in epochs existed counts as epoch 0.)
 async fn revoke_issued(store: &dyn McpOAuthStore, request: &AuthRequest, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
     if let (Some(user_id), Some(org_id)) = (&request.user_id, &request.org_id) {
         if let Some(grant) = store.find_active_grant(&request.client_id, user_id, org_id, request.app_id.as_deref(), request.surface).await? {
-            store.revoke_grant(&grant.id, now).await?;
+            if grant.sign_in_epoch <= request.sign_in_epoch.unwrap_or(0) {
+                store.revoke_grant(&grant.id, now).await?;
+            }
         }
     }
     Ok(())

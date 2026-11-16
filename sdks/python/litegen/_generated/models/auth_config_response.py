@@ -26,13 +26,18 @@ class AuthConfigResponse:
     """
     Attributes:
         password_enabled (bool): Whether email/password signup + login is enabled.
+        password_min_length (int): The shortest password signup, invitations, password changes and
+            resets accept.
         providers_enabled (List[str]): OAuth providers with both CLIENT_ID and CLIENT_SECRET configured
             (e.g. `["github", "google"]`).
-        signup_open (bool): Whether self-service signup is open (true in hosted mode).
+        signup_open (bool): Whether self-service signup is open: always in hosted mode; in
+            single-tenant mode while no account exists and password signup is on
+            (the first signup makes the Owner).
         mcp (Union['McpEndpoints', None, Unset]):
     """
 
     password_enabled: bool
+    password_min_length: int
     providers_enabled: List[str]
     signup_open: bool
     mcp: Union["McpEndpoints", None, Unset] = UNSET
@@ -42,6 +47,8 @@ class AuthConfigResponse:
         from ..models.mcp_endpoints import McpEndpoints
 
         password_enabled = self.password_enabled
+
+        password_min_length = self.password_min_length
 
         providers_enabled = self.providers_enabled
 
@@ -60,6 +67,7 @@ class AuthConfigResponse:
         field_dict.update(
             {
                 "password_enabled": password_enabled,
+                "password_min_length": password_min_length,
                 "providers_enabled": providers_enabled,
                 "signup_open": signup_open,
             }
@@ -75,6 +83,8 @@ class AuthConfigResponse:
 
         d = src_dict.copy()
         password_enabled = d.pop("password_enabled")
+
+        password_min_length = d.pop("password_min_length")
 
         providers_enabled = cast(List[str], d.pop("providers_enabled"))
 
@@ -99,6 +109,7 @@ class AuthConfigResponse:
 
         auth_config_response = cls(
             password_enabled=password_enabled,
+            password_min_length=password_min_length,
             providers_enabled=providers_enabled,
             signup_open=signup_open,
             mcp=mcp,

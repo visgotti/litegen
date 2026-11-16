@@ -91,12 +91,16 @@ impl SourceError {
 }
 
 /// Read `bytes` as `format`, check them against what the model takes, and
-/// convert them to a container it takes if they are not in one. CPU work:
-/// call from a blocking thread.
-pub fn prepare(bytes: Vec<u8>, format: &str, spec: &ParamSpecSourceModel) -> Result<PreparedSource, SourceError> {
+/// convert them to a container it takes if they are not in one. A
+/// Draco-compressed primitive is read as `draco` says: the server's
+/// `mesh.draco` settings, which the caller reads, since the source's bytes are
+/// the caller's (a URL, base64 or a stored generation). CPU work: call from a
+/// blocking thread.
+pub fn prepare(bytes: Vec<u8>, format: &str, spec: &ParamSpecSourceModel, draco: crate::mesh::DracoOptions) -> Result<PreparedSource, SourceError> {
     let from = MeshFormat::parse(format)
         .ok_or_else(|| SourceError::FormatUnsupported(format!("litegen does not read '{format}' meshes")))?;
-    let read = crate::mesh::read_scene(&bytes, from, &crate::mesh::package::NoSidecars)
+    let opts = crate::mesh::ReadOptions { draco, ..Default::default() };
+    let read = crate::mesh::read_scene_with(&bytes, from, &crate::mesh::package::NoSidecars, opts)
         .map_err(|e| SourceError::FormatUnsupported(format!("the source could not be read as {format}: {e}")))?;
     let scene = read.scene;
     let facts = SourceFacts {
@@ -238,10 +242,37 @@ mod tests {
         ParamSpecSourceModel { formats: formats.iter().map(|f| f.to_string()).collect(), ..Default::default() }
     }
 
+    /// [`prepare`] under the mesh library's default Draco options.
+    fn prepared(bytes: Vec<u8>, format: &str, spec: &ParamSpecSourceModel) -> Result<PreparedSource, SourceError> {
+        prepare(bytes, format, spec, crate::mesh::DracoOptions::default())
+    }
+
+    /// A source is read under the `draco` options its caller passes (the
+    /// server's `mesh.draco`). The source is `mock/draco-3d`'s vendor GLB,
+    /// one Draco primitive whose header declares 768 faces. It's refused while
+    /// Draco is off, naming what turned it off, and past a lowered face limit,
+    /// naming the limit. Under the defaults it's read and passed on as sent.
+    #[test]
+    fn a_draco_source_is_read_as_its_callers_options_say() {
+        let draco = include_bytes!("../providers/model3d/mock_data/skinned.draco.glb").to_vec();
+        let defaults = crate::mesh::DracoOptions::default();
+        for (opts, says) in [
+            (crate::mesh::DracoOptions { enabled: false, disabled_by: "the test's switch", ..defaults }, "Draco decoding is turned off by the test's switch"),
+            (crate::mesh::DracoOptions { max_faces: 767, ..defaults }, "declares 768 faces, past this reader's limit of 767"),
+        ] {
+            match prepare(draco.clone(), "glb", &spec(&["glb"]), opts) {
+                Err(SourceError::FormatUnsupported(m)) => assert!(m.contains("KHR_draco_mesh_compression") && m.contains(says), "{says}: {m}"),
+                other => panic!("{says}: {other:?}"),
+            }
+        }
+        let p = prepare(draco.clone(), "glb", &spec(&["glb"]), defaults).unwrap();
+        assert_eq!((p.bytes, p.facts.triangles, p.facts.skinned), (draco, 768, true));
+    }
+
     #[test]
     fn a_source_in_an_accepted_container_reaches_the_vendor_byte_for_byte() {
         let bytes = glb_of(&fixtures::cube());
-        let p = prepare(bytes.clone(), "glb", &spec(&["glb", "fbx"])).unwrap();
+        let p = prepared(bytes.clone(), "glb", &spec(&["glb", "fbx"])).unwrap();
         assert_eq!(p.bytes, bytes);
         assert_eq!((p.format.as_str(), p.received_format.as_str()), ("glb", "glb"));
         assert_eq!(p.sha256, crate::util::content::sha256_hex(&bytes));
@@ -257,7 +288,7 @@ mod tests {
             .files
             .remove(0)
             .bytes;
-        let p = prepare(fbx.clone(), "fbx", &spec(&["glb"])).unwrap();
+        let p = prepared(fbx.clone(), "fbx", &spec(&["glb"])).unwrap();
         assert_eq!(&p.bytes[..4], b"glTF", "what the vendor takes");
         assert_eq!((p.format.as_str(), p.received_format.as_str()), ("glb", "fbx"));
         assert_eq!(p.sha256, crate::util::content::sha256_hex(&fbx), "lineage names what the caller sent");
@@ -267,23 +298,23 @@ mod tests {
     fn what_the_vendor_would_refuse_is_refused_first() {
         let cube = glb_of(&fixtures::cube());
         let too_many = ParamSpecSourceModel { max_faces: Some(2), ..spec(&["glb"]) };
-        assert!(matches!(prepare(cube.clone(), "glb", &too_many), Err(SourceError::TooManyFaces { faces: 12, max: 2 })));
+        assert!(matches!(prepared(cube.clone(), "glb", &too_many), Err(SourceError::TooManyFaces { faces: 12, max: 2 })));
         let too_big = ParamSpecSourceModel { max_bytes: Some(16), ..spec(&["glb"]) };
-        assert!(matches!(prepare(cube.clone(), "glb", &too_big), Err(SourceError::TooLarge { max: 16, .. })));
+        assert!(matches!(prepared(cube.clone(), "glb", &too_big), Err(SourceError::TooLarge { max: 16, .. })));
         let needs_skin = ParamSpecSourceModel { requires_skin: true, ..spec(&["glb"]) };
-        assert!(matches!(prepare(cube.clone(), "glb", &needs_skin), Err(SourceError::NotRigged)));
+        assert!(matches!(prepared(cube.clone(), "glb", &needs_skin), Err(SourceError::NotRigged)));
         let needs_texture = ParamSpecSourceModel { requires_texture: true, ..spec(&["glb"]) };
-        assert!(matches!(prepare(cube.clone(), "glb", &needs_texture), Err(SourceError::NotTextured)));
-        assert!(matches!(prepare(b"not a mesh".to_vec(), "glb", &spec(&["glb"])), Err(SourceError::FormatUnsupported(_))));
+        assert!(matches!(prepared(cube.clone(), "glb", &needs_texture), Err(SourceError::NotTextured)));
+        assert!(matches!(prepared(b"not a mesh".to_vec(), "glb", &spec(&["glb"])), Err(SourceError::FormatUnsupported(_))));
     }
 
     #[test]
     fn a_rigged_or_textured_source_meets_those_requirements() {
         let skinned = glb_of(&fixtures::skinned());
-        let p = prepare(skinned, "glb", &ParamSpecSourceModel { requires_skin: true, ..spec(&["glb"]) }).unwrap();
+        let p = prepared(skinned, "glb", &ParamSpecSourceModel { requires_skin: true, ..spec(&["glb"]) }).unwrap();
         assert!(p.facts.skinned);
         let textured = glb_of(&fixtures::textured());
-        let p = prepare(textured, "glb", &ParamSpecSourceModel { requires_texture: true, ..spec(&["glb"]) }).unwrap();
+        let p = prepared(textured, "glb", &ParamSpecSourceModel { requires_texture: true, ..spec(&["glb"]) }).unwrap();
         assert!(p.facts.textured);
     }
 

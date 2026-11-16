@@ -815,3 +815,82 @@ async def test_async_health_ready_reads_the_readiness_probe_and_raises_on_503() 
         with pytest.raises(LiteGenAPIError) as exc:
             await client.health.ready()
     assert exc.value.status == 503
+
+
+# `GET /health` answers 503 when a provider answered unhealthy, with the same
+# report as its 200 (`status: "degraded"`); a monitoring caller needs that report.
+_DEGRADED = {
+    "status": "degraded",
+    "providers": [
+        {"provider": "mock", "modality": "image", "healthy": True},
+        {"provider": "openai", "modality": "image", "healthy": False, "message": "the vendor refused the key"},
+    ],
+    "cache": {"enabled": True, "entries": 0},
+}
+_AT_CAPACITY = {"error": {"message": "busy", "type": "api_error", "code": "server_at_capacity"}}
+
+
+@respx.mock
+def test_health_check_returns_the_degraded_report_a_503_carries() -> None:
+    respx.get("http://localhost:4000/health").mock(return_value=Response(503, json=_DEGRADED))
+    assert LiteGenClient().health.check() == _DEGRADED
+
+
+@respx.mock
+async def test_async_health_check_returns_the_degraded_report_a_503_carries() -> None:
+    respx.get("http://localhost:4000/health").mock(return_value=Response(503, json=_DEGRADED))
+    async with AsyncLiteGenClient() as client:
+        assert await client.health.check() == _DEGRADED
+
+
+# Guards: only the report is an answer. A 503 that is litegen's error (the
+# server at capacity) still raises, as every other error does.
+@respx.mock
+def test_health_check_still_raises_a_503_that_is_an_error() -> None:
+    respx.get("http://localhost:4000/health").mock(
+        return_value=Response(503, json=_AT_CAPACITY, headers={"retry-after": "1"})
+    )
+    with pytest.raises(LiteGenAPIError) as exc:
+        LiteGenClient().health.check()
+    assert (exc.value.status, exc.value.code, exc.value.retry_after) == (503, "server_at_capacity", 1.0)
+
+
+@respx.mock
+async def test_async_health_check_still_raises_a_503_that_is_an_error() -> None:
+    respx.get("http://localhost:4000/health").mock(return_value=Response(503, json=_AT_CAPACITY))
+    async with AsyncLiteGenClient() as client:
+        with pytest.raises(LiteGenAPIError) as exc:
+            await client.health.check()
+    assert (exc.value.status, exc.value.code) == (503, "server_at_capacity")
+
+
+# `LiteGenAPIError.body`: the error response's body parsed as JSON, when it is
+# JSON (what the server answered with the status); None otherwise.
+_REFUSED = {"error": {"message": "No such key", "type": "api_error", "code": "not_found"}}
+
+
+@respx.mock
+def test_an_api_error_carries_the_json_body_it_came_with() -> None:
+    respx.get("http://localhost:4000/v1/keys/k1").mock(return_value=Response(404, json=_REFUSED))
+    with pytest.raises(LiteGenAPIError) as exc:
+        LiteGenClient().keys.get("k1")
+    assert exc.value.body == _REFUSED
+
+
+@respx.mock
+def test_an_api_error_without_a_json_body_has_none() -> None:
+    respx.get("http://localhost:4000/v1/keys/k1").mock(
+        return_value=Response(502, text="<html>bad gateway</html>", headers={"content-type": "text/html"})
+    )
+    with pytest.raises(LiteGenAPIError) as exc:
+        LiteGenClient().keys.get("k1")
+    assert exc.value.status == 502 and exc.value.body is None
+
+
+@respx.mock
+async def test_async_api_error_carries_the_json_body_it_came_with() -> None:
+    respx.get("http://localhost:4000/v1/keys/k1").mock(return_value=Response(404, json=_REFUSED))
+    async with AsyncLiteGenClient() as client:
+        with pytest.raises(LiteGenAPIError) as exc:
+            await client.keys.get("k1")
+    assert exc.value.body == _REFUSED

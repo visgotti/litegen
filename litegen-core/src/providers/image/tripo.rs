@@ -41,6 +41,11 @@ pub const MODELS: &[&str] = &["tripo/multiview"];
 const TASK_BUDGET: Duration = Duration::from_secs(100);
 
 /// Tripo's result field for each view it makes.
+/// A multiview request without its init image (the preflight's words).
+fn needs_init(model: &ModelSchema) -> ProviderError {
+    ProviderError::InvalidRequest(format!("'{}' turns an init image into views; send one", model.id))
+}
+
 const VIEW_FIELDS: [(&str, &str); 4] = [
     ("front", "front_view_url"),
     ("left", "left_view_url"),
@@ -97,23 +102,38 @@ impl ImageProvider for TripoImageProvider {
         crate::providers::Model3dProvider::is_configured(&self.inner)
     }
 
+    /// What Tripo's multiview can't take, refused before anything is
+    /// quoted, reserved, uploaded or sent; `generate` asks it first: an init
+    /// image, and only the four views it makes.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if !MODELS.contains(&model.id.as_str()) {
+            return Ok(());
+        }
+        if !roles.contains(&"init") {
+            return Err(needs_init(model));
+        }
+        match extras.views.iter().find(|view| !VIEW_FIELDS.iter().any(|(v, _)| v == view)) {
+            Some(view) => Err(ProviderError::InvalidRequest(format!("Tripo makes no '{view}' view"))),
+            None => Ok(()),
+        }
+    }
+
     /// Upload the init image, ask for its views, wait for the task and
     /// download the views the request named, in its order.
     async fn generate(
         &self,
         model: &ModelSchema,
-        _base: &BaseGenerationRequest,
+        base: &BaseGenerationRequest,
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         if !MODELS.contains(&model.id.as_str()) {
             return Err(ProviderError::ModelNotSupported { model: model.id.clone(), provider: "tripo".into() });
         }
-        let init = materialized
-            .refs
-            .iter()
-            .find(|r| r.role == "init")
-            .ok_or_else(|| ProviderError::InvalidRequest(format!("'{}' turns an init image into views; send one", model.id)))?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
+        let init = materialized.refs.iter().find(|r| r.role == "init").ok_or_else(|| needs_init(model))?;
         let input = match &init.form {
             MaterializedRefForm::Url(u) => u.clone(),
             MaterializedRefForm::Base64(b) => {
@@ -166,12 +186,8 @@ impl ImageProvider for TripoImageProvider {
             extras.views.clone()
         };
         let mut images = Vec::with_capacity(views.len());
-        for view in &views {
-            let field = VIEW_FIELDS
-                .iter()
-                .find(|(v, _)| v == view)
-                .map(|(_, f)| *f)
-                .ok_or_else(|| ProviderError::InvalidRequest(format!("Tripo makes no '{view}' view")))?;
+        // Each a view Tripo makes (the preflight refused any other).
+        for (view, field) in views.iter().filter_map(|view| VIEW_FIELDS.iter().find(|(v, _)| v == view).map(|(_, f)| (view, *f))) {
             let url = output[field].as_str().filter(|u| !u.is_empty()).ok_or_else(|| Self::failed(format!("tripo returned no {field}")))?;
             // Tripo has billed the task: a lost view fails the call, never a resubmit.
             let (data, ct) = self.inner.fetch(url).await.map_err(|e| {

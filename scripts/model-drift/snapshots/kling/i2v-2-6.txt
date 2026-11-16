@@ -30,13 +30,14 @@
 - `contents[].type.first_frame / last_frame`: The width and height of the image must be no less than 300px, and the aspect ratio of the image should fall within the range of 1:2.5 to 2.5:1.
 - `contents[].type.first_frame / last_frame`: Supports first-frame-to-video and first-and-last-frame-to-video generation; last-frame-only video generation is not supported. Among which:
     - When generating videos using the first and last frames, only 1080p resolution is supported.
+    - Audio generation (audio = native) is not supported when a last frame (last_frame) is provided.
 - `contents[].type.voice`: Defined in JSON format, as follows:
 - `contents[].type.voice`: At most 2 voices can be referenced.
 - `contents[].type.voice`: When specifying a voice, the sound parameter audio cannot be off.
 - `contents[].type.voice`: The voice_id is returned by the Custom Voice API, or you can use a system preset voice. [Click here for details](https://kling.ai/document-api/api/video/2-6/voice-customization).
 - `settings.audio`: native: The generated video includes native audio matching the visuals.
 - `settings.audio`: off: The generated video has no audio.
-- `settings.audio`: When audio=native, only 1080P videos are supported.
+- `settings.audio`: When audio=native, only 1080P videos are supported and does not support specifying a last frame (last_frame).
 - `settings.audio`: When audio=off, designated voice is not supported.
 - `settings.resolution`: 720p: Output video with a resolution of 720P.
 - `settings.resolution`: 1080p: Output video with a resolution of 1080P.

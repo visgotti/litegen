@@ -168,7 +168,11 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
     let content_type = parts.headers.get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
     let hash = request_hash(parts.method.as_str(), parts.uri.path(), content_type.as_deref(), &body.bytes);
 
-    match state.db.idempotency_begin(&scope, &key, &hash).await {
+    // The record this request makes is held with a lease, renewed while the
+    // request runs (migration 030): if its process dies, the key is free for
+    // the retry once the lease lapses, not 15 minutes on.
+    let held_by = format!("idem-{}", uuid::Uuid::new_v4());
+    match state.db.idempotency_begin_held(&scope, &key, &hash, &held_by, crate::management::reservations::LEASE).await {
         Err(e) => {
             // Without its record the request cannot be made safe to retry,
             // and running it unguarded is exactly the double bill the key is
@@ -209,10 +213,14 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
     // Run and record in a task of its own (see `run_to_completion`): the
     // outcome is stored even when the client hung up, so its retry replays it
     // instead of waiting out a stale "in progress" record and running (and
-    // billing) again.
+    // billing) again. The key's lease is renewed until it is recorded, and
+    // left to lapse if the request is cut.
+    let held = crate::management::reservations::Live::idempotency(&scope, &key, &held_by);
     run_to_completion(async move {
         let resp = next.run(body.into_request(parts)).await;
-        settle(&*state.db, &scope, &key, resp).await
+        let resp = settle(&*state.db, &scope, &key, &held_by, resp).await;
+        drop(held);
+        resp
     })
     .await
 }
@@ -224,10 +232,27 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
 /// inline, the handler was dropped at its vendor `.await` and its key quota
 /// and limit reservations stayed held for good (E12). The task keeps the
 /// request's span, so its vendor calls carry the request's `traceparent`.
+///
+/// A graceful stop cuts a request still running when its grace ends
+/// (`crate::shutdown`): dropped while the runtime still runs, it gives back
+/// what it reserved before litegen exits. Dropped with the runtime, the
+/// releases its guards spawned never ran.
 async fn run_to_completion(fut: impl std::future::Future<Output = Response> + Send + 'static) -> Response {
     use tracing::Instrument;
-    match tokio::spawn(fut.instrument(tracing::Span::current())).await {
-        Ok(resp) => resp,
+    match tokio::spawn(crate::shutdown::cut_at_stop(fut.instrument(tracing::Span::current()))).await {
+        Ok(Some(resp)) => resp,
+        // Its connection was closed when the grace ended; this answers a
+        // caller still waiting in-process, if any.
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("retry-after", "1")],
+            Json(serde_json::json!({ "error": {
+                "message": "litegen stopped before this request finished; retry it",
+                "type": "service_unavailable",
+                "code": "service_unavailable",
+            }})),
+        )
+            .into_response(),
         Err(e) => {
             // The panic's text stays in the log; the caller gets the JSON
             // `internal_error` every other 500 has (handlers review #9).
@@ -238,10 +263,11 @@ async fn run_to_completion(fut: impl std::future::Future<Output = Response> + Se
 }
 
 /// Record `resp` under its key — or free the key when no vendor was called —
-/// and hand it back.
-async fn settle(db: &dyn crate::db::DatabaseStore, scope: &str, key: &str, resp: Response) -> Response {
+/// and hand it back. Only while the key is still `held_by` this request: once
+/// its lease lapsed, a retry may hold it, and keeps its own record.
+async fn settle(db: &dyn crate::db::DatabaseStore, scope: &str, key: &str, held_by: &str, resp: Response) -> Response {
     if resp.extensions().get::<VendorAttempted>().is_none() {
-        if let Err(e) = db.idempotency_release(scope, key).await {
+        if let Err(e) = db.idempotency_release_held(scope, key, held_by).await {
             tracing::warn!(error = %e, "failed to release an unspent idempotency key");
         }
         return resp;
@@ -266,10 +292,10 @@ async fn settle(db: &dyn crate::db::DatabaseStore, scope: &str, key: &str, resp:
             .collect(),
         body: rbytes.to_vec(),
     };
-    if let Err(e) = db.idempotency_complete(scope, key, &stored).await {
+    if let Err(e) = db.idempotency_complete_held(scope, key, held_by, &stored).await {
         // The vendor was called and this response is the only record of it;
         // answer it anyway. A retry with the key finds the run in progress
-        // until it goes stale.
+        // until its lease lapses, about two minutes on.
         tracing::error!(error = %e, "failed to record a response under its Idempotency-Key");
     }
     Response::from_parts(rparts, Body::from(rbytes))
@@ -374,7 +400,7 @@ mod tests {
         resp.extensions_mut().insert(VendorAttempted);
         let db = crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap();
 
-        let resp = settle(&db, "org:-|app:-|master", "too-large", resp).await;
+        let resp = settle(&db, "org:-|app:-|master", "too-large", "idem-test", resp).await;
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
         let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();

@@ -53,8 +53,6 @@ export default defineConfig({
         LITEGEN_CORS_ORIGINS: 'http://localhost:5274,http://127.0.0.1:5274',
         LITEGEN__CORS__ALLOW_CREDENTIALS: 'true',
         LITEGEN__COOKIE_INSECURE_DEV: 'true',
-        LITEGEN__DEV__EXPOSE_INVITE_TOKENS: 'true',
-        LITEGEN__DEV__EXPOSE_RESET_TOKENS: 'true',
       },
     },
     {

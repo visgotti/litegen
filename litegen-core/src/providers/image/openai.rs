@@ -456,6 +456,13 @@ impl ImageProvider for OpenAiProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
+    /// What OpenAI can't make, refused before anything is quoted, reserved
+    /// or sent; `generate` asks it first: a size the model doesn't make
+    /// ([`Self::vendor_size`]).
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, _roles: &[&str]) -> Result<(), ProviderError> {
+        Self::vendor_size(extras.size.as_deref().unwrap_or("1024x1024"), &self.resolve_model_name(&model.id)).map(drop)
+    }
+
     /// Create an image via `POST {api_base}/v1/images/generations`.
     ///
     /// @see <https://developers.openai.com/api/reference/resources/images/methods/generate> — Images: create.
@@ -470,11 +477,14 @@ impl ImageProvider for OpenAiProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let model_name = self.resolve_model_name(&model.id);
         let is_dalle3 = Self::is_dalle3(&model_name);
         let is_gpt_image = Self::is_gpt_image(&model_name);
 
-        // Determine size
+        // The size in OpenAI's spelling (the preflight refused one it can't make).
         let size = extras.size.as_deref().unwrap_or("1024x1024");
         let size = Self::vendor_size(size, &model_name)?;
 

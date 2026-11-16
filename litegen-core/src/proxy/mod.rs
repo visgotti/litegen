@@ -16,6 +16,7 @@ pub mod ref_publish;
 pub mod webhook;
 pub mod poller;
 pub mod retention;
+pub mod tenant_files;
 pub mod aws_sts;
 pub mod circuit_breaker;
 #[cfg(test)] mod materializer_tests;

@@ -54,7 +54,9 @@ fn passes(def: &ToolDef, ctx: &KeyContext, state: &AppState) -> bool {
         Gate::OrgRead(perm) => is_platform_admin(ctx) || user_may(perm, Scope::Read) || (key && may(Scope::Read)),
         Gate::OrgWrite(perm) => is_platform_admin(ctx) || user_may(perm, Scope::Admin) || (key && has(Scope::Admin)),
         Gate::Member(perm) => is_platform_admin(ctx) || user_may(perm, method_scope),
-        Gate::Perm(perm) => ctx.permissions.contains(&perm) && may(method_scope),
+        // `users::invite_user`: the master key too, where it acts in an org
+        // (single-tenant: the default one; hosted: none, `no_active_org`).
+        Gate::Perm(perm) => (ctx.permissions.contains(&perm) || (is_platform_admin(ctx) && ctx.org_id.is_some())) && may(method_scope),
         Gate::Global(perm) => match state.mode {
             Mode::Hosted => is_platform_admin(ctx),
             Mode::SingleTenant => may_manage_users(state, ctx, perm) && may(method_scope),

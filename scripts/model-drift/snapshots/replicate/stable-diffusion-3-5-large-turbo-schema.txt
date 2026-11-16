@@ -1,0 +1,121 @@
+# stability-ai/stable-diffusion-3.5-large-turbo
+served by POST /v1/models/stability-ai/stable-diffusion-3.5-large-turbo/predictions (versionless): true
+disabled for predictions: false
+
+# price
+$0.04 per output image [image_output_count]
+
+# input schema of the served version
+{
+  "POST /predictions (application/json)": {
+    "properties": {
+      "context": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "created_at": {
+        "format": "date-time",
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "nullable": true,
+        "type": "string"
+      },
+      "input": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "1:1",
+            "enum": [
+              "16:9",
+              "1:1",
+              "21:9",
+              "2:3",
+              "3:2",
+              "4:5",
+              "5:4",
+              "9:16",
+              "9:21"
+            ],
+            "type": "string"
+          },
+          "cfg": {
+            "default": 1,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "number"
+          },
+          "image": {
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "negative_prompt": {
+            "nullable": true,
+            "type": "string"
+          },
+          "output_format": {
+            "default": "webp",
+            "enum": [
+              "webp",
+              "jpg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "prompt_strength": {
+            "default": 0.85,
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "seed": {
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "output_file_prefix": {
+        "nullable": true,
+        "type": "string"
+      },
+      "webhook": {
+        "format": "uri",
+        "maxLength": 65536,
+        "minLength": 1,
+        "nullable": true,
+        "type": "string"
+      },
+      "webhook_events_filter": {
+        "default": [
+          "start",
+          "output",
+          "logs",
+          "completed"
+        ],
+        "items": {
+          "enum": [
+            "start",
+            "output",
+            "logs",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "array"
+      }
+    },
+    "type": "object"
+  }
+}

@@ -55,9 +55,8 @@ describe('buildGenerationBody', () => {
     expect(body).not.toHaveProperty('n');
   });
 
-  // Model3dGenerationRequest has no `size` at all and ignores `n`: serde drops
-  // `size` silently even with strict:true, so the checkbox's promise of a
-  // rejection is never kept and the user's "4 meshes" quietly becomes one.
+  // A 3D request has no `size`: strict mode refuses it (`param_unsupported`)
+  // and `strict: false` drops it. No request takes an `n` above 1 (L13).
   it('omits size and n for a 3D model', () => {
     const body = buildGenerationBody(form, 'model3d');
     expect(body).not.toHaveProperty('size');
@@ -122,8 +121,8 @@ describe('buildGenerationBody', () => {
 });
 
 describe('omitImageOnlyParams', () => {
-  // Resubmitting a history entry recorded before this fix must not put the
-  // dropped fields back on the wire.
+  // Resubmitting a history entry recorded before the page left these fields
+  // off must not put them back on the wire.
   it('drops size and n from a stored history body', () => {
     expect(omitImageOnlyParams({ model: 'mock/mesh-3d', prompt: 'x', size: '1024x1024', n: 4 }))
       .toEqual({ model: 'mock/mesh-3d', prompt: 'x' });

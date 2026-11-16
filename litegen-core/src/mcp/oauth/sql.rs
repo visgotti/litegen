@@ -61,10 +61,11 @@ struct RequestRow {
     code_hash: Option<String>,
     decided_at: Option<DateTime<Utc>>,
     consumed_at: Option<DateTime<Utc>>,
+    sign_in_epoch: Option<i64>,
 }
 
 const REQUEST_COLS: &str = "id, client_id, redirect_uri, state, code_challenge, scopes, surface, created_at, expires_at, \
-    user_id, org_id, app_id, granted_scopes, code_hash, decided_at, consumed_at";
+    user_id, org_id, app_id, granted_scopes, code_hash, decided_at, consumed_at, sign_in_epoch";
 
 fn request_from_row(r: RequestRow) -> Option<AuthRequest> {
     Some(AuthRequest {
@@ -84,6 +85,7 @@ fn request_from_row(r: RequestRow) -> Option<AuthRequest> {
         code_hash: r.code_hash,
         decided_at: r.decided_at,
         consumed_at: r.consumed_at,
+        sign_in_epoch: r.sign_in_epoch,
     })
 }
 
@@ -99,9 +101,10 @@ struct GrantRow {
     created_at: DateTime<Utc>,
     last_used_at: Option<DateTime<Utc>>,
     revoked_at: Option<DateTime<Utc>>,
+    sign_in_epoch: i64,
 }
 
-const GRANT_COLS: &str = "id, client_id, user_id, org_id, app_id, surface, scopes, created_at, last_used_at, revoked_at";
+const GRANT_COLS: &str = "id, client_id, user_id, org_id, app_id, surface, scopes, created_at, last_used_at, revoked_at, sign_in_epoch";
 
 fn grant_from_row(r: GrantRow) -> Option<Grant> {
     Some(Grant {
@@ -115,6 +118,7 @@ fn grant_from_row(r: GrantRow) -> Option<Grant> {
         created_at: r.created_at,
         last_used_at: r.last_used_at,
         revoked_at: r.revoked_at,
+        sign_in_epoch: r.sign_in_epoch,
     })
 }
 
@@ -210,7 +214,7 @@ macro_rules! impl_mcp_oauth_store {
             // ─── Requests and codes ─────────────────────────────────────
             async fn insert_request(&self, r: &AuthRequest) -> Result<(), sqlx::Error> {
                 let sql = $sql(&format!(
-                    "INSERT INTO mcp_oauth_requests ({REQUEST_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "INSERT INTO mcp_oauth_requests ({REQUEST_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 ));
                 sqlx::query(&sql)
                     .bind(&r.id)
@@ -229,6 +233,7 @@ macro_rules! impl_mcp_oauth_store {
                     .bind(&r.code_hash)
                     .bind(r.decided_at)
                     .bind(r.consumed_at)
+                    .bind(r.sign_in_epoch)
                     .execute(self.pool())
                     .await?;
                 Ok(())
@@ -242,10 +247,10 @@ macro_rules! impl_mcp_oauth_store {
 
             async fn decide_request(&self, id: &str, decision: Decision) -> Result<bool, sqlx::Error> {
                 let result = match decision {
-                    Decision::Approve { user_id, org_id, app_id, scopes, code_hash, code_expires_at, at } => {
+                    Decision::Approve { user_id, org_id, app_id, scopes, code_hash, code_expires_at, at, sign_in_epoch } => {
                         let sql = $sql(
                             "UPDATE mcp_oauth_requests SET user_id = ?, org_id = ?, app_id = ?, granted_scopes = ?, \
-                             code_hash = ?, expires_at = ?, decided_at = ? \
+                             code_hash = ?, expires_at = ?, decided_at = ?, sign_in_epoch = ? \
                              WHERE id = ? AND decided_at IS NULL AND expires_at > ?",
                         );
                         sqlx::query(&sql)
@@ -256,6 +261,7 @@ macro_rules! impl_mcp_oauth_store {
                             .bind(code_hash)
                             .bind(code_expires_at)
                             .bind(at)
+                            .bind(sign_in_epoch)
                             .bind(id)
                             .bind(at)
                             .execute(self.pool())
@@ -287,7 +293,7 @@ macro_rules! impl_mcp_oauth_store {
 
             // ─── Grants ─────────────────────────────────────────────────
             async fn insert_grant(&self, g: &Grant) -> Result<(), sqlx::Error> {
-                let sql = $sql(&format!("INSERT INTO mcp_oauth_grants ({GRANT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"));
+                let sql = $sql(&format!("INSERT INTO mcp_oauth_grants ({GRANT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"));
                 sqlx::query(&sql)
                     .bind(&g.id)
                     .bind(&g.client_id)
@@ -299,21 +305,41 @@ macro_rules! impl_mcp_oauth_store {
                     .bind(g.created_at)
                     .bind(g.last_used_at)
                     .bind(g.revoked_at)
+                    .bind(g.sign_in_epoch)
                     .execute(self.pool())
                     .await?;
                 Ok(())
             }
 
-            async fn claim_grant(&self, g: &Grant) -> Result<Grant, sqlx::Error> {
+            async fn claim_grant(&self, g: &Grant) -> Result<Option<Grant>, sqlx::Error> {
+                // A claim made under an epoch older than the person's is
+                // stale (their sign-ins ended since): refused, and it revokes
+                // nothing (review round 5, finding 5).
+                let sql = $sql("SELECT sign_in_epoch FROM users WHERE id = ?");
+                let current: Option<i64> = sqlx::query_scalar(&sql).bind(&g.user_id).fetch_optional(self.pool()).await?;
+                if current.is_some_and(|epoch| g.sign_in_epoch < epoch) {
+                    return Ok(None);
+                }
                 // When two first sign-ins race, the unique index fails the
                 // later insert, and that claim takes the grant that won.
                 for _ in 0..3 {
                     if let Some(live) = self.find_active_grant(&g.client_id, &g.user_id, &g.org_id, g.app_id.as_deref(), g.surface).await? {
+                        // A live grant of a newer epoch: this claim is the
+                        // stale one, and changes nothing. One of an older
+                        // epoch is spent: revoked, with its tokens, and this
+                        // claim makes a new one (review round 4, finding 2).
+                        if live.sign_in_epoch > g.sign_in_epoch {
+                            return Ok(None);
+                        }
+                        if live.sign_in_epoch < g.sign_in_epoch {
+                            self.revoke_grant(&live.id, g.created_at).await?;
+                            continue;
+                        }
                         self.update_grant_scopes(&live.id, &g.scopes).await?;
-                        return Ok(Grant { scopes: g.scopes.clone(), ..live });
+                        return Ok(Some(Grant { scopes: g.scopes.clone(), ..live }));
                     }
                     match self.insert_grant(g).await {
-                        Ok(()) => return Ok(g.clone()),
+                        Ok(()) => return Ok(Some(g.clone())),
                         Err(e) if is_unique_violation(&e) => continue,
                         Err(e) => return Err(e),
                     }

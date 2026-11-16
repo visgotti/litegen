@@ -61,6 +61,7 @@ from .error_response import ErrorResponse
 from .expand import Expand
 from .extend_output import ExtendOutput
 from .frames_set_shape import FramesSetShape
+from .gateway_setting_limits import GatewaySettingLimits
 from .gateway_settings import GatewaySettings
 from .gateway_settings_view import GatewaySettingsView
 from .generation import Generation
@@ -192,10 +193,19 @@ from .param_spec_string_array import ParamSpecStringArray
 from .param_spec_time_range import ParamSpecTimeRange
 from .password_reset import PasswordReset
 from .password_reset_confirm_body import PasswordResetConfirmBody
+from .password_reset_link import PasswordResetLink
 from .password_reset_request_body import PasswordResetRequestBody
 from .patch_account_request import PatchAccountRequest
 from .patch_model_state_request import PatchModelStateRequest
+from .patch_provider_config_request import PatchProviderConfigRequest
+from .patch_provider_config_request_extra_headers_type_0 import (
+    PatchProviderConfigRequestExtraHeadersType0,
+)
+from .patch_provider_config_request_model_mapping_type_0 import (
+    PatchProviderConfigRequestModelMappingType0,
+)
 from .patch_user_request import PatchUserRequest
+from .pending_invitation import PendingInvitation
 from .pixel_size import PixelSize
 from .preserves_unmasked import PreservesUnmasked
 from .price_rule import PriceRule
@@ -260,6 +270,7 @@ from .session import Session
 from .session_info import SessionInfo
 from .set_app_model_access_request import SetAppModelAccessRequest
 from .set_org_allowed_models_request import SetOrgAllowedModelsRequest
+from .setting_range import SettingRange
 from .signed_links import SignedLinks
 from .signup_request import SignupRequest
 from .size_spec_enum import SizeSpecEnum
@@ -291,6 +302,8 @@ from .video_generation_response_metadata_type_0 import (
 from .video_media import VideoMedia
 from .video_segment import VideoSegment
 from .webhook_delivery import WebhookDelivery
+from .webhook_delivery_state import WebhookDeliveryState
+from .webhook_delivery_status import WebhookDeliveryStatus
 from .webhook_test_result import WebhookTestResult
 
 __all__ = (
@@ -355,6 +368,7 @@ __all__ = (
     "Expand",
     "ExtendOutput",
     "FramesSetShape",
+    "GatewaySettingLimits",
     "GatewaySettings",
     "GatewaySettingsView",
     "Generation",
@@ -470,10 +484,15 @@ __all__ = (
     "ParamSpecTimeRange",
     "PasswordReset",
     "PasswordResetConfirmBody",
+    "PasswordResetLink",
     "PasswordResetRequestBody",
     "PatchAccountRequest",
     "PatchModelStateRequest",
+    "PatchProviderConfigRequest",
+    "PatchProviderConfigRequestExtraHeadersType0",
+    "PatchProviderConfigRequestModelMappingType0",
     "PatchUserRequest",
+    "PendingInvitation",
     "PixelSize",
     "PreservesUnmasked",
     "PriceRule",
@@ -538,6 +557,7 @@ __all__ = (
     "SessionInfo",
     "SetAppModelAccessRequest",
     "SetOrgAllowedModelsRequest",
+    "SettingRange",
     "SignedLinks",
     "SignupRequest",
     "SizeSpecEnum",
@@ -567,5 +587,7 @@ __all__ = (
     "VideoMedia",
     "VideoSegment",
     "WebhookDelivery",
+    "WebhookDeliveryState",
+    "WebhookDeliveryStatus",
     "WebhookTestResult",
 )

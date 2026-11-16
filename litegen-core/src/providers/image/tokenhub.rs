@@ -216,9 +216,6 @@ impl TokenHubImageProvider {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
-        if extras.size.is_some() && extras.resolution.is_some() {
-            return Err(ProviderError::InvalidRequest("tokenhub: Seedream takes a resolution tier or an exact size, not both (\"不可混用\")".into()));
-        }
         let creds = self.creds()?;
         let mut body = json!({});
         // `extra` (watermark, optimize_prompt_options) first; none replaces an owned field (rule 11).
@@ -305,10 +302,8 @@ impl TokenHubImageProvider {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
-        let tier = match extras.resolution.as_deref() {
-            Some(t) => Some(async_tier(&model.id, t).ok_or_else(|| ProviderError::InvalidRequest(format!("{}: no resolution tier {t}", model.id)))?),
-            None => None,
-        };
+        // A tier with no vendor name was refused by the preflight.
+        let tier = extras.resolution.as_deref().and_then(|t| async_tier(&model.id, t));
         let raw = |form: &MaterializedRefForm| match form {
             MaterializedRefForm::Base64(b64) => Some(b64.clone()),
             MaterializedRefForm::Url(u) => Some(u.clone()),
@@ -320,10 +315,7 @@ impl TokenHubImageProvider {
             // One image: litegen returns and bills one, whatever `n` was.
             body["n"] = json!(1);
             if native == "kling-image-v3" {
-                // "仅文生图支持；图生图（image 不为空）场景下不支持负向提示词。"
-                if base.negative_prompt.is_some() && !images.is_empty() {
-                    return Err(ProviderError::InvalidRequest(format!("{}: a negative_prompt cannot go with a reference image", model.id)));
-                }
+                // Never with an image (the preflight refused that).
                 if let Some(np) = base.negative_prompt.as_deref() {
                     body["negative_prompt"] = json!(np);
                 }
@@ -477,6 +469,47 @@ impl ImageProvider for TokenHubImageProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What TokenHub's image APIs can't take, refused before anything is
+    /// quoted, reserved or sent; `generate` asks it first:
+    /// - Seedream: a tier or an exact size ("方式 1 … 分辨率档位 … 方式 2 …
+    ///   宽高像素值 … 不可混用");
+    /// - Hy-Image: an exact size, or a tier and/or a ratio, since a size beside
+    ///   either would be read as a ratio ("size + generate_max_pixels：最终宽高由
+    ///   内部逻辑综合计算"); a tier and a ratio it has a size for;
+    /// - Kling and Vidu: a tier they name; Kling image v3 no negative prompt
+    ///   with an image ("仅文生图支持；图生图（image 不为空）场景下不支持负向提示词。").
+    fn preflight(&self, model: &ModelSchema, base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some((_, native, shape)) = route(&model.id) else { return Ok(()) };
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(why));
+        match shape {
+            Shape::Seedream => {
+                if extras.size.is_some() && extras.resolution.is_some() {
+                    return refuse("tokenhub: Seedream takes a resolution tier or an exact size, not both (\"不可混用\")".into());
+                }
+            }
+            Shape::KlingImage | Shape::ViduImage => {
+                if let Some(t) = extras.resolution.as_deref().filter(|t| async_tier(&model.id, t).is_none()) {
+                    return refuse(format!("{}: no resolution tier {t}", model.id));
+                }
+                if native == "kling-image-v3" && base.negative_prompt.is_some() && !roles.is_empty() {
+                    return refuse(format!("{}: a negative_prompt cannot go with a reference image", model.id));
+                }
+            }
+            _ => {
+                if extras.size.is_some() && (extras.resolution.is_some() || extras.aspect_ratio.is_some()) {
+                    return refuse("tokenhub: send an exact size, or resolution and/or aspect_ratio — not size with either".into());
+                }
+                if let Some(t) = extras.resolution.as_deref().filter(|t| generate_max_pixels(t).is_none()) {
+                    return refuse(format!("tokenhub: no resolution tier '{t}'"));
+                }
+                if let Some(ratio) = extras.aspect_ratio.as_deref().filter(|r| extras.size.is_none() && ratio_size(r).is_none()) {
+                    return refuse(format!("tokenhub: no size for aspect ratio '{ratio}'"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -488,23 +521,16 @@ impl ImageProvider for TokenHubImageProvider {
             model: model.id.clone(),
             provider: "tokenhub".into(),
         })?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         if shape == Shape::Seedream {
             return self.seedream(model, endpoint, native, base, extras, materialized).await;
         }
         if matches!(shape, Shape::KlingImage | Shape::ViduImage) {
             return self.submit_async(model, endpoint, native, shape, base, extras, materialized).await;
         }
-        // An exact size beside a tier or a ratio would be read as a ratio
-        // ("size + generate_max_pixels：最终宽高由内部逻辑综合计算"), so it is not exact.
-        if extras.size.is_some() && (extras.resolution.is_some() || extras.aspect_ratio.is_some()) {
-            return Err(ProviderError::InvalidRequest(
-                "tokenhub: send an exact size, or resolution and/or aspect_ratio — not size with either".into(),
-            ));
-        }
-        let max_pixels = match extras.resolution.as_deref() {
-            Some(t) => Some(generate_max_pixels(t).ok_or_else(|| ProviderError::InvalidRequest(format!("tokenhub: no resolution tier '{t}'")))?),
-            None => None,
-        };
+        let max_pixels = extras.resolution.as_deref().and_then(generate_max_pixels);
         let creds = self.creds()?;
 
         // One user message: the prompt, then each image as an image_url part
@@ -534,8 +560,10 @@ impl ImageProvider for TokenHubImageProvider {
             // "传入具体值时强制按指定尺寸出图": an exact size.
             (Some(size), _) => body["size"] = json!(size),
             (None, Some(ratio)) => {
-                let size = ratio_size(ratio).ok_or_else(|| ProviderError::InvalidRequest(format!("tokenhub: no size for aspect ratio '{ratio}'")))?;
-                body["size"] = json!(size);
+                // A ratio with no size was refused by the preflight.
+                if let Some(size) = ratio_size(ratio) {
+                    body["size"] = json!(size);
+                }
                 body["generate_max_pixels"] = json!(max_pixels.or_else(|| generate_max_pixels(DEFAULT_TIER)));
             }
             (None, None) => {

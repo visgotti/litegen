@@ -1,0 +1,115 @@
+{
+  "POST /v1/animations (application/json)": {
+    "properties": {
+      "action_id": {
+        "maximum": 32767,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "action_ids": {
+        "items": {
+          "maximum": 32767,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": true
+      },
+      "motion_task_id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "post_process": {
+        "properties": {
+          "fps": {
+            "default": 30,
+            "enum": [
+              24,
+              25,
+              30,
+              60
+            ],
+            "type": "integer"
+          },
+          "operation_type": {
+            "enum": [
+              "change_fps",
+              "fbx2usdz",
+              "extract_armature"
+            ],
+            "type": "string"
+          }
+        },
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "rig_task_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "rig_task_id"
+    ],
+    "type": "object"
+  },
+  "POST /v1/rigging (application/json)": {
+    "properties": {
+      "animation_type": {
+        "default": "biped",
+        "enum": [
+          "biped",
+          "quadruped"
+        ],
+        "type": "string"
+      },
+      "height_meters": {
+        "default": 1.7,
+        "format": "float",
+        "minimum": 0,
+        "type": "number"
+      },
+      "include_fingers": {
+        "default": false,
+        "type": "boolean"
+      },
+      "input_task_id": {
+        "type": "string"
+      },
+      "model_url": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "skeleton_template": {
+        "default": "meshyrig",
+        "enum": [
+          "meshyrig",
+          "mixamo",
+          "ue5_mannequin",
+          "max_biped",
+          "unity_humanoid",
+          "maya_human_ik",
+          "blender_rigify_basic_human",
+          "cc5_hd_neutral_base",
+          "daz_genesis9"
+        ],
+        "type": "string"
+      },
+      "texture_image_url": {
+        "deprecated": true,
+        "type": "string"
+      }
+    },
+    "type": "object"
+  }
+}
+/v1/animations
+/v1/rigging

@@ -71,6 +71,51 @@ impl CachePolicy {
     }
 }
 
+/// Asked before a cached answer is served. An answer is an earlier
+/// generation's (its `id` and its image): once that generation's files are
+/// deleted (`DELETE /v1/generations/{id}`, an app's `retention_days`) or its
+/// row is gone, the answer must never be handed out again
+/// (`docs/gateway-settings.md`, the cache).
+#[async_trait::async_trait]
+pub trait HitCheck: Send + Sync {
+    /// Whether `answer` may still be served. One that may not is dropped
+    /// from both tiers, and the lookup is a miss.
+    async fn servable(&self, answer: &ImageGenerationResponse) -> bool;
+}
+
+/// A fresh answer the cache is to keep, keyed by the request that got it and
+/// held back until its generation's row exists: a hit is served only while
+/// that row does ([`HitCheck`]), so an answer cached before its row would be
+/// dropped by an identical request arriving in between, which would pay the
+/// vendor again (review 2026-11-15 round 3, finding 4).
+/// `ProxyRouter::cache_answer` stores it.
+#[must_use = "an answer is cached only once it is handed to `ProxyRouter::cache_answer`"]
+pub struct AnswerToCache {
+    key: String,
+    model: String,
+    response: ImageGenerationResponse,
+}
+
+impl AnswerToCache {
+    /// `response`, the answer to this request (`tenant`, `model` and the rest
+    /// key it, as a lookup does).
+    pub fn new(
+        tenant: Option<&str>,
+        model: &str,
+        base: &BaseGenerationRequest,
+        extras: &ImageExtras,
+        materialized: &MaterializedRequest,
+        response: &ImageGenerationResponse,
+    ) -> Self {
+        Self { key: image_cache_key(tenant, model, base, extras, materialized), model: model.to_string(), response: response.clone() }
+    }
+
+    /// The model the answer is for, whose route says whether the cache is on.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+}
+
 /// An answer with its own lifetime: its route's TTL, else the gateway's.
 #[derive(Clone)]
 struct Cached {
@@ -200,6 +245,10 @@ pub struct GenerationCache {
     /// before it touches the shared one, so a test can drop its caller there.
     #[cfg(test)]
     clear_pause: std::sync::Mutex<Option<Arc<LookupPause>>>,
+    /// Test only: stops the next store once its answer is in this replica's
+    /// tier, so a test can look it up from another request at that point.
+    #[cfg(test)]
+    put_pause: std::sync::Mutex<Option<Arc<LookupPause>>>,
 }
 
 /// See [`GenerationCache::pause_next_shared_lookup`] and
@@ -258,6 +307,8 @@ impl GenerationCache {
             lookup_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
             clear_pause: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            put_pause: std::sync::Mutex::new(None),
         }
     }
 
@@ -300,6 +351,24 @@ impl GenerationCache {
     #[cfg(test)]
     async fn pause_after_local_clear(&self) {
         let pause = self.clear_pause.lock().unwrap().take();
+        if let Some(pause) = pause {
+            pause.reached.notify_one();
+            pause.resume.notified().await;
+        }
+    }
+
+    /// Test only: the next store stops once its answer is in this replica's
+    /// tier (a lookup finds it from then on), and says so on `reached`.
+    #[cfg(test)]
+    pub(crate) fn pause_next_put(&self) -> Arc<LookupPause> {
+        let pause = Arc::new(LookupPause { reached: tokio::sync::Notify::new(), resume: tokio::sync::Notify::new() });
+        *self.put_pause.lock().unwrap() = Some(pause.clone());
+        pause
+    }
+
+    #[cfg(test)]
+    async fn pause_after_put(&self) {
+        let pause = self.put_pause.lock().unwrap().take();
         if let Some(pause) = pause {
             pause.reached.notify_one();
             pause.resume.notified().await;
@@ -374,11 +443,36 @@ impl GenerationCache {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Option<ImageGenerationResponse> {
+        self.get_servable_image(tenant, model, base, extras, materialized, None).await
+    }
+
+    /// [`Self::get_image`], serving an answer only when `check` lets it. One
+    /// it refuses (its generation's files were deleted, or its row is gone)
+    /// is dropped from this replica's tier and from the shared one, and the
+    /// lookup is a miss. An answer from either tier is checked, so a replica
+    /// holding no copy of its own drops the shared one. Another replica's own
+    /// copy is dropped at its next lookup of it, or expires.
+    pub async fn get_servable_image(
+        &self,
+        tenant: Option<&str>,
+        model: &str,
+        base: &BaseGenerationRequest,
+        extras: &ImageExtras,
+        materialized: &MaterializedRequest,
+        check: Option<&dyn HitCheck>,
+    ) -> Option<ImageGenerationResponse> {
         let key = image_cache_key(tenant, model, base, extras, materialized);
         let local = self.current();
         let mut result = local.get(&key).await.map(|c| c.response);
         if result.is_none() {
             result = self.shared_lookup(&local, &key).await;
+        }
+        if let (Some(answer), Some(check)) = (result.as_ref(), check) {
+            if !check.servable(answer).await {
+                debug!(model = model, generation_id = %answer.id, "a cached answer's generation was deleted; dropped from the cache");
+                self.drop_key(&key).await;
+                result = None;
+            }
         }
         let outcome = if result.is_some() { CacheOutcome::Hit } else { CacheOutcome::Miss };
         metrics::counter!("litegen_cache_requests_total", "result" => outcome.as_str()).increment(1);
@@ -434,14 +528,21 @@ impl GenerationCache {
         response: &ImageGenerationResponse,
         ttl: Duration,
     ) {
-        let key = image_cache_key(tenant, model, base, extras, materialized);
+        self.put_answer(AnswerToCache::new(tenant, model, base, extras, materialized, response), ttl).await;
+    }
+
+    /// Keep `answer` for `ttl`: in this replica's tier, and in the shared one.
+    pub async fn put_answer(&self, answer: AnswerToCache, ttl: Duration) {
+        let AnswerToCache { key, model, response } = answer;
         self.current().insert(key.clone(), Cached { response: response.clone(), ttl }).await;
+        #[cfg(test)]
+        self.pause_after_put().await;
         // The write to Redis goes on in the background: a slow Redis never
         // delays the response that is waiting on this. An answer that cannot
         // fit is not even copied. A failed write is logged (once a minute) and
         // leaves the answer on this replica only.
-        if let Some(shared) = self.shared.get().filter(|_| !cache_tier::too_big_to_share(response)) {
-            let (shared, response) = (shared.clone(), response.clone());
+        if let Some(shared) = self.shared.get().filter(|_| !cache_tier::too_big_to_share(&response)) {
+            let shared = shared.clone();
             let write = SharedWrite::begin(&self.shared_writes);
             tokio::spawn(async move {
                 let _write = write;
@@ -450,7 +551,7 @@ impl GenerationCache {
                 }
             });
         }
-        debug!(model = model, "Cached generation");
+        debug!(model = %model, "Cached generation");
     }
 
     /// Invalidate a specific cache entry, in both tiers. Other replicas keep
@@ -463,10 +564,14 @@ impl GenerationCache {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) {
-        let key = image_cache_key(tenant, model, base, extras, materialized);
-        self.current().invalidate(&key).await;
+        self.drop_key(&image_cache_key(tenant, model, base, extras, materialized)).await;
+    }
+
+    /// Drop the answer under `key` from this replica's tier and the shared one.
+    async fn drop_key(&self, key: &str) {
+        self.current().invalidate(key).await;
         if let Some(shared) = self.shared.get() {
-            if let Err(e) = cache_tier::remove(shared, &key).await {
+            if let Err(e) = cache_tier::remove(shared, key).await {
                 warn_shared(&STORE_FAILED, &e, "the answer stays in the shared tier until it expires");
             }
         }
@@ -674,7 +779,7 @@ mod tests {
         let cache = GenerationCache::new(&CacheGlobalConfig { enabled: true, ..CacheGlobalConfig::default() });
         put_answers(&cache, 4, 1 << 20).await;
         assert_eq!(cache.entry_count().await, 4, "256 MiB holds four 1 MiB answers");
-        cache.reconfigure(CacheSettings { enabled: true, ttl: Duration::from_secs(600), max_items: 10_000, max_bytes: 2_097_152 });
+        cache.reconfigure(CacheSettings { enabled: true, ttl: Duration::from_secs(600), max_items: 10_000, max_bytes: 2_097_152, charge_hits: true });
         assert_eq!(cache.entry_count().await, 0, "a new budget is a new, empty tier");
         put_answers(&cache, 8, 1 << 20).await;
         let n = cache.entry_count().await;

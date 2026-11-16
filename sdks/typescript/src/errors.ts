@@ -45,8 +45,10 @@ export class LiteGenAPIError extends LiteGenError {
    * {@link readResponseMeta} reads litegen's out of them.
    */
   readonly headers?: Headers;
+  /** The error response's body as JSON, when it was JSON: what the server answered with the status. */
+  readonly body?: unknown;
 
-  constructor(status: number, detail: ErrorDetail, retryAfterMs?: number, headers?: Headers) {
+  constructor(status: number, detail: ErrorDetail, retryAfterMs?: number, headers?: Headers, body?: unknown) {
     super(detail.message);
     this.name = "LiteGenAPIError";
     this.status = status;
@@ -62,6 +64,7 @@ export class LiteGenAPIError extends LiteGenError {
     this.retryable = typeof detail.retryable === "boolean" ? detail.retryable : undefined;
     this.retryAfterMs = retryAfterMs;
     this.headers = headers;
+    this.body = body;
   }
 }
 

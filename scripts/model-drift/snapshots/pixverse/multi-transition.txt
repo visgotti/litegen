@@ -1,0 +1,75 @@
+# model values
+v3.5
+v4
+v4.5
+v5
+
+# request property descriptions
+
+
+{
+  "POST /openapi/v2/video/multi_transition/generate (application/json)": {
+    "oneOf": [
+      {
+        "properties": {
+          "model": {
+            "enum": [
+              "v3.5",
+              "v4",
+              "v4.5",
+              "v5"
+            ],
+            "type": "string"
+          },
+          "motion_mode": {
+            "enum": [
+              "normal",
+              "fast"
+            ],
+            "type": "string"
+          },
+          "multi_transition": {
+            "items": {
+              "properties": {
+                "duration": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "img_id": {
+                  "format": "int64",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "prompt": {
+                  "maxLength": 2048,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "img_id"
+              ],
+              "type": "object"
+            },
+            "minItems": 2,
+            "type": "array"
+          },
+          "quality": {
+            "enum": [
+              "360p",
+              "540p",
+              "720p",
+              "1080p"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "quality",
+          "multi_transition"
+        ],
+        "type": "object"
+      }
+    ]
+  }
+}

@@ -287,31 +287,6 @@ impl IdeogramProvider {
         materialized: &MaterializedRequest,
         creds: &ProviderCredentials,
     ) -> Result<GenerationOutput, ProviderError> {
-        let field = |r: &crate::proxy::materializer::MaterializedRef| match &r.form {
-            MaterializedRefForm::MultipartField { field_name, .. } => Some(field_name.clone()),
-            _ => None,
-        };
-        let images = materialized.refs.iter().filter(|r| field(r).as_deref() == Some("images")).count();
-        let masked = materialized.refs.iter().any(|r| field(r).as_deref() == Some("mask"));
-        let refuse = |why: &str| Err(ProviderError::InvalidRequest(format!("'{}': {why}", model.id)));
-        // "`very_low`, the fastest and cheapest, requires source images."
-        if extras.quality.as_deref() == Some("very_low") && images == 0 {
-            return refuse("quality very_low needs a source image");
-        }
-        if masked {
-            if images == 0 {
-                return refuse("a mask edits a source image: send one with role init");
-            }
-            // "With a mask, the output is always the first source image's own
-            // size, so `size` cannot be set."
-            if extras.size.is_some() {
-                return refuse("with a mask the output is the source image's size; send no size");
-            }
-            // "A masked request can include at most three other source images."
-            if images > 4 {
-                return refuse("takes at most 3 other images beside a mask");
-            }
-        }
         let url = format!("{}/v2/image/generate/ideogram-4-5", self.api_base());
         let mut form = Form::new().text("prompt", base.prompt.clone());
         if let Some(size) = extras.size.as_deref() {
@@ -448,6 +423,62 @@ impl ImageProvider for IdeogramProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What Ideogram 4.5 can't take, refused before anything is quoted,
+    /// reserved or sent; `generate` asks it first, with a mask litegen drew
+    /// from a region among the images, which only then is known on the
+    /// precise-edit row (it takes its region as a box):
+    /// - Generate: "`very_low`, the fastest and cheapest, requires source
+    ///   images"; a mask edits a source image; "With a mask, the output is
+    ///   always the first source image's own size, so `size` cannot be set";
+    ///   "A masked request can include at most three other source images."
+    /// - Precise edit: an image to edit, and "A request with a `mask` can
+    ///   include at most three [reference images], because the mask takes up
+    ///   one reference slot".
+    /// @see <https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-4-5.md> (2026-11-03)
+    /// @see <https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md> (2026-11-03)
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(generation) = Self::generation(&model.id) else { return Ok(()) };
+        // Each image's multipart field, as the materializer names it.
+        let field_map = match model.ref_inputs.as_ref().map(|r| &r.provider_format) {
+            Some(crate::capabilities::RefProviderFormat::Multipart(f)) => Some(&f.field_map),
+            _ => None,
+        };
+        let count = |field: &str| roles.iter().filter(|role| field_map.and_then(|f| f.get(**role)).map_or(**role, String::as_str) == field).count();
+        let refuse = |why: &str| Err(ProviderError::InvalidRequest(format!("'{}': {why}", model.id)));
+        match generation {
+            Generation::PreciseEdit45 => {
+                if count("mask") > 0 && count("reference_images") > 3 {
+                    return Err(ProviderError::InvalidRequest(format!(
+                        "'{}' takes at most 3 reference images beside a mask or region (the mask takes the fourth slot)",
+                        model.id
+                    )));
+                }
+                if count("image") == 0 {
+                    return Err(ProviderError::InvalidRequest(format!("'{}' edits an image: send one with role init", model.id)));
+                }
+            }
+            Generation::Generate45 => {
+                let images = count("images");
+                if extras.quality.as_deref() == Some("very_low") && images == 0 {
+                    return refuse("quality very_low needs a source image");
+                }
+                if count("mask") > 0 {
+                    if images == 0 {
+                        return refuse("a mask edits a source image: send one with role init");
+                    }
+                    if extras.size.is_some() {
+                        return refuse("with a mask the output is the source image's size; send no size");
+                    }
+                    if images > 4 {
+                        return refuse("takes at most 3 other images beside a mask");
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -458,6 +489,10 @@ impl ImageProvider for IdeogramProvider {
         let creds = self.creds()?;
         let generation = Self::generation(&model.id)
             .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "ideogram".into() })?;
+        // The quote asked the same before anything was reserved; here a mask
+        // litegen drew from a region is among the images too.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         if generation == Generation::PreciseEdit45 {
             let url = format!("{}/v2/image/precise-edit/ideogram-4-5", self.api_base());
             let mut form = Form::new().text("prompt", base.prompt.clone());
@@ -471,33 +506,16 @@ impl ImageProvider for IdeogramProvider {
             if let Some(seed) = base.seed {
                 form = form.text("seed", seed.to_string());
             }
-            // "A request with a `mask` can include at most three [reference
-            // images], because the mask takes up one reference slot" — a mask
-            // litegen drew from a region counts, so this is checked here.
-            // @see https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md (2026-11-03)
-            let field_count = |name: &str| {
-                materialized.refs.iter().filter(|r| matches!(&r.form, MaterializedRefForm::MultipartField { field_name, .. } if field_name == name)).count()
-            };
-            if field_count("mask") > 0 && field_count("reference_images") > 3 {
-                return Err(ProviderError::InvalidRequest(format!(
-                    "'{}' takes at most 3 reference images beside a mask or region (the mask takes the fourth slot)", model.id
-                )));
-            }
             // `image`, `mask` (already black-edits: litegen converted it) and
             // each `reference_images` part.
-            let mut has_image = false;
             for r in &materialized.refs {
                 if let MaterializedRefForm::MultipartField { field_name, bytes, content_type } = &r.form {
-                    has_image |= field_name == "image";
                     let part = Part::bytes(bytes.to_vec())
                         .file_name(format!("{field_name}.png"))
                         .mime_str(content_type)
                         .map_err(|e| ProviderError::InvalidRequest(format!("ideogram precise edit: {e}")))?;
                     form = form.part(field_name.clone(), part);
                 }
-            }
-            if !has_image {
-                return Err(ProviderError::InvalidRequest(format!("'{}' edits an image: send one with role init", model.id)));
             }
             return self.send(self.client.post(&url).multipart(form), &creds).await;
         }

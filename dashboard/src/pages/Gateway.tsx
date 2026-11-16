@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AdminModelView, GatewaySettingsView, ModelSchema, ProviderConfigView, RoutesDocument } from '@litegen/sdk';
+import type { AdminModelView, GatewaySettingsView, ModelSchema, ProviderConfigView, RoutesDocument, SettingRange } from '@litegen/sdk';
 import { client } from '../sdk-client';
 import { showToast } from '../components/toast-store';
 import { accessBody, describeAccess, type AccessForm } from '../components/access';
-import { runtimeBody, runtimeFormOf, settingsBody, type RuntimeForm } from '../components/gateway-settings';
+import { cacheSummary, numberIn, runtimeBody, runtimeFormOf, sealFormOf, sealValue, settingsBody, type RuntimeForm } from '../components/gateway-settings';
 import { formatPrice } from '../components/model-detail';
+import { providerPatchBody, type ProviderShown } from '../components/provider-config';
 import '../management.css';
 
 type Tab = 'models' | 'providers' | 'routes' | 'settings';
@@ -21,9 +22,6 @@ const MODEL_TEMPLATE = {
 };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-/** A byte count in MiB: `256 MiB`, `1.5 MiB`. */
-const mib = (bytes: number) => `${(bytes / 1_048_576).toLocaleString('en-US', { maximumFractionDigits: 1 })} MiB`;
 
 /** Gateway admin: runtime models, provider configs, model routes and settings. */
 export default function Gateway() {
@@ -137,6 +135,8 @@ function ModelsTab() {
 function ProvidersTab() {
   const [providers, setProviders] = useState<ProviderConfigView[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
+  // What the form showed when it opened: a save sends only what changed.
+  const [shown, setShown] = useState<ProviderShown>({ apiBase: '', enabled: true });
   const [apiKey, setApiKey] = useState('');
   const [apiBase, setApiBase] = useState('');
   const [enabled, setEnabled] = useState(true);
@@ -149,9 +149,21 @@ function ProvidersTab() {
 
   const edit = (p: ProviderConfigView) => {
     setEditing(p.name);
+    setShown({ apiBase: p.api_base ?? '', enabled: p.enabled });
     setApiKey('');
     setApiBase(p.api_base ?? '');
     setEnabled(p.enabled);
+  };
+
+  // PATCH keeps what it isn't sent (headers, model mapping, options, region set
+  // through the API), so a save changes what the form changed and nothing else.
+  const save = (name: string) => {
+    const changes = providerPatchBody(shown, { apiKey, apiBase, enabled });
+    if (Object.keys(changes).length === 0) {
+      setEditing(null);
+      return;
+    }
+    void act(() => client.admin.providers.patch(name, changes), `${name} configured`);
   };
 
   const act = async (fn: () => Promise<unknown>, done: string) => {
@@ -202,21 +214,14 @@ function ProvidersTab() {
           <div className="mg-form-grid">
             <label>API key<input className="input" type="password" autoComplete="off" placeholder="unchanged" value={apiKey}
               data-testid="gateway-provider-key" onChange={e => setApiKey(e.target.value)} /></label>
-            <label>API base<input className="input" placeholder="vendor default" value={apiBase}
+            <label>API base<input className="input" placeholder="config value, else the vendor default" value={apiBase}
               data-testid="gateway-provider-base" onChange={e => setApiBase(e.target.value)} /></label>
             <label style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <input type="checkbox" checked={enabled} data-testid="gateway-provider-enabled" onChange={e => setEnabled(e.target.checked)} /> Enabled
             </label>
           </div>
           <div className="mg-actions">
-            <button className="btn btn-primary" data-testid="gateway-provider-save" onClick={() => void act(
-              () => client.admin.providers.configure(editing, {
-                api_key: apiKey.trim() || null,
-                api_base: apiBase.trim() || null,
-                enabled,
-              }),
-              `${editing} configured`,
-            )}>Save</button>
+            <button className="btn btn-primary" data-testid="gateway-provider-save" onClick={() => save(editing)}>Save</button>
             <button className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
           </div>
         </div>
@@ -294,6 +299,8 @@ function SettingsTab() {
   const [revokedAt, setRevokedAt] = useState('');
   // The cache, retries, the vendor timeout and the breaker (docs/gateway-settings.md).
   const [runtime, setRuntime] = useState<RuntimeForm>(() => runtimeFormOf({}));
+  // Provider credentials sealed at rest (encrypt_provider_credentials).
+  const [seal, setSeal] = useState<'' | 'on'>('');
   const [error, setError] = useState('');
 
   const apply = (v: GatewaySettingsView) => {
@@ -312,6 +319,7 @@ function SettingsTab() {
       signedLinks: v.settings.storage_access_signed_links ?? '',
     });
     setRuntime(runtimeFormOf(v.settings));
+    setSeal(sealFormOf(v.settings));
   };
 
   useEffect(() => {
@@ -320,24 +328,28 @@ function SettingsTab() {
 
   const save = async () => {
     setError('');
-    // NaN would serialize as null and silently clear the field, so refuse it here.
-    const num = (s: string, name: string): number | null => {
-      if (s.trim() === '') return null;
-      const n = Number(s);
-      if (!Number.isFinite(n)) throw new Error(`${name} must be a number`);
+    // Every range is the server's, as it serves them (`limits`).
+    const limits = view?.limits;
+    const num = (s: string, name: string, range?: SettingRange): number | null => {
+      const n = numberIn(s, name, range);
+      if (typeof n === 'string') throw new Error(n);
       return n;
     };
     try {
-      const { body: files, error: filesError } = accessBody(access);
+      const { body: files, error: filesError } = accessBody(access, {
+        ttl: limits?.storage_access_signed_url_ttl_seconds,
+        retentionDays: limits?.storage_access_retention_days,
+      });
       if (!files) throw new Error(filesError);
-      const { body: runtimeFields, error: runtimeError } = runtimeBody(runtime);
+      const { body: runtimeFields, error: runtimeError } = runtimeBody(runtime, limits);
       if (!runtimeFields) throw new Error(runtimeError);
       // Every field is sent, or the save would clear it: the form's over what
       // the server gave, so a setting the form has no field for is kept.
       apply(await client.admin.settings.update(settingsBody(view?.settings ?? {}, {
-        cost_markup_percent: num(markup, 'Cost markup'),
+        cost_markup_percent: num(markup, 'Cost markup', limits?.cost_markup_percent),
         alert_webhook_url: webhook.trim() || null,
         default_end_user_max_budget_usd: num(euBudget, 'Default end-user budget'),
+        encrypt_provider_credentials: sealValue(seal, view?.settings.encrypt_provider_credentials),
         default_end_user_budget_duration: euDuration.trim() || null,
         storage_access_mode: files.mode ?? null,
         storage_access_owner_scope: files.owner_scope ?? null,
@@ -381,6 +393,20 @@ function SettingsTab() {
         <label>Budget alert webhook<input className="input" value={webhook} placeholder="https://…" data-testid="gateway-webhook" onChange={e => setWebhook(e.target.value)} /></label>
         <label>Default end-user budget (USD)<input className="input" value={euBudget} placeholder="none" data-testid="gateway-eu-budget" onChange={e => setEuBudget(e.target.value)} /></label>
         <label>Default end-user window<input className="input" value={euDuration} placeholder="e.g. 30d" data-testid="gateway-eu-duration" onChange={e => setEuDuration(e.target.value)} /></label>
+      </div>
+      <h4 style={{ margin: '16px 0 4px' }}>Provider credentials at rest</h4>
+      <p className="mg-muted">
+        A runtime provider config&apos;s keys are always encrypted. On, its header values and the user info in its
+        URLs are encrypted with them (needs <code>LITEGEN__SECRETS_KEY</code>). Turn it on once every replica runs
+        this version, and off before a rollback.
+      </p>
+      <div className="mg-form-grid">
+        <label>Encrypt header values and URL user info
+          <select className="input" value={seal} data-testid="gateway-encrypt-credentials" onChange={e => setSeal(e.target.value === 'on' ? 'on' : '')}>
+            <option value="">Off (the default)</option>
+            <option value="on">On</option>
+          </select>
+        </label>
       </div>
       <h4 style={{ margin: '16px 0 4px' }}>Stored files</h4>
       <p className="mg-muted" data-testid="gateway-effective-access">
@@ -433,9 +459,7 @@ function SettingsTab() {
       </p>
       <h4 style={{ margin: '16px 0 4px' }}>Cache</h4>
       <p className="mg-muted" data-testid="gateway-cache-effective">
-        {view
-          ? `${view.effective_cache.enabled ? 'on' : 'off'} · answers kept ${view.effective_cache.ttl_seconds} s · up to ${view.effective_cache.max_items} in ${mib(view.effective_cache.max_bytes)} · ${view.cache_entries} cached now`
-          : '…'}
+        {view ? cacheSummary(view.effective_cache, view.cache_entries) : '…'}
       </p>
       <div className="mg-form-grid">
         <label>Image answers cached
@@ -448,7 +472,15 @@ function SettingsTab() {
         <label>Kept for (seconds)<input className="input" placeholder="config default" data-testid="gateway-cache-ttl" {...field('cacheTtl')} /></label>
         <label>At most (answers)<input className="input" placeholder="config default" data-testid="gateway-cache-size" {...field('cacheMaxItems')} /></label>
         <label>Memory, each replica (bytes)<input className="input" placeholder="config default" data-testid="gateway-cache-max-bytes" {...field('cacheMaxBytes')} /></label>
+        <label>Charge cache hits
+          <select className="input" data-testid="gateway-cache-charge-hits" {...field('cacheChargeHits')}>
+            <option value="">Config default</option>
+            <option value="on">On: a hit is charged the cached answer&apos;s price</option>
+            <option value="off">Off: a hit is free</option>
+          </select>
+        </label>
       </div>
+      <p className="mg-muted" style={{ margin: '4px 0 0' }}>Off makes a cache hit free, as LiteLLM does; either way the log marks it.</p>
       <div className="mg-actions"><button className="btn btn-secondary" data-testid="gateway-cache-clear" onClick={() => void clearCache()}>Clear cache</button></div>
       <h4 style={{ margin: '16px 0 4px' }}>Retries and timeouts</h4>
       <p className="mg-muted" data-testid="gateway-retry-effective">

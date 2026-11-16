@@ -16,17 +16,31 @@ class AuditLogEntry:
 
     Attributes:
         action (str): Action identifier, e.g. `"key.create"`, `"generation.cancel"`.
-        actor_label (str): Human-readable actor label: `"master-key"` or the key's name.
+        actor_label (str): Who acted: a signed-in person's email, an API key's id (as in
+            `actor_key_id`), `master-key` for the master key, or `system` for
+            litegen itself (a budget alert). Since 2026-11-15 an account's email
+            must be an address, so a new account can't be labelled `master-key`
+            or `system`.
         created_at (datetime.datetime):
         id (str):
         target_id (str): Target entity ID.
-        target_type (str): Target entity type: `"api_key"` or `"generation"`.
-        actor_key_id (Union[None, Unset, str]): The API key ID of the actor. None when the master key was used.
+        target_type (str): What the action changed: `api_key`, `generation`, `user`,
+            `invitation`, `membership`, `organization`, `application`,
+            `provider_credential`, `end_user`, `oauth_client`, a budget
+            (`key_limits`, `org_limits`, `app_limits`, `member_limits`,
+            `end_user_limits`), or the gateway's `model`, `provider`, `routes` and
+            `settings`.
+        actor_key_id (Union[None, Unset, str]): The API key that acted. Null for the master key, a signed-in person
+            (a browser session, or an app signed in with OAuth) and litegen
+            itself.
         after_json (Union[None, Unset, str]): JSON snapshot of the entity state *after* the action (None on
             delete/revoke).
         before_json (Union[None, Unset, str]): JSON snapshot of the entity state *before* the action (None on create).
-        org_id (Union[None, Unset, str]): Tenant (organization) this audit entry belongs to. None falls back to the
-            default org at the DB layer (single-tenant); set from the caller's active org.
+        org_id (Union[None, Unset, str]): The organization this entry is filed under: the one whose object the
+            action changed, else the one the caller acted in. Absent for an entry
+            filed under no org: in hosted mode, the master key's changes to the
+            gateway and to accounts, and an account change by a person who belongs
+            to no org. Only the master key reads those.
     """
 
     action: str

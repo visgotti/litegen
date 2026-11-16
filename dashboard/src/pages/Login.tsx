@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
-import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
+import { LiteGenAPIError } from '@litegen/sdk';
 import { useTenant } from '../context/tenant';
 import { safeNext } from './safe-next';
+import { SIGN_IN_FALLBACK, type SignInConfig } from './auth-config';
 
 /** The post-login target from the `?next=` query param: a path on this origin (default `/`). */
 function resolveNext(): string {
@@ -66,7 +67,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
+  const [authConfig, setAuthConfig] = useState<SignInConfig | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,7 +77,7 @@ export default function Login() {
       .catch(() => {
         // If the config endpoint is unavailable, fall back to showing the
         // password form + both OAuth buttons (dev / single-tenant default).
-        if (!cancelled) setAuthConfig({ password_enabled: true, providers_enabled: ['github', 'google'], signup_open: false });
+        if (!cancelled) setAuthConfig(SIGN_IN_FALLBACK);
       });
     return () => { cancelled = true; };
   }, []);
@@ -110,6 +111,9 @@ export default function Login() {
     }
   };
 
+  // Back from a reset link's page (`/reset-password/:token`).
+  const passwordChanged = new URLSearchParams(window.location.search).get('reset') === 'done';
+
   // Default to enabled while config loads, so the UI never flashes empty.
   const passwordEnabled = authConfig?.password_enabled ?? true;
   const providers = authConfig?.providers_enabled ?? ['github', 'google'];
@@ -123,6 +127,15 @@ export default function Login() {
         <h2 style={{ margin: '0 0 24px', color: '#e6edf3', fontSize: 24, fontWeight: 600, textAlign: 'center' }}>
           Sign in
         </h2>
+
+        {passwordChanged && (
+          <div
+            data-testid="login-notice"
+            style={{ marginBottom: 16, padding: '10px 14px', background: '#1a4731', border: '1px solid #3fb950', borderRadius: 6, color: '#3fb950', fontSize: 13 }}
+          >
+            Password changed: sign in with the new one.
+          </div>
+        )}
 
         {passwordEnabled && (
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

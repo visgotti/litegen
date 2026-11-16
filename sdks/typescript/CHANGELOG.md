@@ -78,6 +78,89 @@ minor release may change behaviour, and says how here.
   `PromptSpec.required_for_text_to_video`, `ProviderHealth.modality`,
   `GatewaySettings.cache_max_bytes` and the cache's `max_bytes` in force, and
   `strict` on `images.segment` requests.
+- `admin.providers.patch(name, changes)` (`PATCH /v1/admin/providers/{name}`)
+  and its body type `PatchProviderConfigRequest`, resolving to the
+  `ProviderConfigView`: it changes some of a provider's runtime config and
+  keeps the rest. A field sent is set, `null` clears it (it falls back to
+  env/YAML) and a field left out keeps its stored value. A key left out or
+  `null` keeps its stored value, and one sent as `""` removes it, so the
+  env/YAML key applies again; a `model_mapping`, `extra_headers` or
+  `options` sent replaces the stored one whole. `configure` (`PUT`) still
+  replaces the whole config.
+- `orgs.invitations.list(orgId)` (`GET /v1/orgs/{id}/invitations`): the
+  org's invitations not yet accepted or expired, newest first, as
+  `PendingInvitation[]` without their tokens; and
+  `orgs.invitations.revoke(orgId, invitationId)`, resolving to `void` (404
+  `invitation_not_found` when no invitation with that id waits in the org).
+  To send a lost link again, revoke the invitation and invite anew. Both,
+  like `orgs.members.invite`, take a signed-in session or the master key; an
+  API key gets a 403 `forbidden`.
+- `orgs.members.invite` resolves to the exported `InviteResponse` (it
+  resolved to `unknown`), as `users.invite` does, and `InviteResponse` gains
+  `org_id`, `token` and `invite_url` (`string | null`). The token and link
+  are shown only in this answer, and litegen sends no email, so hand one of
+  them to the invitee; `invite_url` is `null` when the server has no
+  `server.public_base_url` (build `/invite/{token}` on the dashboard's
+  origin). A 400 is `cannot_invite_owner` or `invalid_email`.
+- `expires_at` (`string | null`) and `is_active` on `PatchKeyBody`, the body
+  of `keys.patch`.
+- `delivery_id` (`string | null`) on `WebhookDelivery`
+  (`keys.listWebhookDeliveries`): `whd-` and a UUID, the
+  `X-Litegen-Delivery-Id` its receiver got, the same on every attempt of one
+  delivery (`null` on attempts recorded before migration 029). Every attempt
+  of one delivery shows the payload of its latest attempt.
+- `keys.redeliverWebhookDelivery(id, deliveryId)`
+  (`POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver`): sends
+  a delivery that ended (`delivered` or `failed`) again, as a fresh series
+  of attempts under the same `delivery_id`, to the key's `webhook_url` of
+  that moment, and resolves to its `WebhookDeliveryState` (`status` a
+  `WebhookDeliveryStatus`: `pending`, `delivered` or `failed`), both types
+  exported. It throws a 409 `delivery_pending` while the delivery is still
+  being sent, a 429 `redeliver_too_soon` within a minute of its last
+  redeliver (`retryAfterMs` says when to ask again), a 400
+  `no_webhook_configured` or `invalid_webhook_url`, and a 404 for an
+  unknown key or delivery.
+- `LiteGenAPIError.body`: the error response's body as JSON, when it was
+  JSON (optional).
+- `users.passwordResetLink(id)` (`POST /v1/users/{id}/password-reset`),
+  resolving to the exported `PasswordResetLink`. Its `token` and `reset_url`
+  (`null` when the server has no `server.public_base_url`) are shown only in
+  this answer and set the account's password once, until `expires_at` (an
+  hour); litegen sends no email. The master key may, and so may a signed-in
+  person who outranks the account in every org it belongs to, never for their
+  own account; for a deactivated account only someone who may reactivate it,
+  since confirming the link reactivates it. An API key gets a 403. A 403 is
+  `forbidden_permission`, a 404 `user_not_found`.
+- `org_id` on `AuditLogEntry`, absent from an entry filed under no org (in
+  hosted mode, the master key's changes to the gateway and to accounts, and
+  an account change by a person in no org), which only the master key reads;
+  and `org_id` in the options of `audit.list` and `audit.exportCsv`: the
+  master key reads another org's entries, and anyone else may name only
+  their own (else a 403).
+- In the generated types: the redeliver route and `WebhookDeliveryState`;
+  `cache_hit` on `RequestLog` and `SpendLogEntry` (whether the cache
+  answered; a hit has a row of its own, at what it was charged),
+  `GatewaySettings.cache_charge_hits` and `EffectiveCache.charge_hits`
+  (whether a hit is charged the cached answer's price: by default it is,
+  `false` makes hits free); `AuthConfigResponse.signup_open` (whether
+  self-service signup is open: always in hosted mode, in single-tenant mode
+  while no account exists) and `AuthConfigResponse.password_min_length` (the
+  shortest password signup, invitations, password changes and resets
+  accept), both required; `RefRoleSpec.not_with` (see Changed);
+  `ParamSpecStringArray.returned_together`, on `output_formats`: the
+  containers one vendor job returns together (Meshy's rig returns a glb and
+  an fbx at once); `GatewaySettings.encrypt_provider_credentials`, which also
+  encrypts each `extra_headers` value and the user info of `api_base` and of
+  the URLs in `options` at rest (off by default; turning it on needs
+  `LITEGEN__SECRETS_KEY`, else a 400 `secrets_key_missing`; unlike the other
+  settings, a PUT that leaves it out keeps its stored value);
+  `GatewaySettingsView.limits` and the exported `GatewaySettingLimits` and
+  `SettingRange` (`min` and `max`, both allowed, for each numeric setting,
+  as `PUT /v1/admin/settings` checks them); the 503 `HealthResponse` of
+  `GET /health` (`status` `"degraded"`: a provider answered unhealthy); and
+  the file routes' 410 (`files_deleted`, `vendor_file_gone`), 500, 502
+  (`vendor_file_unreachable`) and 503 (`hook_failed`) answers, the signed
+  route's 307.
 
 ### Changed
 
@@ -97,6 +180,71 @@ minor release may change behaviour, and says how here.
   `circuit_open`, `cache_clear_incomplete` (`cache.clear`, 503),
   `request_unsupported`, `provider_not_configured`, `prompt_required`,
   `range_not_satisfiable` (416).
+- `health.check()` resolves to the report a 503 carries, as to a 200's: the
+  server answers 503 when a provider answered unhealthy (`status`
+  `"degraded"`, with what each vendor answered), and the SDK used to throw
+  it as a `LiteGenAPIError`. A 503 without that report (litegen's own error,
+  or something in front of the gateway) still throws, as does any other
+  error.
+- `keys.patch` clears what it is sent as `null`: `token_quota`,
+  `rpm_limit`, `webhook_url` and `expires_at`, where `null` used to change
+  nothing. A field left out still stays as it is, and a `webhook_url` of
+  `""` is stored as no webhook.
+- Webhooks: every delivery request carries `X-Litegen-Delivery-Id`, `whd-`
+  and a UUID, the same on every attempt of one delivery. Delivery is at
+  least once, so a receiver drops a repeat by that id; the signature covers
+  the body, not this header. A job's webhook is saved with its outcome, so a
+  restart loses none; a failed attempt is retried for about a day (13
+  attempts) unless the receiver answers `410 Gone`, and each attempt is
+  built when it is sent, so its signed links are fresh.
+- Reference roles a model takes apart (`RefRoleSpec.not_with`, on every
+  model whose vendor takes one or the other, such as Vidu's first and last
+  frames or reference images) are refused together with `ref_role_conflict`
+  (a `LiteGenAPIError` with `param: "reference_images"`) before anything is
+  quoted or reserved. Where such a model's last frame also needs a first
+  frame, a last frame sent with reference images is now `ref_role_conflict`
+  (it was `ref_role_required`). `needs_first_frame` now also marks a
+  `reference` role: Runway's Kling O3 models take reference images only from
+  a first frame, so references without a `first_frame` (or `init`) image are
+  refused with `ref_role_required` before the quote.
+- A generation that keeps nothing (`keepOutputs: false`) converts nothing,
+  so it is promised only what its vendor job returns (`returned_together`,
+  else the one container asked for): asking for more is a 400
+  `format_needs_keeping`. Its 3D files are the vendor's own links, each
+  checked with a one-byte ranged request rather than downloaded;
+  `size_bytes` is then the size the vendor's host reported, and
+  `generations.assets()` lists them with `kept: false` (it said `true`).
+- `images.submit` on a model route: the `wait` it asks for (`Prefer`) is
+  honoured only when every deployment's vendor runs jobs, and it then also
+  ends a deployment's call early (at most the deployment's
+  `timeout_seconds`), resolving to the generation to come rather than
+  waiting out the deployment's whole timeout.
+- `admin.providers` answers show an `api_base` with user info as
+  `https://[redacted]@host/v1`, and the URLs in `options` likewise. Sent
+  back unchanged to `configure` or `patch`, such a URL keeps the one in
+  force; any other `[redacted]` user info is a 400
+  `invalid_provider_config`. `extra_headers` values are never shown, only
+  their names (`extra_header_names`).
+- Signing up, inviting and accepting an invitation that makes an account
+  check that the email is an address: a 400 `invalid_email` otherwise.
+- `LiteGenAPIError.param` names the field at fault on a `malformed_request`
+  (a body the server can't read, such as a negative `feather_px`), and the
+  message starts with that path; `param` was absent.
+
+### Deprecated
+
+- The `_dev_token` that `LITEGEN__DEV__EXPOSE_INVITE_TOKENS` adds to an
+  invitation's answer: read `token` (or `invite_url`), which every answer
+  carries.
+
+### Fixed
+
+- A test webhook (`keys.testWebhook`) is signed like a job's webhook, so a
+  receiver that checks signatures accepts it.
+- In single-tenant mode the master key may list and invite users
+  (`users.list`, `users.invite`), where it got a 403.
+- A hosted `audit.list` with the master key answers the entries filed under
+  no org, where it was a 403 `no active organization`.
 
 ## [0.1.0] - 2026-10-30
 

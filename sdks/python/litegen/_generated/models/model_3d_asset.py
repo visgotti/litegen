@@ -46,7 +46,9 @@ class Model3DAsset:
                 derived carries its source's count — conversion keeps every triangle.
             scene (Union['SceneManifest', None, Unset]):
             sha256 (Union[None, Unset, str]): Lowercase hex SHA-256 of the stored file.
-            size_bytes (Union[None, Unset, int]): Size of the stored file.
+            size_bytes (Union[None, Unset, int]): Size of the file in bytes: the stored file's, or for a file litegen
+                didn't keep (`kept: false`) the size the vendor's host reported when
+                litegen checked its link.
             width (Union[None, Unset, int]): Pixel width, on textures and previews whose vendor reports it.
     """
 

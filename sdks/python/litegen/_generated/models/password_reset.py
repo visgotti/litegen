@@ -26,6 +26,10 @@ class PasswordReset:
         expires_at (datetime.datetime):
         token (str):
         user_id (str):
+        issued_by (Union[None, Unset, str]): Who issued the link: a person's account id, or `None` for the master
+            key (and for the dev flag's self-service tokens, local tests only).
+            Confirming re-checks that this issuer may still issue it (review round
+            4, findings 4 and 5).
         used_at (Union[None, Unset, datetime.datetime]):
     """
 
@@ -33,6 +37,7 @@ class PasswordReset:
     expires_at: datetime.datetime
     token: str
     user_id: str
+    issued_by: Union[None, Unset, str] = UNSET
     used_at: Union[None, Unset, datetime.datetime] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -44,6 +49,12 @@ class PasswordReset:
         token = self.token
 
         user_id = self.user_id
+
+        issued_by: Union[None, Unset, str]
+        if isinstance(self.issued_by, Unset):
+            issued_by = UNSET
+        else:
+            issued_by = self.issued_by
 
         used_at: Union[None, Unset, str]
         if isinstance(self.used_at, Unset):
@@ -63,6 +74,8 @@ class PasswordReset:
                 "user_id": user_id,
             }
         )
+        if issued_by is not UNSET:
+            field_dict["issued_by"] = issued_by
         if used_at is not UNSET:
             field_dict["used_at"] = used_at
 
@@ -78,6 +91,15 @@ class PasswordReset:
         token = d.pop("token")
 
         user_id = d.pop("user_id")
+
+        def _parse_issued_by(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        issued_by = _parse_issued_by(d.pop("issued_by", UNSET))
 
         def _parse_used_at(data: object) -> Union[None, Unset, datetime.datetime]:
             if data is None:
@@ -101,6 +123,7 @@ class PasswordReset:
             expires_at=expires_at,
             token=token,
             user_id=user_id,
+            issued_by=issued_by,
             used_at=used_at,
         )
 

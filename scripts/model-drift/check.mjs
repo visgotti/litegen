@@ -77,6 +77,7 @@ function usage() {
     'Compares every vendor\'s published model list against models/*.yaml.',
     'Exit 0 clean · 1 drift to review · 2 a source/definition needs investigating, or a bad argument.',
     'Snapshots of each source land in scripts/model-drift/snapshots/ (or --snapshots dir) — `git diff` them.',
+    'For the weekly run use scripts/model-drift/pipeline.mjs: it checks a copy of snapshots/, reviews, checks quotes, and says what to do next.',
     '',
   ].join('\n');
 }

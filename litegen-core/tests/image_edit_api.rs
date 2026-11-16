@@ -97,6 +97,79 @@ async fn a_bad_edit_is_refused_before_anything_is_billed() {
     assert_eq!(db.count_generations(None).await.unwrap(), 0);
 }
 
+async fn post_to(app: &axum::Router, at: &str, body: Value) -> (StatusCode, Value) {
+    let resp = app
+        .clone()
+        .oneshot(Request::post(at).header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// round 3 (found by the dashboard lane): the quote refuses the region the
+/// generation refuses. A region with no area (w or h 0), one whose end runs
+/// past any image, or one off the init image sent in the request was quoted
+/// 200 by POST /v1/images/cost, then refused by the generation with 400
+/// `region_out_of_bounds`. Both now refuse it at validation, in the same
+/// words, before anything is quoted or billed. A region inside the init is
+/// quoted; an `expand` that adds nothing was already refused by both.
+#[tokio::test]
+async fn the_quote_refuses_a_region_the_generation_refuses() {
+    use litegen::db::DatabaseStore;
+    let (app, db) = harness::app_with_mock_3d().await;
+    let init = init_img(64, 48);
+    let region = |x: u32, y: u32, w: u32, h: u32| json!({ "region": { "x": x, "y": y, "w": w, "h": h } });
+    let mut wrong = Vec::new();
+    for extra in [region(0, 0, 0, 8), region(0, 0, 8, 0), region(60, 0, 8, 8), region(0, 44, 8, 8), region(u32::MAX - 2, 0, 8, 8)] {
+        let body = edit("mock/inpainting-image", &init, None, extra.clone());
+        let (cost, quoted) = post_to(&app, "/v1/images/cost", body.clone()).await;
+        let (made, generated) = post_to(&app, "/v1/images/generations", body).await;
+        let answer = |s: StatusCode, v: &Value| (s.as_u16(), v["error"]["code"].as_str().map(str::to_string), v["error"]["param"].as_str().map(str::to_string));
+        let refused = (400, Some("region_out_of_bounds".to_string()), Some("region".to_string()));
+        if answer(cost, &quoted) != refused || answer(made, &generated) != refused || quoted["error"]["message"] != generated["error"]["message"] {
+            wrong.push(format!("{extra}: quoted {} {quoted}, generated {} {generated}", cost.as_u16(), made.as_u16()));
+        }
+    }
+    assert!(wrong.is_empty(), "{} regions answered otherwise:\n{}", wrong.len(), wrong.join("\n"));
+    let (s, resp) = post_to(&app, "/v1/images/cost", edit("mock/inpainting-image", &init, None, region(56, 40, 8, 8))).await;
+    assert_eq!(s, StatusCode::OK, "a region inside the init: {resp}");
+    let nothing = edit("mock/expand-image", &init, None, json!({ "expand": { "left": 0, "top": 0, "right": 0, "bottom": 0 } }));
+    for at in ["/v1/images/cost", "/v1/images/generations"] {
+        let (s, resp) = post_to(&app, at, nothing.clone()).await;
+        assert_eq!((s.as_u16(), resp["error"]["code"].as_str()), (400, Some("param_out_of_range")), "an expand that adds nothing at {at}: {resp}");
+    }
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0);
+}
+
+/// round 3: an outpaint row grows a canvas and nothing else (its `expand` is
+/// `required`). A request without `expand` was quoted 200 by POST
+/// /v1/images/cost, then refused by the adapter at the generation, after the
+/// reservation. Both now refuse it at validation with `param_required`
+/// (param `expand`); with `expand` it is quoted.
+#[tokio::test]
+async fn an_outpaint_without_expand_is_refused_by_the_quote_and_the_generation() {
+    use litegen::db::DatabaseStore;
+    let (app, db) = harness::app_with_mock_3d().await;
+    let init = init_img(64, 48);
+    let body = edit("mock/expand-image", &init, None, json!({}));
+    for at in ["/v1/images/cost", "/v1/images/generations"] {
+        let (s, resp) = post_to(&app, at, body.clone()).await;
+        assert_eq!(
+            (s.as_u16(), resp["error"]["code"].as_str(), resp["error"]["param"].as_str()),
+            (400, Some("param_required"), Some("expand")),
+            "at {at}: {resp}"
+        );
+    }
+    let grown = edit("mock/expand-image", &init, None, json!({ "expand": { "left": 8, "top": 0, "right": 0, "bottom": 0 } }));
+    let (s, resp) = post_to(&app, "/v1/images/cost", grown).await;
+    assert_eq!(s, StatusCode::OK, "with expand: {resp}");
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0);
+}
+
 #[tokio::test]
 async fn the_inpainting_mock_fills_exactly_the_masked_area() {
     let (app, _db) = harness::app_with_mock_3d().await;

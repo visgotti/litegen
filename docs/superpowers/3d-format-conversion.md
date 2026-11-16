@@ -136,6 +136,16 @@ The bounds that make this a ceiling rather than a trend:
   Text and uncompressed containers outgrow the 128 MB input cap first at the caps (GLB
   144 MB, OBJ 517 MB), which is that cap working.
 - A texture decodes within 256 MiB, a 64M-pixel RGBA map (`normalize::decode_image`).
+- A Draco primitive decodes within `mesh.draco`'s limits (`mesh::DracoOptions`): by default
+  4M points, 4M faces, 24 MB of decoded attributes and 5 faces per point, its header's
+  counts checked before anything decodes. Real meshes have about 2 faces per point (at most
+  1.96 in the testdata), and a double-sided mesh that shares its vertices about 4. The worst
+  decode measured within the limits, at about 2 faces per point, took 1,494 MB; each face
+  per point more adds about 0.53 GB by the same measurements, so the default of 5
+  extrapolates to about 3.1 GB, unmeasured. Hosted deployments that accept uploads from
+  untrusted users can lower it to 3 (about 2.0 GB worst case, extrapolated) at the cost of
+  double-sided meshes (`draco.rs`'s `MAX_FACES_PER_POINT`). The converter, delivery and an
+  operation's source mesh (`proxy/model3d_source.rs`) all read under the server's settings.
 - The callers bound how many run at once: the convert endpoint's conversion slots
   (`available_parallelism`, 2–8), each held from before the upload is buffered until the
   converted file is sent, and the delivery slots (2–4), shared by a client's poll and the
@@ -153,10 +163,12 @@ The bounds that make this a ceiling rather than a trend:
     decoded rather than read from its fallback (a KHR-only stream version or filter under
     the EXT name is read with a warning); Draco through the `draco-core` crate
     (`mesh/draco.rs`), a TRIANGLES or TRIANGLE_STRIP primitive whose stream's faces are
-    read as a list, under absolute limits (the scene's vertex and index caps, and
+    read as a list, under absolute limits (the scene's vertex and index caps,
     24,000,000 bytes of decoded attributes a primitive, the ceiling set to bound the
-    decoder's memory on the shapes measured, strips and grids, with a faces-per-point
-    pre-check still open), with a primitive in any mode but TRIANGLES or TRIANGLE_STRIP,
+    decoder's memory on the shapes measured, strips and grids, and 5 faces per point,
+    checked on the stream's header before it decodes; each limit, and Draco itself, is a
+    server setting, `mesh.draco`, in `docs/gateway-settings.md`), with a primitive in any
+    mode but TRIANGLES or TRIANGLE_STRIP,
     a point cloud, a pre-2.2 bitstream and a stream past the limits refused by name, and
     an accessor whose `count` disagrees with the decode read at the decoded count with a
     warning. The output is never compressed:
@@ -1720,8 +1732,8 @@ In the harness:
 - **Compressed glTF output:** litegen writes neither Draco nor meshopt. Both are read
   since mesh-gaps item 2 (§3), and a compressed input comes out uncompressed. Still
   refused by name, within them: a Draco point cloud, a pre-2.2 Draco bitstream, a Draco
-  primitive in any mode but TRIANGLES or TRIANGLE_STRIP, and a Draco primitive past the
-  decoder's limits.
+  primitive in any mode but TRIANGLES or TRIANGLE_STRIP, a Draco primitive past the
+  decoder's limits, and any Draco primitive while `mesh.draco.enabled` is false.
 - **KTX2 beyond Basis Universal and uncompressed RGBA8:** WebP and KTX2 are re-encoded as
   PNG on every production path (§3, mesh-gaps item 3). Still left out, with an
   `image_formats` loss that names the file's own value: cube maps, texture arrays, 3D and

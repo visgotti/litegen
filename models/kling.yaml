@@ -346,7 +346,8 @@ models:
   # @see https://kling.ai/document-api/api/video/4-0/image-to-video.md (2026-11-09)
   # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-11-09)
   #   - "`settings.resolution` … `1080p` | `720p`, `1080p`" (the default is
-  #     1080p), "`settings.aspect_ratio` … `21:9`, `16:9`, `9:16`, `1:1`",
+  #     1080p), "`settings.aspect_ratio` … `21:9`, `16:9`, `9:16`, `1:1`,
+  #     `4:3`, `3:4`" (4:3 and 3:4 listed since 2026-11-16),
   #     "`settings.duration` | int | No | - | `3`, `4`, … `30`"; the field
   #     note: "When this parameter is omitted and no explicit duration is
   #     identified in the prompt, the default is 10 seconds."
@@ -381,10 +382,12 @@ models:
       duration_seconds: { kind: int, min: 3, max: 30, default: 10 }
       # 720p or 1080p, the vendor's default 1080p, sent as is.
       resolution: { kind: string, enum_values: [720p, 1080p], default: 1080p }
-      # Text-to-video only; image-to-video takes the frames' shape.
+      # Text-to-video only; image-to-video takes the frames' shape. "`settings.aspect_ratio` |
+      # string | No | `16:9` | `21:9`, `16:9`, `9:16`, `1:1`, `4:3`, `3:4`", sent as is (kling_settings).
+      # @see https://kling.ai/document-api/api/video/4-0/text-to-video.md (2026-11-16)
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["21:9","16:9","9:16","1:1"]
+        allowed: ["21:9","16:9","9:16","1:1","4:3","3:4"]
         default: "16:9"
         # The image-to-video `settings`: "settings.resolution: The resolution of
         # the generated video", "settings.duration: Target duration of the

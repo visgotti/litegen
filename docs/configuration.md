@@ -207,11 +207,43 @@ Written in the config file they do nothing, and `os.environ/` can't feed them:
 | `LITEGEN__ALLOW_NO_AUTH` | `true` starts single-tenant litegen with no master key on a public address (README, security note). |
 | `LITEGEN__OAUTH__GITHUB__CLIENT_ID`, `LITEGEN__OAUTH__GITHUB__CLIENT_SECRET`, `LITEGEN__OAUTH__GOOGLE__CLIENT_ID`, `LITEGEN__OAUTH__GOOGLE__CLIENT_SECRET`, `LITEGEN__OAUTH__CALLBACK_BASE` | The dashboard's GitHub and Google sign-in. |
 | `LITEGEN__COOKIE_INSECURE_DEV` | `true` drops `Secure` from the sign-in cookies, for local HTTP only. |
-| `LITEGEN__OWNER_EMAIL` | The only email that may sign up as a single-tenant deployment's Owner. |
-| `LITEGEN__DEV__EXPOSE_RESET_TOKENS` | `true` returns password-reset tokens in API answers (development only). `dev.expose_reset_tokens` in the file does nothing. |
 | `LITEGEN_CORS_ORIGINS` | The CORS origins, a comma list (above). |
 | `LITEGEN_MODELS_DIR` | The model registry directory (default `models`). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `RUST_LOG` | Trace export, and the log filter. |
+
+`owner_email` (`LITEGEN__OWNER_EMAIL`, the only address that may sign up as a
+single-tenant deployment's Owner) and `dev.expose_reset_tokens`
+(`LITEGEN__DEV__EXPOSE_RESET_TOKENS`) are ordinary settings since 2026-11-15:
+the file or the variable sets them, read once at startup like the rest.
+
+Set `owner_email` before you expose a fresh single-tenant deployment: until an
+account exists, whoever signs up first becomes the Owner. litegen warns at
+startup when a deployment with no account and no `owner_email` binds an address
+other than loopback, or has a `server.public_base_url` that isn't loopback.
+
+## The dev token flags: local tests only
+
+`dev.expose_reset_tokens` (`LITEGEN__DEV__EXPOSE_RESET_TOKENS`) hands out
+account-takeover tokens: the unauthenticated reset request
+(`POST /v1/auth/password-reset/request`) answers with the reset token as
+`_dev_token`, so anyone who knows an account's email can take it over.
+`dev.expose_invite_tokens` (`LITEGEN__DEV__EXPOSE_INVITE_TOKENS`, deprecated)
+adds `_dev_token` to the answer that makes an invitation, which carries the token
+without it since 2026-11-15. Both are for local tests only. litegen refuses to
+start (`FATAL`, naming the flag) with either one on:
+
+- in hosted mode;
+- on a bind other than loopback (`server.host`);
+- with a `server.public_base_url` whose host isn't loopback, since a proxy on
+  the same host forwards public traffic to 127.0.0.1.
+
+On a loopback-only single-tenant server it starts, and logs a `SECURITY` warning
+naming the flag.
+
+Without `dev.expose_reset_tokens`, the self-service request stores nothing and
+answers `{"ok": true}` either way. A reset link comes from an admin who outranks
+the account, or from the master key: `POST /v1/users/{id}/password-reset`
+(README, "Password resets").
 
 ## `.env`
 
@@ -229,6 +261,6 @@ see [gateway-settings.md](gateway-settings.md#server-limits-set-at-startup)).
 
 Routes, provider configs, gateway settings and runtime models can change while
 litegen runs, through the admin API (`PUT /v1/admin/routes`,
-`PUT /v1/admin/providers/{name}`, `PUT /v1/admin/settings`) or the dashboard.
+`PUT`/`PATCH /v1/admin/providers/{name}`, `PUT /v1/admin/settings`) or the dashboard.
 Every replica picks a change up within 15 seconds, or about a second with Redis
 ([scaling.md](scaling.md)).

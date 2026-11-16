@@ -365,6 +365,14 @@ pub struct ParamSpecStringArray {
     /// by the server; the catalog loader refuses a yaml that sets it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub derivable_values: Vec<String>,
+    /// For `output_formats`: the containers one vendor job returns together
+    /// (Meshy's rig names a glb and an fbx at once); empty: a job returns the
+    /// one container it is asked for. A generation that keeps nothing
+    /// (`keep_outputs: false`) converts nothing, so it can be promised only
+    /// what its vendor job returns; anything more is refused, 400
+    /// `format_needs_keeping`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returned_together: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
@@ -560,6 +568,11 @@ pub struct ParamSpecExpand {
     /// The most pixels it adds to one side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_px: Option<u32>,
+    /// The row grows a canvas and nothing else: a request without `expand`
+    /// is refused with `param_required` (param `expand`) before anything is
+    /// quoted or reserved. Absent (false): `expand` is optional.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
@@ -752,13 +765,24 @@ pub struct RefRoleSpec {
     /// to bound its clip: the longest clip it makes or prices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_time_s: Option<f64>,
-    /// On a video model's `last_frame` role: its vendor ends a clip on a
-    /// last frame only when the clip starts from a first frame, so a request
-    /// with a `last_frame` and no `first_frame` (or `init`) image is refused
-    /// with `ref_role_required` before anything is quoted or reserved.
-    /// Absent (false): a last frame alone goes to the vendor.
+    /// On a video model's `last_frame` or `reference` role: its vendor takes
+    /// an image of this role only in a clip that starts from a first frame
+    /// (it ends a clip on a last frame only after a first one; Runway's
+    /// Kling O3 takes reference images only on image-to-video), so a request
+    /// with an image of this role and no `first_frame` (or `init`) image is
+    /// refused with `ref_role_required` before anything is quoted or
+    /// reserved. Absent (false): an image of this role goes to the vendor
+    /// without a first frame.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub needs_first_frame: bool,
+    /// Roles this role can't be sent with in one request: its vendor takes
+    /// one or the other (Vidu: first/last frames, or reference images), so
+    /// a request with an image of this role and one of a role named here is
+    /// refused with `ref_role_conflict` before anything is quoted or
+    /// reserved. Absent (empty): images of any roles go to the vendor
+    /// together.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_with: Vec<String>,
 }
 
 /// Where a model's keyframes may sit in the clip.
@@ -1036,6 +1060,7 @@ impl ModelSchema {
                 max_items: Some(1),
                 default: s.default.clone().into_iter().collect(),
                 derivable_values: Vec::new(),
+                returned_together: Vec::new(),
                 label: s.label.clone(),
                 description: s.description.clone(),
             }),
@@ -1067,6 +1092,67 @@ impl ModelSchema {
             }
         }
         vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()]
+    }
+
+    /// The containers one vendor job of this 3D model returns as they come,
+    /// for a request of `requested` asked with `format_source` `source`.
+    /// litegen asks the vendor for the containers it makes that
+    /// [`asks_vendor_for`](crate::proxy::model3d_convert::asks_vendor_for)
+    /// picks (its own fbx, say), else for its glb. A job that makes one
+    /// container returns the first of those; one that returns several at once
+    /// (`output_formats.returned_together`) returns its glb and each of them
+    /// it holds.
+    pub fn vendor_returned_formats(&self, requested: &[String], source: Option<crate::types::Model3dFormatSource>) -> Vec<String> {
+        let glb = crate::types::DEFAULT_MODEL3D_FORMAT.to_string();
+        let Some(spec) = self.output_formats_spec() else { return vec![glb] };
+        let has = |list: &[String], f: &str| list.iter().any(|n| n.eq_ignore_ascii_case(f));
+        let mut asked = requested
+            .iter()
+            .filter(|f| has(&spec.enum_values, f.as_str()) && crate::proxy::model3d_convert::asks_vendor_for(f, source))
+            .map(|f| f.to_ascii_lowercase());
+        if spec.returned_together.is_empty() {
+            return vec![asked.next().unwrap_or(glb)];
+        }
+        let mut returned = vec![glb];
+        for f in asked.filter(|f| has(&spec.returned_together, f)) {
+            if !returned.contains(&f) {
+                returned.push(f);
+            }
+        }
+        returned
+    }
+
+    /// Why a generation that keeps nothing (`keep_outputs: false`) can't be
+    /// promised the containers `requested` (resolved), asked with
+    /// `format_source` `source`; `None` when it can. litegen converts nothing
+    /// for such a generation, so each container must be one this model's
+    /// vendor makes itself, and one its job returns for this very request
+    /// ([`vendor_returned_formats`](Self::vendor_returned_formats)). Refused as
+    /// `format_needs_keeping`.
+    pub fn keep_nothing_refusal(&self, requested: &[String], source: Option<crate::types::Model3dFormatSource>) -> Option<String> {
+        let native = self.output_formats_spec().map(|s| s.enum_values).unwrap_or_default();
+        let converted: Vec<&String> = requested.iter().filter(|f| !native.iter().any(|n| n.eq_ignore_ascii_case(f))).collect();
+        if !converted.is_empty() {
+            return Some(format!(
+                "litegen makes {} by converting a file it keeps, and this request keeps nothing (keep_outputs: false); {} makes {} itself",
+                converted.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", "),
+                self.id,
+                native.join(", "),
+            ));
+        }
+        let returned = self.vendor_returned_formats(requested, source);
+        let missing: Vec<&str> =
+            requested.iter().map(String::as_str).filter(|f| !returned.iter().any(|r| r.eq_ignore_ascii_case(f))).collect();
+        if missing.is_empty() {
+            return None;
+        }
+        let why = if source == Some(crate::types::Model3dFormatSource::Glb) { ", as format_source: glb asks it for its glb" } else { "" };
+        Some(format!(
+            "litegen makes {} by converting a file it keeps, and this request keeps nothing (keep_outputs: false); for this request {} returns only {}{why}",
+            missing.join(", "),
+            self.id,
+            returned.join(", "),
+        ))
     }
 }
 

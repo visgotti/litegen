@@ -27,6 +27,7 @@ import base64
 import hashlib
 import importlib
 import io
+import json
 import pkgutil
 import struct
 import uuid
@@ -36,7 +37,7 @@ import httpx
 import pytest
 
 import litegen._generated.api as api_pkg
-from litegen import LiteGenClient, LiteGenValidationError
+from litegen import LiteGenAPIError, LiteGenClient, LiteGenValidationError
 from litegen._generated.client import AuthenticatedClient, Client
 from litegen._generated.models import (
     AcceptInvitationRequest,
@@ -92,6 +93,7 @@ from litegen._generated.api.admin import (
     list_audit,
     list_webhook_deliveries,
     patch_api_key_handler,
+    redeliver_webhook_delivery,
     revoke_api_key,
     rotate_api_key,
     test_webhook,
@@ -156,6 +158,7 @@ from litegen._generated.api.organizations import (
     get_org,
     get_org_allowed_models,
     invite_member,
+    list_invitations,
     list_members,
     list_org_provider_credentials,
     list_orgs,
@@ -163,6 +166,7 @@ from litegen._generated.api.organizations import (
     patch_org,
     put_org_allowed_models,
     remove_member,
+    revoke_invitation,
     transfer_owner as org_transfer_owner,
 )
 from litegen._generated.api.providers import list_providers
@@ -172,6 +176,7 @@ from litegen._generated.api.users import (
     delete_user,
     get_invitation,
     invite_user,
+    issue_password_reset,
     list_users,
     patch_user,
     transfer_owner as global_transfer_owner,
@@ -778,6 +783,35 @@ def test_org_members_invite_patch_remove(owner, base_url):
         EXERCISED.add("remove_member")
 
 
+def test_org_invitations_list_and_revoke(owner, base_url):
+    """An invitation is listed, without its token, until it is revoked; revoking
+    it again is a 404. The facade does the same with the master key; an org API
+    key is refused, since these routes take a signed-in person or the master key."""
+    invitee = unique_email("pending")
+    inv = _ok(invite_member.sync_detailed(
+        client=owner.session, id=owner.org_id, body=AddMemberRequest(email=invitee, role=Role.MEMBER),
+    ), 200)
+    assert inv.parsed.token and inv.parsed.org_id == owner.org_id
+    listed = _ok(list_invitations.sync_detailed(owner.org_id, client=owner.session), 200)
+    assert [i.email for i in listed.parsed] == [invitee]
+    assert "token" not in listed.content.decode()
+    EXERCISED.add("list_invitations")
+    _ok(revoke_invitation.sync_detailed(owner.org_id, inv.parsed.id, client=owner.session), 204)
+    EXERCISED.add("revoke_invitation")
+    assert _ok(list_invitations.sync_detailed(owner.org_id, client=owner.session), 200).parsed == []
+    _ok(revoke_invitation.sync_detailed(owner.org_id, inv.parsed.id, client=owner.session), 404)
+
+    facade = LiteGenClient(api_key=MASTER_KEY, base_url=base_url)
+    made = facade.orgs.members.invite(owner.org_id, email=unique_email("facade"), role="viewer")
+    assert made["token"] and made["org_id"] == owner.org_id
+    assert [i["id"] for i in facade.orgs.invitations.list(owner.org_id)] == [made["id"]]
+    assert facade.orgs.invitations.revoke(owner.org_id, made["id"]) is None
+    assert facade.orgs.invitations.list(owner.org_id) == []
+    with pytest.raises(LiteGenAPIError) as exc:
+        LiteGenClient(api_key=owner.api_key, base_url=base_url).orgs.invitations.list(owner.org_id)
+    assert exc.value.status == 403
+
+
 def test_org_transfer_owner_throwaway(owner, base_url):
     """transfer_owner (org-scoped) on a throwaway org to a second real user.
 
@@ -941,8 +975,8 @@ def test_admin_audit_cache(owner, master_client):
     EXERCISED.add("clear_cache")
 
 
-def test_admin_webhooks(owner):
-    """Webhook test/deliveries on a throwaway key configured with a webhook_url."""
+def test_admin_webhooks(owner, base_url):
+    """Webhook test/deliveries/redeliver on a throwaway key configured with a webhook_url."""
     created = _ok(
         create_api_key.sync_detailed(
             client=owner.session,
@@ -963,8 +997,49 @@ def test_admin_webhooks(owner):
     assert r.status_code in (200, 202, 400, 404, 502, 503), f"test_webhook: {r.status_code} {r.content!r}"
     EXERCISED.add("test_webhook")
 
-    # Cleanup the throwaway key.
+    # No delivery of this key has that id: a defined 404, which still drives the
+    # generated call (a real ended delivery needs a job whose webhook finished).
+    bogus = "whd-00000000-0000-4000-8000-000000000000"
+    r = redeliver_webhook_delivery.sync_detailed(client=owner.session, id=key_id, delivery_id=bogus)
+    assert r.status_code == 404, f"redeliver_webhook_delivery bogus: {r.status_code} {r.content!r}"
+    EXERCISED.add("redeliver_webhook_delivery")
+
+    # The facade, with the owner's admin-scope key.
+    facade = LiteGenClient(api_key=owner.api_key, base_url=base_url)
+    page = facade.keys.list_webhook_deliveries(str(key_id), per_page=10)
+    assert page["per_page"] == 10 and isinstance(page["data"], list)
+    with pytest.raises(LiteGenAPIError) as exc:
+        facade.keys.redeliver_webhook_delivery(str(key_id), bogus)
+    assert exc.value.status == 404
+    plain = _ok(
+        create_api_key.sync_detailed(client=owner.session, body=CreateApiKeyRequest(name="it-plain-key", scopes="read")),
+        200, 201,
+    ).parsed.id
+    with pytest.raises(LiteGenAPIError) as exc:
+        facade.keys.redeliver_webhook_delivery(str(plain), bogus)
+    assert (exc.value.status, exc.value.code) == (400, "no_webhook_configured")
+
+    # Cleanup the throwaway keys.
+    revoke_api_key.sync_detailed(client=owner.session, id=plain)
     revoke_api_key.sync_detailed(client=owner.session, id=key_id)
+
+
+def test_facade_key_patch_is_a_merge_patch(owner, base_url):
+    """keys.patch sends None as null, which clears the field; what it leaves out stays."""
+    made = owner.http.post("/v1/keys", json={
+        "name": "it-merge", "scopes": "read", "rpm_limit": 60, "token_quota": 100.0,
+        "webhook_url": "https://example.com/hook",
+    })
+    assert made.status_code in (200, 201), made.text
+    kid = made.json()["id"]
+    facade = LiteGenClient(api_key=owner.api_key, base_url=base_url)
+    k = facade.keys.patch(kid, rpm_limit=None, webhook_url="")
+    assert k.get("rpm_limit") is None and k.get("webhook_url") is None and k["token_quota"] == 100.0
+    k = facade.keys.patch(kid, name="it-merged", expires_at=None)
+    assert k["name"] == "it-merged" and k["token_quota"] == 100.0 and k.get("expires_at") is None
+    k = facade.keys.patch(kid, token_quota=None)
+    assert k.get("token_quota") is None and k["name"] == "it-merged"
+    owner.http.delete(f"/v1/keys/{kid}")
 
 
 # =============================================================================
@@ -1020,6 +1095,33 @@ def test_global_transfer_owner_throwaway(master_client, base_url):
     )
     assert r.status_code in (200, 204, 400, 404, 409), f"global transfer_owner: {r.status_code} {r.content!r}"
     EXERCISED.add("transfer_owner")  # users.transfer_owner
+
+
+def test_password_reset_link(master_client, owner, base_url):
+    """The master key issues a reset link for an account, shown once; its token
+    sets the password, and the new one signs in. The facade does the same; an
+    unknown account is a 404 and an org API key may not ask (403)."""
+    user_id = _owner_user_id(owner)
+    r = _ok(issue_password_reset.sync_detailed(user_id, client=master_client), 200)
+    assert r.parsed.user_id == user_id and r.parsed.email == owner.email and r.parsed.token
+    EXERCISED.add("issue_password_reset")
+    new_password = "reset-integration-pw-2"
+    _ok(password_reset_confirm.sync_detailed(
+        client=Client(base_url=base_url),
+        body=PasswordResetConfirmBody(token=r.parsed.token, new_password=new_password),
+    ), 200, 204)
+    _ok(login.sync_detailed(client=Client(base_url=base_url), body=LoginRequest(email=owner.email, password=new_password)), 200)
+
+    facade = LiteGenClient(api_key=MASTER_KEY, base_url=base_url)
+    link = facade.users.password_reset_link(user_id)
+    assert link["user_id"] == user_id and link["token"] and link["reset_url"] is None
+    with pytest.raises(LiteGenAPIError) as exc:
+        facade.users.password_reset_link("no-such-user")
+    assert (exc.value.status, exc.value.code) == (404, "user_not_found")
+    assert exc.value.body["error"]["code"] == "user_not_found"
+    with pytest.raises(LiteGenAPIError) as exc:
+        LiteGenClient(api_key=owner.api_key, base_url=base_url).users.password_reset_link(user_id)
+    assert exc.value.status == 403
 
 
 def test_invitations(master_client, owner, base_url):
@@ -1091,13 +1193,13 @@ from litegen._generated.api.end_users import (  # noqa: E402
 from litegen._generated.api.gateway import (  # noqa: E402
     admin_create_model, admin_delete_model, admin_delete_provider, admin_delete_routes,
     admin_get_model, admin_get_provider, admin_get_routes, admin_get_settings, admin_list_models,
-    admin_list_providers, admin_patch_model, admin_put_provider, admin_put_routes,
+    admin_list_providers, admin_patch_model, admin_patch_provider, admin_put_provider, admin_put_routes,
     admin_put_settings, admin_replace_model, admin_revoke_links,
 )
 from litegen._generated.api.spend import spend_logs, spend_report  # noqa: E402
 from litegen._generated.models import (  # noqa: E402
     CreateEndUserRequest, GatewaySettings, LimitsInput, ModelSchema, PatchModelStateRequest,
-    PutProviderConfigRequest, RoutesDocument, UpdateEndUserRequest,
+    PatchProviderConfigRequest, PutProviderConfigRequest, RoutesDocument, UpdateEndUserRequest,
 )
 
 
@@ -1286,6 +1388,22 @@ def test_gateway_admin(master_client, owner, base_url):
         {"api_key": secret, "api_base": "https://example.invalid/v1"})), 200)
     assert r.parsed.key_hint == "…4321" and secret not in r.content.decode()
     EXERCISED.add("admin_put_provider")
+    # openai can't be reached at that api_base, so /health answers 503 with its
+    # "degraded" report; the facade returns that report as it returns a 200's.
+    r = _ok(health_check.sync_detailed(client=master_client), 503)
+    assert r.parsed.status == "degraded"
+    report = LiteGenClient(api_key=MASTER_KEY, base_url=base_url).health.check()
+    assert report["status"] == "degraded"
+    assert any(p["provider"] == "openai" and not p["healthy"] for p in report["providers"])
+    # PATCH sets what it is sent and keeps the rest (the key stays); null clears.
+    r = _ok(admin_patch_provider.sync_detailed("openai", client=master_client, body=PatchProviderConfigRequest(
+        region="eu-west")), 200)
+    assert r.parsed.region == "eu-west" and r.parsed.key_hint == "…4321"
+    r = _ok(admin_patch_provider.sync_detailed("openai", client=master_client, body=PatchProviderConfigRequest(
+        region=None)), 200)
+    cleared = json.loads(r.content)  # an unset region may be left out, so read the wire answer
+    assert cleared.get("region") is None and cleared["key_hint"] == "…4321"
+    EXERCISED.add("admin_patch_provider")
     _ok(admin_get_provider.sync_detailed("openai", client=master_client), 200)
     EXERCISED.add("admin_get_provider")
     r = _ok(admin_delete_provider.sync_detailed("openai", client=master_client), 200)
@@ -1317,6 +1435,10 @@ def test_gateway_admin(master_client, owner, base_url):
     assert facade.admin.routes.get()["source"] == "config"
     assert facade.admin.settings.get()["settings"]["cost_markup_percent"] is None
     assert any(p["name"] == "mock" for p in facade.admin.providers.list())
+    assert facade.admin.providers.patch("openai", region="eu-west", model_mapping={"a": "b"})["region"] == "eu-west"
+    kept = facade.admin.providers.patch("openai", region=None)
+    assert kept.get("region") is None and kept["model_mapping"] == {"a": "b"}
+    facade.admin.providers.reset("openai")
 
 
 # =============================================================================
@@ -1425,9 +1547,9 @@ def test_every_generated_endpoint_is_covered(base_url):
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 144. Both `transfer_owner` modules are exercised
+    file count is 149. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    143 entries while the file count is 144.
+    148 entries while the file count is 149.
 
     Takes `base_url` only so it skips with the rest of the suite when the binary
     isn't built: without the binary nothing populates EXERCISED, and this would
@@ -1441,6 +1563,6 @@ def test_every_generated_endpoint_is_covered(base_url):
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 144 endpoint module files in total (143 unique names + duplicate transfer_owner).
-    assert file_count == 144, f"expected 144 endpoint module files, found {file_count}"
-    assert len(discovered) == 143, f"expected 143 unique names, found {len(discovered)}"
+    # 149 endpoint module files in total (148 unique names + duplicate transfer_owner).
+    assert file_count == 149, f"expected 149 endpoint module files, found {file_count}"
+    assert len(discovered) == 148, f"expected 148 unique names, found {len(discovered)}"

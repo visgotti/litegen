@@ -10,7 +10,7 @@ protection: it fails unless every other job passed.
 | Job | What it proves |
 |---|---|
 | `actionlint` | The workflow itself is valid, and its shell steps pass shellcheck. |
-| `core` | litegen-core: clippy with `-D warnings`; the lib, all 55 integration suites and the examples, against real Postgres, a real Redis and a real S3 (Zenko CloudServer); the timing tests, run alone; nothing skipped; the OpenAPI document and both SDKs regenerate unchanged. |
+| `core` | litegen-core: clippy with `-D warnings`; the lib, all 55 integration suites and the examples, against real Postgres, a real Redis and a real S3 (Zenko CloudServer); the timing tests and the two Redis script-flush tests, run alone; nothing skipped; the OpenAPI document and both SDKs regenerate unchanged. |
 | `release-binary` | `cargo build --release`. The binary goes to the jobs below. |
 | `docker` | The image builds, and `.github/scripts/docker-smoke.sh` runs it: with environment variables only and no database setting (the database and kept files in the `/app/data` volume, through a restart and a new container; `docker stop` ends it cleanly), with a mounted config file (as `/app/litegen.yaml`, by `--config`, `LITEGEN_CONFIG_FILE_PATH` or `LITEGEN_CONFIG_FILE`; variables beat it, and nothing the image sets does), as uid 1000, refusing to start with no master key, and on Postgres from the `LITEGEN_DATABASE_*` parts. A failed check prints its container's log. |
 | `dashboard` | Lint, unit tests, build, Storybook build and the stories suite. |

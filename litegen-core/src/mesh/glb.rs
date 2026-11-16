@@ -95,15 +95,18 @@
 //!   is refused as incomplete. A layer-only image in a meshopt view that
 //!   doesn't decode drops its layer with a warning (Ruling B15b, above).
 //! - **Draco**, `KHR_draco_mesh_compression` (`draco.rs`, through the
-//!   `draco-core` crate, under the absolute `DRACO_LIMITS`): a TRIANGLES or
+//!   `draco-core` crate, under the caller's absolute [`DracoOptions`],
+//!   `ReadOptions::draco`, the reader's own limits by default): a TRIANGLES or
 //!   TRIANGLE_STRIP primitive, whose stream's faces are read as a triangle
 //!   list either way, since a Draco stream holds faces, not a strip
 //!   (three.js expands a Draco strip's faces as a strip, GLTFLoader.js
 //!   :3851-3853; no Khronos sample has one). Refused by name: a primitive
 //!   in any other mode (POINTS, LINES, LINE_LOOP, LINE_STRIP or
 //!   TRIANGLE_FAN), which the extension doesn't allow, as Malformed; a
-//!   point cloud; a bitstream older than 2.2; and a stream past the
-//!   limits. The stream is decoded even when the extension is only used,
+//!   point cloud; a bitstream older than 2.2; a stream past the limits,
+//!   its header's faces per point among them; and, while the caller has
+//!   Draco off, any Draco primitive, naming what turned it off. The stream
+//!   is decoded even when the extension is only used,
 //!   never the fallback accessors (Ruling B27). An accessor whose `count`
 //!   disagrees with the decoded count, `indices` included, is read at the
 //!   decoded count, with a warning (Ruling B32). An attribute the extension
@@ -134,7 +137,7 @@ use super::scene::{Anisotropy, Clearcoat, Iridescence, MaterialLayer, Sheen, Spe
 use super::scene::{Camera, Light, LightKind, Projection};
 use super::draco;
 use super::meshopt;
-use super::{MeshError, MeshFormat};
+use super::{DracoOptions, MeshError, MeshFormat};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -269,17 +272,6 @@ const DRACO_EXTENSION: &str = "KHR_draco_mesh_compression";
 /// a file that uses one, even beside an uncompressed fallback, should
 /// rewrite it rather than hand it on.
 pub const COMPRESSION_EXTENSIONS: &[&str] = &[MESHOPT_EXTENSIONS[0], MESHOPT_EXTENSIONS[1], DRACO_EXTENSION];
-
-/// The absolute limits on one Draco primitive's decode: the scene's own
-/// vertex and index caps, and draco.rs's decoded-bytes ceiling, set to bound
-/// the Draco decoder's memory on the shapes measured, strips and grids
-/// (Ruling B38: 24 MB, under the document's own 192 MB budget, which still
-/// holds what the scene copies; the faces-per-point pre-check that would
-/// cover a mesh with many more faces a point is open, Ruling B39). A
-/// stream's size bounds nothing (a constant attribute codes to a few bytes
-/// whatever its count), so these hold whatever the file is.
-const DRACO_LIMITS: draco::Limits =
-    draco::Limits { max_points: MAX_MERGED_VERTICES, max_faces: MAX_MERGED_INDICES / 3, max_bytes: draco::MAX_DECODED_BYTES };
 
 /// The meshopt extension objects `view` carries.
 fn meshopt_extensions(view: &Value) -> impl Iterator<Item = (&'static str, &Value)> {
@@ -1056,6 +1048,11 @@ struct Gltf<'a> {
     notes: RefCell<Vec<String>>,
     quantized: bool,
     budget: Budget,
+    /// How a Draco primitive is read: whether at all, and the absolute
+    /// limits on one decode. A stream's size bounds nothing (a constant
+    /// attribute codes to a few bytes whatever its count), so these hold
+    /// whatever the file is.
+    draco: DracoOptions,
 }
 
 impl<'a> Gltf<'a> {
@@ -1099,7 +1096,7 @@ impl<'a> Gltf<'a> {
             .filter(|(_, view)| meshopt_extensions(view).next().is_some())
             .map(|(i, _)| (i, OnceCell::new()))
             .collect();
-        Gltf { doc, buffers, decoded, notes: RefCell::new(Vec::new()), quantized, budget: Budget::new() }
+        Gltf { doc, buffers, decoded, notes: RefCell::new(Vec::new()), quantized, budget: Budget::new(), draco: DracoOptions::default() }
     }
 
     fn array(&self, key: &str) -> &[Value] {
@@ -1426,9 +1423,10 @@ impl<'a> Gltf<'a> {
         })
     }
 
-    /// A Draco primitive's stream, decoded by `draco.rs` within the absolute
-    /// [`DRACO_LIMITS`], with the attributes its extension maps that this
-    /// reader reads ([`read_attributes`]). The stream
+    /// A Draco primitive's stream, decoded by `draco.rs` within the read's
+    /// absolute [`DracoOptions`], with the attributes its extension maps that
+    /// this reader reads ([`read_attributes`]); refused before anything is
+    /// read of it while the options have Draco off. The stream
     /// is its `bufferView`'s bytes, so a meshopt-compressed view is
     /// meshopt-decoded first. The extension's `attributes` are a subset of
     /// the primitive's (README :109). A name of its own that this reader
@@ -1437,6 +1435,10 @@ impl<'a> Gltf<'a> {
     /// wouldn't read is skipped with a warning, as three.js ignores such a
     /// mapping (Ruling B49).
     fn decode_draco(&self, ext: &Value, attrs: &serde_json::Map<String, Value>, at: &str) -> Result<draco::DecodedPrimitive, MeshError> {
+        if !self.draco.enabled {
+            let by = if self.draco.disabled_by.is_empty() { String::new() } else { format!(" by {}", self.draco.disabled_by) };
+            return Err(unsupported(format!("{at} is Draco-compressed ({DRACO_EXTENSION}), and Draco decoding is turned off{by}")));
+        }
         let view = index_field(ext.get("bufferView"), &format!("{at} {DRACO_EXTENSION} bufferView"))?
             .ok_or_else(|| malformed(format!("{at}'s {DRACO_EXTENSION} has no bufferView")))?;
         let mapped = ext
@@ -1488,7 +1490,7 @@ impl<'a> Gltf<'a> {
             }
         }
         let (stream, _) = self.view_bytes(view)?;
-        draco::decode_primitive(stream, &names, DRACO_LIMITS).map_err(|e| match e {
+        draco::decode_primitive(stream, &names, self.draco.decode_limits()).map_err(|e| match e {
             MeshError::Malformed(d) => malformed(format!("{at} ({DRACO_EXTENSION}): {d}")),
             MeshError::Unsupported(d) => unsupported(format!("{at} ({DRACO_EXTENSION}): {d}")),
             other => other,
@@ -3178,10 +3180,16 @@ pub struct ReadOutcome {
     pub warnings: Vec<String>,
 }
 
+/// [`read_document_with`] under the default [`DracoOptions`].
+#[cfg(test)]
 fn read_document(doc: Value, bin: Option<&[u8]>, sidecars: &dyn Sidecars) -> Result<ReadOutcome, MeshError> {
+    read_document_with(doc, bin, sidecars, DracoOptions::default())
+}
+
+fn read_document_with(doc: Value, bin: Option<&[u8]>, sidecars: &dyn Sidecars, draco: DracoOptions) -> Result<ReadOutcome, MeshError> {
     check_required_extensions(&doc)?;
     let uncarried = uncarried_extensions(&doc);
-    let g = Gltf::new(doc, bin, sidecars);
+    let g = Gltf { draco, ..Gltf::new(doc, bin, sidecars) };
     let mut r = Reader {
         g: &g,
         scene: Scene::default(),
@@ -3226,13 +3234,23 @@ fn read_document(doc: Value, bin: Option<&[u8]>, sidecars: &dyn Sidecars) -> Res
 /// Read a glTF binary into a scene. External buffers and images are looked up
 /// in `sidecars`.
 pub fn read_scene(bytes: &[u8], sidecars: &dyn Sidecars) -> Result<ReadOutcome, MeshError> {
+    read_scene_with(bytes, sidecars, DracoOptions::default())
+}
+
+/// [`read_scene`], reading a Draco primitive as `draco` says.
+pub fn read_scene_with(bytes: &[u8], sidecars: &dyn Sidecars, draco: DracoOptions) -> Result<ReadOutcome, MeshError> {
     let (json, bin) = split_chunks(bytes)?;
     let doc = parse_json(json)?;
-    read_document(doc, bin, sidecars)
+    read_document_with(doc, bin, sidecars, draco)
 }
 
 /// Read a glTF JSON document (`.gltf`) into a scene.
 pub fn read_gltf_scene(bytes: &[u8], sidecars: &dyn Sidecars) -> Result<ReadOutcome, MeshError> {
+    read_gltf_scene_with(bytes, sidecars, DracoOptions::default())
+}
+
+/// [`read_gltf_scene`], reading a Draco primitive as `draco` says.
+pub fn read_gltf_scene_with(bytes: &[u8], sidecars: &dyn Sidecars, draco: DracoOptions) -> Result<ReadOutcome, MeshError> {
     if bytes.starts_with(MAGIC) {
         return Err(MeshError::NotThisFormat {
             expected: MeshFormat::Gltf,
@@ -3256,7 +3274,7 @@ pub fn read_gltf_scene(bytes: &[u8], sidecars: &dyn Sidecars) -> Result<ReadOutc
             detail: "JSON without an asset.version is not a glTF document".into(),
         });
     }
-    read_document(doc, None, sidecars)
+    read_document_with(doc, None, sidecars, draco)
 }
 
 /// Read a glTF 2.0 binary into the flat mesh: every primitive in world space,
@@ -8373,6 +8391,90 @@ mod tests {
 
     fn read_box(doc: Value) -> Result<ReadOutcome, MeshError> {
         read_with_bin(doc, "Box.bin", draco_sample("Box").draco[1])
+    }
+
+    /// One of [`DRACO_SAMPLES`] as `mesh::read_scene_with` reads a `.gltf`,
+    /// its glTF-Draco variant (`draco`) or its plain one, under `draco`.
+    fn read_sample_with(name: &str, compressed: bool, draco: super::super::DracoOptions) -> Result<super::super::SceneRead, MeshError> {
+        let s = draco_sample(name);
+        let ([gltf, bin], bin_name) = if compressed { (s.draco, s.draco_bin) } else { (s.plain, s.plain_bin) };
+        let files = [PackageFile { path: bin_name.into(), bytes: bin.to_vec() }];
+        super::super::read_scene_with(gltf, MeshFormat::Gltf, &package::MemorySidecars { files: &files }, super::super::ReadOptions { draco, ..Default::default() })
+    }
+
+    /// A read's Draco options reach the decode (`ReadOptions::draco`): Box's
+    /// glTF-Draco sample reads under the defaults and under its exact needs
+    /// (24 points, 12 faces, 576 decoded bytes, 2 faces a point; its header
+    /// declares 8 vertices, which its normals' seams split into the 24
+    /// points), and each limit under its needs refuses it, Unsupported,
+    /// naming the primitive, the extension and the limit.
+    #[test]
+    fn a_reads_draco_options_reach_the_decode() {
+        let defaults = super::super::DracoOptions::default();
+        let needs = super::super::DracoOptions { max_points: 24, max_faces: 12, max_decoded_bytes: 576, max_faces_per_point: 2, ..defaults };
+        for opts in [defaults, needs] {
+            let r = read_sample_with("Box", true, opts).unwrap_or_else(|e| panic!("{opts:?}: {e}"));
+            assert_eq!(r.scene.meshes[0].primitives[0].triangle_count(), 12, "{opts:?}");
+        }
+        for (opts, says) in [
+            (super::super::DracoOptions { max_points: 7, ..needs }, "declares 8 points, past this reader's limit of 7"),
+            (super::super::DracoOptions { max_faces: 11, ..needs }, "declares 12 faces, past this reader's limit of 11"),
+            (super::super::DracoOptions { max_decoded_bytes: 575, ..needs }, "575 bytes of decoded attributes"),
+            (super::super::DracoOptions { max_faces_per_point: 1, ..needs }, "declares 12 faces over 8 points (1.5 a point), past this reader's limit of 1 face a point"),
+        ] {
+            match read_sample_with("Box", true, opts) {
+                Err(MeshError::Unsupported(m)) => assert!(m.starts_with("mesh 0 primitive 0 (KHR_draco_mesh_compression): ") && m.contains(says), "{opts:?}: {m}"),
+                other => panic!("{opts:?}: {other:?}"),
+            }
+        }
+    }
+
+    /// With Draco off, a Draco primitive is refused before its stream is
+    /// read, Unsupported, naming the primitive, the extension and what the
+    /// caller says turned decoding off (nothing more when it names nothing),
+    /// whether the extension is required or only used, beside plain data
+    /// (Ruling B27: that data is never read). A file without one reads as
+    /// ever: Box's plain twin.
+    #[test]
+    fn with_draco_off_a_draco_primitive_is_refused_naming_what_turned_it_off() {
+        let off = super::super::DracoOptions { enabled: false, disabled_by: "the test's switch", ..Default::default() };
+        let says = "mesh 0 primitive 0 is Draco-compressed (KHR_draco_mesh_compression), and Draco decoding is turned off";
+        match read_sample_with("Box", true, off) {
+            Err(MeshError::Unsupported(m)) => assert_eq!(m, format!("{says} by the test's switch")),
+            other => panic!("{other:?}"),
+        }
+        match read_sample_with("Box", true, super::super::DracoOptions { disabled_by: "", ..off }) {
+            Err(MeshError::Unsupported(m)) => assert_eq!(m, says),
+            other => panic!("{other:?}"),
+        }
+        let mut used_only = box_draco_doc();
+        used_only.as_object_mut().unwrap().remove("extensionsRequired");
+        let files = [PackageFile { path: "Box.bin".into(), bytes: draco_sample("Box").draco[1].to_vec() }];
+        let bytes = serde_json::to_vec(&used_only).unwrap();
+        match super::super::read_scene_with(&bytes, MeshFormat::Gltf, &package::MemorySidecars { files: &files }, super::super::ReadOptions { draco: off, ..Default::default() }) {
+            Err(MeshError::Unsupported(m)) => assert!(m.starts_with(says), "{m}"),
+            other => panic!("only used: {other:?}"),
+        }
+        let plain = read_sample_with("Box", false, off).unwrap_or_else(|e| panic!("Box's plain twin: {e}"));
+        assert_eq!(plain.scene.meshes[0].primitives[0].triangle_count(), 12);
+    }
+
+    /// Every Draco file in this module's testdata reads under the default
+    /// options, whose faces-per-point pre-check is new (Ruling B39): the five
+    /// Khronos samples' glTF-Draco variants and our textured.q.draco GLB,
+    /// plain and with two of its streams wrapped in meshopt.
+    #[test]
+    fn every_draco_file_here_reads_under_the_default_options() {
+        assert_eq!(super::super::ReadOptions::default().draco, super::super::DracoOptions::default());
+        for s in &DRACO_SAMPLES {
+            read_sample_with(s.name, true, super::super::DracoOptions::default()).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+        }
+        for (name, glb) in [
+            ("textured.q.draco.glb", &include_bytes!("testdata/gltf/draco/ours/textured.q.draco.glb")[..]),
+            ("textured.q.draco.meshopt.glb", &include_bytes!("testdata/gltf/draco/ours/textured.q.draco.meshopt.glb")[..]),
+        ] {
+            super::super::read_scene_with(glb, MeshFormat::Glb, &NoSidecars, super::super::ReadOptions::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
     }
 
     /// What [`assert_draco_twins`] measured: the worst of each kind of error

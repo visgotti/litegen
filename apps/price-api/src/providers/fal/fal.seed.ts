@@ -5,12 +5,6 @@ import { SeedModel } from '../types';
 
 export const seed: SeedModel[] = [
   {
-    id: "fal/auraflow",
-    displayName: "AuraFlow (Fal)",
-    mediaType: MediaType.IMAGE,
-    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.02 }],
-  },
-  {
     id: "fal/birefnet-v2",
     displayName: "BiRefNet v2 (Fal)",
     mediaType: MediaType.IMAGE,
@@ -345,12 +339,6 @@ export const seed: SeedModel[] = [
     displayName: "SAM 3.1 (Fal)",
     mediaType: MediaType.IMAGE,
     prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.01 }],
-  },
-  {
-    id: "fal/sd35-medium",
-    displayName: "SD 3.5 Medium (Fal)",
-    mediaType: MediaType.IMAGE,
-    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.02 }],
   },
   {
     id: "fal/sdxl",

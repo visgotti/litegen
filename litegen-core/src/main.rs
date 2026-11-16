@@ -113,8 +113,12 @@ fn refuse_to_start(file: Option<&config::ConfigFile>, env: &HashMap<String, Stri
                 eprintln!("litegen's configuration did not load: {e}");
             }
         }
-        Ok(_) => eprintln!("{name} defines hooks but did not load: {e}"),
-        Err(hooks_err) => eprintln!("{name} defines hooks but did not load: {e} (hooks: {hooks_err})"),
+        // The hooks' own error, when the config stopped at another one. When
+        // it stopped at the hooks, `e` is that error: said once.
+        Err(hooks_err) if !e.to_string().contains(&hooks_err) => {
+            eprintln!("{name} defines hooks but did not load: {e} (hooks: {hooks_err})")
+        }
+        Ok(_) | Err(_) => eprintln!("{name} defines hooks but did not load: {e}"),
     }
     std::process::exit(1)
 }
@@ -184,6 +188,20 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
             );
             std::process::exit(1);
         }
+    }
+
+    // Review A7: the dev token flags are for local tests only (the reset one
+    // hands any account's reset token to whoever asks): refused wherever the
+    // public could reach them, and named whenever they are on.
+    let dev_flag_refusals = config.dev_token_flag_refusals();
+    if !dev_flag_refusals.is_empty() {
+        for refusal in &dev_flag_refusals {
+            eprintln!("FATAL: refusing to start. {refusal}.");
+        }
+        std::process::exit(1);
+    }
+    for warning in config.dev_token_flag_warnings() {
+        tracing::warn!("{warning}");
     }
 
     // A provider header litegen can't send is a config error, not a surprise
@@ -375,6 +393,36 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
             Ok(None) => {}
             Err(e) => tracing::warn!(error = %e, "could not check the Owner records"),
         }
+        // LITEGEN__OWNER_EMAIL lets only one address claim the first account,
+        // and signup takes only addresses: one that isn't an address would
+        // block the first signup for good. Refused while that signup is still
+        // to come; once accounts exist it changes nothing, so only named.
+        if let Some(problem) = litegen::auth::email::owner_email_problem(config.owner_email.as_deref()) {
+            match db.count_users().await {
+                Ok(0) if config.auth.allow_password => {
+                    eprintln!("FATAL: refusing to start. {problem}. Set it to the first Owner's address, or unset it.");
+                    std::process::exit(1);
+                }
+                Ok(_) => tracing::warn!("{problem}; it applies only to the first signup, which can't come now (accounts exist, or password signup is off)"),
+                Err(e) => tracing::warn!(error = %e, "{problem}; could not tell whether the first signup is still to come"),
+            }
+        }
+        // Review A5: a fresh deployment the public can reach, with no owner
+        // email, lets whoever signs up first become its Owner.
+        if let Ok(accounts) = db.count_users().await {
+            if let Some(warning) = config.open_first_signup_warning(accounts == 0) {
+                tracing::warn!("{warning}");
+            }
+        }
+    }
+    // Hosted: versions before 2026-11-15 filed the master key's gateway and
+    // account entries under the default org, whose Owners and Admins read
+    // them. Each start moves what is left of them to no org, the master key's
+    // own log (docs/RUNBOOK.md, "Operator entries in the default org's audit log").
+    match litegen::api::audit::move_operator_entries_out_of_the_default_org(&*db, config.mode).await {
+        Ok(0) => {}
+        Ok(moved) => info!(moved, "audit log: moved the master key's gateway and account entries out of the default org's log"),
+        Err(e) => tracing::warn!(error = %e, "could not move the master key's gateway and account entries out of the default org's audit log; the next start tries again"),
     }
     // Stored keys whose webhook goes inside the deployment get no deliveries
     // since SEC-STWEBHOOK: named in the log, on a task of its own, so an
@@ -428,6 +476,19 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
         poller_shutdown,
     );
 
+    // The webhook outbox's dispatcher (migration 029): it sends the due
+    // deliveries of every replica's jobs, retries and a dead replica's
+    // included, and stops claiming at the stop signal.
+    let outbox_handle = litegen::proxy::webhook::outbox().clone().spawn(
+        db.clone(),
+        litegen::proxy::webhook::SendContext::new(
+            config.mode,
+            Some(litegen::access::present::Presenting { router: router.clone(), db: db.clone(), secrets_key, mode: config.mode }),
+            litegen::proxy::webhook::webhook_client(config.mode),
+        ),
+        stopped(&shutdown_rx),
+    );
+
     // Each app's retention_days (docs/storage-access.md), in every store.
     litegen::proxy::retention::spawn_retention_sweep(litegen::access::present::Presenting {
         router: router.clone(),
@@ -436,11 +497,23 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
         mode: config.mode,
     });
 
+    // The files of deleted orgs and apps (migration 031): every replica
+    // deletes the due ones from litegen's store, a dead replica's and its
+    // failed deletes included, until they're gone; it claims no more at the
+    // stop signal, and what it held is due again for the others.
+    litegen::proxy::tenant_files::spawn_tenant_file_deleter(db.clone(), router.model3d_store.clone(), stopped(&shutdown_rx));
+
     // MCP OAuth keeps short-lived rows (sign-in requests, codes, tokens):
     // clear out the expired ones hourly.
     if config.mcp.enabled && config.mcp.oauth.enabled {
         litegen::mcp::oauth::spawn_purger(db.clone(), stopped(&shutdown_rx));
     }
+
+    // Billed requests record what they reserve (migration 030): this replica
+    // renews its requests' leases and gives back the reservations whose
+    // request can no longer finish, a crashed replica's included, from now
+    // until the process ends (docs/scaling.md, "Reservations").
+    litegen::management::reservations::spawn_upkeep(db.clone());
 
     // The local backend also keeps assets on disk no longer than its own
     // retention (never under 7 days), whatever an app sets.
@@ -514,6 +587,11 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
     };
     if let Some(h) = &hooks {
         info!(hooks = ?h.names(), "generation call hooks running");
+        // Entries that start but set something with no effect, such as
+        // `routes` on a file that defines only file_access (docs/hooks.md).
+        for warning in h.warnings() {
+            tracing::warn!("{warning}");
+        }
     }
 
     // Build axum router
@@ -554,6 +632,11 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
     // get what is left of the grace, then are cut. Their claims are given
     // back below either way.
     let deadline = shutdown_rx.borrow().unwrap_or_else(tokio::time::Instant::now) + shutdown_grace();
+    // A billed request runs in a task of its own, which outlives its
+    // connection: those still running get what is left of the grace too, then
+    // are cut while the runtime still runs, so what they reserved is given
+    // back before it goes away (at most 5 s more). Beside the steps below.
+    let finishing = tokio::spawn(litegen::shutdown::finish(deadline, std::time::Duration::from_secs(5)));
     let mut poller_handle = poller_handle;
     if tokio::time::timeout_at(deadline, &mut poller_handle).await.is_err() {
         tracing::warn!("the shutdown grace ran out while the poller was polling: its current rows are cut (server.shutdown_grace_secs)");
@@ -576,17 +659,49 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
         Err(_) => tracing::warn!("releasing this replica's poll claims took more than 5 s; other replicas poll those rows once the claims lapse (30 s)"),
     }
 
-    // The webhooks of jobs that ended before the stop (by the poller, a
-    // client's poll or a cancel) may still be going out, or waiting in their
-    // back-off: they get what is left of the grace. Nothing sends them again,
-    // so any still running at the deadline are abandoned, and named.
-    let abandoned = litegen::proxy::webhook::deliveries().drain(deadline).await;
-    if !abandoned.is_empty() {
+    // The outbox's dispatcher stopped claiming at the signal. The webhook
+    // attempts already sending get what is left of the grace; one still
+    // waiting for its slot sends nothing, and every other delivery stays due
+    // in the database, for another replica or for this one after its restart.
+    if tokio::time::timeout_at(deadline, outbox_handle).await.is_err() {
+        tracing::warn!("the webhook outbox's dispatcher did not stop within the grace (server.shutdown_grace_secs)");
+    }
+    let still_sending = litegen::proxy::webhook::deliveries().drain(deadline).await;
+    // Its claims on the deliveries it isn't sending go back, so the other
+    // replicas send those at their next tick, not once the leases lapse. An
+    // attempt still sending keeps its own until it ends or lapses (60 s), so
+    // no other replica sends that delivery while it may still be on the
+    // wire. As with the poll claims, a failure only costs that wait.
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        litegen::proxy::webhook::outbox().release_claims(&db),
+    )
+    .await
+    {
+        Ok(Ok(released)) => info!(freed = released.freed, kept = released.kept, "released this replica's webhook delivery claims"),
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not release this replica's webhook delivery claims; other replicas send those deliveries once the claims lapse (60 s)"),
+        Err(_) => tracing::warn!("releasing this replica's webhook delivery claims took more than 5 s; other replicas send those deliveries once the claims lapse (60 s)"),
+    }
+    if !still_sending.is_empty() {
         tracing::warn!(
-            count = abandoned.len(),
-            generations = ?abandoned,
-            "the shutdown grace ran out with webhook deliveries still running: they were abandoned, and these generations' webhooks were not delivered (server.shutdown_grace_secs)"
+            count = still_sending.len(),
+            generations = ?still_sending,
+            "the shutdown grace ran out with webhook attempts still sending: they are cut, and their deliveries are sent again by another replica, or by this one after its restart (server.shutdown_grace_secs)"
         );
+    }
+    if let Ok(finished) = finishing.await {
+        if finished.cut > 0 {
+            tracing::warn!(
+                count = finished.cut,
+                "the shutdown grace ran out with billed requests still running: they are cut, and what they reserved is given back (server.shutdown_grace_secs)"
+            );
+        }
+        if finished.left > 0 {
+            tracing::warn!(
+                count = finished.left,
+                "the stop's tracked work (reservation releases, a submit's rows, request-log writes) was still running 5 s after the grace: it is cut, and a sweep gives back the reservations it held once their leases lapse, about 2 minutes on (docs/RUNBOOK.md)"
+            );
+        }
     }
     info!("LiteGen proxy stopped");
 

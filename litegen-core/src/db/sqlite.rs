@@ -19,7 +19,7 @@ const API_KEY_COLS: &str = "id, name, key_hash, key_prefix, created_at, expires_
 
 /// Full column list for request_logs selects — shared across backends.
 pub(crate) const REQUEST_LOG_COLS: &str =
-    "id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at";
+    "id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at, cache_hit";
 
 /// Full column list for generations selects.
 const GENERATION_COLS: &str = "id, key_id, model, provider, media_type, status, progress, \
@@ -261,6 +261,89 @@ fn metadata_cas_exhausted(id: &str) -> sqlx::Error {
     ))
 }
 
+/// Claim an `Idempotency-Key` ([`DatabaseStore::idempotency_begin_held`]),
+/// the record held by `held_by` for `lease`. A record in progress is free once
+/// its lease lapsed; one with no lease (an older replica's, or one from before
+/// migration 030) once it is older than `IDEMPOTENCY_IN_PROGRESS_STALE`. The
+/// lease is SQLite's own `strftime` text, written and compared in SQL only.
+async fn begin_idempotency(
+    db: &SqliteDatabase,
+    scope: &str,
+    key: &str,
+    request_hash: &str,
+    held_by: &str,
+    lease: chrono::Duration,
+) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
+    use crate::db::IdempotencyBegin;
+    // The database's clock, as every replica's records are judged on it.
+    let now = db.now();
+    // Opportunistic purge: the index on created_at keeps this cheap.
+    sqlx::query("DELETE FROM idempotency_keys WHERE created_at < ?")
+        .bind(now - crate::db::IDEMPOTENCY_TTL)
+        .execute(&db.pool)
+        .await?;
+    for _ in 0..4 {
+        let inserted = sqlx::query(
+            "INSERT INTO idempotency_keys (scope, idem_key, request_hash, state, created_at, held_by, held_until) \
+             VALUES (?, ?, ?, 'in_progress', ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', ?)) ON CONFLICT (scope, idem_key) DO NOTHING",
+        )
+        .bind(scope)
+        .bind(key)
+        .bind(request_hash)
+        .bind(now)
+        .bind(held_by)
+        .bind(sqlite_seconds(lease))
+        .execute(&db.pool)
+        .await?;
+        if inserted.rows_affected() > 0 {
+            return Ok(IdempotencyBegin::Started);
+        }
+        #[allow(clippy::type_complexity)]
+        let row: Option<(String, String, Option<i64>, Option<String>, Option<Vec<u8>>, chrono::DateTime<chrono::Utc>, Option<bool>)> = sqlx::query_as(
+            "SELECT request_hash, state, CAST(response_status AS BIGINT), response_headers, response_body, created_at, \
+                    held_until < strftime('%Y-%m-%d %H:%M:%f', 'now') \
+             FROM idempotency_keys WHERE scope = ? AND idem_key = ?",
+        )
+        .bind(scope)
+        .bind(key)
+        .fetch_optional(&db.pool)
+        .await?;
+        let Some((hash, state, status, headers, body, created_at, lapsed)) = row else { continue };
+        // In progress: a leased record until its lease lapses, one with
+        // no lease (NULL) for the stale window.
+        let abandoned = match lapsed {
+            Some(lapsed) => lapsed,
+            None => now - created_at > crate::db::IDEMPOTENCY_IN_PROGRESS_STALE,
+        };
+        let expired = now - created_at > crate::db::IDEMPOTENCY_TTL || (state == "in_progress" && abandoned);
+        if expired {
+            // Only the record we looked at: a fresh one a racer just made stays.
+            sqlx::query("DELETE FROM idempotency_keys WHERE scope = ? AND idem_key = ? AND created_at = ?")
+                .bind(scope)
+                .bind(key)
+                .bind(created_at)
+                .execute(&db.pool)
+                .await?;
+            continue;
+        }
+        if hash != request_hash {
+            return Ok(IdempotencyBegin::Conflict);
+        }
+        if state != "completed" {
+            return Ok(IdempotencyBegin::InProgress);
+        }
+        let headers: Vec<(String, String)> = headers
+            .and_then(|h| serde_json::from_str(&h).ok())
+            .unwrap_or_default();
+        return Ok(IdempotencyBegin::Replay(crate::db::StoredResponse {
+            status: status.unwrap_or(200).clamp(100, 599) as u16,
+            headers,
+            body: body.unwrap_or_default(),
+        }));
+    }
+    Err(sqlx::Error::Protocol(format!("idempotency key {key} kept changing under four claim attempts")))
+}
+
 #[async_trait]
 impl DatabaseStore for SqliteDatabase {
     fn management(&self) -> Option<&dyn crate::management::store::ManagementStore> {
@@ -268,6 +351,10 @@ impl DatabaseStore for SqliteDatabase {
     }
 
     fn mcp_oauth(&self) -> Option<&dyn crate::mcp::oauth::store::McpOAuthStore> {
+        Some(self)
+    }
+
+    fn reservations(&self) -> Option<&dyn crate::management::reservations::ReservationStore> {
         Some(self)
     }
 
@@ -350,87 +437,40 @@ impl DatabaseStore for SqliteDatabase {
         Ok(())
     }
 
-    async fn idempotency_begin(&self, scope: &str, key: &str, request_hash: &str) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
-        use crate::db::IdempotencyBegin;
-        // The database's clock, as every replica's records are judged on it.
-        let now = self.now();
-        // Opportunistic purge: the index on created_at keeps this cheap.
-        sqlx::query("DELETE FROM idempotency_keys WHERE created_at < ?")
-            .bind(now - crate::db::IDEMPOTENCY_TTL)
-            .execute(&self.pool)
-            .await?;
-        for _ in 0..4 {
-            let inserted = sqlx::query(
-                "INSERT INTO idempotency_keys (scope, idem_key, request_hash, state, created_at) \
-                 VALUES (?, ?, ?, 'in_progress', ?) ON CONFLICT (scope, idem_key) DO NOTHING",
-            )
-            .bind(scope)
-            .bind(key)
-            .bind(request_hash)
-            .bind(now)
-            .execute(&self.pool)
-            .await?;
-            if inserted.rows_affected() > 0 {
-                return Ok(IdempotencyBegin::Started);
-            }
-            let row: Option<(String, String, Option<i64>, Option<String>, Option<Vec<u8>>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                "SELECT request_hash, state, CAST(response_status AS BIGINT), response_headers, response_body, created_at \
-                 FROM idempotency_keys WHERE scope = ? AND idem_key = ?",
-            )
-            .bind(scope)
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?;
-            let Some((hash, state, status, headers, body, created_at)) = row else { continue };
-            let expired = now - created_at > crate::db::IDEMPOTENCY_TTL
-                || (state == "in_progress" && now - created_at > crate::db::IDEMPOTENCY_IN_PROGRESS_STALE);
-            if expired {
-                // Only the record we looked at: a fresh one a racer just made stays.
-                sqlx::query("DELETE FROM idempotency_keys WHERE scope = ? AND idem_key = ? AND created_at = ?")
-                    .bind(scope)
-                    .bind(key)
-                    .bind(created_at)
-                    .execute(&self.pool)
-                    .await?;
-                continue;
-            }
-            if hash != request_hash {
-                return Ok(IdempotencyBegin::Conflict);
-            }
-            if state != "completed" {
-                return Ok(IdempotencyBegin::InProgress);
-            }
-            let headers: Vec<(String, String)> = headers
-                .and_then(|h| serde_json::from_str(&h).ok())
-                .unwrap_or_default();
-            return Ok(IdempotencyBegin::Replay(crate::db::StoredResponse {
-                status: status.unwrap_or(200).clamp(100, 599) as u16,
-                headers,
-                body: body.unwrap_or_default(),
-            }));
-        }
-        Err(sqlx::Error::Protocol(format!("idempotency key {key} kept changing under four claim attempts")))
+    async fn idempotency_begin_held(
+        &self,
+        scope: &str,
+        key: &str,
+        request_hash: &str,
+        held_by: &str,
+        lease: chrono::Duration,
+    ) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
+        begin_idempotency(self, scope, key, request_hash, held_by, lease).await
     }
 
-    async fn idempotency_complete(&self, scope: &str, key: &str, response: &crate::db::StoredResponse) -> Result<(), sqlx::Error> {
+    async fn idempotency_complete_held(&self, scope: &str, key: &str, held_by: &str, response: &crate::db::StoredResponse) -> Result<(), sqlx::Error> {
+        // Only the record this request holds: after its lease lapsed, a
+        // retry's record has another holder.
         sqlx::query(
             "UPDATE idempotency_keys SET state = 'completed', response_status = ?, response_headers = ?, response_body = ? \
-             WHERE scope = ? AND idem_key = ?",
+             WHERE scope = ? AND idem_key = ? AND held_by = ?",
         )
         .bind(i32::from(response.status))
         .bind(serde_json::to_string(&response.headers).unwrap_or_else(|_| "[]".into()))
         .bind(&response.body)
         .bind(scope)
         .bind(key)
+        .bind(held_by)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn idempotency_release(&self, scope: &str, key: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM idempotency_keys WHERE scope = ? AND idem_key = ? AND state = 'in_progress'")
+    async fn idempotency_release_held(&self, scope: &str, key: &str, held_by: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM idempotency_keys WHERE scope = ? AND idem_key = ? AND state = 'in_progress' AND held_by = ?")
             .bind(scope)
             .bind(key)
+            .bind(held_by)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -775,6 +815,20 @@ impl DatabaseStore for SqliteDatabase {
         Ok(renewed.rows_affected())
     }
 
+    async fn note_poll_skip_warning(&self, id: &str, mark: i64) -> Result<bool, sqlx::Error> {
+        // One guarded statement: of two polls at one mark, one changes the row.
+        let noted = sqlx::query(
+            "UPDATE generations SET poll_skip_warned_mark = ?2 \
+             WHERE id = ?1 AND status IN ('pending', 'processing') \
+               AND (poll_skip_warned_mark IS NULL OR poll_skip_warned_mark < ?2)",
+        )
+            .bind(id)
+            .bind(mark)
+            .execute(&self.pool)
+            .await?;
+        Ok(noted.rows_affected() > 0)
+    }
+
     async fn clock_now(&self) -> Result<chrono::DateTime<chrono::Utc>, sqlx::Error> {
         Ok(self.now())
     }
@@ -884,7 +938,7 @@ impl DatabaseStore for SqliteDatabase {
 
         let rows = sqlx::query_as::<_, RequestLogRow>(
             r#"
-            SELECT id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at
+            SELECT id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at, cache_hit
             FROM request_logs
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
@@ -976,6 +1030,8 @@ impl DatabaseStore for SqliteDatabase {
         scopes: &str,
         webhook_url: Option<&str>,
     ) -> Result<ApiKey, sqlx::Error> {
+        // "" is no webhook (review 2026-11-15 round 2, finding 4).
+        let webhook_url = webhook_url.filter(|u| !u.is_empty());
         let id = Uuid::new_v4();
         let now = Utc::now();
         // Back-compat method: untenanted keys land in the default org/app so they
@@ -1054,9 +1110,9 @@ impl DatabaseStore for SqliteDatabase {
         let mut q = sqlx::query(&sql);
         if let Some(ref v) = req.name { q = q.bind(v); }
         if let Some(v) = req.token_quota { q = q.bind(v); }
-        if let Some(v) = req.rpm_limit { q = q.bind(v as i64); }
+        if let Some(v) = req.rpm_limit { q = q.bind(v.map(i64::from)); }
         if let Some(ref v) = req.scopes { q = q.bind(v); }
-        if let Some(ref v) = req.webhook_url { q = q.bind(v); }
+        if let Some(ref v) = req.webhook_url { q = q.bind(v.as_deref().filter(|u| !u.is_empty())); }
         if let Some(v) = req.expires_at { q = q.bind(v); }
         if let Some(v) = req.is_active { q = q.bind(v); }
         q = q.bind(id.to_string());
@@ -1347,12 +1403,13 @@ impl DatabaseStore for SqliteDatabase {
     }
 
     async fn insert_audit_log(&self, entry: &AuditLogEntry) -> Result<(), sqlx::Error> {
+        // `org_id` as the server filed it (`api::audit::audit_org`): NULL is no org.
         sqlx::query(
             r#"
             INSERT INTO audit_log
                 (id, actor_key_id, actor_label, action, target_type, target_id,
                  before_json, after_json, org_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ?), datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             "#,
         )
         .bind(&entry.id)
@@ -1364,10 +1421,27 @@ impl DatabaseStore for SqliteDatabase {
         .bind(&entry.before_json)
         .bind(&entry.after_json)
         .bind(&entry.org_id)
-        .bind(crate::api::middleware::DEFAULT_ORG_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn move_master_key_audit_entries_to_no_org(&self, org_id: &str, actions: &[&str]) -> Result<u64, sqlx::Error> {
+        if actions.is_empty() {
+            return Ok(0);
+        }
+        // The master key's entries: no key, and the label every writer gives it.
+        let mut qb = QueryBuilder::<sqlx::Sqlite>::new(
+            "UPDATE audit_log SET org_id = NULL WHERE actor_key_id IS NULL AND actor_label = 'master-key' AND org_id = ",
+        );
+        qb.push_bind(org_id.to_string());
+        qb.push(" AND action IN (");
+        let mut listed = qb.separated(", ");
+        for action in actions {
+            listed.push_bind(action.to_string());
+        }
+        listed.push_unseparated(")");
+        Ok(qb.build().execute(&self.pool).await?.rows_affected())
     }
 
     async fn list_audit_log(
@@ -1433,8 +1507,10 @@ impl DatabaseStore for SqliteDatabase {
             r#"
             INSERT INTO webhook_deliveries
                 (id, key_id, generation_id, url, attempt_number, status_code, success,
-                 response_body, error_message, payload_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 response_body, error_message, payload_json, created_at, delivery_id, org_id, app_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'), ?11,
+                    COALESCE((SELECT org_id FROM webhook_outbox WHERE id = ?11), (SELECT org_id FROM generations WHERE id = ?3)),
+                    COALESCE((SELECT app_id FROM webhook_outbox WHERE id = ?11), (SELECT app_id FROM generations WHERE id = ?3)))
             "#,
         )
         .bind(&delivery.id)
@@ -1447,6 +1523,7 @@ impl DatabaseStore for SqliteDatabase {
         .bind(&delivery.response_body)
         .bind(&delivery.error_message)
         .bind(&delivery.payload_json)
+        .bind(&delivery.delivery_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1467,11 +1544,16 @@ impl DatabaseStore for SqliteDatabase {
         .fetch_one(&self.pool)
         .await?;
 
+        // An outbox delivery's attempts keep no copy of its payload: each
+        // shows the delivery's, its latest attempt's (migration 029).
         let rows = sqlx::query_as::<_, WebhookDeliveryRow>(
-            "SELECT id, key_id, generation_id, url, attempt_number, status_code, success, \
-             response_body, error_message, payload_json, created_at \
-             FROM webhook_deliveries WHERE key_id = ? \
-             ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            "SELECT d.id, d.key_id, d.generation_id, d.url, d.attempt_number, d.status_code, d.success, \
+             d.response_body, d.error_message, \
+             CASE WHEN d.payload_json = '' AND o.payload_json IS NOT NULL THEN o.payload_json ELSE d.payload_json END AS payload_json, \
+             d.created_at, d.delivery_id \
+             FROM webhook_deliveries d LEFT JOIN webhook_outbox o ON o.id = d.delivery_id \
+             WHERE d.key_id = ? \
+             ORDER BY d.created_at DESC LIMIT ? OFFSET ?"
         )
         .bind(key_id)
         .bind(per_page as i64)
@@ -1481,6 +1563,318 @@ impl DatabaseStore for SqliteDatabase {
 
         let deliveries = rows.into_iter().map(webhook_delivery_from_row).collect();
         Ok((deliveries, total.0))
+    }
+
+    // ─── Webhook outbox (migration 029) ──────────────────────────────────
+    // Times are written and compared as SQLite's own strftime millisecond
+    // text, as the poll claims are: never a time bound from the app.
+
+    fn keeps_webhook_outbox(&self) -> bool {
+        true
+    }
+
+    async fn webhook_outbox_of(&self, generation_id: &str) -> Result<Option<crate::db::OutboxRecord>, sqlx::Error> {
+        let sql = format!("SELECT {WEBHOOK_OUTBOX_COLS} FROM webhook_outbox WHERE generation_id = ?");
+        let row = sqlx::query_as::<_, WebhookOutboxRow>(&sql).bind(generation_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(webhook_outbox_from_row))
+    }
+
+    async fn claim_webhook_delivery_of(
+        &self,
+        generation_id: &str,
+        claimant: &str,
+        hold: chrono::Duration,
+    ) -> Result<Option<crate::db::OutboxDelivery>, sqlx::Error> {
+        let row = sqlx::query_as::<_, OutboxClaimRow>(
+            "UPDATE webhook_outbox \
+             SET claimed_by = ?2, claimed_until = strftime('%Y-%m-%d %H:%M:%f', 'now', ?3) \
+             WHERE generation_id = ?1 AND status = 'pending' AND attempts = 0 \
+               AND (claimed_until IS NULL OR claimed_until < strftime('%Y-%m-%d %H:%M:%f', 'now')) \
+             RETURNING id, generation_id, key_id, org_id, attempts, redelivered_at IS NOT NULL AS redelivered",
+        )
+        .bind(generation_id)
+        .bind(claimant)
+        .bind(sqlite_seconds(hold))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Into::into))
+    }
+
+    async fn claim_due_webhook_deliveries(
+        &self,
+        claimant: &str,
+        limit: u32,
+        per_org: u32,
+        hold: chrono::Duration,
+    ) -> Result<Vec<crate::db::OutboxDelivery>, sqlx::Error> {
+        // One statement, so SQLite's single writer makes the claim atomic.
+        // The due deliveries nobody holds are ranked within their org, the
+        // ones `claimant` holds already counted, so it takes at most `per_org`
+        // of one org; then the longest due go first.
+        let rows = sqlx::query_as::<_, OutboxClaimRow>(
+            "UPDATE webhook_outbox \
+             SET claimed_by = ?1, claimed_until = strftime('%Y-%m-%d %H:%M:%f', 'now', ?2) \
+             WHERE id IN ( \
+                 WITH held AS ( \
+                     SELECT COALESCE(org_id, '') AS org, COUNT(*) AS n FROM webhook_outbox \
+                     WHERE claimed_by = ?1 AND status = 'pending' AND claimed_until >= strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                     GROUP BY COALESCE(org_id, '') \
+                 ), due AS ( \
+                     SELECT o.id, o.next_attempt_at, o.created_at, \
+                            ROW_NUMBER() OVER (PARTITION BY COALESCE(o.org_id, '') ORDER BY o.next_attempt_at, o.created_at, o.id) \
+                              + COALESCE((SELECT h.n FROM held h WHERE h.org = COALESCE(o.org_id, '')), 0) AS place \
+                     FROM webhook_outbox o \
+                     WHERE o.status = 'pending' \
+                       AND o.next_attempt_at <= strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                       AND (o.claimed_until IS NULL OR o.claimed_until < strftime('%Y-%m-%d %H:%M:%f', 'now')) \
+                 ) \
+                 SELECT id FROM due WHERE place <= ?4 ORDER BY next_attempt_at, created_at, id LIMIT ?3) \
+             RETURNING id, generation_id, key_id, org_id, attempts, redelivered_at IS NOT NULL AS redelivered",
+        )
+        .bind(claimant)
+        .bind(sqlite_seconds(hold))
+        .bind(limit as i64)
+        .bind(per_org as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn webhook_delivery_due(&self) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM webhook_outbox \
+             WHERE status = 'pending' AND next_attempt_at <= strftime('%Y-%m-%d %H:%M:%f', 'now') \
+               AND (claimed_until IS NULL OR claimed_until < strftime('%Y-%m-%d %H:%M:%f', 'now')))",
+        )
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    async fn webhook_answered_for(&self, generation_id: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE generation_id = ? AND success = 1)")
+            .bind(generation_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    async fn renew_webhook_claims(&self, claimant: &str, ids: &[String], hold: chrono::Duration) -> Result<u64, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let renewed = sqlx::query(
+            "UPDATE webhook_outbox SET claimed_until = strftime('%Y-%m-%d %H:%M:%f', 'now', ?2) \
+             WHERE claimed_by = ?1 AND status = 'pending' AND id IN (SELECT value FROM json_each(?3))",
+        )
+        .bind(claimant)
+        .bind(sqlite_seconds(hold))
+        .bind(serde_json::Value::from(ids.to_vec()).to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(renewed.rows_affected())
+    }
+
+    async fn release_webhook_claims(&self, claimant: &str, keep: &[String]) -> Result<u64, sqlx::Error> {
+        let freed = sqlx::query(
+            "UPDATE webhook_outbox SET claimed_by = NULL, claimed_until = NULL \
+             WHERE claimed_by = ?1 AND status = 'pending' AND id NOT IN (SELECT value FROM json_each(?2))",
+        )
+        .bind(claimant)
+        .bind(serde_json::Value::from(keep.to_vec()).to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(freed.rows_affected())
+    }
+
+    async fn finish_webhook_attempt(&self, id: &str, claimant: &str, attempt: &crate::db::OutboxAttempt<'_>) -> Result<bool, sqlx::Error> {
+        let (status, after) = (attempt.outcome.status(), attempt.outcome.retry_after());
+        let done = sqlx::query(
+            "UPDATE webhook_outbox \
+             SET status = ?3, attempts = ?4, \
+                 next_attempt_at = CASE WHEN ?5 IS NULL THEN next_attempt_at ELSE strftime('%Y-%m-%d %H:%M:%f', 'now', ?5) END, \
+                 claimed_by = NULL, claimed_until = NULL, \
+                 last_status_code = ?6, last_error = ?7, payload_json = COALESCE(?8, payload_json), \
+                 finished_at = CASE WHEN ?3 = 'pending' THEN NULL ELSE strftime('%Y-%m-%d %H:%M:%f', 'now') END \
+             WHERE id = ?1 AND claimed_by = ?2 AND status = 'pending'",
+        )
+        .bind(id)
+        .bind(claimant)
+        .bind(status)
+        .bind(attempt.attempts)
+        .bind(after.map(sqlite_seconds))
+        .bind(attempt.status_code)
+        .bind(attempt.error)
+        .bind(attempt.payload_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn redeliver_webhook_delivery(&self, key_id: &str, delivery_id: &str, cooldown: chrono::Duration) -> Result<crate::db::Redelivery, sqlx::Error> {
+        let sql = format!(
+            "UPDATE webhook_outbox \
+             SET status = 'pending', attempts = 0, next_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), \
+                 claimed_by = NULL, claimed_until = NULL, last_status_code = NULL, last_error = NULL, finished_at = NULL, \
+                 redelivered_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
+             WHERE id = ?1 AND key_id = ?2 AND status IN ('delivered', 'failed') \
+               AND (redelivered_at IS NULL OR redelivered_at <= strftime('%Y-%m-%d %H:%M:%f', 'now', ?3)) \
+             RETURNING {WEBHOOK_OUTBOX_COLS}"
+        );
+        let redelivered = sqlx::query_as::<_, WebhookOutboxRow>(&sql)
+            .bind(delivery_id)
+            .bind(key_id)
+            .bind(sqlite_seconds(-cooldown))
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(row) = redelivered {
+            return Ok(crate::db::Redelivery::Redelivered(webhook_outbox_from_row(row)));
+        }
+        let sql = format!("SELECT {WEBHOOK_OUTBOX_COLS} FROM webhook_outbox WHERE id = ? AND key_id = ?");
+        let row = sqlx::query_as::<_, WebhookOutboxRow>(&sql).bind(delivery_id).bind(key_id).fetch_optional(&self.pool).await?;
+        Ok(crate::db::trait_def::redelivery_refused(row.map(webhook_outbox_from_row), cooldown))
+    }
+
+    async fn purge_webhook_log(&self, days: u32, limit: u32) -> Result<crate::db::WebhookLogPurged, sqlx::Error> {
+        let before = format!("-{days} days");
+        // Each by its index: a delivery's end and an attempt's time are
+        // written and compared in one text form each.
+        let deliveries = sqlx::query(
+            "DELETE FROM webhook_outbox WHERE id IN ( \
+                 SELECT id FROM webhook_outbox \
+                 WHERE finished_at < strftime('%Y-%m-%d %H:%M:%f', 'now', ?1) AND status IN ('delivered', 'failed') LIMIT ?2)",
+        )
+        .bind(&before)
+        .bind(i64::from(limit))
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        let attempts = sqlx::query(
+            "DELETE FROM webhook_deliveries WHERE id IN ( \
+                 SELECT id FROM webhook_deliveries WHERE created_at < datetime('now', ?1) LIMIT ?2)",
+        )
+        .bind(&before)
+        .bind(i64::from(limit))
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(crate::db::WebhookLogPurged { deliveries, attempts })
+    }
+
+    // Both tables' `created_at` is `datetime('now')` text, so a cutoff in
+    // that form compares by the `created_at` index (`request_log_time`).
+
+    async fn purge_request_artifacts(&self, before: chrono::DateTime<chrono::Utc>, limit: u32) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "DELETE FROM request_artifacts WHERE request_id IN ( \
+                 SELECT request_id FROM request_artifacts WHERE created_at < ?1 ORDER BY created_at LIMIT ?2)",
+        )
+        .bind(request_log_time(before))
+        .bind(i64::from(limit))
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    async fn purge_request_logs(&self, before: chrono::DateTime<chrono::Utc>, limit: u32) -> Result<u64, sqlx::Error> {
+        // The rows first, then the tags of exactly those rows, in one
+        // transaction: SQLite has no foreign key to take the tags, and a tag
+        // written later finds no row (`attribute_request_log`).
+        let mut tx = self.pool.begin().await?;
+        let ids: Vec<String> = sqlx::query_scalar(
+            "DELETE FROM request_logs WHERE id IN ( \
+                 SELECT id FROM request_logs WHERE created_at < ?1 ORDER BY created_at LIMIT ?2) RETURNING id",
+        )
+        .bind(request_log_time(before))
+        .bind(i64::from(limit))
+        .fetch_all(&mut *tx)
+        .await?;
+        if !ids.is_empty() {
+            let ids_json = serde_json::to_string(&ids).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+            sqlx::query("DELETE FROM request_log_tags WHERE request_id IN (SELECT value FROM json_each(?1))")
+                .bind(ids_json)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(ids.len() as u64)
+    }
+
+    fn single_writer(&self) -> bool {
+        true
+    }
+
+    // ─── A deleted org's or app's files (migration 031) ──────────────────
+    // Times are SQLite's own strftime millisecond text, as the outbox's.
+
+    async fn claim_tenant_file_deletions(
+        &self,
+        of: Option<(&str, &str)>,
+        limit: u32,
+        hold: chrono::Duration,
+    ) -> Result<Vec<crate::db::TenantFileDeletion>, sqlx::Error> {
+        // One statement, so SQLite's single writer makes the claim atomic.
+        let (scope, tenant) = of.unzip();
+        let rows = sqlx::query_as::<_, TenantFileDeletionRow>(
+            "UPDATE tenant_file_deletions \
+             SET attempts = attempts + 1, next_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now', ?3) \
+             WHERE id IN ( \
+                 SELECT id FROM tenant_file_deletions \
+                 WHERE next_attempt_at <= strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                   AND (?1 IS NULL OR (scope = ?1 AND tenant_id = ?2)) \
+                 ORDER BY next_attempt_at, id LIMIT ?4) \
+             RETURNING id, scope, tenant_id, generation_id, url, attempts",
+        )
+        .bind(scope)
+        .bind(tenant)
+        .bind(sqlite_seconds(hold))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn finish_tenant_file_deletion(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let done = sqlx::query("DELETE FROM tenant_file_deletions WHERE id = ?").bind(id).execute(&self.pool).await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn retry_tenant_file_deletion(&self, id: i64, attempts: i32, after: chrono::Duration, error: &str) -> Result<bool, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE tenant_file_deletions SET next_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now', ?3), last_error = ?4 \
+             WHERE id = ?1 AND attempts = ?2",
+        )
+        .bind(id)
+        .bind(attempts)
+        .bind(sqlite_seconds(after))
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn record_tenant_file_deletions(&self, scope: &str, tenant_id: &str, generation_id: &str, urls: &[String]) -> Result<(), sqlx::Error> {
+        let files: Vec<(String, String)> = urls.iter().map(|url| (generation_id.to_string(), url.clone())).collect();
+        let mut conn = self.pool.acquire().await?;
+        insert_tenant_files(&mut conn, scope, tenant_id, &files).await
+    }
+
+    async fn forget_request_rows(&self, generation_id: Option<&str>, request_id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        for stmt in [
+            "DELETE FROM request_artifacts WHERE request_id = ?",
+            "DELETE FROM request_log_tags WHERE request_id = ?",
+            "DELETE FROM request_logs WHERE id = ?",
+        ] {
+            sqlx::query(stmt).bind(request_id).execute(&mut *tx).await?;
+        }
+        if let Some(generation_id) = generation_id {
+            sqlx::query("DELETE FROM generations WHERE id = ?").bind(generation_id).execute(&mut *tx).await?;
+        }
+        tx.commit().await
+    }
+
+    async fn mark_cache_hit(&self, request_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE request_logs SET cache_hit = 1 WHERE id = ?").bind(request_id).execute(&self.pool).await?;
+        Ok(())
     }
 
     async fn ping(&self) -> Result<(), sqlx::Error> {
@@ -1537,33 +1931,13 @@ impl DatabaseStore for SqliteDatabase {
     // ─── Users ──────────────────────────────────────────────────────────
 
     async fn create_user(&self, user: &User) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO users
-                (id, email, password_hash, role, oauth_github_id, oauth_google_id,
-                 created_at, updated_at, last_login_at, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(&user.id)
-        .bind(&user.email)
-        .bind(&user.password_hash)
-        .bind(user.role.as_str())
-        .bind(&user.oauth_github_id)
-        .bind(&user.oauth_google_id)
-        .bind(user.created_at)
-        .bind(user.updated_at)
-        .bind(user.last_login_at)
-        .bind(user.is_active as i32)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        insert_user(&self.pool, user).await
     }
 
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
+             created_at, updated_at, last_login_at, is_active, sign_in_epoch \
              FROM users WHERE email = ?"
         )
         .bind(email)
@@ -1573,15 +1947,7 @@ impl DatabaseStore for SqliteDatabase {
     }
 
     async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
-        let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
-             FROM users WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(user_from_row))
+        fetch_user(&self.pool, id).await
     }
 
     async fn get_user_by_oauth(&self, provider: &str, oauth_id: &str) -> Result<Option<User>, sqlx::Error> {
@@ -1592,7 +1958,7 @@ impl DatabaseStore for SqliteDatabase {
         };
         let sql = format!(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
+             created_at, updated_at, last_login_at, is_active, sign_in_epoch \
              FROM users WHERE {} = ?",
             col
         );
@@ -1610,9 +1976,24 @@ impl DatabaseStore for SqliteDatabase {
         is_active: Option<bool>,
         password_hash: Option<&str>,
     ) -> Result<Option<User>, sqlx::Error> {
+        Ok(self.update_user_with_revoked(id, role, is_active, password_hash, None).await?.map(|(user, _)| user))
+    }
+
+    async fn update_user_with_revoked(
+        &self,
+        id: &str,
+        role: Option<Role>,
+        is_active: Option<bool>,
+        password_hash: Option<&str>,
+        member_org: Option<&str>,
+    ) -> Result<Option<(User, Vec<Invitation>)>, sqlx::Error> {
         let mut sets: Vec<&str> = Vec::new();
         if role.is_some() { sets.push("role = ?"); }
         if is_active.is_some() { sets.push("is_active = ?"); }
+        // Reactivating moves the sign-in epoch on (review round 5, finding
+        // 2): a session stamped while the account was deactivated doesn't
+        // come back with it. (The right side reads the row before the write.)
+        if is_active == Some(true) { sets.push("sign_in_epoch = CASE WHEN is_active THEN sign_in_epoch ELSE sign_in_epoch + 1 END"); }
         if password_hash.is_some() { sets.push("password_hash = ?"); }
         sets.push("updated_at = datetime('now')");
 
@@ -1623,11 +2004,44 @@ impl DatabaseStore for SqliteDatabase {
         if let Some(ph) = password_hash { q = q.bind(ph); }
         q = q.bind(id);
 
-        let result = q.execute(&self.pool).await?;
+        let mut tx = self.pool.begin().await?;
+        // The role in `member_org` too (review round 7, finding 3), where the
+        // single-tenant permissions come from, in this transaction: a failure
+        // leaves both roles as they were. The membership first, as on
+        // Postgres. Never an Owner's: an account made the Owner since the
+        // caller checked stays the Owner, and this fails with nothing written.
+        if let (Some(r), Some(org)) = (role, member_org) {
+            let moved = sqlx::query("UPDATE organization_members SET role = ? WHERE org_id = ? AND user_id = ? AND role <> 'owner'")
+                .bind(r.as_str())
+                .bind(org)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            if moved.rows_affected() == 0 {
+                return Err(sqlx::Error::RowNotFound);
+            }
+        }
+        // Migrations 042/043's triggers delete the account's unused reset
+        // links, and the ones it issued, when this changes its role or writes
+        // is_active false.
+        let result = q.execute(&mut *tx).await?;
         if result.rows_affected() == 0 {
             return Ok(None);
         }
-        self.get_user_by_id(id).await
+        // Deactivating ends what the account was signed in with, in the
+        // transaction that deactivates it (review round 3b, S1), and revokes
+        // the pending invitations it sent, in every org (SEC-INVITES), in the
+        // same transaction (review round 6, finding 2).
+        let mut revoked = Vec::new();
+        if is_active == Some(false) {
+            end_sign_ins(&mut tx, id, None).await?;
+            revoked = revoke_pending_invitations_in(&mut *tx, None, None, Some(id)).await?;
+        }
+        // Read back before the commit (review round 7, finding 3): after it,
+        // nothing can fail and leave the revokes without their audit entries.
+        let user = fetch_user(&mut *tx, id).await?.ok_or(sqlx::Error::RowNotFound)?;
+        tx.commit().await?;
+        Ok(Some((user, revoked)))
     }
 
     async fn touch_last_login(&self, id: &str) -> Result<(), sqlx::Error> {
@@ -1645,10 +2059,44 @@ impl DatabaseStore for SqliteDatabase {
         Ok(row.0)
     }
 
+    async fn create_first_owner(&self, user: &User, org_id: &str) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // The claim on the one `first_owner` row (migration 034) is the
+        // transaction's first statement and a write, so it takes SQLite's
+        // write lock: another first signup waits for this one to end, then
+        // finds the row. Returning before the commit rolls everything back.
+        let claimed = sqlx::query("INSERT INTO first_owner (id, user_id) VALUES (1, ?) ON CONFLICT (id) DO NOTHING")
+            .bind(&user.id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if claimed == 0 {
+            return Ok(false);
+        }
+        // Accounts made before the claim existed close the signup too.
+        let (accounts,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users").fetch_one(&mut *tx).await?;
+        if accounts > 0 {
+            return Ok(false);
+        }
+        insert_user(&mut *tx, user).await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
+        sqlx::query(
+            "INSERT INTO organization_members (org_id, user_id, role, created_at) \
+             VALUES (?, ?, ?, datetime('now'))",
+        )
+        .bind(org_id)
+        .bind(&user.id)
+        .bind(Role::Owner.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
         let rows = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
+             created_at, updated_at, last_login_at, is_active, sign_in_epoch \
              FROM users ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)
@@ -1673,9 +2121,11 @@ impl DatabaseStore for SqliteDatabase {
 
     async fn transfer_owner(&self, new_owner_id: &str) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'admin', updated_at = datetime('now') WHERE role = 'owner'")
             .execute(&mut *tx)
             .await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'owner', updated_at = datetime('now') WHERE id = ?")
             .bind(new_owner_id)
             .execute(&mut *tx)
@@ -1687,20 +2137,78 @@ impl DatabaseStore for SqliteDatabase {
     // ─── Sessions ───────────────────────────────────────────────────────
 
     async fn create_session(&self, s: &Session) -> Result<(), sqlx::Error> {
+        // Kept by its token's hash (migration 044), stamped with the epoch
+        // the account has now (migration 043).
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent, csrf_token) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent, csrf_token, sign_in_epoch) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sign_in_epoch FROM users WHERE id = ?), 0))"
         )
-        .bind(&s.id)
+        .bind(crate::auth::tokens::token_hash(&s.id))
         .bind(&s.user_id)
         .bind(s.created_at)
         .bind(s.expires_at)
         .bind(&s.ip)
         .bind(&s.user_agent)
         .bind(&s.csrf_token)
+        .bind(&s.user_id)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn create_session_at_epoch(&self, s: &Session, epoch: i64) -> Result<(), sqlx::Error> {
+        // Kept by its token's hash (migration 044).
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent, csrf_token, sign_in_epoch) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(crate::auth::tokens::token_hash(&s.id))
+        .bind(&s.user_id)
+        .bind(s.created_at)
+        .bind(s.expires_at)
+        .bind(&s.ip)
+        .bind(&s.user_agent)
+        .bind(&s.csrf_token)
+        .bind(epoch)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn sign_in_epoch(&self, user_id: &str) -> Result<Option<i64>, sqlx::Error> {
+        sqlx::query_scalar("SELECT sign_in_epoch FROM users WHERE id = ?").bind(user_id).fetch_optional(&self.pool).await
+    }
+
+    async fn session_epoch(&self, id: &str) -> Result<Option<i64>, sqlx::Error> {
+        sqlx::query_scalar("SELECT sign_in_epoch FROM sessions WHERE id = ?").bind(id).fetch_optional(&self.pool).await
+    }
+
+    async fn change_own_password(&self, user_id: &str, password_hash: &str, verified_hash: &str, keep_session: &str) -> Result<crate::db::PasswordChange, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // Only while nothing moved since the current password was checked
+        // (review round 5, finding 1): the account still holds the hash it was
+        // checked against, is active, and is at the sending session's epoch,
+        // all in this one statement. A reset, a deactivation or another
+        // change that committed meanwhile makes it write nothing.
+        let changed = sqlx::query(
+            "UPDATE users SET password_hash = ?, updated_at = datetime('now') \
+             WHERE id = ? AND password_hash = ? AND is_active \
+             AND sign_in_epoch = (SELECT sign_in_epoch FROM sessions WHERE id = ? AND user_id = ?)",
+        )
+        .bind(password_hash)
+        .bind(user_id)
+        .bind(verified_hash)
+        .bind(keep_session)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed == 0 {
+            return Ok(crate::db::PasswordChange::SignInEnded);
+        }
+        end_sign_ins(&mut tx, user_id, Some(keep_session)).await?;
+        tx.commit().await?;
+        Ok(crate::db::PasswordChange::Done)
     }
 
     async fn get_session(&self, id: &str) -> Result<Option<Session>, sqlx::Error> {
@@ -1714,9 +2222,16 @@ impl DatabaseStore for SqliteDatabase {
         Ok(row.map(session_from_row))
     }
 
-    async fn get_session_with_user(&self, id: &str) -> Result<Option<(Session, Option<User>)>, sqlx::Error> {
-        let sql = format!("SELECT {SESSION_USER_COLS} FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE s.id = ?");
-        let row = sqlx::query_as::<_, SessionUserRow>(&sql).bind(id).fetch_optional(&self.pool).await?;
+    async fn get_session_with_user(&self, cookie: &str) -> Result<Option<(Session, Option<User>)>, sqlx::Error> {
+        // Found by the cookie's hash, never the cookie itself (migration
+        // 044). A session stamped with an epoch the account has moved past (a
+        // reset, deactivation or password change committed after its sign-in
+        // began) is no session (review round 4, finding 2).
+        let sql = format!(
+            "SELECT {SESSION_USER_COLS} FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
+             WHERE s.id = ? AND (u.id IS NULL OR u.sign_in_epoch = s.sign_in_epoch)"
+        );
+        let row = sqlx::query_as::<_, SessionUserRow>(&sql).bind(crate::auth::tokens::token_hash(cookie)).fetch_optional(&self.pool).await?;
         Ok(row.map(session_user_from_row))
     }
 
@@ -1746,8 +2261,9 @@ impl DatabaseStore for SqliteDatabase {
 
     async fn list_user_sessions(&self, user_id: &str) -> Result<Vec<Session>, sqlx::Error> {
         let rows = sqlx::query_as::<_, SessionRow>(
-            "SELECT id, user_id, created_at, expires_at, ip, user_agent, csrf_token \
-             FROM sessions WHERE user_id = ? ORDER BY created_at DESC"
+            "SELECT s.id, s.user_id, s.created_at, s.expires_at, s.ip, s.user_agent, s.csrf_token \
+             FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.user_id = ? AND s.sign_in_epoch = u.sign_in_epoch ORDER BY s.created_at DESC"
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -1771,29 +2287,42 @@ impl DatabaseStore for SqliteDatabase {
     // ─── Invitations ────────────────────────────────────────────────────
 
     async fn create_invitation(&self, inv: &Invitation) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO invitations (id, email, role, token, invited_by, org_id, expires_at, used_at, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        .bind(&inv.id)
-        .bind(&inv.email)
-        .bind(inv.role.as_str())
-        .bind(&inv.token)
-        .bind(&inv.invited_by)
-        .bind(&inv.org_id)
-        .bind(inv.expires_at)
-        .bind(inv.used_at)
-        .bind(inv.created_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        self.create_invitation_from(inv, crate::db::SignIn::MasterKey).await.map(|_| ())
+    }
+
+    async fn create_invitation_from(&self, inv: &Invitation, from: crate::db::SignIn<'_>) -> Result<bool, sqlx::Error> {
+        // Only the token's hash is kept (migration 041), in both columns. The
+        // sender's sign-in is checked in this statement (review round 6,
+        // finding 2).
+        let hash = crate::auth::tokens::token_hash(&inv.token);
+        let (guard, sign_in) = live_sign_in_guard(from);
+        let sql = format!(
+            "INSERT INTO invitations (id, email, role, token, token_hash, invited_by, org_id, expires_at, used_at, created_at) \
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{guard}"
+        );
+        let mut q = sqlx::query(&sql)
+            .bind(&inv.id)
+            .bind(&inv.email)
+            .bind(inv.role.as_str())
+            .bind(&hash)
+            .bind(&hash)
+            .bind(&inv.invited_by)
+            .bind(&inv.org_id)
+            .bind(inv.expires_at)
+            .bind(inv.used_at)
+            .bind(inv.created_at);
+        if let Some(id) = sign_in {
+            q = q.bind(id);
+        }
+        Ok(q.execute(&self.pool).await?.rows_affected() == 1)
     }
 
     async fn get_invitation(&self, token: &str) -> Result<Option<Invitation>, sqlx::Error> {
         let row = sqlx::query_as::<_, InvitationRow>(
             "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
-             FROM invitations WHERE token = ?"
+             FROM invitations WHERE token_hash = ? OR (token_hash IS NULL AND token = ?)"
         )
+        .bind(crate::auth::tokens::token_hash(token))
         .bind(token)
         .fetch_optional(&self.pool)
         .await?;
@@ -1802,12 +2331,57 @@ impl DatabaseStore for SqliteDatabase {
 
     async fn mark_invitation_used(&self, token: &str) -> Result<bool, sqlx::Error> {
         let res = sqlx::query(
-            "UPDATE invitations SET used_at = datetime('now') WHERE token = ? AND used_at IS NULL",
+            "UPDATE invitations SET used_at = datetime('now') \
+             WHERE (token_hash = ? OR (token_hash IS NULL AND token = ?)) AND used_at IS NULL",
         )
+        .bind(crate::auth::tokens::token_hash(token))
         .bind(token)
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    async fn invitation_accepted(&self, org_id: &str, id: &str) -> Result<bool, sqlx::Error> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM invitations WHERE id = ? AND org_id = ? AND used_at IS NOT NULL")
+            .bind(id)
+            .bind(org_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn accept_invitation(&self, token: &str, new_user: Option<&User>, user_id: &str, org_id: &str, role: Role) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // Consumed first, as the transaction's first write: a revoke or a
+        // second acceptance either ran before (nothing to consume, nothing
+        // written) or waits for this one.
+        let consumed = sqlx::query(
+            "UPDATE invitations SET used_at = datetime('now') \
+             WHERE (token_hash = ? OR (token_hash IS NULL AND token = ?)) AND used_at IS NULL",
+        )
+        .bind(crate::auth::tokens::token_hash(token))
+        .bind(token)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if consumed == 0 {
+            return Ok(false);
+        }
+        if let Some(user) = new_user {
+            insert_user(&mut *tx, user).await?;
+        }
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
+        sqlx::query(
+            "INSERT INTO organization_members (org_id, user_id, role, created_at) VALUES (?, ?, ?, datetime('now')) \
+             ON CONFLICT (org_id, user_id) DO NOTHING",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn delete_invitation(&self, id: &str) -> Result<(), sqlx::Error> {
@@ -1818,18 +2392,8 @@ impl DatabaseStore for SqliteDatabase {
         Ok(())
     }
 
-    async fn revoke_pending_invitations(&self, org_id: Option<&str>, email: Option<&str>, invited_by: Option<&str>) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(
-            "DELETE FROM invitations WHERE used_at IS NULL AND (? IS NULL OR org_id = ?) \
-             AND (email = ? OR invited_by = ?)",
-        )
-        .bind(org_id)
-        .bind(org_id)
-        .bind(email)
-        .bind(invited_by)
-        .execute(&self.pool)
-        .await?;
-        Ok(res.rows_affected())
+    async fn revoke_pending_invitations(&self, org_id: Option<&str>, email: Option<&str>, invited_by: Option<&str>) -> Result<Vec<Invitation>, sqlx::Error> {
+        revoke_pending_invitations_in(&self.pool, org_id, email, invited_by).await
     }
 
     async fn list_invitations(&self) -> Result<Vec<Invitation>, sqlx::Error> {
@@ -1842,32 +2406,133 @@ impl DatabaseStore for SqliteDatabase {
         Ok(rows.into_iter().map(invitation_from_row).collect())
     }
 
+    async fn list_unused_invitations(&self, org_id: &str) -> Result<Vec<Invitation>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, InvitationRow>(
+            "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
+             FROM invitations WHERE org_id = ? AND used_at IS NULL ORDER BY created_at DESC"
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(invitation_from_row).collect())
+    }
+
+    async fn revoke_invitation(&self, org_id: &str, id: &str) -> Result<Option<Invitation>, sqlx::Error> {
+        let row = sqlx::query_as::<_, InvitationRow>(
+            "DELETE FROM invitations WHERE id = ? AND org_id = ? AND used_at IS NULL \
+             RETURNING id, email, role, token, invited_by, org_id, expires_at, used_at, created_at"
+        )
+        .bind(id)
+        .bind(org_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(invitation_from_row))
+    }
+
     // ─── Password Resets ────────────────────────────────────────────────
 
     async fn create_password_reset(&self, r: &PasswordReset) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO password_resets (token, user_id, expires_at, used_at, created_at) \
-             VALUES (?, ?, ?, ?, ?)"
-        )
-        .bind(&r.token)
-        .bind(&r.user_id)
-        .bind(r.expires_at)
-        .bind(r.used_at)
-        .bind(r.created_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        self.create_password_reset_from(r, crate::db::SignIn::MasterKey).await.map(|_| ())
+    }
+
+    async fn create_password_reset_from(&self, r: &PasswordReset, from: crate::db::SignIn<'_>) -> Result<bool, sqlx::Error> {
+        // Only the token's hash is kept (migration 041). The link goes in
+        // first, only while the issuer's sign-in is live, checked in the same
+        // statement (review round 6, finding 2); then it voids the account's
+        // older unused ones. A refused link changes nothing.
+        let hash = crate::auth::tokens::token_hash(&r.token);
+        let (guard, sign_in) = live_sign_in_guard(from);
+        let sql = format!(
+            "INSERT INTO password_resets (token, user_id, expires_at, used_at, created_at, issued_by) \
+             SELECT ?, ?, ?, ?, ?, ?{guard}"
+        );
+        let mut tx = self.pool.begin().await?;
+        let mut q = sqlx::query(&sql)
+            .bind(&hash)
+            .bind(&r.user_id)
+            .bind(r.expires_at)
+            .bind(r.used_at)
+            .bind(r.created_at)
+            .bind(&r.issued_by);
+        if let Some(id) = sign_in {
+            q = q.bind(id);
+        }
+        if q.execute(&mut *tx).await?.rows_affected() == 0 {
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL AND token <> ?")
+            .bind(&r.user_id)
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn get_password_reset(&self, token: &str) -> Result<Option<PasswordReset>, sqlx::Error> {
         let row = sqlx::query_as::<_, PasswordResetRow>(
-            "SELECT token, user_id, expires_at, used_at, created_at \
+            "SELECT token, user_id, expires_at, used_at, created_at, issued_by \
              FROM password_resets WHERE token = ?"
         )
-        .bind(token)
+        .bind(crate::auth::tokens::token_hash(token))
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(password_reset_from_row))
+    }
+
+    async fn confirm_password_reset(&self, token: &str, password_hash: &str, mode: crate::config::Mode) -> Result<crate::db::ResetConfirm, sqlx::Error> {
+        use crate::db::ResetConfirm;
+        let mut tx = self.pool.begin().await?;
+        // The single-use CAS first; returning before the commit undoes it.
+        // From here the transaction holds SQLite's writer lock, so no role,
+        // membership or active write lands until it ends.
+        let claimed: Option<(String, Option<String>)> = sqlx::query_as(
+            "UPDATE password_resets SET used_at = datetime('now') WHERE token = ? AND used_at IS NULL RETURNING user_id, issued_by",
+        )
+        .bind(crate::auth::tokens::token_hash(token))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((user_id, issued_by)) = claimed else { return Ok(ResetConfirm::Unusable) };
+        let Some(active): Option<bool> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?").bind(&user_id).fetch_optional(&mut *tx).await? else {
+            return Ok(ResetConfirm::Unusable);
+        };
+        // The issuer may still issue this link, now (review round 4,
+        // findings 4 and 5); the master key's links carry no issuer.
+        if let Some(issuer) = issued_by {
+            let issuer_active: Option<bool> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?").bind(&issuer).fetch_optional(&mut *tx).await?;
+            let roles_of = |rows: Vec<(String, String)>| rows.into_iter().filter_map(|(org, role)| Role::parse(&role).map(|r| (org, r))).collect::<Vec<_>>();
+            let issuer_roles: Vec<(String, String)> = sqlx::query_as("SELECT org_id, role FROM organization_members WHERE user_id = ?").bind(&issuer).fetch_all(&mut *tx).await?;
+            let account_roles: Vec<(String, String)> = sqlx::query_as("SELECT org_id, role FROM organization_members WHERE user_id = ?").bind(&user_id).fetch_all(&mut *tx).await?;
+            let may = crate::auth::permissions::issuer_may_still_issue(
+                issuer_active == Some(true),
+                &roles_of(issuer_roles),
+                &roles_of(account_roles),
+                active,
+                mode,
+                crate::api::middleware::DEFAULT_ORG_ID,
+            );
+            if !may {
+                return Ok(ResetConfirm::IssuerRevoked);
+            }
+        }
+        // A deactivated account is reactivated (review round 3b, S1): its
+        // deactivation deleted the links issued before it, so this one came
+        // from someone who may reactivate it.
+        sqlx::query("UPDATE users SET password_hash = ?, is_active = 1, updated_at = datetime('now') WHERE id = ?")
+            .bind(password_hash)
+            .bind(&user_id)
+            .execute(&mut *tx)
+            .await?;
+        // Whoever held the old password, or a session, an app or a code it
+        // signed in, is out, in this transaction: a failure leaves the link
+        // usable, and no answer leaves a sign-in behind (round 3b, S2).
+        end_sign_ins(&mut tx, &user_id, None).await?;
+        // A reset (the recovery of an account someone else may hold) also
+        // revokes the pending invitations it sent, a stand-in a thief invited
+        // say, handed back for the audit log (review round 5, finding 3).
+        let revoked = revoke_pending_invitations_in(&mut *tx, None, None, Some(&user_id)).await?;
+        tx.commit().await?;
+        Ok(ResetConfirm::Done { user_id, reactivated: !active, revoked_invitations: revoked })
     }
 
     async fn mark_password_reset_used(&self, token: &str) -> Result<bool, sqlx::Error> {
@@ -1876,7 +2541,7 @@ impl DatabaseStore for SqliteDatabase {
         let res = sqlx::query(
             "UPDATE password_resets SET used_at = datetime('now') WHERE token = ? AND used_at IS NULL",
         )
-        .bind(token)
+        .bind(crate::auth::tokens::token_hash(token))
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
@@ -1916,20 +2581,29 @@ impl DatabaseStore for SqliteDatabase {
     // ─── Organizations ──────────────────────────────────────────────────
 
     async fn create_organization(&self, o: &Organization) -> Result<(), sqlx::Error> {
+        insert_organization(&self.pool, o).await
+    }
+
+    async fn create_org_with_owner(&self, org: &Organization, app: &Application, owner: crate::db::OrgOwner<'_>) -> Result<(), sqlx::Error> {
+        // One transaction: returning on an error before the commit rolls
+        // back whatever was written.
+        let mut tx = self.pool.begin().await?;
+        if let crate::db::OrgOwner::New(user) = owner {
+            insert_user(&mut *tx, user).await?;
+        }
+        insert_organization(&mut *tx, org).await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query(
-            "INSERT INTO organizations (id, name, slug, plan, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO organization_members (org_id, user_id, role, created_at) \
+             VALUES (?, ?, ?, datetime('now'))",
         )
-        .bind(&o.id)
-        .bind(&o.name)
-        .bind(&o.slug)
-        .bind(&o.plan)
-        .bind(&o.status)
-        .bind(o.created_at)
-        .bind(o.updated_at)
-        .execute(&self.pool)
+        .bind(&org.id)
+        .bind(owner.user_id())
+        .bind(Role::Owner.as_str())
+        .execute(&mut *tx)
         .await?;
-        Ok(())
+        insert_application(&mut *tx, app).await?;
+        tx.commit().await
     }
 
     async fn get_organization(&self, id: &str) -> Result<Option<Organization>, sqlx::Error> {
@@ -1998,14 +2672,26 @@ impl DatabaseStore for SqliteDatabase {
         // org-scoped rows (generations references api_keys → before api_keys).
         for stmt in [
             "DELETE FROM webhook_deliveries WHERE org_id = ?",
+            "DELETE FROM webhook_outbox WHERE org_id = ?",
             "DELETE FROM request_artifacts WHERE org_id = ?",
+            // Its requests' spend tags, before the rows they hang off.
+            "DELETE FROM request_log_tags WHERE request_id IN (SELECT id FROM request_logs WHERE org_id = ?)",
             "DELETE FROM request_logs WHERE org_id = ?",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        // The files its generations kept, recorded before their rows go
+        // (migration 031): deleted from litegen's store after the commit,
+        // until they're gone. The deletes above hold the write lock.
+        record_tenant_files(&mut tx, "org", id).await?;
+        for stmt in [
             "DELETE FROM generations WHERE org_id = ?",
             "DELETE FROM api_keys WHERE org_id = ?",
             "DELETE FROM audit_log WHERE org_id = ?",
             "DELETE FROM invitations WHERE org_id = ?",
             "DELETE FROM org_provider_credentials WHERE org_id = ?",
             "DELETE FROM org_allowed_models WHERE org_id = ?",
+            // Migrations 042/043's triggers delete unused reset links here (see 043's header).
             "DELETE FROM organization_members WHERE org_id = ?",
         ] {
             sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
@@ -2036,6 +2722,7 @@ impl DatabaseStore for SqliteDatabase {
         user_id: &str,
         role: Role,
     ) -> Result<(), sqlx::Error> {
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query(
             "INSERT INTO organization_members (org_id, user_id, role, created_at) \
              VALUES (?, ?, ?, datetime('now'))",
@@ -2082,6 +2769,7 @@ impl DatabaseStore for SqliteDatabase {
         user_id: &str,
         role: Role,
     ) -> Result<(), sqlx::Error> {
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE organization_members SET role = ? WHERE org_id = ? AND user_id = ?")
             .bind(role.as_str())
             .bind(org_id)
@@ -2092,6 +2780,7 @@ impl DatabaseStore for SqliteDatabase {
     }
 
     async fn remove_org_member(&self, org_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("DELETE FROM organization_members WHERE org_id = ? AND user_id = ?")
             .bind(org_id)
             .bind(user_id)
@@ -2106,11 +2795,13 @@ impl DatabaseStore for SqliteDatabase {
         new_owner_user_id: &str,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = ? AND role = 'owner'")
             .bind(org_id)
             .execute(&mut *tx)
             .await?;
         let promoted =
+            // Migrations 042/043's triggers delete unused reset links here (see 043's header).
             sqlx::query("UPDATE organization_members SET role = 'owner' WHERE org_id = ? AND user_id = ?")
                 .bind(org_id)
                 .bind(new_owner_user_id)
@@ -2129,11 +2820,13 @@ impl DatabaseStore for SqliteDatabase {
         new_owner_user_id: &str,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = ? AND role = 'owner'")
             .bind(org_id)
             .execute(&mut *tx)
             .await?;
         let promoted =
+            // Migrations 042/043's triggers delete unused reset links here (see 043's header).
             sqlx::query("UPDATE organization_members SET role = 'owner' WHERE org_id = ? AND user_id = ?")
                 .bind(org_id)
                 .bind(new_owner_user_id)
@@ -2143,10 +2836,12 @@ impl DatabaseStore for SqliteDatabase {
             // Not a member: dropping the tx rolls the demotion back.
             return Err(sqlx::Error::RowNotFound);
         }
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'admin', updated_at = datetime('now') WHERE role = 'owner' AND id <> ?")
             .bind(new_owner_user_id)
             .execute(&mut *tx)
             .await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'owner', updated_at = datetime('now') WHERE id = ?")
             .bind(new_owner_user_id)
             .execute(&mut *tx)
@@ -2157,20 +2852,7 @@ impl DatabaseStore for SqliteDatabase {
     // ─── Applications ───────────────────────────────────────────────────
 
     async fn create_application(&self, a: &Application) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO applications (id, org_id, name, slug, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&a.id)
-        .bind(&a.org_id)
-        .bind(&a.name)
-        .bind(&a.slug)
-        .bind(&a.status)
-        .bind(a.created_at)
-        .bind(a.updated_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        insert_application(&self.pool, a).await
     }
 
     async fn get_application(&self, id: &str) -> Result<Option<Application>, sqlx::Error> {
@@ -2224,8 +2906,18 @@ impl DatabaseStore for SqliteDatabase {
         let mut tx = self.pool.begin().await?;
         for stmt in [
             "DELETE FROM webhook_deliveries WHERE app_id = ?",
+            "DELETE FROM webhook_outbox WHERE app_id = ?",
             "DELETE FROM request_artifacts WHERE app_id = ?",
+            // Its requests' spend tags, before the rows they hang off.
+            "DELETE FROM request_log_tags WHERE request_id IN (SELECT id FROM request_logs WHERE app_id = ?)",
             "DELETE FROM request_logs WHERE app_id = ?",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        // The files its generations kept, recorded before their rows go, as
+        // delete_organization does.
+        record_tenant_files(&mut tx, "app", id).await?;
+        for stmt in [
             "DELETE FROM generations WHERE app_id = ?",
             "DELETE FROM api_keys WHERE app_id = ?",
             "DELETE FROM app_model_access_ids WHERE app_id = ?",
@@ -2453,6 +3145,17 @@ impl DatabaseStore for SqliteDatabase {
         Ok(())
     }
 
+    async fn clear_artifact_output(&self, request_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE request_artifacts SET output_kind = 'deleted', output_value = NULL, output_truncated = 0 \
+             WHERE request_id = ? AND output_kind IN ('b64', 'url')",
+        )
+        .bind(request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn note_files_delete_failed(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE generations SET files_delete_attempted_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = ? AND files_deleted_at IS NULL")
             .bind(id)
@@ -2481,14 +3184,13 @@ impl DatabaseStore for SqliteDatabase {
             }
         }
         sqlx::query("DELETE FROM request_artifacts WHERE request_id = ?").bind(id).execute(&self.pool).await?;
+        // The artifacts of the cache hits it answered name it, and carry its
+        // prompt and params: the same request.
+        sqlx::query("DELETE FROM request_artifacts WHERE output_kind = 'generation' AND output_value = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
-    }
-
-    async fn generations_with_kept_files(&self, scope: &str, id: &str) -> Result<Vec<Generation>, sqlx::Error> {
-        let column = if scope == "org" { "org_id" } else { "app_id" };
-        let sql = format!("SELECT {} FROM generations WHERE {column} = ? AND files_deleted_at IS NULL", GENERATION_COLS);
-        let rows = sqlx::query_as::<_, GenerationRow>(&sql).bind(id).fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(generation_from_row).collect())
     }
 
     async fn revoke_links(&self, scope: &str, scope_id: &str, at: chrono::DateTime<chrono::Utc>) -> Result<(), sqlx::Error> {
@@ -2631,6 +3333,8 @@ impl DatabaseStore for SqliteDatabase {
         webhook_url: Option<&str>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<ApiKey, sqlx::Error> {
+        // "" is no webhook (review 2026-11-15 round 2, finding 4).
+        let webhook_url = webhook_url.filter(|u| !u.is_empty());
         let id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO api_keys \
@@ -2918,7 +3622,7 @@ impl DatabaseStore for SqliteDatabase {
 
     async fn list_audit_log_for_tenant_filtered(
         &self,
-        org_id: &str,
+        org: crate::db::AuditLogOrg<'_>,
         filter: &crate::db::TenantAuditFilter<'_>,
         page: u32,
         per_page: u32,
@@ -2927,8 +3631,12 @@ impl DatabaseStore for SqliteDatabase {
         let fmt = |dt: chrono::DateTime<chrono::Utc>| dt.format("%Y-%m-%d %H:%M:%S").to_string();
         const COLS: &str = "id, actor_key_id, actor_label, action, target_type, target_id, before_json, after_json, created_at, org_id";
 
-        let mut cb = QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM audit_log WHERE org_id = ");
-        cb.push_bind(org_id.to_string());
+        // One org's entries, or those filed under no org (`org_id` NULL).
+        let mut cb = QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM audit_log WHERE org_id ");
+        match org {
+            crate::db::AuditLogOrg::Org(o) => cb.push("= ").push_bind(o.to_string()),
+            crate::db::AuditLogOrg::NoOrg => cb.push("IS NULL"),
+        };
         if let Some(a) = filter.actor_key_id { cb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
         if let Some(a) = filter.action { cb.push(" AND action = ").push_bind(a.to_string()); }
         if let Some(f) = filter.from { cb.push(" AND created_at >= ").push_bind(fmt(f)); }
@@ -2936,8 +3644,11 @@ impl DatabaseStore for SqliteDatabase {
         let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
 
         let offset = crate::api::pagination::offset(page, per_page) as i64;
-        let mut qb = QueryBuilder::<sqlx::Sqlite>::new(format!("SELECT {COLS} FROM audit_log WHERE org_id = "));
-        qb.push_bind(org_id.to_string());
+        let mut qb = QueryBuilder::<sqlx::Sqlite>::new(format!("SELECT {COLS} FROM audit_log WHERE org_id "));
+        match org {
+            crate::db::AuditLogOrg::Org(o) => qb.push("= ").push_bind(o.to_string()),
+            crate::db::AuditLogOrg::NoOrg => qb.push("IS NULL"),
+        };
         if let Some(a) = filter.actor_key_id { qb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
         if let Some(a) = filter.action { qb.push(" AND action = ").push_bind(a.to_string()); }
         if let Some(f) = filter.from { qb.push(" AND created_at >= ").push_bind(fmt(f)); }
@@ -2962,6 +3673,9 @@ pub(crate) struct RequestLogRow {
     pub error: Option<String>,
     pub metadata: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Migration 036; false where a select leaves it out.
+    #[sqlx(default)]
+    pub cache_hit: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -3018,6 +3732,7 @@ pub(crate) fn request_log_from_row(r: RequestLogRow) -> RequestLog {
             .metadata
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
+        cache_hit: r.cache_hit,
     }
 }
 
@@ -3194,6 +3909,7 @@ pub(crate) struct WebhookDeliveryRow {
     pub error_message: Option<String>,
     pub payload_json: String,
     pub created_at: DateTime<Utc>,
+    pub delivery_id: Option<String>,
 }
 
 pub(crate) fn webhook_delivery_from_row(r: WebhookDeliveryRow) -> WebhookDelivery {
@@ -3209,7 +3925,147 @@ pub(crate) fn webhook_delivery_from_row(r: WebhookDeliveryRow) -> WebhookDeliver
         error_message: r.error_message,
         payload_json: r.payload_json,
         created_at: r.created_at,
+        delivery_id: r.delivery_id,
     }
+}
+
+// ─── Webhook outbox row types (migration 029) ────────────────────────────────
+
+/// A `webhook_outbox` row's columns, as both backends select them.
+pub(crate) const WEBHOOK_OUTBOX_COLS: &str = "id, generation_id, key_id, org_id, app_id, status, attempts, next_attempt_at, \
+    claimed_by, claimed_until, last_status_code, last_error, payload_json, created_at, finished_at, redelivered_at";
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct WebhookOutboxRow {
+    pub id: String,
+    pub generation_id: String,
+    pub key_id: String,
+    pub org_id: Option<String>,
+    pub app_id: Option<String>,
+    pub status: String,
+    pub attempts: i32,
+    pub next_attempt_at: DateTime<Utc>,
+    pub claimed_by: Option<String>,
+    pub claimed_until: Option<DateTime<Utc>>,
+    pub last_status_code: Option<i32>,
+    pub last_error: Option<String>,
+    pub payload_json: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub redelivered_at: Option<DateTime<Utc>>,
+}
+
+pub(crate) fn webhook_outbox_from_row(r: WebhookOutboxRow) -> crate::db::OutboxRecord {
+    crate::db::OutboxRecord {
+        id: r.id,
+        generation_id: r.generation_id,
+        key_id: r.key_id,
+        org_id: r.org_id,
+        app_id: r.app_id,
+        status: r.status,
+        attempts: r.attempts,
+        next_attempt_at: r.next_attempt_at,
+        claimed_by: r.claimed_by,
+        claimed_until: r.claimed_until,
+        last_status_code: r.last_status_code,
+        last_error: r.last_error,
+        payload_json: r.payload_json,
+        created_at: r.created_at,
+        finished_at: r.finished_at,
+        redelivered_at: r.redelivered_at,
+    }
+}
+
+/// A delivery a claim took: the columns its `RETURNING` lists.
+#[derive(sqlx::FromRow)]
+pub(crate) struct OutboxClaimRow {
+    pub id: String,
+    pub generation_id: String,
+    pub key_id: String,
+    pub org_id: Option<String>,
+    pub attempts: i32,
+    pub redelivered: bool,
+}
+
+impl From<OutboxClaimRow> for crate::db::OutboxDelivery {
+    fn from(r: OutboxClaimRow) -> Self {
+        Self { id: r.id, generation_id: r.generation_id, key_id: r.key_id, org_id: r.org_id, attempts: r.attempts, redelivered: r.redelivered }
+    }
+}
+
+/// `t` as the request log writes its `created_at` (`datetime('now')`:
+/// `2026-11-15 08:05:09`, UTC), so a comparison with it uses the index.
+fn request_log_time(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// `d` as a SQLite date-time modifier of fractional seconds, e.g. `+30.000 seconds`.
+fn sqlite_seconds(d: chrono::Duration) -> String {
+    format!("{:+.3} seconds", d.num_milliseconds() as f64 / 1000.0)
+}
+
+/// A file deletion a claim took (migration 031): the columns its `RETURNING`
+/// lists, on both backends.
+#[derive(sqlx::FromRow)]
+pub(crate) struct TenantFileDeletionRow {
+    pub id: i64,
+    pub scope: String,
+    pub tenant_id: String,
+    pub generation_id: String,
+    pub url: String,
+    pub attempts: i32,
+}
+
+impl From<TenantFileDeletionRow> for crate::db::TenantFileDeletion {
+    fn from(r: TenantFileDeletionRow) -> Self {
+        Self { id: r.id, scope: r.scope, tenant_id: r.tenant_id, generation_id: r.generation_id, url: r.url, attempts: r.attempts }
+    }
+}
+
+/// How many file deletions one insert records: four bound values each, well
+/// under either backend's limit on a statement's.
+pub(crate) const TENANT_FILES_PER_INSERT: usize = 500;
+
+/// Record, in `tx`, each file litegen kept for the generations of org
+/// (`scope` "org") or app ("app") `id` whose files aren't deleted yet
+/// ([`super::trait_def::kept_file_urls`]), for `proxy::tenant_files` to delete
+/// from litegen's store once their rows are gone (migration 031). Run in the
+/// transaction that deletes the rows, after a write has taken SQLite's write
+/// lock, so no generation changes between this read and their delete.
+async fn record_tenant_files(tx: &mut sqlx::SqliteConnection, scope: &str, id: &str) -> Result<(), sqlx::Error> {
+    use futures::TryStreamExt;
+    let column = if scope == "org" { "org_id" } else { "app_id" };
+    let sql = format!("SELECT id, result_url, metadata FROM generations WHERE {column} = ? AND files_deleted_at IS NULL");
+    // Read as a stream: only the URLs are kept, never every row's metadata.
+    let mut files: Vec<(String, String)> = Vec::new();
+    {
+        let mut rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(&sql).bind(id).fetch(&mut *tx);
+        while let Some((generation, result_url, metadata)) = rows.try_next().await? {
+            for url in super::trait_def::kept_file_urls(result_url.as_deref(), metadata.as_deref()) {
+                files.push((generation.clone(), url));
+            }
+        }
+    }
+    insert_tenant_files(tx, scope, id, &files).await
+}
+
+/// Insert `files` (generation, URL) as file deletions of `scope` `tenant`,
+/// due now, [`TENANT_FILES_PER_INSERT`] to a statement.
+async fn insert_tenant_files(conn: &mut sqlx::SqliteConnection, scope: &str, tenant: &str, files: &[(String, String)]) -> Result<(), sqlx::Error> {
+    for chunk in files.chunks(TENANT_FILES_PER_INSERT) {
+        let mut insert = QueryBuilder::new("INSERT INTO tenant_file_deletions (scope, tenant_id, generation_id, url, attempts, next_attempt_at, created_at) ");
+        insert.push_values(chunk, |mut row, (generation, url)| {
+            row.push_bind(scope)
+                .push_bind(tenant)
+                .push_bind(generation.as_str())
+                .push_bind(url.as_str())
+                .push("0")
+                .push("strftime('%Y-%m-%d %H:%M:%f', 'now')")
+                .push("strftime('%Y-%m-%d %H:%M:%f', 'now')");
+        });
+        insert.build().execute(&mut *conn).await?;
+    }
+    Ok(())
 }
 
 // ─── Request Artifact row type ───────────────────────────────────────────────
@@ -3283,6 +4139,7 @@ pub(crate) struct UserRow {
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
     pub is_active: bool,
+    pub sign_in_epoch: i64,
 }
 
 pub(crate) fn user_from_row(r: UserRow) -> User {
@@ -3297,7 +4154,173 @@ pub(crate) fn user_from_row(r: UserRow) -> User {
         updated_at: r.updated_at,
         last_login_at: r.last_login_at,
         is_active: r.is_active,
+        sign_in_epoch: r.sign_in_epoch,
     }
+}
+
+/// The clause that makes an insert (`INSERT … SELECT <values>`) land only
+/// while the sign-in `from` is live (review round 6, finding 2), and the id
+/// it binds after the values; nothing for the master key. SQLite runs one
+/// writer at a time, so a reset, a deactivation or a password change commits
+/// wholly before or after the statement.
+fn live_sign_in_guard(from: crate::db::SignIn<'_>) -> (&'static str, Option<&str>) {
+    use crate::db::SignIn;
+    match from {
+        SignIn::MasterKey => ("", None),
+        SignIn::Session(id) => (
+            " WHERE EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.id = ? AND u.is_active AND s.sign_in_epoch = u.sign_in_epoch)",
+            Some(id),
+        ),
+        SignIn::Grant(id) => (
+            " WHERE EXISTS (SELECT 1 FROM mcp_oauth_grants g JOIN users u ON u.id = g.user_id \
+             WHERE g.id = ? AND g.revoked_at IS NULL AND u.is_active AND g.sign_in_epoch = u.sign_in_epoch)",
+            Some(id),
+        ),
+    }
+}
+
+/// Delete the pending invitations, in `org_id` or every org, that go to
+/// `email` or that `invited_by` sent, through `executor` (the pool, or a
+/// deactivation's or a confirm's transaction), and return them: the one
+/// statement behind every revoke (review round 6, finding 6).
+async fn revoke_pending_invitations_in<'e, E: sqlx::Executor<'e, Database = sqlx::Sqlite>>(
+    executor: E,
+    org_id: Option<&str>,
+    email: Option<&str>,
+    invited_by: Option<&str>,
+) -> Result<Vec<Invitation>, sqlx::Error> {
+    let rows: Vec<InvitationRow> = sqlx::query_as(
+        "DELETE FROM invitations WHERE used_at IS NULL AND (? IS NULL OR org_id = ?) AND (email = ? OR invited_by = ?) \
+         RETURNING id, email, role, token, invited_by, org_id, expires_at, used_at, created_at",
+    )
+    .bind(org_id)
+    .bind(org_id)
+    .bind(email)
+    .bind(invited_by)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().map(invitation_from_row).collect())
+}
+
+/// The account `id` through `executor`: the pool (`get_user_by_id`) or a
+/// transaction (`update_user_with_revoked`'s read-back before its commit).
+async fn fetch_user<'e, E: sqlx::Executor<'e, Database = sqlx::Sqlite>>(executor: E, id: &str) -> Result<Option<User>, sqlx::Error> {
+    let row = sqlx::query_as::<_, UserRow>(
+        "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
+         created_at, updated_at, last_login_at, is_active, sign_in_epoch \
+         FROM users WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.map(user_from_row))
+}
+
+/// Ends every sign-in `user_id` has, in `tx`: its sessions (all but
+/// `keep_session`), its OAuth grants with their tokens, and its OAuth codes
+/// not yet redeemed, and moves its sign-in epoch on, so a sign-in begun
+/// before and landing after is refused too. Deactivating an account,
+/// confirming a reset and changing one's own password do it in the
+/// transaction that makes the change (review round 3b, S1 and S2; round 4,
+/// findings 2 and 6), so either all of it lands or none. `keep_session` is
+/// re-stamped with the new epoch.
+async fn end_sign_ins(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, user_id: &str, keep_session: Option<&str>) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now();
+    sqlx::query("UPDATE users SET sign_in_epoch = sign_in_epoch + 1 WHERE id = ?").bind(user_id).execute(&mut **tx).await?;
+    match keep_session {
+        Some(keep) => {
+            sqlx::query("DELETE FROM sessions WHERE user_id = ? AND id <> ?").bind(user_id).bind(keep).execute(&mut **tx).await?;
+            sqlx::query("UPDATE sessions SET sign_in_epoch = (SELECT sign_in_epoch FROM users WHERE id = ?) WHERE id = ? AND user_id = ?")
+                .bind(user_id)
+                .bind(keep)
+                .bind(user_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(user_id).execute(&mut **tx).await?;
+        }
+    }
+    sqlx::query("UPDATE mcp_oauth_tokens SET revoked_at = ? WHERE revoked_at IS NULL AND grant_id IN (SELECT id FROM mcp_oauth_grants WHERE user_id = ?)")
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("UPDATE mcp_oauth_grants SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM mcp_oauth_requests WHERE user_id = ? AND consumed_at IS NULL").bind(user_id).execute(&mut **tx).await?;
+    // And the unused links it issued, from a stolen session say (review
+    // round 5, finding 4).
+    sqlx::query("DELETE FROM password_resets WHERE issued_by = ? AND used_at IS NULL").bind(user_id).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Insert `user` through `executor`: the pool (`create_user`) or the first
+/// signup's transaction (`create_first_owner`).
+async fn insert_user<'e, E: sqlx::Executor<'e, Database = sqlx::Sqlite>>(executor: E, user: &User) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO users
+            (id, email, password_hash, role, oauth_github_id, oauth_google_id,
+             created_at, updated_at, last_login_at, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&user.id)
+    .bind(&user.email)
+    .bind(&user.password_hash)
+    .bind(user.role.as_str())
+    .bind(&user.oauth_github_id)
+    .bind(&user.oauth_google_id)
+    .bind(user.created_at)
+    .bind(user.updated_at)
+    .bind(user.last_login_at)
+    .bind(user.is_active as i32)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Insert `o` through `executor`: the pool (`create_organization`) or a
+/// transaction (`create_org_with_owner`).
+async fn insert_organization<'e, E: sqlx::Executor<'e, Database = sqlx::Sqlite>>(executor: E, o: &Organization) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO organizations (id, name, slug, plan, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&o.id)
+    .bind(&o.name)
+    .bind(&o.slug)
+    .bind(&o.plan)
+    .bind(&o.status)
+    .bind(o.created_at)
+    .bind(o.updated_at)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Insert `a` through `executor`: the pool (`create_application`) or a
+/// transaction (`create_org_with_owner`).
+async fn insert_application<'e, E: sqlx::Executor<'e, Database = sqlx::Sqlite>>(executor: E, a: &Application) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO applications (id, org_id, name, slug, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&a.id)
+    .bind(&a.org_id)
+    .bind(&a.name)
+    .bind(&a.slug)
+    .bind(&a.status)
+    .bind(a.created_at)
+    .bind(a.updated_at)
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 // ─── Session row type ────────────────────────────────────────────────────────
@@ -3354,7 +4377,8 @@ pub(crate) fn api_key_owner_from_row(r: ApiKeyOwnerRow) -> (ApiKey, crate::db::K
 pub(crate) const SESSION_USER_COLS: &str = "s.id, s.user_id, s.created_at, s.expires_at, s.ip, s.user_agent, s.csrf_token, \
     u.id AS u_id, u.email AS u_email, u.password_hash AS u_password_hash, u.role AS u_role, \
     u.oauth_github_id AS u_oauth_github_id, u.oauth_google_id AS u_oauth_google_id, u.created_at AS u_created_at, \
-    u.updated_at AS u_updated_at, u.last_login_at AS u_last_login_at, u.is_active AS u_is_active";
+    u.updated_at AS u_updated_at, u.last_login_at AS u_last_login_at, u.is_active AS u_is_active, \
+    u.sign_in_epoch AS u_sign_in_epoch";
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct SessionUserRow {
@@ -3370,6 +4394,7 @@ pub(crate) struct SessionUserRow {
     pub u_updated_at: Option<DateTime<Utc>>,
     pub u_last_login_at: Option<DateTime<Utc>>,
     pub u_is_active: Option<bool>,
+    pub u_sign_in_epoch: Option<i64>,
 }
 
 pub(crate) fn session_user_from_row(r: SessionUserRow) -> (Session, Option<User>) {
@@ -3385,6 +4410,7 @@ pub(crate) fn session_user_from_row(r: SessionUserRow) -> (Session, Option<User>
             updated_at,
             last_login_at: r.u_last_login_at,
             is_active,
+            sign_in_epoch: r.u_sign_in_epoch.unwrap_or(0),
         })),
         _ => None,
     };
@@ -3466,6 +4492,7 @@ pub(crate) struct PasswordResetRow {
     pub expires_at: DateTime<Utc>,
     pub used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub issued_by: Option<String>,
 }
 
 pub(crate) fn password_reset_from_row(r: PasswordResetRow) -> PasswordReset {
@@ -3475,6 +4502,7 @@ pub(crate) fn password_reset_from_row(r: PasswordResetRow) -> PasswordReset {
         expires_at: r.expires_at,
         used_at: r.used_at,
         created_at: r.created_at,
+        issued_by: r.issued_by,
     }
 }
 

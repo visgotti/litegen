@@ -29,7 +29,7 @@ LiteGen provides a unified API gateway for the major image and video generation 
 - **Strict validation with per-request lax opt-out** — Default `strict: true` rejects unsupported parameters and fields the request has no such name for; set `strict: false` to drop them and get an `X-Litegen-Dropped-Params` response header.
 - **DB-backed multi-key auth: scopes, quotas, RPM rate limits** — Create API keys with per-key USD budget caps, requests-per-minute throttles, and CSV scope sets (`generate`, `read`, `admin`).
 - **DB-backed video generations + polling endpoint** — Video jobs are persisted to the `generations` table; poll status via `GET /v1/generations/{id}`. A background poller updates status every 5 s.
-- **Per-key webhook delivery on video completion** — When a generation reaches a terminal status (`completed`, `failed`, `cancelled`), the owning key's `webhook_url` receives a signed `POST` with the generation payload (`X-Litegen-Signature: sha256=<hex>`). Retries 3 times with exponential back-off. In single-tenant mode only the deployment's own keys (master-key made, or an Owner's or Admin's) may point a webhook at its own network; see [docs/management-api.md](docs/management-api.md#key-webhooks).
+- **Per-key webhook delivery on video completion** — When a generation reaches a terminal status (`completed`, `failed`, `cancelled`), the owning key's `webhook_url` receives a signed `POST` with the generation payload (`X-Litegen-Signature: sha256=<hex>`). The delivery is saved in the database with the job's outcome, so a crash, a kill or a restart loses none, and any replica sends it. A failed attempt is retried for about a day (13 attempts; a `410 Gone` stops it at once), each attempt is built when it is sent, so its signed file links are fresh, and a delivery that ended can be sent again (`POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver`). Every attempt of one delivery carries the same `X-Litegen-Delivery-Id`: delivery is at least once, so a receiver drops a repeat by its id. In single-tenant mode only the deployment's own keys (master-key made, or an Owner's or Admin's) may point a webhook at its own network; see [docs/management-api.md](docs/management-api.md#key-webhooks).
 - **Request metadata, spend per tag** — Send `metadata` (a string map, at most 1 KB) on any generation or segmentation: it is kept on the row, echoed on every answer and webhook, and filters `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`, so spend splits by project or asset.
 - **Cancel at the vendor, refund on cancel or failure** — `PATCH /v1/generations/{id}` asks the vendor to stop (fal, Replicate and Runway have a cancel) and reports `vendor_cancelled`; a job that is cancelled or fails gives its charge back to the key's quota and every limit it counted against.
 - **OpenTelemetry OTLP gRPC export** — Set `OTEL_EXPORTER_OTLP_ENDPOINT` to ship traces to any OTel collector.
@@ -358,6 +358,13 @@ Collada, USDA and USDC.
 curl --data-binary @fox.glb "http://localhost:4000/v1/utils/models3d/convert?from=glb&to=obj&package=zip" -o fox.obj.zip
 ```
 
+Draco-compressed glTF (`KHR_draco_mesh_compression`) is decoded within limits the server sets at startup:
+`mesh.draco` in `litegen.yaml`, or `LITEGEN__MESH__DRACO__…`
+([docs/gateway-settings.md](docs/gateway-settings.md#server-limits-set-at-startup)). A file past one gets
+422 `mesh_unsupported` naming the limit, and with `mesh.draco.enabled: false` every Draco file does,
+naming the setting. 3D generations read their vendors' files, and 3D operations their source meshes,
+under the same settings.
+
 ### List Models
 ```bash
 curl http://localhost:4000/v1/models
@@ -383,6 +390,9 @@ curl http://localhost:4000/v1/stats
 ```bash
 curl "http://localhost:4000/v1/logs?page=1&per_page=50"
 ```
+Kept for good unless `logs.retention_days` is set, and each request's prompt,
+params and output (its artifact) as long, or for `logs.artifact_retention_days`.
+See [docs/RUNBOOK.md](docs/RUNBOOK.md#database-growing-what-grows-and-how-to-bound-it).
 
 ### Management (budgets, end users, spend, runtime config)
 ```bash
@@ -405,7 +415,7 @@ delivered later, never lost: the 504 names the generation, and
 
 ### Provider config (keys, proxies, headers, model names)
 Each vendor takes the same fields, in `litegen.yaml`, env vars or
-`PUT /v1/admin/providers/{name}`: `api_key(s)`, `api_base` (route a vendor
+`PUT`/`PATCH /v1/admin/providers/{name}`: `api_key(s)`, `api_base` (route a vendor
 through a proxy or AI gateway), `extra_headers` (sent with every call to
 the vendor's API, never with downloads) and `model_mapping` (send a
 catalog model under another name: a new version, a deployment, a
@@ -434,7 +444,9 @@ hooks:
 ```
 `pre_call` sees the raw request before litegen authenticates it; `post_call`
 sees the finished response, including the completed result of a video or 3D
-job. See [docs/hooks.md](docs/hooks.md) and the runnable
+job. A hook runs on every hooked route unless its `routes:` names fewer, so a
+paid moderation hook can skip price checks with `routes: [generations]`. See
+[docs/hooks.md](docs/hooks.md) and the runnable
 [examples/hooks/](examples/hooks/).
 
 ### Stored outputs: who may open them
@@ -590,7 +602,7 @@ The model ID prefix (`<provider>/<model>`) selects the provider, and the model's
 | Runway | ✅ | ✅ | — | Gen-4 Image and Image Turbo; resold: GPT Image 2, 2.5 and 2.6 (Flare, Sunburst), Gemini 2.5 Flash, 3 Pro, 3.1 Flash and 3.1 Flash Lite image, Nano Banana 2.1, Seedream 5.0 Pro, Lite and Flash, Grok Imagine Image 2, Bria FIBO 1.5 and FIBO Edit 1.5, Ideogram 4.0, 4.5 and Vector, Muse Image · Gen-4 Turbo, Gen-4.5; resold: Veo 3.1 and 3.1 Fast, Gemini Omni Flash 1.0, 1.1 and 1.2, Kling 2.5 Turbo Pro, 3.0 and O3 (Standard, Pro, 4K), 4.0 and 4.0 Flash, MiniMax H3 and H3 Max, Seedance 2.0, 2.0 Fast, 2.0 Mini and 2.5, Grok Imagine Video 1.5 and 1.5 Lite, Wan 3.0 and 3.0 Prime, HappyHorse 1.0 |
 | Luma | ✅ | ✅ | — | Photon, Photon Flash · Dream Machine, Ray 2, Ray Flash 2 |
 | Kling AI | ✅ | ✅ | — | Kling Image v2.1 and v3 · Kling Video v2.5 Turbo, v2.6, v3, v3 Turbo and v4 |
-| MiniMax | ✅ | ✅ | — | image-01 · Hailuo 02, 2.3 and 2.3 Fast, H3, H3 Max, H3 Highspeed and H3 Lite, T2V-01 Director, S2V-01 |
+| MiniMax | ✅ | ✅ | — | image-01 · Hailuo 02, 2.3 and 2.3 Fast, H3, H3 Max, H3 Highspeed and H3 Lite · _(T2V-01 Director and S2V-01 retired 2026-11-16: MiniMax publishes no price for them)_ |
 | ByteDance (BytePlus ModelArk) | ✅ | ✅ | — | Seedream 4.0, 4.5, 5.0 Lite, 5.0 Pro and 5.0 Flash · Seedance 1.0 Pro and Pro Fast, 2.0 Mini |
 | Tencent Hunyuan (Tencent Cloud API) | ✅ | ✅ | — | Hunyuan Image · Hunyuan Video and Video I2V — for buyers of the old platform, which Tencent closed to new purchases as it moves Hunyuan to TokenHub |
 | Amazon Bedrock | ✅ | ✅ | — | On your AWS account (us-west-2): Stability AI's Stable Diffusion 3.5 Large, Stable Image Core, Stable Image Ultra · Luma Ray 2 (the MP4 goes to your S3 bucket, `s3_output_uri`, and litegen reads it back) |
@@ -599,7 +611,7 @@ The model ID prefix (`<provider>/<model>`) selects the provider, and the model's
 | PixVerse | — | ✅ | — | PixVerse v3.5, v4.5, v5, v5 Multi-Transition, V6, V6 Max, C1 |
 | Tripo | ✅ | — | ✅ | Image to multiview (front, left, back, right) · auto rig (after Tripo's free rig-check) · animation retarget |
 | Meshy | — | — | ✅ | Auto rig · animation library (678 clips) |
-| fal | ✅ | ✅ | ✅ | FLUX 3 Image (1K), FLUX 3 Klein and Klein base, Flux Pro, FLUX.1 Kontext pro and max, FLUX1.1 pro ultra, Redux, Fill and Erase, Flux Dev and Schnell, FLUX.2 dev (with edits), turbo, flash, pro (with outpainting), max, flex, and klein 4B and 9B with their base models, SDXL, SD 3.5 Medium, Recraft V2, V3 (with image-to-image), V4 and V4.1 (pro, vector, utility, flash), V4 style references, vectorize and upscale, AuraFlow, SAM 3 and 3.1 segmentation, Bria RMBG 2.0 and BiRefNet v2 background removal · FLUX 3 video (standard, 720p drafts and Max), LTX-2.3, LTX Video (`fal/video`) · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging |
+| fal | ✅ | ✅ | ✅ | FLUX 3 Image (1K), FLUX 3 Klein and Klein base, Flux Pro, FLUX.1 Kontext pro and max, FLUX1.1 pro ultra, Redux, Fill and Erase, Flux Dev and Schnell, FLUX.2 dev (with edits), turbo, flash, pro (with outpainting), max, flex, and klein 4B and 9B with their base models, SDXL, Recraft V2, V3 (with image-to-image), V4 and V4.1 (pro, vector, utility, flash), V4 style references, vectorize and upscale, SAM 3 and 3.1 segmentation, Bria RMBG 2.0 and BiRefNet v2 background removal · FLUX 3 video (standard, 720p drafts and Max), LTX-2.3, LTX Video (`fal/video`) · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging · _(SD 3.5 Medium and AuraFlow retired 2026-11-16: fal removed them)_ |
 | Replicate | ✅ | ✅ | — | FLUX 3 Image, Flux Pro, 1.1 Pro, Dev and Schnell, SDXL, SD3, SD 3.5 Large, Large Turbo and Medium · AnimateDiff (`replicate/video`) |
 
 **Legend:** ✅ supported in litegen · 🔜 the vendor offers a public API for this family but litegen
@@ -784,9 +796,13 @@ A single LiteGen instance handles hundreds of concurrent requests. To run severa
 
 ### First-run flow
 
-When the `users` table is empty, `POST /v1/auth/signup` creates the first account and grants it the **Owner** role automatically.
+When the `users` table is empty, `POST /v1/auth/signup` creates the first account and grants it the **Owner** role automatically. One first signup wins, even when several arrive at once or at different replicas: the account and its Owner membership are made in one transaction, and the others get `409 signup_closed`. A first signup that fails part way leaves no account, so signup stays open.
 
-If `LITEGEN__OWNER_EMAIL` is set, only that email address can claim ownership on first signup — any other email is rejected until an Owner exists to invite them.
+If `LITEGEN__OWNER_EMAIL` (or `owner_email` in the config file) is set, only that email address can claim ownership on first signup — any other email is rejected until an Owner exists to invite them. It must be an address: while no account exists, LiteGen refuses to start with one that isn't, since no signup could match it (once accounts exist it only warns). An empty value counts as unset. `GET /v1/auth/config` reports `signup_open: true` while that first signup is still to come.
+
+Set `LITEGEN__OWNER_EMAIL` before you expose a fresh deployment: until then, whoever signs up first becomes its Owner. LiteGen warns at start when a single-tenant deployment with no account and no owner email binds an address other than loopback, or has a `server.public_base_url` that isn't loopback.
+
+An account's email must be an address: one `@`, a name before it, a domain with a dot after it, no spaces, control or invisible characters (Unicode format and default-ignorable characters, such as variation selectors), no code points Unicode hasn't assigned, no look-alike letters (fullwidth, ligature or styled forms, which NFKC normalization would change), at most 254 characters. Signup and invitations answer anything else with `400 invalid_email`. Look-alikes from another script mixed into an address, such as a Cyrillic `а` among Latin letters, aren't detected. Accounts made before 2026-11-15 keep their email as it is.
 
 **Master-key Bearer auth keeps working as a superuser bypass.** Set `LITEGEN__MASTER_KEY` and include `Authorization: Bearer <value>` on any request to bypass user auth entirely. Useful for bootstrap scripts, CI pipelines, and recovery scenarios.
 
@@ -795,11 +811,15 @@ If `LITEGEN__OWNER_EMAIL` is set, only that email address can claim ownership on
 | Role | Description |
 |------|-------------|
 | **Owner** | Full access including `system:transfer_owner`. Only one Owner at a time. |
-| **Admin** | Full access to all resources except transferring ownership. |
+| **Admin** | Full access to all resources except transferring ownership, inviting Admins, and changing, removing, deactivating, reactivating or resetting Owners and other Admins. |
 | **Member** | Manage own API keys, create generations, view own logs. |
 | **Viewer** | Read-only — view own keys and logs; cannot create or mutate. |
 
 An app's settings, budgets and limits, its model access, its storage and file-access settings, and the org's vendor credentials are changed by Owners and Admins only; Members and Viewers can read them. A Viewer can't start a generation or ask for a quote, and neither can their API keys: a key acts for the person who made it, so while they're a Viewer it keeps `read` and loses `generate` (and `admin`).
+
+A role change (`PATCH /v1/orgs/{id}/members/{user_id}`, or `PATCH /v1/users/{id}` in single-tenant mode) needs a role above the member's current one, and never grants one at or above your own: an Owner moves people among Admin, Member and Viewer, and an Admin only between Member and Viewer. No one changes their own role. The Owner's role moves only with transfer-owner. The master key may make any other change. Each change is in the audit log with the old role and the new one.
+
+Removing a member (`DELETE /v1/orgs/{id}/members/{user_id}`), deactivating an account (`PATCH /v1/users/{id}` with `is_active: false`, or `DELETE /v1/users/{id}`) and reactivating one (`is_active: true`) follow the same rule, since removing someone and inviting them back lower is a demotion by another door: a person acts only on someone they outrank in that org (in single-tenant mode, the deployment's org). Leaving an org by removing yourself stays allowed, but no one deactivates their own account through these routes. The master key may remove or deactivate anyone but the Owner. In hosted mode ownership belongs to each organization, so no account is the deployment's Owner: the master key may deactivate any account, a tenant's signup included, and the deployment-level `POST /v1/users/transfer-owner` is refused (`400 transfer_owner_per_org`; use `POST /v1/orgs/{id}/transfer-owner`). Deactivating ends the account's sessions, revokes its apps' OAuth sign-ins and their unredeemed codes, deletes its unused reset links and the ones it issued, and revokes the pending invitations it sent, in every org, all at once, even when the account was already deactivated. Its API keys stop working while it is deactivated. An invitation follows the rule too: its role must be below the inviter's own, so an Admin invites Members and Viewers, and an Owner invites Admins as well. The master key may invite to any role but Owner.
 
 `GET /v1/auth/me` lists each organization you belong to with your role there and its `permissions` (`org:write`, `generation:create`, …), worked out as the server checks every request, so a client can offer only what will work. What you may do in an organization is your role there, not your account's own `user.role`. The deployment's own permissions (`system:config`, `cache:clear`, `user:read:any`, `user:write:any`, `user:delete:any`, `system:transfer_owner`) are listed only for the default organization of a single-tenant deployment; in hosted mode they are the master key's alone.
 
@@ -809,8 +829,16 @@ Owners and Admins can invite new users from the dashboard:
 
 1. Go to `/users` in the dashboard.
 2. Click **Invite**, enter the recipient's email and desired role.
-3. An invite link is generated: `https://your-host/invite/<token>`. Copy and send it manually until SMTP is configured.
+3. An invite link is generated: `https://your-host/invite/<token>`. LiteGen sends no email, so copy it and send it yourself. The answer to the invitation (`POST /v1/orgs/{id}/members`, or `POST /v1/users` for the org you act in) carries the `token` and, when `server.public_base_url` is set, the link as `invite_url`. It is shown only then (LiteGen keeps only the token's hash): if it gets lost, revoke the invitation and invite again.
 4. The recipient clicks the link and sets a password, or signs in via OAuth if a provider is pre-configured.
+
+`GET /v1/orgs/{id}/invitations` lists an organization's pending invitations, without their tokens, and `DELETE /v1/orgs/{id}/invitations/{invitation_id}` revokes one: its link stops working. An invitation that was already accepted can't be revoked (`409 invitation_accepted`): remove the member instead. Accepting and revoking at the same moment end one way or the other, never both. Both routes take an Owner or Admin there, or the master key, which in single-tenant mode also manages the accounts at `/v1/users` (list, change a role, deactivate, invite, transfer ownership). Every revoke is in the org's audit log as `invitation.revoke`: one by hand, and those that come with a removal, a role change that can't invite, a deactivation or a reset, which carry a `reason` (`member_removed`, `inviter_role_changed`, `inviter_deactivated`, `inviter_reset`). Accepting also checks that whoever sent the invitation may still send it, as confirming a reset link checks its issuer: still active, and still a member of the org whose role may invite and is above the invited one. Otherwise it answers `400 invitation_revoked` (through GitHub or Google, the accept page shows the same reason) and changes nothing: ask for a new invitation. That covers an invitation that was being sent when its sender was demoted, removed or deactivated, and an Admin invitation from a former Owner, who as an Admin may invite only Members and Viewers. Such an invitation stays listed as pending until it expires or someone revokes it. The master key's invitations name no sender and always qualify.
+
+### Password resets
+
+LiteGen sends no email, so a forgotten password is reset through a link someone issues: `POST /v1/users/{id}/password-reset` answers with a `token` and, when `server.public_base_url` is set, `reset_url` (the dashboard's `/reset-password/<token>` page), shown only once. Send it to the person; it sets a new password once, within the hour (`POST /v1/auth/password-reset/confirm`). A link takes the whole account over, so only the master key may issue one for any account. A person may issue one only for an account they outrank in every org it belongs to, as an Owner or Admin there: an Admin for Members and Viewers, an Owner for Admins too. So only the master key issues one for an Owner, and no one issues one for their own account (they change their password with `PATCH /v1/account`, which asks for the current one). A new link voids the account's older unused ones, and so does any change to the account's roles, ownership or memberships (the link was checked against the roles it had). A deactivated account gets a link only from someone who may reactivate it: in single-tenant mode a person who outranks it, and in either mode the master key. Setting the password then reactivates it. Deactivating deleted its earlier links, so only a link issued after the deactivation does that: for an account someone else may hold, deactivate it, revoke its API keys, then issue the link.
+
+Setting the new password ends the account's sessions and revokes its apps' OAuth sign-ins (MCP clients) and the codes they haven't redeemed yet, in the same step that uses the link up: if any of it fails, nothing changes and the link still works. That step also checks that whoever issued the link may still issue it (still active, still above the account everywhere, and for a deactivated account still allowed to reactivate it), or answers `400 invalid_token`; an issuer's unused links are deleted when the issuer is deactivated, removed or has a role changed. Every account has a sign-in epoch that a reset, a deactivation and a change of one's own password move on, in the same step. A session, an app's approval and its grant record the epoch they began under and stop working once it moves, so a login or an app sign-in that was still in flight is refused too. Changing your own password (`PATCH /v1/account`) ends your other sessions, your apps' OAuth sign-ins and their codes the same way, and deletes the reset links you issued, keeping the session you changed it from. It writes only while nothing moved since it checked your current password: a reset, a deactivation or another change that committed meanwhile makes it answer `401 sign_in_ended` with nothing written. A reset or a deactivation also deletes the unused links the account issued and revokes the pending invitations it sent, each in the audit log (`invitation.revoke`). A link or an invitation sent from one of the account's sessions or apps while the reset or deactivation commits isn't stored either: it answers `401 sign_in_ended`. A change of your own password keeps the invitations you sent, so a routine change doesn't void real ones. If you change it because a session was stolen, review them on the Members page (or `GET /v1/orgs/{id}/invitations`) and revoke any you didn't send with `DELETE /v1/orgs/{id}/invitations/{invitation_id}`. Reactivating an account moves its sign-in epoch on too. `GET /v1/account/sessions` lists only the sessions that still work. Its API keys keep working: block them with the master key, which may block a key in any org (`POST /v1/keys/{id}/block`; a block outlasts a reactivation), or revoke them on each org's Keys page. Issuing a link and using it are both in the audit log, under each organization the account belongs to. LiteGen keeps only a hash of each reset and invitation token, and of each dashboard session's token (the `litegen_session` cookie), so a copy of the database holds none that works. The self-service `POST /v1/auth/password-reset/request` reveals, stores and delivers nothing, so it can't void a link someone issued; see "Forgot password emails not sending" in `docs/RUNBOOK.md`.
 
 ### OAuth setup
 
@@ -863,7 +891,7 @@ The default is `single_tenant`; everything documented above (first-run owner sig
 
 - `POST /v1/auth/signup` becomes **open self-serve signup**. Each new user gets their own **Organization** (plus a default Application) and becomes its Owner — signup is no longer gated by the empty-`users` check or `LITEGEN__OWNER_EMAIL`.
 - The master key is **demoted to platform-admin**: it is still a superuser for operational endpoints, but it carries **no implicit tenant access** — it is not a member of any org and cannot read tenant-scoped data by default. A generation belongs to an organization, so it starts none either: the generation, quote and conversion routes answer `403 no_active_org`. Use an organization's API key, or sign in, to generate.
-- An account that belongs to no organization (it deleted its only one, was removed from it or left it, or its signup failed after the account was made) acts in none. It keeps its own account: its profile and password, its sessions, signing out, making a new organization and accepting an invitation. Anything that acts in an organization answers 403 (`no_active_org`, or `no active organization`); it is never the default organization instead. Its account's own `role` grants it nothing.
+- An account that belongs to no organization (it deleted its only one, or was removed from it or left it) acts in none. A signup that fails part way leaves no account at all. It keeps its own account: its profile and password, its sessions, signing out, making a new organization and accepting an invitation. Anything that acts in an organization answers 403 (`no_active_org`, or `no active organization`); it is never the default organization instead. Its account's own `role` grants it nothing.
 
 ### The tenancy model
 
@@ -874,7 +902,7 @@ User ──< OrganizationMember >── Organization ──< Application ──<
 
 - A **User** belongs to one or more **Organizations** via memberships, each carrying a per-org **role**: `owner`, `admin`, `member`, or `viewer`.
 - An **Organization** owns one or more **Applications**.
-- An **Application** owns its **API keys** and its own upstream provider credentials.
+- An **Application** owns its **API keys**. Upstream provider credentials belong to the organization, and every app of the org uses them (see below).
 
 ### API keys are id + secret
 
@@ -900,13 +928,19 @@ Both headers are validated against the user's memberships server-side, so a sess
 
 ### BYO provider keys
 
-Each Application stores its **own** upstream provider credentials, encrypted at rest with **AES-256-GCM**. To enable credential storage in hosted mode, provide a base64-encoded 32-byte key:
+Each organization stores its **own** upstream provider credentials, one per provider, encrypted at rest with **AES-256-GCM**. Every app of the org uses them. A member with `provider_cred:write` sets one on the dashboard's **Providers** page, or with `POST /v1/orgs/{org_id}/provider-credentials` and a body such as `{"provider": "openai", "credentials": {"api_key": "sk-..."}}`. Posting again for the same provider replaces it. `GET` on the same path lists them without their secrets, and `DELETE /v1/orgs/{org_id}/provider-credentials/{provider}` removes one. Storing a credential needs a secrets key, a base64-encoded 32-byte key; without one the `POST` answers `400 secrets_not_configured`:
 
 ```bash
 LITEGEN__SECRETS_KEY=$(head -c 32 /dev/urandom | base64)
 ```
 
-At generation time (and during background video-status polling) each request is dispatched using that app's decrypted provider credentials, keeping tenants' upstream keys isolated. Resolution order per provider is: **the app's stored credential → the global env-configured credential (if any) → `400 provider_not_configured`** when neither exists. Cost-estimate endpoints follow the same rule. A model route resolves each deployment's provider this way and is refused only when none of its deployments can be served ([Model Routing](#model-routing)). Decryption/parse failures surface as `500` (server misconfiguration), never a silent fallback to another key.
+At generation time each request is dispatched using its org's decrypted provider credentials, keeping tenants' upstream keys isolated. Resolution order per provider is: **the org's stored credential → the global env-configured credential (if any) → `400 provider_not_configured`** when neither exists. Cost-estimate endpoints follow the same rule. A model route resolves each deployment's provider this way and is refused only when none of its deployments can be served ([Model Routing](#model-routing)). Decryption/parse failures surface as `500` (server misconfiguration), never a silent fallback to another key.
+
+A job litegen polls or cancels in the background (a video, a 3D model, a late image) is asked about on the account it ran on, because a vendor knows a job only under the key that made it. The submit records that account on the job's row as `metadata.vendor_account`: `org:<org id>` for the org's own key, `platform` for the gateway's.
+
+- A job that ran on the gateway's key stays on it, even after the org stores a key of its own.
+- A job that ran on the org's key is never asked about on the gateway's. While that key can't be read, or after the org removed it, the poller skips the job and tries again each tick. It logs a warning about the job at the first skip, then once at each 10-minute mark of the job's age, not at every tick. The job's row records the mark it last warned at, so replicas and restarts don't repeat a warning, and drifting ticks don't skip one. A key stored again in time lets the job finish. After 2 hours the job fails and is refunded, with a reason that says why. A cancel in that state answers `vendor_cancelled: false` and leaves the vendor job running.
+- A row with no account recorded (older rows) uses the org's key when it stores one, else the gateway's. A stored key that can't be read is skipped, never swapped for the gateway's. A row under a minute old with no account recorded yet waits a tick for it rather than be polled on a guess.
 
 ### BYO object storage (per app)
 

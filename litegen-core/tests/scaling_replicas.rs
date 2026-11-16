@@ -673,3 +673,82 @@ async fn a_provider_that_keeps_failing_stays_cut_off_on_both_replicas() {
     cooling_down("B, after A's probe", &ask(&b).await);
     assert_eq!(hits().await, 3, "B stays cut off: its own count was one failure, and it never called the vendor");
 }
+
+// ─── 10. A deleted generation's answer is never served, from either tier ────
+
+/// The generation ids of the answers the shared cache tier holds under this
+/// client's prefix.
+async fn shared_cache_ids(shared: &SharedRedis) -> Vec<String> {
+    let pattern = shared.key(&["cache", "e", "*"]);
+    let keys: Vec<String> = shared.run(|mut c| async move { redis::cmd("KEYS").arg(pattern).query_async(&mut c).await }).await.expect("list the shared tier");
+    let mut ids = Vec::new();
+    for key in keys {
+        let entry: Option<String> = shared.run(|mut c| async move { redis::cmd("GET").arg(key).query_async(&mut c).await }).await.expect("read an entry");
+        if let Some(entry) = entry {
+            let entry: Value = serde_json::from_str(&entry).expect("an entry is JSON");
+            ids.push(entry["response"]["id"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    ids
+}
+
+impl Replica {
+    /// A `mock/image-gen` image for `prompt` as the master key, with
+    /// `Cache-Control: no-store`: a hit is still served, but a fresh answer
+    /// isn't cached, so the tiers hold afterwards only what the lookup left.
+    async fn generate_unstored(&self, prompt: &str) -> Reply {
+        let req = Request::post("/v1/images/generations")
+            .header("authorization", format!("Bearer {MASTER}"))
+            .header("content-type", "application/json")
+            .header("cache-control", "no-store")
+            .body(Body::from(json!({ "model": "mock/image-gen", "prompt": prompt }).to_string()))
+            .unwrap();
+        let resp = self.app.clone().oneshot(req).await.unwrap();
+        let (status, headers) = (resp.status(), resp.headers().clone());
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024).await.unwrap();
+        Reply { status, headers, body: serde_json::from_slice(&bytes).unwrap_or(Value::Null) }
+    }
+}
+
+fn cache_of(reply: &Reply) -> &str {
+    reply.headers.get("x-litegen-cache").and_then(|v| v.to_str().ok()).unwrap_or("absent")
+}
+
+/// Once a generation is deleted (`DELETE /v1/generations/{id}`, on A), its
+/// answer is served by neither tier: B, which holds no copy of its own,
+/// finds it in the shared tier, sees the generation deleted (in the database
+/// both share), drops it from the shared tier, and asks the vendor; A drops
+/// its own copy at its next lookup. Before the delete, a hit's artifact
+/// names the generation instead of copying the image.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_generations_answer_is_dropped_from_both_tiers() {
+    let Some(mut world) = World::start().await else { return };
+    let (a, b) = world.pair(|| ReplicaOptions { subscribe: false }, |c| c.cache.enabled = true).await;
+    let tier = world.redis().await;
+
+    let first = a.generate("mock/image-gen", "a crane", MASTER).await;
+    assert_eq!((first.status, cache_of(&first)), (StatusCode::OK, "miss"), "{}", first.body);
+    a.state.router.cache.flush_shared_writes().await;
+    let id = first.body["id"].as_str().unwrap().to_string();
+    assert_eq!(shared_cache_ids(&tier).await, std::slice::from_ref(&id), "the answer is in the shared tier");
+
+    let hit = a.generate("mock/image-gen", "a crane", MASTER).await;
+    assert_eq!((cache_of(&hit), hit.body["id"].as_str()), ("hit", Some(id.as_str())), "{}", hit.body);
+    let (rows, _) = a.state.db.get_request_logs(1, 100).await.unwrap();
+    let hit_row = rows.iter().find(|r| r.cache_hit).expect("the hit's own log row");
+    let artifact = a.state.db.get_request_artifact(&hit_row.id).await.unwrap().expect("the hit's artifact");
+    assert_eq!((artifact.output_kind.as_str(), artifact.output_value.as_deref()), ("generation", Some(id.as_str())), "a hit's artifact names its generation: {artifact:?}");
+
+    let deleted = a.call("DELETE", &format!("/v1/generations/{id}"), Some(MASTER), None).await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+
+    let on_b = b.generate_unstored("a crane").await;
+    assert_eq!((on_b.status, cache_of(&on_b)), (StatusCode::OK, "miss"), "B never serves the deleted generation: {}", on_b.body);
+    assert_ne!(on_b.body["id"].as_str(), Some(id.as_str()), "the vendor answered B afresh");
+    assert!(shared_cache_ids(&tier).await.is_empty(), "B dropped it from the shared tier");
+    assert_eq!(b.state.router.cache.entry_count().await, 0, "and kept no copy of it");
+
+    let on_a = a.generate_unstored("a crane").await;
+    assert_eq!((on_a.status, cache_of(&on_a)), (StatusCode::OK, "miss"), "nor does A, from its own memory: {}", on_a.body);
+    assert_eq!(a.state.router.cache.entry_count().await, 0, "A dropped its own copy");
+}

@@ -27,7 +27,6 @@ black-forest-labs/flux-kontext-max
 black-forest-labs/flux-kontext-pro
 black-forest-labs/flux-krea-dev
 black-forest-labs/flux-pro
-black-forest-labs/flux-pro-finetuned
 black-forest-labs/flux-redux-dev
 black-forest-labs/flux-redux-schnell
 black-forest-labs/flux-schnell

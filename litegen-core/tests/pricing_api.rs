@@ -116,14 +116,16 @@ async fn a_ratio_an_image_overrides_is_refused_before_it_is_quoted() {
         );
     }
     // Guards: the ratio without a frame, Vidu's reference mode (it takes a
-    // ratio), and Seedance, which honours a ratio on a first frame.
+    // ratio; a frame beside the reference is refused, see
+    // `a_frame_with_a_reference_is_refused_before_it_is_quoted_or_reserved`),
+    // and Seedance, which honours a ratio on a first frame.
     for (model, refs) in [
         ("kling/video-kling-v4", json!([])),
         ("vidu/viduq3-turbo", json!([])),
         ("pixverse/v6", json!([])),
         ("tokenhub/hy-video-v1.5", json!([])),
         ("runway/kling_4_flash", json!([])),
-        ("vidu/viduq1", json!([image("first_frame"), image("reference")])),
+        ("vidu/viduq1", json!([image("reference")])),
         ("bytedance/doubao-seedance-1-0-pro-250528", json!([image("first_frame")])),
     ] {
         let (s, resp) = post(&app, "/v1/videos/cost", body(model, refs.clone())).await;
@@ -196,7 +198,7 @@ const LAST_FRAME_NEEDS_A_FIRST: &[(&str, bool, &str)] = &[
     ("vidu", true, "vidu.rs: \"needs a first_frame to go with a last_frame\" (img2video takes its image as the first frame)"),
     ("bedrock", false, "Ray 2 on Bedrock: \"start (frame0) and/or end (frame1) keyframes\""),
     ("luma", false, "Luma's keyframes: frame0 and frame1, each optional"),
-    ("minimax", false, "MiniMax first-last-frame: \"required: - model - last_frame_image\""),
+    ("minimax", false, "MiniMax first-last-frame: \"required: - model - last_frame_image\"; V2 (H3): \"Image-to-video, last frame: `text` + 1 `image_url` (`role=last_frame`).\""),
     ("mock", false, "the mock adapter makes either"),
 ];
 
@@ -262,6 +264,430 @@ async fn a_last_frame_without_a_first_is_refused_before_it_is_quoted_or_reserved
     // on a last frame alone keeps it (above, every Luma, MiniMax and mock row).
     let (s, resp) = post(&app, "/v1/videos/cost", json!({ "model": "runway/veo3.1", "prompt": "x", "reference_images": [frame("first_frame"), frame("last_frame")] })).await;
     assert_eq!(s, StatusCode::OK, "a first and a last frame: {resp}");
+}
+
+/// catalog-rules: a model whose vendor takes reference images only on
+/// image-to-video (its `reference` role's `needs_first_frame`: Runway's
+/// Kling O3) refuses a reference sent without a first frame at validation,
+/// with `ref_role_required`, before it is quoted, reserved or sent. It used
+/// to be quoted and reserved, then refused at submit (runway.rs
+/// `resold_request`: "reference images go with a start frame"). Every
+/// catalog video row with a `reference` role is checked: one without the
+/// rule still quotes a reference alone, and one with it quotes a first
+/// frame with a reference.
+#[tokio::test]
+async fn a_reference_that_needs_a_first_frame_is_refused_without_one_before_it_is_quoted_or_reserved() {
+    use base64::Engine;
+    use litegen::db::DatabaseStore;
+    let mut models_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    models_dir.pop();
+    models_dir.push("models");
+    let catalog = litegen::capabilities::CapabilityRegistry::from_dir(&models_dir).expect("models/");
+    let mut rows: Vec<(String, String, bool)> = catalog
+        .all()
+        .filter(|m| m.media_type == litegen::capabilities::MediaType::Video)
+        .filter_map(|m| {
+            let reference = m.ref_inputs.as_ref()?.roles.get("reference")?;
+            Some((m.id.clone(), m.provider.clone(), reference.needs_first_frame))
+        })
+        .collect();
+    rows.sort();
+    let vendors: std::collections::BTreeSet<String> = rows.iter().map(|(_, vendor, _)| vendor.clone()).collect();
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, move |cfg| {
+        for v in &vendors {
+            cfg.providers.insert(v.clone(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await;
+    let png = base64::engine::general_purpose::STANDARD.encode(litegen::providers::image::visual_mock::generate_visual_image_png("a reference"));
+    let image = |role: &str| json!({ "type": "base64", "value": png, "role": role });
+    let refused = |s: StatusCode, resp: &Value| {
+        s == StatusCode::BAD_REQUEST && resp["error"]["code"] == "ref_role_required" && resp["error"]["param"] == "reference_images"
+    };
+    let mut wrong = Vec::new();
+    for (model, _, needs) in &rows {
+        let alone = json!({ "model": model, "prompt": "a lighthouse at dusk", "reference_images": [image("reference")] });
+        let (s, resp) = post(&app, "/v1/videos/cost", alone.clone()).await;
+        if refused(s, &resp) != *needs {
+            wrong.push(format!("{model}: a reference alone at /v1/videos/cost: {} {resp}", s.as_u16()));
+            continue;
+        }
+        if !*needs {
+            continue;
+        }
+        let (s, resp) = post(&app, "/v1/videos/generations", alone).await;
+        if !refused(s, &resp) {
+            wrong.push(format!("{model}: a reference alone at /v1/videos/generations: {} {resp}", s.as_u16()));
+        }
+        let framed = json!({ "model": model, "prompt": "a lighthouse at dusk", "reference_images": [image("first_frame"), image("reference")] });
+        let (s, resp) = post(&app, "/v1/videos/cost", framed).await;
+        if s != StatusCode::OK {
+            wrong.push(format!("{model}: a first frame and a reference at /v1/videos/cost: {} {resp}", s.as_u16()));
+        }
+    }
+    assert!(rows.iter().any(|(.., needs)| *needs), "no catalog row's reference role needs a first frame: {rows:?}");
+    assert!(wrong.is_empty(), "{} answers of {} rows were otherwise:\n{}", wrong.len(), rows.len(), wrong.join("\n"));
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed or logged as a failed generation");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
+}
+
+/// round 3: a request the vendor refuses for a rule across two of its fields,
+/// which the catalog can't say, is refused at the quote in the adapter's own
+/// words (its `preflight`), and the generation refuses it the same way before
+/// anything is reserved. TokenHub's Kling 2.6 makes native audio only at
+/// 1080p ("audio=native 时仅支持 1080p"): `audio: true` at the row's default
+/// 720p used to be quoted and reserved, then refused at submit. At 1080p it
+/// is quoted.
+#[tokio::test]
+async fn a_request_the_vendor_refuses_across_two_fields_is_refused_at_the_quote_in_its_words() {
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, |cfg| {
+        cfg.providers.insert("tokenhub".into(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+    })
+    .await;
+    let body = json!({ "model": "tokenhub/kling-video-v2.6", "prompt": "a lighthouse at dusk", "audio": true });
+    for at in ["/v1/videos/cost", "/v1/videos/generations"] {
+        let (s, resp) = post(&app, at, body.clone()).await;
+        assert_eq!((s, resp["error"]["code"].as_str(), resp["error"]["retryable"].as_bool()), (StatusCode::BAD_REQUEST, Some("request_unsupported"), Some(false)), "at {at}: {resp}");
+        assert_eq!(resp["error"]["message"], "tokenhub/kling-video-v2.6: native audio needs resolution 1080p, and no last frame", "at {at}");
+    }
+    let (s, resp) = post(&app, "/v1/videos/cost", json!({ "model": "tokenhub/kling-video-v2.6", "prompt": "x", "audio": true, "resolution": "1080p" })).await;
+    assert_eq!(s, StatusCode::OK, "native audio at 1080p: {resp}");
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed or logged as a failed generation");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
+}
+
+/// round 3: the direct adapters' own two-field rules are refused at the
+/// quote as well, in their words, and the generation refuses them before it
+/// reserves: Kling 2.6's native audio only at 1080p, a loop without a last
+/// frame on Luma and on Ray 2 through Bedrock ("Loop is not supported for
+/// keyframes"), PixVerse v3.5 never 8 s at 1080p, Hailuo 02 only 6 s at
+/// 1080P. Each used to be quoted and reserved, then refused at submit.
+#[tokio::test]
+async fn a_direct_vendors_two_field_rule_is_refused_at_the_quote_in_its_words() {
+    use base64::Engine;
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, |cfg| {
+        for v in ["kling", "luma", "pixverse", "minimax", "bedrock"] {
+            cfg.providers.insert(v.to_string(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await;
+    let png = base64::engine::general_purpose::STANDARD.encode(litegen::providers::image::visual_mock::generate_visual_image_png("a frame"));
+    let image = |role: &str| json!({ "type": "base64", "value": png, "role": role });
+    let cases = [
+        (
+            json!({ "model": "kling/video-kling-v2-6", "prompt": "a lighthouse at dusk", "audio": true }),
+            "kling/video-kling-v2-6: native audio needs resolution 1080p, and no last frame",
+        ),
+        (
+            json!({ "model": "luma/ray-2", "prompt": "a lighthouse at dusk", "loop": true, "reference_images": [image("first_frame"), image("last_frame")] }),
+            "luma/ray-2: a loop cannot have a last frame",
+        ),
+        (
+            json!({ "model": "pixverse/v3.5", "prompt": "a lighthouse at dusk", "duration_seconds": 8, "resolution": "1080p" }),
+            "pixverse/v3.5: 8 s is not a length it makes at 1080p (5 s is)",
+        ),
+        (
+            json!({ "model": "minimax/MiniMax-Hailuo-02", "prompt": "a lighthouse at dusk", "duration_seconds": 10, "resolution": "1080P" }),
+            "minimax/MiniMax-Hailuo-02 makes 6 or 10 s, and only 6 s at 1080P; asked for 10 s",
+        ),
+        (
+            json!({ "model": "bedrock/luma.ray-v2:0", "prompt": "a lighthouse at dusk", "loop": true, "reference_images": [image("first_frame"), image("last_frame")] }),
+            "bedrock Ray 2: a loop can't end on a last frame (\"Loop is not supported for keyframes\")",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (body, words) in &cases {
+        for at in ["/v1/videos/cost", "/v1/videos/generations"] {
+            let (s, resp) = post(&app, at, body.clone()).await;
+            if (s, resp["error"]["code"].as_str(), resp["error"]["message"].as_str()) != (StatusCode::BAD_REQUEST, Some("request_unsupported"), Some(*words)) {
+                wrong.push(format!("{} at {at}: {} {resp}", body["model"], s.as_u16()));
+                break;
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {} answered otherwise:\n{}", wrong.len(), cases.len(), wrong.join("\n"));
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed or logged as a failed generation");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
+}
+
+/// round 3: a rule that hangs on the endpoint the request's images choose is
+/// refused at the quote, in the adapter's words, and the generation refuses
+/// it before it reserves: vidu2.0's lengths by endpoint and resolution,
+/// viduq1's audio switch (text2video only), FLUX 3 on fal (its first-last
+/// and keyframe endpoints priced at 720p and 1080p only, keyframes never
+/// beside a first or last frame, two keyframes never on one frame), and
+/// MiniMax H3's `prompt_expansion_mode` through Ideogram (reference to video
+/// only). Each used to be quoted and reserved, then refused at submit. The
+/// same request through an endpoint that takes it is still quoted.
+#[tokio::test]
+async fn a_rule_of_the_endpoint_the_images_choose_is_refused_at_the_quote_in_its_words() {
+    use base64::Engine;
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, |cfg| {
+        for v in ["vidu", "fal", "ideogram"] {
+            cfg.providers.insert(v.to_string(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await;
+    let png = base64::engine::general_purpose::STANDARD.encode(litegen::providers::image::visual_mock::generate_visual_image_png("a frame"));
+    let image = |role: &str| json!({ "type": "base64", "value": png, "role": role });
+    let keyframe = |at: f64| json!({ "type": "base64", "value": png, "role": "keyframe", "time_s": at });
+    let prompt = "a lighthouse at dusk";
+    let vidu2 = "(4 s at 360p/720p/1080p, 8 s at 720p; references 4 s at 360p/720p)";
+    let refused = [
+        (
+            json!({ "model": "vidu/vidu2.0", "prompt": prompt, "duration_seconds": 8, "resolution": "1080p", "reference_images": [image("first_frame")] }),
+            format!("vidu2.0 makes no 8 s 1080p clip on img2video {vidu2}"),
+        ),
+        (
+            json!({ "model": "vidu/vidu2.0", "prompt": prompt, "duration_seconds": 8, "reference_images": [image("reference")] }),
+            format!("vidu2.0 makes no 8 s 720p clip on reference2video {vidu2}"),
+        ),
+        (
+            json!({ "model": "vidu/viduq1", "prompt": prompt, "audio": true, "reference_images": [image("first_frame")] }),
+            "vidu/viduq1 has no audio switch on img2video: ask without audio, or use a mode that has one".to_string(),
+        ),
+        (
+            json!({ "model": "fal/flux-3-video", "prompt": prompt, "resolution": "1440p", "reference_images": [image("first_frame"), image("last_frame")] }),
+            "fal/flux-3-video: fal prices first-last and keyframe videos at 720p and 1080p only, not 1440p".to_string(),
+        ),
+        (
+            json!({ "model": "fal/flux-3-video", "prompt": prompt, "reference_images": [image("first_frame"), keyframe(2.0)] }),
+            "fal/flux-3-video: keyframes don't mix with a first or last frame: send those as keyframes at 0 s and at the end".to_string(),
+        ),
+        (
+            json!({ "model": "fal/flux-3-video", "prompt": prompt, "reference_images": [keyframe(0.0), keyframe(0.01)] }),
+            "fal/flux-3-video: two keyframes fall on frame 0 at 24 fps".to_string(),
+        ),
+        (
+            json!({ "model": "ideogram/minimax-h3", "prompt": prompt, "extra": { "prompt_expansion_mode": "fast" } }),
+            "ideogram/minimax-h3: `prompt_expansion_mode` is taken by reference-to-video only (attach reference images)".to_string(),
+        ),
+    ];
+    let quoted = [
+        json!({ "model": "vidu/vidu2.0", "prompt": prompt, "duration_seconds": 8, "resolution": "720p", "reference_images": [image("first_frame")] }),
+        json!({ "model": "vidu/viduq1", "prompt": prompt, "audio": true }),
+        json!({ "model": "fal/flux-3-video", "prompt": prompt, "resolution": "1080p", "reference_images": [image("first_frame"), image("last_frame")] }),
+        json!({ "model": "fal/flux-3-video", "prompt": prompt, "resolution": "1440p", "reference_images": [image("first_frame")] }),
+        json!({ "model": "fal/flux-3-video", "prompt": prompt, "reference_images": [keyframe(0.0), keyframe(0.5)] }),
+        json!({ "model": "ideogram/minimax-h3", "prompt": prompt, "extra": { "prompt_expansion_mode": "fast" }, "reference_images": [image("reference")] }),
+    ];
+    let mut wrong = Vec::new();
+    for (body, words) in &refused {
+        for at in ["/v1/videos/cost", "/v1/videos/generations"] {
+            let (s, resp) = post(&app, at, body.clone()).await;
+            let answer = (s, resp["error"]["code"].as_str(), resp["error"]["message"].as_str(), resp["error"]["retryable"].as_bool());
+            if answer != (StatusCode::BAD_REQUEST, Some("request_unsupported"), Some(words.as_str()), Some(false)) {
+                wrong.push(format!("{} at {at}: {} {resp}", body["model"], s.as_u16()));
+                break;
+            }
+        }
+    }
+    for body in &quoted {
+        let (s, resp) = post(&app, "/v1/videos/cost", body.clone()).await;
+        if s != StatusCode::OK {
+            wrong.push(format!("{} (an endpoint that takes it) at /v1/videos/cost: {} {resp}", body["model"], s.as_u16()));
+        }
+    }
+    assert!(wrong.is_empty(), "{} answered otherwise:\n{}", wrong.len(), wrong.join("\n"));
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed or logged as a failed generation");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
+}
+
+/// round 3: an image request an adapter refuses for a vendor rule the
+/// catalog can't say (two fields, or a field and the images) is refused at
+/// the quote in the adapter's words, and the generation refuses it before
+/// it reserves, one case per rule family: TokenHub's Seedream (a tier or a
+/// size, "不可混用"), Hy-Image 3.5 (a size, or a tier and/or ratio) and Kling
+/// image v3 (no negative prompt with an image), Kling's own, Hunyuan image
+/// (four sizes, and no seed, with an image), Ideogram 4.5 (`very_low` needs
+/// an image; no size with a mask), Runway (`very_low` and `edit` need an
+/// image; Bria FIBO Edit's ratio needs two), Stability (inpaint needs a mask
+/// or a region, search-and-replace a `mask_prompt`), fal's FLUX Fill (a
+/// mask or a region) and BFL's FLUX 3 Image (at most 4,194,304 pixels with
+/// an image). The Playground quotes before it generates, so each
+/// used to be quoted, then refused at submit. A request that meets the rule
+/// is still quoted, a region standing for the mask it is drawn into.
+#[tokio::test]
+async fn an_image_rule_the_catalog_cant_say_is_refused_at_the_quote_in_its_words() {
+    use base64::Engine;
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, |cfg| {
+        for v in ["tokenhub", "kling", "hunyuan", "ideogram", "runway", "stability", "fal", "bfl"] {
+            cfg.providers.insert(v.to_string(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await;
+    let png = base64::engine::general_purpose::STANDARD.encode(litegen::providers::image::visual_mock::generate_visual_image_png("an init image"));
+    let image = |role: &str| json!({ "type": "base64", "value": png, "role": role });
+    let prompt = "a lighthouse at dusk";
+    let region = json!({ "x": 0, "y": 0, "w": 64, "h": 64 });
+    let refused = [
+        (
+            json!({ "model": "tokenhub/seedream-image-v5.0-pro", "prompt": prompt, "size": "2048x2048", "resolution": "2K" }),
+            "tokenhub: Seedream takes a resolution tier or an exact size, not both (\"不可混用\")",
+        ),
+        (
+            json!({ "model": "tokenhub/hy-image-v3.5-preview", "prompt": prompt, "size": "1024x1024", "aspect_ratio": "1:1" }),
+            "tokenhub: send an exact size, or resolution and/or aspect_ratio — not size with either",
+        ),
+        (
+            json!({ "model": "tokenhub/kling-image-v3", "prompt": prompt, "negative_prompt": "blur", "reference_images": [image("init")] }),
+            "tokenhub/kling-image-v3: a negative_prompt cannot go with a reference image",
+        ),
+        (
+            json!({ "model": "kling/kling-v3", "prompt": prompt, "negative_prompt": "blur", "reference_images": [image("init")] }),
+            "kling/kling-v3: a negative_prompt cannot go with a reference image",
+        ),
+        (
+            json!({ "model": "hunyuan/hunyuan-image", "prompt": prompt, "size": "1280x720", "reference_images": [image("init")] }),
+            "hunyuan-image: with a reference image the size is 768x768, 768x1024, 1024x768 or 1024x1024, not 1280x720",
+        ),
+        (
+            json!({ "model": "hunyuan/hunyuan-image", "prompt": prompt, "seed": 7, "reference_images": [image("init")] }),
+            "hunyuan-image: a seed has no effect with a reference image (Tencent keeps prompt expansion on)",
+        ),
+        (
+            json!({ "model": "ideogram/ideogram-4-5", "prompt": prompt, "quality": "very_low" }),
+            "'ideogram/ideogram-4-5': quality very_low needs a source image",
+        ),
+        (
+            json!({ "model": "ideogram/ideogram-4-5", "prompt": prompt, "size": "1024x1024", "reference_images": [image("init"), image("mask")] }),
+            "'ideogram/ideogram-4-5': with a mask the output is the source image's size; send no size",
+        ),
+        (
+            json!({ "model": "runway/ideogram_4_5", "prompt": prompt, "quality": "very_low" }),
+            "runway/ideogram_4_5: quality very_low needs a reference image and no preciseEdit",
+        ),
+        (
+            json!({ "model": "runway/grok_imagine_image_2", "prompt": prompt, "extra": { "edit": true } }),
+            "runway/grok_imagine_image_2: `edit` needs a reference image",
+        ),
+        (
+            json!({ "model": "runway/bria_fibo_edit_1_5", "prompt": prompt, "aspect_ratio": "16:9", "reference_images": [image("init")] }),
+            "runway/bria_fibo_edit_1_5 keeps a single image's framing: an aspect_ratio needs at least 2 images",
+        ),
+        (
+            json!({ "model": "stability/inpaint", "prompt": prompt, "reference_images": [image("init")] }),
+            "'stability/inpaint' edits a masked area: send a mask or a region",
+        ),
+        (
+            json!({ "model": "stability/search-and-replace", "prompt": prompt, "reference_images": [image("init")] }),
+            "search-and-replace needs `mask_prompt`: what to find and replace",
+        ),
+        (
+            json!({ "model": "fal/flux-pro-fill", "prompt": prompt, "reference_images": [image("init")] }),
+            "fal/flux-pro-fill: send a mask, or a region to edit",
+        ),
+        // Moved on reading bfl.rs (no sweep size reached it before): a guard
+        // that FLUX 3 Image's smaller ceiling with an image stays at the quote.
+        (
+            json!({ "model": "bfl/flux-3-image", "prompt": prompt, "size": "4096x2048", "reference_images": [image("init")] }),
+            "FLUX 3 Image makes at most 4194304 pixels with reference images; the size asks for 8388608",
+        ),
+    ];
+    let quoted = [
+        json!({ "model": "tokenhub/seedream-image-v5.0-pro", "prompt": prompt, "size": "2048x2048" }),
+        json!({ "model": "tokenhub/hy-image-v3.5-preview", "prompt": prompt, "resolution": "2K", "aspect_ratio": "1:1" }),
+        json!({ "model": "kling/kling-v3", "prompt": prompt, "negative_prompt": "blur" }),
+        json!({ "model": "hunyuan/hunyuan-image", "prompt": prompt, "size": "1024x1024", "reference_images": [image("init")] }),
+        json!({ "model": "ideogram/ideogram-4-5", "prompt": prompt, "quality": "very_low", "reference_images": [image("init")] }),
+        json!({ "model": "ideogram/ideogram-4-5", "prompt": prompt, "reference_images": [image("init"), image("mask")] }),
+        json!({ "model": "runway/bria_fibo_edit_1_5", "prompt": prompt, "reference_images": [image("init")] }),
+        json!({ "model": "stability/inpaint", "prompt": prompt, "region": region, "reference_images": [image("init")] }),
+        json!({ "model": "stability/search-and-replace", "prompt": prompt, "mask_prompt": "the sky", "reference_images": [image("init")] }),
+        json!({ "model": "fal/flux-pro-fill", "prompt": prompt, "region": region, "reference_images": [image("init")] }),
+        json!({ "model": "bfl/flux-3-image", "prompt": prompt, "size": "4096x2048" }),
+    ];
+    let mut wrong = Vec::new();
+    for (body, words) in &refused {
+        for at in ["/v1/images/cost", "/v1/images/generations"] {
+            let (s, resp) = post(&app, at, body.clone()).await;
+            let answer = (s, resp["error"]["code"].as_str(), resp["error"]["message"].as_str(), resp["error"]["retryable"].as_bool());
+            if answer != (StatusCode::BAD_REQUEST, Some("request_unsupported"), Some(*words), Some(false)) {
+                wrong.push(format!("{} at {at}: {} {resp}", body["model"], s.as_u16()));
+                break;
+            }
+        }
+    }
+    for body in &quoted {
+        let (s, resp) = post(&app, "/v1/images/cost", body.clone()).await;
+        if s != StatusCode::OK {
+            wrong.push(format!("{} (meets the rule) at /v1/images/cost: {} {resp}", body["model"], s.as_u16()));
+        }
+    }
+    assert!(wrong.is_empty(), "{} answered otherwise:\n{}", wrong.len(), wrong.join("\n"));
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed or logged as a failed generation");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
+}
+
+/// vidu-mix: Vidu takes first/last frames (img2video, start-end2video) or
+/// reference images (reference2video), never both in one request. A mix was
+/// quoted, reserved and sent to reference2video with the frame as one more
+/// reference, so the clip did not start on it. Every Vidu row that takes a
+/// frame and a reference, direct or resold on TokenHub, refuses the mix at
+/// validation (its `reference` role's `not_with`) with `ref_role_conflict`,
+/// before it is quoted, reserved or sent; a last frame too, which a first
+/// frame would not help. Each role alone is still quoted.
+#[tokio::test]
+async fn a_frame_with_a_reference_is_refused_before_it_is_quoted_or_reserved() {
+    use base64::Engine;
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, |cfg| {
+        for v in ["vidu", "tokenhub"] {
+            cfg.providers.insert(v.to_string(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await;
+    let png = base64::engine::general_purpose::STANDARD.encode(litegen::providers::image::visual_mock::generate_visual_image_png("a frame"));
+    let image = |role: &str| json!({ "type": "base64", "value": png, "role": role });
+    let mut models_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    models_dir.pop();
+    models_dir.push("models");
+    let catalog = litegen::capabilities::CapabilityRegistry::from_dir(&models_dir).expect("models/");
+    // Vidu direct, and the TokenHub rows tokenhub.rs sends to `vidu_submit`.
+    let mut rows: Vec<(String, Vec<&str>)> = catalog
+        .all()
+        .filter(|m| m.provider == "vidu" || m.id.starts_with("tokenhub/vidu-video-"))
+        .filter_map(|m| {
+            let roles = &m.ref_inputs.as_ref()?.roles;
+            let frames: Vec<&str> = ["first_frame", "last_frame"].into_iter().filter(|f| roles.contains_key(*f)).collect();
+            (roles.contains_key("reference") && !frames.is_empty()).then(|| (m.id.clone(), frames))
+        })
+        .collect();
+    rows.sort();
+    assert!(rows.iter().any(|(id, _)| id.starts_with("vidu/")) && rows.iter().any(|(id, _)| id.starts_with("tokenhub/")), "{rows:?}");
+    let mut wrong = Vec::new();
+    for (model, frames) in &rows {
+        for frame in frames {
+            let body = json!({ "model": model, "prompt": "a lighthouse at dusk", "reference_images": [image(frame), image("reference")] });
+            for at in ["/v1/videos/cost", "/v1/videos/generations"] {
+                let (s, resp) = post(&app, at, body.clone()).await;
+                let got = (s, resp["error"]["code"].as_str(), resp["error"]["param"].as_str());
+                if got != (StatusCode::BAD_REQUEST, Some("ref_role_conflict"), Some("reference_images")) {
+                    wrong.push(format!("{model} {frame} + reference at {at}: {} {resp}", s.as_u16()));
+                }
+            }
+        }
+        // Guards: each role alone is quoted.
+        for role in ["first_frame", "reference"] {
+            let (s, resp) = post(&app, "/v1/videos/cost", json!({ "model": model, "prompt": "a lighthouse at dusk", "reference_images": [image(role)] })).await;
+            if s != StatusCode::OK {
+                wrong.push(format!("{model} {role} alone at /v1/videos/cost: {} {resp}", s.as_u16()));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} answers of {} rows were otherwise:\n{}", wrong.len(), rows.len(), wrong.join("\n"));
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed or logged as a failed generation");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
 }
 
 /// One job makes one clip or one mesh, and one is billed (E3): a quote for

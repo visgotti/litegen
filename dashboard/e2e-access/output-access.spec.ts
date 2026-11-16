@@ -121,10 +121,14 @@ test('an app set to signed, then private links; the gateway default; private pre
   await adminPage.goto('/gateway');
   await adminPage.getByTestId('gateway-tab-settings').click();
   await expect(adminPage.getByTestId('gateway-effective-access')).toContainText('public links');
+  // The link life's range is the server's, as it serves it (`limits`).
+  const ttlRange = ((await (await request.get(`${BACKEND}/v1/admin/settings`, { headers: { authorization: `Bearer ${MASTER_KEY}` } })).json()) as {
+    limits: { storage_access_signed_url_ttl_seconds: { min: number; max: number } };
+  }).limits.storage_access_signed_url_ttl_seconds;
   await adminPage.getByTestId('gateway-access-mode').selectOption('signed');
-  await adminPage.getByTestId('gateway-access-ttl').fill('59');
+  await adminPage.getByTestId('gateway-access-ttl').fill(String(ttlRange.min - 1));
   await adminPage.getByTestId('gateway-settings-save').click();
-  await expect(adminPage.getByTestId('gateway-settings-error')).toContainText('between 60 and 604800');
+  await expect(adminPage.getByTestId('gateway-settings-error')).toContainText(`from ${ttlRange.min} to ${ttlRange.max}`);
   await adminPage.getByTestId('gateway-access-ttl').fill('900');
   await adminPage.getByTestId('gateway-settings-save').click();
   await expect(adminPage.getByTestId('gateway-effective-access')).toContainText('signed links for 15 min');

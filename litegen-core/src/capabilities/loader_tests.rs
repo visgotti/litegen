@@ -196,6 +196,27 @@ models:
     }
 
     #[test]
+    fn accepts_containers_one_vendor_job_returns_together() {
+        let r = model3d_yaml(
+            "      output_formats:\n        kind: string_array\n        enum_values: [glb, fbx]\n        max_items: 1\n        returned_together: [glb, fbx]\n",
+        ).unwrap();
+        assert_eq!(r.get("x/m").unwrap().output_formats_spec().unwrap().returned_together, vec!["glb", "fbx"]);
+    }
+
+    /// The keep-nothing rule promises what `returned_together` names, so it
+    /// must name containers the vendor makes, its glb among them.
+    #[test]
+    fn rejects_returned_together_the_vendor_does_not_make() {
+        for (together, named) in [("[glb, obj]", "obj"), ("[fbx]", "glb")] {
+            let loaded = model3d_yaml(&format!(
+                "      output_formats:\n        kind: string_array\n        enum_values: [glb, fbx]\n        max_items: 1\n        returned_together: {together}\n",
+            ));
+            let err = loaded.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(err.contains("returned_together") && err.contains(named), "{together}: {err:?}");
+        }
+    }
+
+    #[test]
     fn rejects_a_model_carrying_both_format_spellings() {
         let err = model3d_yaml(
             "      output_formats:\n        kind: string_array\n        enum_values: [glb]\n      output_format:\n        kind: string\n        enum_values: [glb]\n",
@@ -433,6 +454,125 @@ models:
         ] {
             let err = row(media, caps, roles).expect_err(&format!("{media} {roles:?}")).to_string();
             assert!(err.contains("needs_first_frame") && err.contains("x/m"), "{media} {roles:?}: {err}");
+        }
+    }
+
+    /// One row of `roles` (name, the rest of its spec after `max_count`), the
+    /// first role the default; `media` and `caps` as YAML.
+    fn roles_row(media: &str, caps: &str, roles: &[(&str, &str)]) -> Result<CapabilityRegistry, LoadError> {
+        let mut block = String::new();
+        for (name, more) in roles {
+            block.push_str(&format!("        {name}: {{ required: false, min_count: 0, max_count: 1{more} }}\n"));
+        }
+        yaml(&format!(
+            "models:\n  - id: x/m\n    provider: x\n    media_type: {media}\n    display_name: M\n    pricing: {{ base_cost_usd: 0.01 }}\n    capabilities: {{ {caps} }}\n    prompt: {{ required: true }}\n    ref_inputs:\n      max_total: 3\n      default_role: {}\n      provider_format: {{ form: url }}\n      roles:\n{block}",
+            roles[0].0
+        ))
+    }
+
+    #[test]
+    fn needs_first_frame_goes_on_a_video_reference_role_beside_a_start_frame() {
+        // catalog-rules: Runway's Kling O3 takes reference images on
+        // image-to-video only, so its `reference` role says it needs a first
+        // frame too; on a row with no role that starts the clip, or off a
+        // video model, it would refuse every reference.
+        let video = "text_to_video: true, image_to_video: true";
+        let needs = ", needs_first_frame: true";
+        for roles in [
+            &[("first_frame", ""), ("reference", needs)][..],
+            &[("init", ""), ("reference", needs)][..],
+            &[("first_frame", ""), ("last_frame", needs), ("reference", needs)][..],
+        ] {
+            let ok = roles_row("video", video, roles);
+            assert!(ok.is_ok(), "{roles:?}: {:?}", ok.err());
+        }
+        for (media, caps, roles) in [
+            ("video", video, &[("reference", needs)][..]),
+            ("video", video, &[("last_frame", ""), ("reference", needs)][..]),
+            ("image", "text_to_image: true, image_to_image: true", &[("init", ""), ("reference", needs)][..]),
+        ] {
+            let err = roles_row(media, caps, roles).expect_err(&format!("{media} {roles:?}")).to_string();
+            assert!(err.contains("needs_first_frame") && err.contains("x/m"), "{media} {roles:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_role_that_needs_a_first_frame_can_be_sent_with_one() {
+        // catalog-rules: a role that goes only beside a first frame, but that
+        // `not_with` keeps from every role that starts the clip (named either
+        // way round), could never be sent.
+        let video = "text_to_video: true, image_to_video: true";
+        let needs = ", needs_first_frame: true";
+        for roles in [
+            &[("first_frame", ""), ("init", ""), ("reference", ", needs_first_frame: true, not_with: [init]")][..],
+            &[("first_frame", ""), ("last_frame", ""), ("reference", ", needs_first_frame: true, not_with: [last_frame]")][..],
+        ] {
+            let ok = roles_row("video", video, roles);
+            assert!(ok.is_ok(), "{roles:?}: {:?}", ok.err());
+        }
+        for roles in [
+            &[("first_frame", ""), ("reference", ", needs_first_frame: true, not_with: [first_frame]")][..],
+            &[("first_frame", ", not_with: [reference]"), ("reference", needs)][..],
+            &[("first_frame", ""), ("last_frame", ", needs_first_frame: true, not_with: [first_frame]")][..],
+        ] {
+            let err = roles_row("video", video, roles).expect_err(&format!("{roles:?}")).to_string();
+            assert!(err.contains("needs_first_frame") && err.contains("not_with") && err.contains("x/m"), "{roles:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_role_can_name_the_roles_it_is_never_sent_with() {
+        // vidu-mix: Vidu takes first/last frames or reference images, never
+        // both in one request, so its `reference` role names the frame roles.
+        let r = yaml(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: video
+    display_name: M
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 3
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
+        reference: { required: false, min_count: 0, max_count: 1, not_with: [first_frame, last_frame] }
+"#);
+        assert!(r.is_ok(), "the rule loads: {:?}", r.as_ref().err());
+        let r = r.unwrap();
+        let roles = &r.get("x/m").unwrap().ref_inputs.as_ref().unwrap().roles;
+        let served = |role: &str| serde_json::to_value(&roles[role]).unwrap();
+        assert_eq!(served("reference")["not_with"], serde_json::json!(["first_frame", "last_frame"]));
+        assert!(served("first_frame").get("not_with").is_none(), "an empty list is left out: {}", served("first_frame"));
+    }
+
+    #[test]
+    fn not_with_names_another_optional_role_of_the_model() {
+        // vidu-mix: `not_with` names another role the row declares, and
+        // neither of the two is required: then the other could never be sent.
+        let row = |first: &str, reference: &str| {
+            yaml(&format!(
+                "models:\n  - id: x/m\n    provider: x\n    media_type: video\n    display_name: M\n    pricing: {{ base_cost_usd: 0.01 }}\n    capabilities: {{ text_to_video: true, image_to_video: true }}\n    prompt: {{ required: true }}\n    ref_inputs:\n      max_total: 2\n      default_role: first_frame\n      provider_format: {{ form: url }}\n      roles:\n        first_frame: {{ {first} }}\n        reference: {{ {reference} }}\n"
+            ))
+        };
+        let optional = "required: false, min_count: 0, max_count: 1";
+        let required = "required: true, min_count: 1, max_count: 1";
+        let ok = row(optional, &format!("{optional}, not_with: [first_frame]"));
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        for (first, reference, named) in [
+            (optional, format!("{optional}, not_with: [last_frame]"), "last_frame"),
+            (optional, format!("{optional}, not_with: [reference]"), "reference"),
+            (required, format!("{optional}, not_with: [first_frame]"), "first_frame"),
+            (optional, format!("{required}, not_with: [first_frame]"), "first_frame"),
+        ] {
+            let res = row(first, &reference);
+            assert!(res.is_err(), "first_frame {{ {first} }}, reference {{ {reference} }} loads");
+            let err = res.err().unwrap().to_string();
+            assert!(err.contains("not_with") && err.contains(&format!("'{named}'")) && err.contains("x/m"), "{reference}: {err}");
         }
     }
 
@@ -1090,6 +1230,40 @@ models:
         assert!(row("        init: { required: true, min_count: 1, max_count: 1 }").is_ok());
         let err = row("        style: { required: false, min_count: 0, max_count: 1 }").unwrap_err().to_string();
         assert!(err.contains("expand") && err.contains("init"), "{err}");
+    }
+
+    #[test]
+    fn only_an_expand_says_it_is_required() {
+        // round 3: an outpaint row grows a canvas and nothing else, so its
+        // `expand` is required (the validator refuses a request without one);
+        // no other param kind takes `required`.
+        let row = |params: &str| yaml(&format!(r#"
+models:
+  - id: x/expand
+    provider: x
+    media_type: image
+    display_name: Expand
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ image_to_image: true }}
+    prompt: {{ required: false }}
+    params:
+{params}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: {{ form: base64 }}
+      roles:
+        init: {{ required: true, min_count: 1, max_count: 1 }}
+"#));
+        let served = |r: &CapabilityRegistry| serde_json::to_value(&r.get("x/expand").unwrap().params["expand"]).unwrap();
+        let r = row("      expand: { kind: expand, max_px: 100, required: true }").expect("a required expand loads");
+        assert_eq!(served(&r)["required"], serde_json::json!(true), "{}", served(&r));
+        let r = row("      expand: { kind: expand, max_px: 100 }").expect("an optional expand loads");
+        assert!(served(&r).get("required").is_none(), "false is left out: {}", served(&r));
+        for other in ["      seed: { kind: seed, min: 0, max: 10, required: true }", "      steps: { kind: int, min: 1, max: 50, required: true }"] {
+            let err = row(other).expect_err(other).to_string();
+            assert!(err.contains("required"), "{other}: {err}");
+        }
     }
 
     // ─── Layout (3D doc §4, P2) ───────────────────────────────────────────────

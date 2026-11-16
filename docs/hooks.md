@@ -51,6 +51,7 @@ hooks:
   - path: hooks/tag_results.mjs    # .js/.mjs/.cjs → node
     runtime: bun                   # optional: python | node | bun
     command: /usr/local/bin/bun    # optional: the executable to run it with
+    routes: [generations, status]  # optional: the route groups it runs on (default: all)
 ```
 
 | key | meaning | default |
@@ -61,6 +62,7 @@ hooks:
 | `timeout_ms` | How long one call may take. | 2000 |
 | `on_error` | What a failure does, for every hook of the file: `refuse` answers 503, `allow` carries on as if the hook returned nothing. | `pre_call` and `file_access`: `refuse`; `post_call`: `allow` |
 | `env` | Extra environment variables for the hook. | none |
+| `routes` | The route groups whose requests the hook's `pre_call` and `post_call` see: any of `generations`, `cost`, `status`, `convert` and `files` ([which routes are in which](#which-routes-are-hooked)). It doesn't limit `file_access`. | every group |
 
 | extension | default runtime | also allowed |
 |---|---|---|
@@ -68,29 +70,61 @@ hooks:
 | `.js`, `.mjs`, `.cjs` | `node` | `bun` |
 | `.ts`, `.mts` | `bun` | `node` (Node 22.18+ strips types itself) |
 
-- **Order.** Hooks run in the order listed. `pre_call`s each see the
-  previous one's output, and the first refusal stops the chain. `post_call`s
-  run in the same order.
+- **Order.** Hooks run in the order listed, each on the routes its `routes`
+  names. `pre_call`s each see the previous one's output, and the first
+  refusal stops the chain. `post_call`s run in the same order.
 - **A file defines any of `pre_call`, `post_call` and `file_access`.**
 - **Startup refuses mistakes.** litegen won't start if a hook file is
   missing, fails to load, or defines none of the three, or if an entry has an
-  unknown key. If `litegen.yaml` declares hooks but doesn't load, it won't
-  fall back to its defaults (which would drop the hooks); it stops.
+  unknown key, or a `routes` list that is empty, names a group twice or names
+  one that doesn't exist. If `litegen.yaml` declares hooks but doesn't load,
+  it won't fall back to its defaults (which would drop the hooks); it stops.
+- **Errors name the entry**, by its place in `hooks:` (counting from 0) and
+  its `path`, as in
+  `hooks[1] (hooks/tag_results.mjs): routes: "cost" is named twice`.
+  An entry without a `path` is named by its place alone.
+- **Startup warns about a `routes` that does nothing.** On a file that
+  defines only `file_access`, `routes` has no effect, so litegen starts and
+  logs `hooks[0] (hooks/files.py): routes has no effect: the file defines
+  only file_access, and routes limits only pre_call and post_call`.
 - **Restarting.** Changing a hook takes a restart of litegen, as with
   LiteLLM.
 
 ## Which routes are hooked
 
-Exactly the routes an API key needs the `generate` scope for:
+Exactly the routes an API key needs the `generate` scope for, in five groups.
+A hook runs on every group unless its `routes` names fewer:
 
-| route | `pre_call` sees the body? | `post_call` sees the body? |
-|---|---|---|
-| `POST /v1/images/generations`, `POST /v1/images/segmentations` | yes (JSON, or the multipart `request` part) | yes |
-| `POST /v1/videos/generations`, `POST /v1/models3d/generations` | yes | yes |
-| `POST /v1/images/cost`, `/v1/videos/cost`, `/v1/models3d/cost` | yes | yes |
-| `GET /v1/videos/{id}`, `GET /v1/models3d/{id}` (status) | no body | yes |
-| `POST /v1/utils/models3d/convert` | no: the upload streams through unread | no: the converted file streams through; headers only |
-| `GET /v1/generations/{id}/assets/{index}` (a stored file; also runs `file_access`) | no body | no: the file streams through; headers only |
+| group | route | `pre_call` sees the body? | `post_call` sees the body? |
+|---|---|---|---|
+| `generations` | `POST /v1/images/generations`, `POST /v1/images/segmentations` | yes (JSON, or the multipart `request` part) | yes |
+| `generations` | `POST /v1/videos/generations`, `POST /v1/models3d/generations` | yes | yes |
+| `cost` | `POST /v1/images/cost`, `/v1/videos/cost`, `/v1/models3d/cost` (price checks) | yes | yes |
+| `status` | `GET /v1/videos/{id}`, `GET /v1/models3d/{id}` (job status) | no body | yes |
+| `convert` | `POST /v1/utils/models3d/convert` | no: the upload streams through unread | no: the converted file streams through; headers only |
+| `files` | `GET /v1/generations/{id}/assets/{index}` (a stored file; also runs `file_access`) | no body | no: the file streams through; headers only |
+
+**Price checks and status polls reach hooks too.** The dashboard's
+Playground asks a `cost` route for the price each time you pause in typing,
+and API callers poll the `status` routes every few seconds. A hook that costs
+money or time on each call, such as a paid moderation or logging service,
+should leave out `cost`, and `status` too unless it needs each job's finished
+answer:
+
+```yaml
+hooks:
+  - path: hooks/moderate.py
+    routes: [generations]
+```
+
+A `pre_call` that does custom auth must keep every group its callers use. A
+request it doesn't see reaches litegen without the key it would inject, and
+litegen answers 401.
+
+`routes` doesn't limit `file_access`. It runs wherever a stored file is about
+to be read, on the file route and when a request names a stored generation as
+an input, so a rule that keeps customers to their own files covers both ways
+in.
 
 The file route is hooked so custom auth reaches a stored file, as it does a
 generation ([docs/storage-access.md](storage-access.md)). Every other

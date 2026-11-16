@@ -1,0 +1,565 @@
+## blackforestlabs/flux-3-max/image-to-video — active image-to-video (spec written for fal-ai/alligator/image-to-video)
+{
+  "POST /fal-ai/alligator/image-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 5,
+        "enum": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "type": "integer"
+      },
+      "end_image_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "prompt": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "reasoning_level": {
+        "default": "high",
+        "enum": [
+          "low",
+          "high"
+        ],
+        "type": "string"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "720p",
+          "1080p",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt",
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3-max/keyframes-to-video — active image-to-video (spec written for fal-ai/alligator/keyframes-to-video)
+{
+  "POST /fal-ai/alligator/keyframes-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 5,
+        "enum": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "keyframes": {
+        "items": {
+          "properties": {
+            "frame_index": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "image_url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "image_url",
+            "frame_index"
+          ],
+          "type": "object"
+        },
+        "maxItems": 10,
+        "minItems": 1,
+        "type": "array"
+      },
+      "prompt": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "reasoning_level": {
+        "default": "high",
+        "enum": [
+          "low",
+          "high"
+        ],
+        "type": "string"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "720p",
+          "1080p",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt",
+      "keyframes"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3-max/text-to-video — active text-to-video (spec written for fal-ai/alligator/text-to-video)
+{
+  "POST /fal-ai/alligator/text-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 5,
+        "enum": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "prompt": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "reasoning_level": {
+        "default": "high",
+        "enum": [
+          "low",
+          "high"
+        ],
+        "type": "string"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "720p",
+          "1080p",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/first-last-frame-to-video/draft — active image-to-video (spec written for fal-ai/flux-3/first-last-frame-to-video/draft)
+{
+  "POST /fal-ai/flux-3/first-last-frame-to-video/draft (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 5,
+        "enum": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "type": "integer"
+      },
+      "end_image_url": {
+        "type": "string"
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 4,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "start_image_url": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "start_image_url",
+      "end_image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/image-to-video/draft — active image-to-video (spec written for fal-ai/flux-3/image-to-video/draft)
+{
+  "POST /fal-ai/flux-3/image-to-video/draft (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ]
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 4,
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "prompt",
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/keyframes-to-video/draft — active image-to-video (spec written for fal-ai/flux-3/keyframes-to-video/draft)
+{
+  "POST /fal-ai/flux-3/keyframes-to-video/draft (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 5,
+        "enum": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "keyframes": {
+        "items": {
+          "properties": {
+            "frame_index": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "image_url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "image_url",
+            "frame_index"
+          ],
+          "type": "object"
+        },
+        "maxItems": 10,
+        "minItems": 1,
+        "type": "array"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 4,
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "prompt",
+      "keyframes"
+    ],
+    "type": "object"
+  }
+}
+
+## blackforestlabs/flux-3/text-to-video/draft — active text-to-video (spec written for fal-ai/flux-3/text-to-video/draft)
+{
+  "POST /fal-ai/flux-3/text-to-video/draft (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21:9",
+          "2:1",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ]
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 4,
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}

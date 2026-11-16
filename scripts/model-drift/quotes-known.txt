@@ -1,0 +1,110 @@
+# Quoted vendor strings in models/*.yaml that quotes.mjs cannot verify by text match.
+# One per line: <model id> | <normalized fragment>  # why (two spaces before the #).
+# The quote check skips these and reports a line that no longer applies as stale.
+# Baselined 2026-11-16 from the first run (880 quotes on 301 pages; these are the
+# misses left after normalization). A new miss in a later run is a vendor change.
+bedrock/(header) | filter reason: input image  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bedrock/(header) | filter reason: output image  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bedrock/(header) | filter reason: prompt  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bedrock/(header) | inference error  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bedrock/(header) | us-west-2 (oregon)  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bedrock/luma.ray-v2:0 | 540p, 24 fps $0.75  # AWS loads the pricing tables by script
+bedrock/luma.ray-v2:0 | luma ray2 720p, 24 fps $1.50  # AWS loads the pricing tables by script
+bfl/flux-2-klein-9b | $0.015 + $0.002/mp  # BFL renders its prices by script: the HTML and the .md show the cards without numbers
+bfl/flux-2-klein-9b | from $0.015  # BFL renders its prices by script: the HTML and the .md show the cards without numbers
+bfl/flux-2-max | 0-5 flux.2 endpoints  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bfl/flux-2-max | from $0.07  # BFL renders its prices by script: the HTML and the .md show the cards without numbers
+bfl/flux-2-pro | from $0.03  # BFL renders its prices by script: the HTML and the .md show the cards without numbers
+bfl/flux-3-image-klein | omitted: 1k for text-to-image  # BFL renders its prices by script: the HTML and the .md show the cards without numbers
+bfl/flux-3-image-klein | the same request  # BFL renders its prices by script: the HTML and the .md show the cards without numbers
+bytedance/dola-seedream-5-0-pro-260628 | aspect ratio range: [1/16, 16]  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/dola-seedream-5-0-pro-260628 | dola-seedream-5-0-pro-260628 first image: free · from the second image: $0.003 up to 2.61 million pixels (1.5k or lower): $0.045 · more than 2.61 million pixels (higher than 1.5k): $0.09  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/dola-seedream-5-0-pro-260628 | seedream 5.0 pro and seedream 5.0 flash support up to 10 reference images  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/doubao-seedance-1-0-pro-250528 | dreamina seedance 1.0 pro: default 5; supports [2, 12].  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/seedance-1-0-pro-fast-251015 | dreamina seedance 1.0 pro fast: default 5; supports [2, 12].  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/seedance-1-0-pro-fast-251015 | dreamina seedance 1.0 pro fast: supports image-to-video (first frame) and text-to-video  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/seedream-4-0-250828 | aspect ratio range: [1/16, 16]  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/seedream-4-0-250828 | total pixels range: [1280x720=921,600, 4096x4096=16,777,216]  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/seedream-4-5-251128 | seedream-4-5-251128 free 0.04  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/seedream-5-0-lite-260128 | aspect ratio range: [1/16, 16]  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+bytedance/seedream-5-0-lite-260128 | seedream-5-0-lite-260128 free 0.035  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+fal/flux-3-image | like how litellm can still use openrouter  # the user's words (2026-11-04), not a vendor quote
+fal/flux-3-image | maxitems 10  # an author's rendering of schema fields, not verbatim spec text
+fal/flux-3-image-klein-base | 50; negative_prompt  # an author's rendering of schema fields, not verbatim spec text
+fal/flux-3-image-klein-base | default: []  # an author's rendering of schema fields, not verbatim spec text
+fal/flux-3-max-video | a post-trained variant of flux 3 video, tuned for stronger prompt adherence and better visual quality  # an author's rendering of schema fields, not verbatim spec text
+fal/flux-3-video-draft | draft video (720p)  # an author's rendering of schema fields, not verbatim spec text
+fal/recraft-v4-style | a new one will be generated from the provided images  # an author's rendering of schema fields, not verbatim spec text
+fal/recraft-vectorize | keeps detail  # an author's rendering of schema fields, not verbatim spec text
+fal/sam-3 | point_prompts [{x, y, label 0 1, object_id, frame_index}], box_prompts [{x_min, y_min, x_max, y_max, object_id, frame_index}]  # an author's rendering of schema fields, not verbatim spec text
+fal/tripo-h3.1-multiview | is not documented (unverified): litegen sends the subject's left side, yaw 90. @see https://fal.ai/models/tripo3d/h3.1/multiview-to-3d/llms.txt (2026-10-30)  # an author's rendering of schema fields, not verbatim spec text
+google/gemini-2.5-flash-image | works best with up to 3 images as input  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+google/gemini-3.1-flash-image | adds the smaller 512px (0.5k) resolution  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+google/gemini-3.1-flash-image | in gemini developer api mode  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+google/gemini-3.1-flash-lite-image | aspect ratios and image size  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+google/gemini-3.1-flash-lite-image | up to 14 objects  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+google/gemini-nano-banana-2.1 | (not supported on gemini nano banana 2.1)  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+ideogram/ideogram-4-5 | maxlength: 10000  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+ideogram/ideogram-4-5 | minlength: 1  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+ideogram/ideogram-4-5-precise-edit | post https://api.ideogram.ai/v2/image/precise-edit/ideogram-4-5 / content-type: multipart/form-data  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+ideogram/nano-banana-2 | ## response  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+ideogram/nano-banana-2 | like how litellm can still use openrouter  # the user's words (2026-11-04), not a vendor quote
+kling/kling-v2-1 | resolution: 1k (default) 2k  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+kling/kling-v3 | resolution: 1k (default) 2k  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+kling/video-kling-v3-turbo | kling 3.0 turbo text, image 3~15s 720p, 1080p  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+kling/video-kling-v3-turbo | with native audio  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+kling/video-kling-v4 | settings.duration: target duration of the generated video, in seconds  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+kling/video-kling-v4 | settings.resolution: the resolution of the generated video  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+leonardo/motion2 | 2147483637}  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+leonardo/motion2 | maxlength  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+leonardo/motion2 | negative_prompt  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+luma/photon-1 | sent as format (jpeg → jpg). pixelgenie l9's  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+luma/photon-flash-1 | sent as format (jpeg → jpg). pixelgenie l9's  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+meshy/(header) | the meshy api uses prepaid credits. before you send api requests, buy api credits in your subscription settings  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+pixverse/v3.5 | v3.5 1080p cannot use 8  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+pixverse/v5-multi-transition | multi-transition - fixed duration tiers for motion_mode=normal  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+pixverse/v6-max | 9 credits/s usd 0.040/s 11 credits/s 22 credits/s  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+pixverse/v6-max | c1, v6, v5.6, v5  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+pixverse/v6-max | enable multi-clip generation with v5.5 or v6  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+pixverse/v6-max | on 9 11 15 28  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+pixverse/v6-max | v6 max (v6-max) only support text-to-video/image-to-video now  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+recraft/recraftv4_1_flash | aspect ratio (1:1, 16:9, 3:4  # Recraft replaced V4.1 Flash with Flash V2; the row is deprecated (2026-11-16) and its page redirects
+recraft/recraftv4_1_flash | not supported by flash: style, style_id, style_match, style references, negative_prompt, and text_layout  # Recraft replaced V4.1 Flash with Flash V2; the row is deprecated (2026-11-16) and its page redirects
+recraft/recraftv4_1_flash | or exact size  # Recraft replaced V4.1 Flash with Flash V2; the row is deprecated (2026-11-16) and its page redirects
+recraft/recraftv4_1_flash | v4.1 flash $0.007  # Recraft replaced V4.1 Flash with Flash V2; the row is deprecated (2026-11-16) and its page redirects
+recraft/recraftv4_1_flash_v2 | 1k raster, webp or png  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+replicate/flux-1.1-pro | $0.04 per output image  # composed from Replicate's pricing JSON (price and title fields) or its schema, not one run of page text
+replicate/flux-3-image | $0.048 per output image [image_output_count] when target resolution equals 1k  # composed from Replicate's pricing JSON (price and title fields) or its schema, not one run of page text
+replicate/sd3 | like how litellm can still use openrouter  # the user's words (2026-11-04), not a vendor quote
+replicate/sdxl | costs approximately $0.0043 to run on replicate, or 232 runs per $1, but this varies depending on your inputs  # composed from Replicate's pricing JSON (price and title fields) or its schema, not one run of page text
+replicate/sdxl | prompt strength when using img2img. 1.0 corresponds to full destruction of information in image  # composed from Replicate's pricing JSON (price and title fields) or its schema, not one run of page text
+runway/gen4-turbo | prompttext is optional  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+runway/gpt_image_2_6_flare | reasoning effort does not change the price  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+runway/gpt_image_2_6_sunburst | reasoning effort does not change the price  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+stability/inpaint | inpaint - use a mask (or alpha channel) to replace anything in an image - 5  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+stability/sd3.5-medium | sd3.5-medium requires 3.5 credits per generation  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+stability/sdxl | guides the image model towards a particular style  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/(header) | 鉴权方式为请求头 authorization: bearer your_api_key  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/hy-image-v3.5-preview | hy-image-3.0（2026-11-12 下线）  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/hy-video-v1.5 | hy-video-1.5  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/kling-image-v3 | submitted（已提交）、processing（处理中）、 succeed（成功）、failed（失败）  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/kling-video-v2.5-turbo | 格式要求： data:image/<图片格式>;base64  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/minimax-video-v2.3 | prompt 是 string 文本提示词， ≤ 2000 字符。支持 [指令] 运镜语法  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/seedream-image-v5.0-pro | the shape then follows the prompt) or  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/vidu-image-q2 | 格式要求： data:image/<图片格式>;base64,<base64 编码>  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tokenhub/vidu-video-q4-preview | 格式要求： data:image/<图片格式>;base64  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tripo/animate | animation retarget / 10 / animation  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tripo/animate | the returned task_id of the rigged model.  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tripo/rig | auto rig / 25  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+tripo/rig | rig check / free  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/vidu2.0 | and resolution rows refuse. nothing there is said of vidu2.0 alone, so the three ratios still stand on the legacy page's  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/vidu2.0 | beside a 5 s, 1080p clip that the same page's duration  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/vidu2.0 | duration 4s, 8s  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq2-pro | the direct audio/video output feature for image-to-video/ reference-to-video consumes an additional 15 credits on top of the corresponding task  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq3 | aspect ratio 1:1 / 9:16 / 16:9 / 3:4 / 4:3; audio  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq3-pro-fast | image-to-video viduq3-pro-fast 1080p 15, 720p 12 credits/second  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq3-turbo | available range: 1-16  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq3-turbo | not available in q3 models  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq3-turbo | the q3 series model is not effective  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq4-preview | (default 5; the model map's  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited
+vidu/viduq4-preview | next-gen flagship for expressive audio & video  # not matched verbatim on 2026-11-16 (table layout, script-rendered text or a paraphrase); not checked one by one: re-quote it when the row is next edited

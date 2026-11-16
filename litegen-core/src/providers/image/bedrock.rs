@@ -144,6 +144,16 @@ impl ImageProvider for BedrockImageProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
+    /// What Bedrock's Stability models can't take, refused before anything
+    /// is quoted, reserved or sent; `generate` asks it first: Stable Image
+    /// Core makes images from text only.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, _extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if stability_model(Self::resolve_model(&model.id)) == Some(Stability::Core) && roles.contains(&"init") {
+            return Err(ProviderError::InvalidRequest("bedrock: Stable Image Core does text-to-image only".into()));
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -151,6 +161,9 @@ impl ImageProvider for BedrockImageProvider {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let native = Self::resolve_model(&model.id);
         let kind = stability_model(native).ok_or_else(|| ProviderError::ModelNotSupported {
             model: model.id.clone(),
@@ -182,9 +195,6 @@ impl ImageProvider for BedrockImageProvider {
             _ => None,
         });
         match (kind, image) {
-            (Stability::Core, Some(_)) => {
-                return Err(ProviderError::InvalidRequest("bedrock: Stable Image Core does text-to-image only".into()));
-            }
             // "image-to-image requires the prompt, image, and strength parameters".
             (Stability::Sd35Large, Some(image)) => {
                 body["mode"] = json!("image-to-image");
@@ -198,8 +208,9 @@ impl ImageProvider for BedrockImageProvider {
                     body["strength"] = json!(strength);
                 }
             }
-            // "aspect_ratio … Valid for text-to-image requests only."
-            (_, None) => {
+            // "aspect_ratio … Valid for text-to-image requests only." Core
+            // makes images from text only (the preflight refused an image).
+            (Stability::Core, _) | (_, None) => {
                 if let Some(ratio) = extras.aspect_ratio.as_deref() {
                     body["aspect_ratio"] = json!(ratio);
                 }

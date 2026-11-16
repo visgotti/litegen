@@ -232,12 +232,26 @@ const FRAME_ROLES = ['first_frame', 'last_frame', 'init'];
 const FRAMES_SET_SHAPES = ['always', 'without_references'];
 
 /**
+ * Whether one request may carry images of roles `a` and `b`: neither names the
+ * other in its `not_with`, which validator.rs `check_refs` reads on every
+ * image (400 `ref_role_conflict`, before anything is quoted).
+ */
+function sentTogether(roles, a, b) {
+  const names = (role, other) => Array.isArray(roles?.[role]?.not_with) && roles[role].not_with.includes(other);
+  return !names(a, b) && !names(b, a);
+}
+
+/**
  * When a frame image sets a video's shape (the aspect ratio's
  * `frames_set_shape`), as validator.rs `check_frame_shape` applies it: an
  * aspect_ratio sent with an image in one of the row's frame roles is refused
  * (strict) or dropped and named (lax), unless the row is `without_references`
  * and a `reference` image goes with it. A role-less image has taken the row's
  * `default_role` by then, so it counts when that role is a frame role.
+ * `check_refs` runs first, so a reference image whose role is never sent with
+ * a frame (`not_with`, Vidu's) lifts nothing: that mix is refused. One that
+ * goes with some frame roles but not others stops the derivation, since the
+ * page says "unless" for all of them or none.
  * Undefined when the row has no such rule or takes no frame image.
  */
 function aspectRatioFramesOf(m) {
@@ -246,10 +260,16 @@ function aspectRatioFramesOf(m) {
   if (!FRAMES_SET_SHAPES.includes(shape)) {
     throw new Error(`${m.id}: aspect_ratio.frames_set_shape ${JSON.stringify(shape)} is not one the page can word (${FRAMES_SET_SHAPES.join(', ')})`);
   }
-  const taken = Object.keys(m.ref_inputs?.roles ?? {});
+  const all = m.ref_inputs?.roles ?? {};
+  const taken = Object.keys(all);
   const roles = FRAME_ROLES.filter((r) => taken.includes(r));
   if (roles.length === 0) return undefined;
-  const frames = { roles, unlessReference: shape === 'without_references' && taken.includes('reference') };
+  const liftable = shape === 'without_references' && taken.includes('reference') ? roles.filter((r) => sentTogether(all, 'reference', r)) : [];
+  if (liftable.length > 0 && liftable.length < roles.length) {
+    const apart = roles.filter((r) => !liftable.includes(r));
+    throw new Error(`${m.id}: a reference image may go with ${liftable.join(', ')} but not with ${apart.join(', ')} (not_with), so the page cannot word when it lifts the frame rule`);
+  }
+  const frames = { roles, unlessReference: liftable.length > 0 };
   const defaultRole = m.ref_inputs?.default_role;
   if (typeof defaultRole === 'string' && roles.includes(defaultRole)) frames.defaultRole = defaultRole;
   return frames;
@@ -267,6 +287,8 @@ function paramContractOf(p) {
   if (p?.kind === 'string') copySet(out, p, [['max_length', 'maxLength']]);
   // For a string_array (output_formats) max_items counts vendor jobs, not members (schema.rs), so it is not "up to N".
   if (COUNTED_LISTS.includes(p?.kind)) copySet(out, p, [['max_items', 'maxItems']]);
+  // output_formats: the containers one vendor job returns together; a generation that keeps nothing gets only what its job returns (schema.rs keep_nothing_refusal).
+  if (p?.kind === 'string_array' && Array.isArray(p.returned_together) && p.returned_together.length > 0) out.returnedTogether = p.returned_together.map(String);
   switch (p?.kind) {
     case 'source_model':
       copySet(out, p, [['formats', 'formats'], ['max_bytes', 'maxBytes'], ['max_faces', 'maxFaces']]);
@@ -286,6 +308,8 @@ function paramContractOf(p) {
       break;
     case 'expand':
       copySet(out, p, [['max_px', 'maxPx']]);
+      // A row that grows a canvas and nothing else (validator.rs check_expand: 400 param_required without one).
+      if (p.required === true) out.required = true;
       break;
     case 'layout':
       if (p.single_word_text === true) out.singleWordText = true;
@@ -352,6 +376,11 @@ export function deriveModel(m) {
         required: r?.required === true,
         min: r?.min_count ?? 0,
         max: r?.max_count ?? 0,
+        // The roles it is never sent with (validator.rs check_refs: 400 ref_role_conflict).
+        ...(Array.isArray(r?.not_with) && r.not_with.length > 0 ? { notWith: r.not_with.map(String) } : {}),
+        // An image its vendor takes only after a first frame (a last frame; Runway's Kling O3 references),
+        // sent without one (validator.rs check_video_request: 400 ref_role_required).
+        ...(r?.needs_first_frame === true ? { needsFirstFrame: true } : {}),
       }))
     : [];
 
@@ -469,8 +498,15 @@ const INTERFACE = `export interface ModelParam {
   maxMasks?: number;
   /** An expand: the most pixels added to one side. */
   maxPx?: number;
+  /** An expand the row requires (\`required\`): it grows a canvas and nothing else, so a request without one is refused. */
+  required?: boolean;
   /** A layout: each text box holds one word. */
   singleWordText?: boolean;
+  /**
+   * \`output_formats\`: the containers one vendor job returns together. A
+   * generation that keeps nothing (\`keep_outputs: false\`) gets only what its job returns.
+   */
+  returnedTogether?: string[];
 }
 
 /** A freeform size's bounds, in pixels. */
@@ -507,7 +543,7 @@ export type ModalityKey =
 export interface AspectRatioFrames {
   /** The row's frame roles (first_frame, last_frame, init). */
   roles: string[];
-  /** A \`reference\` image beside the frame lifts the rule. */
+  /** A \`reference\` image beside the frame lifts the rule (never on a row that takes no reference beside a frame: \`not_with\`). */
   unlessReference: boolean;
   /** The role an image sent without one takes, when it is a frame role. */
   defaultRole?: string;
@@ -525,6 +561,10 @@ export interface ModelRefRole {
   required: boolean;
   min: number;
   max: number;
+  /** The roles an image of this one is never sent with in one request (\`not_with\`): the vendor takes one or the other. */
+  notWith?: string[];
+  /** Images of this role go only with a first_frame (or init) image (\`needs_first_frame\`): a last frame the vendor ends a clip on only after a first frame, or reference images it takes only in a clip that starts from one. */
+  needsFirstFrame?: boolean;
 }
 
 /**

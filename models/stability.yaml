@@ -218,7 +218,11 @@ models:
       # 3D doc §4: "A mask-only vendor receives the box drawn as a mask".
       region: { kind: region, input: mask, label: Region, description: "The rectangle to edit, sent drawn as the mask." }
       negative_prompt: { kind: string, max_length: 2000 }
-      seed: { kind: seed, min: 0, max: 4294967294 }
+      # The v1 `Seed` schema on text-to-image, image-to-image and masking alike:
+      # "Random noise seed (omit this option or use `0` for a random seed)",
+      # minimum 0, maximum 4294967295 (the v2 routes stop at 4294967294).
+      # @see https://docs.stability.ai/api-reference/sdxl-10/text-to-image.md (2026-11-16)
+      seed: { kind: seed, min: 0, max: 4294967295 }
       steps: { kind: int, min: 10, max: 50, default: 30 }
       # `style_preset`, the StylePreset enum (the same 17 values; the v1 schema
       # gives it no description), on v1 text-to-image, image-to-image and
@@ -373,6 +377,9 @@ models:
       expand:
         kind: expand
         max_px: 2000
+        # Required: Stability refuses an outpaint with no side above 0, and stability.rs refuses it first
+        # ("outpaint needs `expand` with at least one side above 0").
+        required: true
         label: Expand
         description: Pixels to add to each side (Stability's left, up, right, down).
       seed: { kind: seed, min: 0, max: 4294967294 }

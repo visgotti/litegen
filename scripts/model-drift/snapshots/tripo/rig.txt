@@ -1,0 +1,4 @@
+model: v1.0-20240301, v2.5-20260210, v3.0-20260909
+rig_type: biped, quadruped, hexapod, octopod, avian, serpentine, aquatic, others
+spec: tripo, mixamo, actorcore, unity, unreal, vrm
+out_format: glb, fbx

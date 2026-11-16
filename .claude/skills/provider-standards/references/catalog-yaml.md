@@ -71,7 +71,11 @@ following:
 - `prompt.required_for_text_to_video: true` on a row that is not a video
   model with `text_to_video`;
 - `needs_first_frame: true` on a role other than a video model's
-  `last_frame`, or on a row with no `first_frame` (or `init`) role;
+  `last_frame` or `reference`, on a row with no `first_frame` (or `init`)
+  role, or on a role that `not_with` keeps from every such role (named either
+  way round), which could then never be sent;
+- a `not_with` that names an undeclared role or the role itself, or pairs
+  two roles one of which is `required`;
 - a freeform size with min > max;
 - a multipart `field_map` or `default_role` naming an undeclared role, and
   a `provider_format` with a key its `form` doesn't take
@@ -88,6 +92,8 @@ following:
 - a `pattern` that isn't a regular expression;
 - a `litegen_params` key (the server computes it, like
   `output_formats.derivable_values`);
+- an `output_formats.returned_together` member outside the row's
+  `enum_values`, or a `returned_together` without `glb`;
 - 3D `output_formats` problems, covered in the model3d-provider skill.
 
 The registry (`capabilities/registry.rs`) also rejects duplicate ids across
@@ -146,7 +152,7 @@ The canonical kind for each param (`canonical_param_kinds` in
 | `duration_seconds` | `float` or `int` | Most vendors take fractional seconds; Runway takes whole ones. |
 | `size` | `size` | `mode: enum` with `values: [[w,h],…]` (these feed `supported_sizes`), or `mode: freeform` with `min_width`/`max_width`/`min_height`/`max_height`/`multiple_of` |
 | `aspect_ratio` | `aspect_ratio` | `allowed` holds the vendor's exact strings, plus an optional `default`. A video row whose frame image sets the clip's shape adds `frames_set_shape: always \| without_references` (see "One list serves every mode") |
-| `output_formats` | `string_array` | 3D only; see model3d-provider |
+| `output_formats` | `string_array` | 3D only; see model3d-provider. Set `returned_together` when one vendor job returns several containers (Meshy's rig: `[glb, fbx]`); left out, a job returns the one container it is asked for. A generation that keeps nothing (`keep_outputs: false`) asking for more than its job returns is refused with `format_needs_keeping` |
 | `output_format`, `symmetry`, `topology` | `string` | 3D; `output_format` is the superseded scalar |
 | `texture`, `pbr`, `rig` | `bool` | 3D |
 | `target_polycount` | `int` | 3D |
@@ -193,6 +199,14 @@ How validation treats a param:
   runs without a prompt: Runway's Kling 3.0 and O3 branches don't require
   `promptText`, and their shots can carry the prompts in
   `providerSettings.multiPrompt`.
+- `expand` takes `required: true` on a row that grows a canvas and nothing
+  else (an outpaint endpoint: `stability/outpaint`,
+  `fal/flux-2-pro-outpaint`): a request without `expand` is then refused
+  with `param_required` (param `expand`), in either mode, before anything is
+  quoted or reserved. No other param kind takes `required`; the loader
+  refuses the key there. `every_row_whose_adapter_needs_an_expand_requires_one`
+  in `catalog_conformance.rs` fails on a row whose adapter refuses a request
+  without one but which doesn't say so.
 - A model whose endpoint has no prompt field at all (TRELLIS, for example)
   declares `prompt: { required: false, max_length: 0 }`. Strict callers then
   get `param_unsupported` and lax callers have the prompt dropped, so it
@@ -229,6 +243,8 @@ ref_inputs:
     <role>: { required: <bool>, min_count: <n>, max_count: <n> }
     # a video row whose vendor ends a clip on a last frame only after a first:
     # last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
+    # a video row whose vendor takes reference images only on image-to-video:
+    # reference: { required: false, min_count: 0, max_count: 7, needs_first_frame: true }
 ```
 
 **Role names carry meaning, so reuse the existing vocabulary:**
@@ -259,8 +275,60 @@ help. Keep the adapter's refusal as a backstop. Today that is every row of
 BytePlus, fal's FLUX 3, Ideogram, Kling, PixVerse, Runway's resold models,
 TokenHub and Vidu. Leave it off where the vendor takes a last frame alone:
 Luma's `frame1`, Ray 2 on Bedrock, MiniMax's first-last-frame endpoint
-(`required: model, last_frame_image`). `tests/pricing_api.rs` lists each
-vendor's answer with its source and fails on a vendor it doesn't know.
+(`required: model, last_frame_image`) and its V2 API, whose create page lists
+"Image-to-video, last frame: `text` + 1 `image_url` (`role=last_frame`)."
+(its role enum's "must be paired with first_frame" disagrees; the H3 rows
+quote all three sources). `tests/pricing_api.rs` lists each vendor's answer
+with its source and fails on a vendor it doesn't know.
+
+**A reference that needs a start frame.** When the vendor takes reference
+images only on image-to-video, so the adapter refuses a `reference` sent
+without a `first_frame`, set `needs_first_frame: true` on the row's
+`reference` role. A request with a `reference` and no `first_frame` (or
+`init`) image is then refused with `ref_role_required` before anything is
+quoted or reserved, ahead of the prompt check. Keep the adapter's refusal as
+a backstop. Today that is Runway's Kling O3 rows (`klingO3_standard`, `_pro`,
+`_4k`: their text-to-video branch takes no `references`, image-to-video up to
+7); runway.rs's `the_catalog_says_which_references_need_a_start_frame_as_runway_does`
+pins every resold row to its `references_t2v` and `references_i2v`. Every
+other row with a `reference` role sends references without a frame. Don't
+also name the start roles in the reference role's `not_with`: the loader
+refuses a role that can't be sent with any of them.
+
+**TokenHub rows promise only what tokenhub.rs sends.** In
+`catalog_conformance.rs`, `every_request_a_tokenhub_video_row_takes_reaches_tokenhub`
+sends every request a `tokenhub/*` video row lets through validation (each
+combination of its roles, each value of each param and allowlisted extra,
+each pair of param values, no prompt and the longest prompt) to a mock
+TokenHub and fails when the adapter refuses one, drops an image or a field,
+or sends two values of a field as the same request. A new row or role,
+param or value is swept with no edit to the test; make the row say what the
+adapter does. A TokenHub rule across two fields that the catalog can't say
+(Kling v2.6's audio only at 1080p, Vidu's 2000-character reference prompt)
+goes in tokenhub.rs's `preflight`, which the quote runs, and on
+`TOKENHUB_CROSS_FIELD_RULES` with TokenHub's words; the sweep fails when
+the submit refuses anything the quote didn't.
+
+**Roles a vendor never takes together.** List them in the role's `not_with`
+(Vidu's `reference`: `[first_frame, last_frame]`). A mix is refused with
+`ref_role_conflict` in either mode, before anything is quoted or reserved;
+keep the adapter's refusal as a backstop. Today that is the `reference` role
+of every video row whose vendor takes first/last frames or reference images,
+never both: Vidu's rows, direct and on TokenHub; Ideogram's MiniMax H3 and
+Seedance rows; TokenHub's WAND-Vega, MiniMax H3 and PixVerse; Runway's
+resold models whose image-to-video branch takes no `references`; and
+MiniMax's H3 family. Each names every frame role its row declares, so
+`[first_frame]` where the row takes no last frame (viduq4-preview, TokenHub's
+vidu-video-q4-preview, Runway's grok_imagine_1_5). In
+`catalog_conformance.rs`, `every_vidu_row_keeps_its_frames_and_references_apart`
+and `every_other_row_whose_vendor_takes_frames_or_references_keeps_them_apart`
+pin those rows. The second fails on a new video row with a `reference` role
+beside a frame role until you list it as apart or together (Runway's Kling 4,
+Kling 4 Flash and Kling O3 send references with the frame). On a
+`without_references` row, name all of the row's frame roles or none of them:
+the landing page (`sync-models`) can say that a reference image lifts the
+frame rule, or that it never does, and stops on a row where it lifts it for
+some frame roles only.
 
 **How refs are materialized** (`proxy/materializer.rs`). Callers send each ref
 as a `url`, `base64` or a multipart `blob`, and the materializer converts it to
@@ -463,13 +531,25 @@ Some vendor rules have no YAML representation today. List each one in your
 report under "Can't express", along with what you advertised instead:
 
 - **Discrete numeric sets**, such as "5 or 10 seconds only" or "4, 6 or
-  8 s". The schema only knows min and max. Advertise the range, and have the
-  adapter snap deterministically to an allowed value (vidu's
-  `resolve_duration`) or reject with `InvalidRequest` before submitting
-  (400 `request_unsupported`, nothing billed). Test that behavior.
+  8 s", can be said now: list them as the int or float param's `values`
+  beside its range, and the validator refuses the rest (`param_enum_mismatch`).
+  Never snap to a neighbour (L13). A set that depends on another field or on
+  the endpoint (vidu2.0: 8 s at 720p only) is a coupled param (below).
 - **Per-mode value sets.** Intersect them, or split the model into two rows
   (see "One list serves every mode" above).
-- **Coupled params**, such as "1080p only at 5 s" or "negative_prompt only in
-  text-to-image". Enforce them in the adapter with `InvalidRequest` before
-  any vendor call, or drop the field in the mode that forbids it, and
-  document it in a YAML comment.
+- **Coupled params**, such as "1080p only at 5 s", "negative_prompt only in
+  text-to-image" or a rule of the endpoint the images choose. Refuse them in
+  the adapter's `VideoProvider::preflight` or `ImageProvider::preflight`
+  (from the request's params, prompt, image roles and keyframe times alone;
+  for an image, a region drawn as a mask counts as a mask) and have
+  `generate` ask it first: the quote and the generation run it before
+  anything is quoted or reserved (400 `request_unsupported` in the adapter's
+  words), so nothing is reserved for a request the vendor can't make. Where
+  the endpoint hangs on the images, one function picks it and refuses, and
+  the preflight and the submit both call it (video: vidu.rs `endpoint`,
+  fal.rs `route`, ideogram.rs `mode`; image: fal.rs `image_endpoint`). Every
+  video and image adapter does this now, and the sweeps in
+  catalog_conformance.rs check it: list a new rule in
+  `TOKENHUB_CROSS_FIELD_RULES` (TokenHub video), `DIRECT_VIDEO_RULES` or
+  `IMAGE_RULES`. Only a rule that needs the image's bytes stays at submit.
+  Document each in a YAML comment.

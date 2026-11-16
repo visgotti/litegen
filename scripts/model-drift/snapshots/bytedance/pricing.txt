@@ -11,7 +11,9 @@
 | dreamina-seedance-2-0-mini-260615 | $2.1 | Not supported | Not supported | Not supported |
 
 # Image generation models · Pricing
-| Model ID | Input image | Output image |
+| Model ID | Input image | Output image > P is the total pixel count of a single output image. |
+| dola-seedream-5-0-pro-260628 | * First image: Free * From the second image: $0.003 > Pricing varies by image generation scenario. | * Single-image generation: * P ≤ 2.61 million (1.5K or lower): $0.045 * P > 2.61 million (higher than 1.5K): $0.09 * Layer decomposition: * P ≤ 2.61 million (1.5K or lower): $0.0225 * P > 2.61 million (higher than 1.5K): $0.045 |
+| dola-seedream-5-0-flash-260915 | Free | $0.018 |
 | seedream-5-0-lite-260128 | Free | $0.035 |
 | seedream-4-5-251128 | Free | $0.04 |
 | seedream-4-0-250828 | Free | $0.03 |

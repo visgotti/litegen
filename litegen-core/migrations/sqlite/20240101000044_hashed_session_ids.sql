@@ -1,0 +1,18 @@
+-- 044: dashboard sessions are kept by their token's SHA-256 hash
+-- (`auth::tokens::token_hash`), so a copy of the database holds no session
+-- that works. The litegen_session cookie carries the token, sessions.id holds
+-- its hash, and a stored id sent as the cookie finds nothing.
+--
+-- The sessions stored before hold the plain token, and SQLite has no SHA-256
+-- to hash them in place (Postgres does the same, so both stores agree). They
+-- are deleted: everyone signs in again once after the upgrade.
+DELETE FROM sessions;
+--
+-- While old and new replicas run side by side (a rolling upgrade), or after a
+-- rollback past 044, an old binary looks a session up as it is stored
+-- (`WHERE id = ?`). The cookie a new replica handed out doesn't work there,
+-- but the stored hash does: anyone with a copy of the database could use a
+-- new session on an old binary. A session an old replica makes is kept by its
+-- plain token and doesn't work on a new one. So finish the rollout quickly,
+-- and before rolling back past 044 delete every session (docs/RUNBOOK.md,
+-- "Sessions across the 044 upgrade").

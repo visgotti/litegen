@@ -839,6 +839,7 @@ mod tests {
                 updated_at: now,
                 last_login_at: None,
                 is_active: true,
+                sign_in_epoch: 0,
             };
             db.create_user(&user).await.unwrap();
             db.add_org_member(crate::api::middleware::DEFAULT_ORG_ID, &user.id, Role::Owner).await.unwrap();

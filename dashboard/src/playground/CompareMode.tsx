@@ -7,6 +7,7 @@ import ParamField from './ParamField';
 import RefImagesField from './RefImagesField';
 import ExtraParamsField from './ExtraParamsField';
 import ResultGrid from './ResultGrid';
+import { formatCost } from '../components/model-detail';
 import { useUnifiedParams } from './useUnifiedParams';
 import { useFanOut } from './useFanOut';
 import { useServerChecks } from './useServerCheck';
@@ -195,7 +196,7 @@ export default function CompareMode() {
           </div>
 
           {estCost != null && (
-            <div className="pg-cost" data-testid="pg-cost">Est. cost: ${estCost.toFixed(3)}</div>
+            <div className="pg-cost" data-testid="pg-cost">Est. cost: {formatCost(estCost)}</div>
           )}
 
           {blocked.length > 0 && (

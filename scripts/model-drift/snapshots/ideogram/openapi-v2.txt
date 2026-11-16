@@ -1,4 +1,320 @@
 {
+  "POST /v2/image/generate/ideogram-4-5 (multipart/form-data)": {
+    "properties": {
+      "async": {
+        "default": false,
+        "type": "boolean"
+      },
+      "background": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "transparent",
+          "opaque"
+        ],
+        "type": "string"
+      },
+      "enable_copyright_detection": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "magic_prompt": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "on",
+          "off"
+        ],
+        "type": "string"
+      },
+      "mask": {
+        "format": "binary",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "quality": {
+        "enum": [
+          "very_low",
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "maximum": 2147483647,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "size": {
+        "default": "auto",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/image/generate/nano-banana-2 (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "1:1",
+          "3:2",
+          "2:3",
+          "4:3",
+          "3:4",
+          "5:4",
+          "4:5",
+          "16:9",
+          "9:16",
+          "21:9",
+          "4:1",
+          "1:4",
+          "8:1",
+          "1:8"
+        ],
+        "type": "string"
+      },
+      "async": {
+        "default": false,
+        "type": "boolean"
+      },
+      "images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution_tier": {
+        "default": "1K",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/image/generate/nano-banana-pro (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "1:1",
+          "3:2",
+          "2:3",
+          "4:3",
+          "3:4",
+          "5:4",
+          "4:5",
+          "16:9",
+          "9:16",
+          "21:9"
+        ],
+        "type": "string"
+      },
+      "async": {
+        "default": false,
+        "type": "boolean"
+      },
+      "images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution_tier": {
+        "default": "1K",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/image/generate/p-image-ideogram (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "1x1",
+        "enum": [
+          "1x3",
+          "3x1",
+          "1x2",
+          "2x1",
+          "9x16",
+          "16x9",
+          "10x16",
+          "16x10",
+          "2x3",
+          "3x2",
+          "3x4",
+          "4x3",
+          "4x5",
+          "5x4",
+          "1x1"
+        ],
+        "type": "string"
+      },
+      "async": {
+        "default": false,
+        "type": "boolean"
+      },
+      "custom_height": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "custom_width": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "enable_copyright_detection": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "magic_prompt": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "on",
+          "off"
+        ],
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "quality": {
+        "default": "medium",
+        "enum": [
+          "very_low",
+          "low",
+          "medium",
+          "high",
+          "very_high"
+        ],
+        "type": "string"
+      },
+      "resolution": {
+        "oneOf": [
+          {
+            "enum": [
+              "1k",
+              "2k"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "seed": {
+        "maximum": 2147483647,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
   "POST /v2/image/precise-edit/ideogram-4-5 (multipart/form-data)": {
     "properties": {
       "async": {
@@ -6,7 +322,7 @@
         "type": "boolean"
       },
       "context_window": {
-        "default": "none",
+        "default": "auto",
         "pattern": "^(none|auto|[0-9]+,[0-9]+,[0-9]+,[0-9]+)$",
         "type": "string"
       },
@@ -68,6 +384,610 @@
       "image"
     ],
     "type": "object"
+  },
+  "POST /v2/video/generate/kling-3-standard-image-to-video (multipart/form-data)": {
+    "properties": {
+      "cfg_scale": {
+        "type": "string"
+      },
+      "duration": {
+        "maximum": 15,
+        "minimum": 3,
+        "type": "integer"
+      },
+      "end_image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "negative_prompt": {
+        "maxLength": 2000,
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "shot_type": {
+        "default": "customize",
+        "enum": [
+          "customize",
+          "intelligent"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "image",
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/kling-3-standard-text-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "16x9",
+        "enum": [
+          "16x9",
+          "9x16",
+          "1x1"
+        ],
+        "type": "string"
+      },
+      "cfg_scale": {
+        "type": "string"
+      },
+      "duration": {
+        "maximum": 15,
+        "minimum": 3,
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "negative_prompt": {
+        "maxLength": 2000,
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "shot_type": {
+        "default": "customize",
+        "enum": [
+          "customize",
+          "intelligent"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/minimax-h3-image-to-video (multipart/form-data)": {
+    "properties": {
+      "duration": {
+        "default": 5,
+        "maximum": 15,
+        "minimum": 5,
+        "type": "integer"
+      },
+      "end_image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "2K",
+        "enum": [
+          "480P",
+          "768P",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "image",
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/minimax-h3-reference-to-video (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "16x9",
+        "enum": [
+          "21x9",
+          "16x9",
+          "4x3",
+          "1x1",
+          "3x4",
+          "9x16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 5,
+        "maximum": 15,
+        "minimum": 5,
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "prompt_expansion_mode": {
+        "default": "balanced",
+        "enum": [
+          "disabled",
+          "fast",
+          "balanced",
+          "quality"
+        ],
+        "type": "string"
+      },
+      "reference_audios": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "reference_images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "resolution": {
+        "default": "2K",
+        "enum": [
+          "480P",
+          "768P",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/minimax-h3-text-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "16x9",
+        "enum": [
+          "21x9",
+          "16x9",
+          "4x3",
+          "1x1",
+          "3x4",
+          "9x16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 5,
+        "maximum": 15,
+        "minimum": 5,
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "2K",
+        "enum": [
+          "480P",
+          "768P",
+          "2K",
+          "4K"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/seedance-2-5-image-to-video (multipart/form-data)": {
+    "properties": {
+      "duration": {
+        "maximum": 30,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "end_image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 30000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "image",
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/seedance-2-5-reference-to-video (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21x9",
+          "16x9",
+          "4x3",
+          "1x1",
+          "3x4",
+          "9x16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "maximum": 30,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "prompt": {
+        "maxLength": 30000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "reference_audios": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "reference_images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/seedance-2-5-text-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21x9",
+          "16x9",
+          "4x3",
+          "1x1",
+          "3x4",
+          "9x16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "maximum": 30,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "prompt": {
+        "maxLength": 30000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/seedance-2-image-to-video (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21x9",
+          "16x9",
+          "4x3",
+          "1x1",
+          "3x4",
+          "9x16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "maximum": 15,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "end_image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "480p",
+          "720p"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "image",
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/seedance-2-reference-to-video (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21x9",
+          "16x9",
+          "4x3",
+          "1x1",
+          "3x4",
+          "9x16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "maximum": 15,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "reference_audios": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "reference_images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "480p",
+          "720p"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2/video/generate/seedance-2-text-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "21x9",
+          "16x9",
+          "4x3",
+          "1x1",
+          "3x4",
+          "9x16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "maximum": 15,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "prompt": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "720p",
+        "enum": [
+          "480p",
+          "720p"
+        ],
+        "type": "string"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
   }
 }
 /v2/image/precise-edit/ideogram-4-5
+/v2/image/generate/ideogram-4-5
+/v2/image/generate/nano-banana-2
+/v2/image/generate/nano-banana-pro
+/v2/image/generate/p-image-ideogram
+/v2/video/generate/kling-3-standard-text-to-video
+/v2/video/generate/kling-3-standard-image-to-video
+/v2/video/generate/minimax-h3-text-to-video
+/v2/video/generate/minimax-h3-image-to-video
+/v2/video/generate/minimax-h3-reference-to-video
+/v2/video/generate/seedance-2-text-to-video
+/v2/video/generate/seedance-2-image-to-video
+/v2/video/generate/seedance-2-reference-to-video
+/v2/video/generate/seedance-2-5-text-to-video
+/v2/video/generate/seedance-2-5-image-to-video
+/v2/video/generate/seedance-2-5-reference-to-video
+video/kling-3-standard: /v2/video/generate/kling-3-standard-text-to-video /v2/video/generate/kling-3-standard-image-to-video
+video/minimax-h3: /v2/video/generate/minimax-h3-text-to-video /v2/video/generate/minimax-h3-image-to-video /v2/video/generate/minimax-h3-reference-to-video
+video/seedance-2: /v2/video/generate/seedance-2-text-to-video /v2/video/generate/seedance-2-image-to-video /v2/video/generate/seedance-2-reference-to-video
+video/seedance-2-5: /v2/video/generate/seedance-2-5-text-to-video /v2/video/generate/seedance-2-5-image-to-video /v2/video/generate/seedance-2-5-reference-to-video

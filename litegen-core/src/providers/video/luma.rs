@@ -101,6 +101,23 @@ impl VideoProvider for LumaProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
+    /// What Luma cannot make, refused before anything is quoted, reserved or
+    /// sent; `generate` asks it first:
+    /// `"VideoModelOutputDuration": {"anyOf":[{"enum":["5s","9s"]}…]}`, and
+    /// "Loop is not supported for keyframes" (both frame0 and frame1).
+    /// @see <https://docs.lumalabs.ai/reference/creategeneration>
+    /// @see <https://docs.lumalabs.ai/docs/errors>
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        if extras.duration_seconds > 0.0 && ![5.0, 9.0].contains(&extras.duration_seconds) {
+            return refuse(format!("{} s is not a length it makes (5 or 9 s)", extras.duration_seconds));
+        }
+        if extras.r#loop == Some(true) && roles.contains(&"last_frame") {
+            return refuse("a loop cannot have a last frame".into());
+        }
+        Ok(())
+    }
+
     /// Submit a generation (`POST {api_base}/generations`), returning a job `id`.
     ///
     /// @see <https://docs.lumalabs.ai/reference/creategeneration> — create a generation.
@@ -116,19 +133,9 @@ impl VideoProvider for LumaProvider {
         let api_key = self.api_key()?;
         let model_name = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "luma".into() })?;
         let url = format!("{}/generations", self.api_base());
-
-        // What Luma cannot make is refused before any call:
-        // `"VideoModelOutputDuration": {"anyOf":[{"enum":["5s","9s"]}…]}`, and
-        // "Loop is not supported for keyframes" (both frame0 and frame1).
-        // @see <https://docs.lumalabs.ai/reference/creategeneration>
-        // @see <https://docs.lumalabs.ai/docs/errors>
-        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
-        if extras.duration_seconds > 0.0 && ![5.0, 9.0].contains(&extras.duration_seconds) {
-            return refuse(format!("{} s is not a length it makes (5 or 9 s)", extras.duration_seconds));
-        }
-        if extras.r#loop == Some(true) && materialized.refs.iter().any(|r| r.role == "last_frame") {
-            return refuse("a loop cannot have a last frame".into());
-        }
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
 
         let mut body = json!({
             "model": crate::providers::wire_model(self.config.as_ref(), &model.id, model_name),

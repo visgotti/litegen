@@ -35,6 +35,10 @@ export default {
   models: {
     'openai/gpt-image-2.5-sunburst': 'gpt-image-2.5-sunburst',
     'openai/gpt-image-2.5-flare': 'gpt-image-2.5-flare',
+    // Carried 2026-11-16: OpenAI's named successors to gpt-image-2 (deprecations page).
+    'openai/gpt-image-2.6-sunburst': 'gpt-image-2.6-sunburst',
+    'openai/gpt-image-2.6-flare': 'gpt-image-2.6-flare',
+    // Deprecated 2026-11-10, shuts down 2027-02-10 (the row's retires_at).
     'openai/gpt-image-2': 'gpt-image-2',
   },
   sources: [

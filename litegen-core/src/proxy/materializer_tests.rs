@@ -32,8 +32,8 @@ mod tests {
                 data_uri: true,
                 view_order: Vec::new(),
                 roles: HashMap::from([
-                    ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None, max_time_s: None, needs_first_frame: false }),
-                    ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None, max_time_s: None, needs_first_frame: false }),
+                    ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None, max_time_s: None, needs_first_frame: false, not_with: Vec::new() }),
+                    ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None, max_time_s: None, needs_first_frame: false, not_with: Vec::new() }),
                 ]),
             }),
             extra_allowlist: vec![],

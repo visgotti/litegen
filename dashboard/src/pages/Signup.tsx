@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
-import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
+import { LiteGenAPIError } from '@litegen/sdk';
 import { useTenant } from '../context/tenant';
+import { SIGN_IN_FALLBACK, passwordHint, type SignInConfig } from './auth-config';
 import { safeNext } from './safe-next';
 
 /** The post-signup target from the `?next=` query param: a path on this origin (default `/`). */
@@ -66,7 +67,7 @@ export default function Signup() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
+  const [authConfig, setAuthConfig] = useState<SignInConfig | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +75,7 @@ export default function Signup() {
       .config()
       .then(cfg => { if (!cancelled) setAuthConfig(cfg); })
       .catch(() => {
-        if (!cancelled) setAuthConfig({ password_enabled: true, providers_enabled: ['github', 'google'], signup_open: false });
+        if (!cancelled) setAuthConfig(SIGN_IN_FALLBACK);
       });
     return () => { cancelled = true; };
   }, []);
@@ -83,10 +84,7 @@ export default function Signup() {
     e.preventDefault();
     setError('');
 
-    if (password.length < 12) {
-      setError('Password must be at least 12 characters');
-      return;
-    }
+    // A typo guard, not a rule: what a password must be is the server's to say.
     if (password !== confirmPassword) {
       setError('Passwords do not match');
       return;
@@ -166,7 +164,7 @@ export default function Signup() {
 
             <div>
               <label style={{ display: 'block', marginBottom: 6, color: '#8b949e', fontSize: 13 }}>
-                Password <span style={{ color: '#6e7681' }}>(min 12 chars)</span>
+                Password{passwordHint(authConfig) && <> <span data-testid="signup-password-hint" style={{ color: '#6e7681' }}>({passwordHint(authConfig)})</span></>}
               </label>
               <input
                 className="input"
@@ -176,7 +174,7 @@ export default function Signup() {
                 onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••••••"
                 required
-                minLength={12}
+                minLength={authConfig?.password_min_length}
                 style={{ width: '100%', boxSizing: 'border-box' }}
               />
             </div>

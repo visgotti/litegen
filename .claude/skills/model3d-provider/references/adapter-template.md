@@ -37,6 +37,9 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+// Downloads and link checks are shared by every 3D adapter
+// (`providers/model3d/download.rs`): never write your own.
+use super::download::AssetError;
 use crate::capabilities::ModelSchema;
 use crate::providers::auth::{AuthSpec, ProviderCredentials};
 use crate::providers::{
@@ -47,9 +50,9 @@ use crate::providers::{
 use crate::proxy::materializer::{MaterializedRefForm, MaterializedRequest};
 use crate::types::*;
 
-/// Bytes are held in memory through rehost, and `mesh::MAX_INPUT_BYTES`
-/// refuses to parse anything larger anyway.
-const MAX_ASSET_BYTES: u64 = 128 * 1024 * 1024;
+/// Largest result pulled down: bytes are held in memory through rehost, and
+/// litegen's mesh reader refuses anything larger anyway.
+const MAX_ASSET_BYTES: u64 = crate::mesh::MAX_INPUT_BYTES as u64;
 
 /// What ONE endpoint's schema accepts. Read every field from that endpoint's
 /// own schema. Vendors (aggregators especially) don't share a vocabulary.
@@ -74,6 +77,13 @@ pub struct AcmeModel3dProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one. It never carries the API's
+    /// headers or key.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    public_assets_only: bool,
 }
 
 impl AcmeModel3dProvider {
@@ -92,6 +102,13 @@ impl AcmeModel3dProvider {
             key_pool: None,
             auth: AuthSpec::bearer(),
             client: Self::api_client(&Default::default()),
+            // 600 s caps a large mesh's whole transfer; 60 s of silence fails
+            // a stalled one early (downloads run inline in the poller's tick).
+            asset_client: crate::util::ssrf::public_only_download_client(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(60),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -122,14 +139,18 @@ impl AcmeModel3dProvider {
     }
 
     /// Ask the vendor for exactly ONE container (see SKILL.md, "The output_formats promise").
-    fn vendor_format(spec: &EndpointSpec, requested: &[String]) -> Option<String> {
+    /// `source` is the request's `format_source`: with `glb`, a promised fbx or
+    /// usdz is made here from the vendor's glb, so only what litegen can't
+    /// derive is asked for.
+    fn vendor_format(spec: &EndpointSpec, requested: &[String], source: Option<Model3dFormatSource>) -> Option<String> {
         if spec.format_values.is_empty() {
             return None;
         }
         let offers = |f: &str| spec.format_values.iter().any(|v| v.eq_ignore_ascii_case(f));
-        // Never test derivability directly: the seam also keeps fbx/usdz vendor-made.
-        if let Some(native_only) = requested.iter().find(|r| crate::proxy::model3d_convert::prefers_vendor_native(r) && offers(r)) {
-            return Some(native_only.clone());                   // fbx, usdz, or anything litegen can't derive
+        // Never test derivability directly: the seam also keeps fbx/usdz
+        // vendor-made, and reads format_source.
+        if let Some(native_only) = requested.iter().find(|r| crate::proxy::model3d_convert::asks_vendor_for(r, source) && offers(r)) {
+            return Some(native_only.clone());                   // fbx or usdz (unless source is glb), or anything litegen can't derive
         }
         if offers(DEFAULT_MODEL3D_FORMAT) {
             return Some(DEFAULT_MODEL3D_FORMAT.to_string());    // glb: the conversion source
@@ -137,29 +158,23 @@ impl AcmeModel3dProvider {
         requested.iter().find(|r| offers(r)).cloned().or_else(|| spec.format_values.first().map(|s| s.to_string()))
     }
 
-    /// Downloads one vendor asset, size-capped, with no auth header on CDN
-    /// URLs. Shape it like `fal.rs` `fetch_asset`:
-    /// - `crate::util::ssrf::validate_public_url` first (behind a
-    ///   `public_assets_only` switch that tests turn off for wiremock);
-    /// - a client from `util::ssrf::public_only_download_client`: no
-    ///   redirects, public addresses only, and shared like the API client
-    ///   (fal's `asset_client`: 600 s in all, 60 s idle);
-    /// - a Content-Length precheck, a streamed read against the cap, and the
-    ///   status check.
-    ///
-    /// It returns `AssetError` so the caller can tell "ask again later" from
-    /// "this will never download".
-    async fn fetch_asset(&self, url: &str) -> Result<(Vec<u8>, String), AssetError> {
-        todo!()
+    /// Download one result file, or, for a job that keeps nothing
+    /// (`links_only`: the gate answered `Fetch::LinksOnly`), only check its
+    /// link. `super::download::fetch_or_check` does both, as tripo.rs,
+    /// meshy.rs and fal.rs call it:
+    /// - the public-address check first (unless `public_assets_only` is off,
+    ///   which only tests do), on `asset_client`, which follows no redirects
+    ///   and sends no credentials;
+    /// - a download checks the status, refuses a declared length over the
+    ///   cap before reading, and streams the body against the cap;
+    /// - a check is one ranged GET (`Range: bytes=0-0`, never HEAD), its body
+    ///   never read, the size from `Content-Range`;
+    /// - either fails as `AssetError::Transient` ("ask again later": a dropped
+    ///   connection, a 5xx, 408 or 429) or `AssetError::Gone` ("this will
+    ///   never download": gone, expired, refused, private or too large).
+    async fn fetch_or_check(&self, url: &str, links_only: bool) -> Result<super::download::Fetched, AssetError> {
+        super::download::fetch_or_check(&self.asset_client, url, MAX_ASSET_BYTES, self.public_assets_only, "acme 3d", links_only).await
     }
-}
-
-/// Why an asset didn't download.
-enum AssetError {
-    /// Asking again may work: a dropped connection, or a 5xx / 408 / 429.
-    Transient(ProviderError),
-    /// It never will: gone, expired, refused, private or too large.
-    Gone(String),
 }
 
 /// Container from the URL's extension (object stores label everything
@@ -218,7 +233,7 @@ impl Model3dProvider for AcmeModel3dProvider {
         if !images.is_empty() {
             body[spec.image_field] = if spec.image_is_array { json!(images) } else { json!(images[0]) };
         }
-        if let Some(fmt) = Self::vendor_format(&spec, &extras.output_formats) {
+        if let Some(fmt) = Self::vendor_format(&spec, &extras.output_formats, extras.format_source) {
             body[spec.format_field] = json!(fmt);
         }
         if let (Some(seed), Some(max)) = (base.seed, spec.seed_max) {
@@ -281,22 +296,29 @@ impl Model3dProvider for AcmeModel3dProvider {
 
         // The gate, once, before anything is downloaded. StandAside: another
         // observer delivers, so download nothing and report the job still
-        // processing. A long wait for the right (the poller waiting for a
-        // delivery slot) may outlast the signed URLs: read the task again.
-        let data = match gate.ask().await {
+        // processing. LinksOnly: the job keeps nothing (keep_outputs: false),
+        // so its links are handed out: check each one, download nothing. A
+        // long wait for the right (the poller waiting for a delivery slot)
+        // may outlast the signed URLs: read the task again.
+        let answer = gate.ask().await;
+        let data = match answer {
             crate::providers::Fetch::StandAside => {
                 let mut aside = Model3dGenerationPollResult { status: GenerationStatus::Completed, progress: 100, files: vec![], error: None, metadata: meta, stage_context: None, next_stage: None };
                 crate::proxy::model3d_deliver::stand_aside(&mut aside);
                 return Ok(aside);
             }
-            crate::providers::Fetch::Go { waited } if waited >= crate::providers::REFRESH_LINKS_AFTER => {
+            crate::providers::Fetch::Go { waited } | crate::providers::Fetch::LinksOnly { waited }
+                if waited >= crate::providers::REFRESH_LINKS_AFTER =>
+            {
                 let again: Value = todo!("the same GET of status_url");
                 if again["status"].as_str() == Some("success") { again } else { data }
             }
-            crate::providers::Fetch::Go { .. } => data,
+            crate::providers::Fetch::Go { .. } | crate::providers::Fetch::LinksOnly { .. } => data,
         };
+        let links_only = matches!(answer, crate::providers::Fetch::LinksOnly { .. });
 
-        // Every mesh container the vendor produced, downloaded NOW (URLs expire).
+        // Every mesh container the vendor produced, downloaded NOW (URLs expire),
+        // or, keeping nothing, its link checked.
         let mut files = Vec::new();
         if let Some(urls) = data["output"]["model_urls"].as_object() {
             for (fmt, url) in urls {
@@ -304,21 +326,22 @@ impl Model3dProvider for AcmeModel3dProvider {
                 // The mesh is the deliverable. "Try again" is an Err; "it will
                 // never download" (expired, refused) is the vendor's result being
                 // unavailable, which is a verdict: Ok(Failed), which fires the webhook.
-                let (bytes, ct) = match self.fetch_asset(url).await {
+                let got = match self.fetch_or_check(url, links_only).await {
                     Ok(v) => v,
                     Err(AssetError::Transient(e)) => return Err(e),
                     Err(AssetError::Gone(why)) => return Ok(failed(format!("Acme 3D mesh unavailable: {why}"))),
                 };
                 files.push(Model3dFile {
                     kind: Model3dAssetKind::Mesh,
-                    format: fmt.to_ascii_lowercase(),                    // or format_of(url, &ct)
-                    content_type: ct,
-                    bytes,
+                    format: fmt.to_ascii_lowercase(),                    // or format_of(url, &got.content_type)
+                    content_type: got.content_type,
+                    bytes: got.bytes,                                    // empty when only the link was checked
                     polycount: data["output"]["face_count"].as_u64().map(|n| n as u32), // only if the VENDOR reports it
                     width: None,
                     height: None,
                     manifest: None,                                      // core measures it
                     source_url: Some(url.to_string()),                   // what a keep-nothing job hands out
+                    size_bytes: got.size_bytes,                          // the link check's size; None after a download
                 });
             }
         }
@@ -326,8 +349,8 @@ impl Model3dProvider for AcmeModel3dProvider {
             return Ok(failed("Acme 3D reported success without a mesh".into()));
         }
         if let Some(url) = data["output"]["thumbnail_url"].as_str() {
-            match self.fetch_asset(url).await {                          // a bonus: never fails a good mesh
-                Ok((bytes, ct)) => files.push(Model3dFile { kind: Model3dAssetKind::Preview, format: format_of(url, &ct), content_type: ct, bytes, polycount: None, width: None, height: None, manifest: None, source_url: Some(url.to_string()) }),
+            match self.fetch_or_check(url, links_only).await {           // a bonus: never fails a good mesh
+                Ok(got) => files.push(Model3dFile { kind: Model3dAssetKind::Preview, format: format_of(url, &got.content_type), content_type: got.content_type, bytes: got.bytes, polycount: None, width: None, height: None, manifest: None, source_url: Some(url.to_string()), size_bytes: got.size_bytes }),
                 Err(_) => tracing::warn!("acme 3d: skipping a preview that would not download"),
             }
         }
@@ -345,10 +368,12 @@ impl Model3dProvider for AcmeModel3dProvider {
 }
 ```
 
-`fal.rs` already does the `todo!()` bodies well, so read its versions
-first: `fetch_asset` (with `AssetError`), `format_of`, the error-envelope
-parser, and `trusted_queue_url` for status and result URLs the vendor
-returns. Lift what fits, keeping the `AssetError` split.
+Downloads and link checks are shared. `providers/model3d/download.rs` holds
+`fetch_or_check`, `fetch_asset`, `probe_asset` and `AssetError`, and
+tripo.rs, meshy.rs and fal.rs all call them. Call them too, never a copy.
+For the `todo!()` bodies, `fal.rs` does them well, so read its versions
+first: `format_of`, the error-envelope parser, and `trusted_queue_url` for
+status and result URLs the vendor returns. Lift what fits.
 
 `model3d/fal.rs` was being rewritten on 2026-10-12. Re-read it rather than
 trusting this summary.
@@ -358,12 +383,18 @@ trusting this summary.
 Use the helper shapes from `.claude/skills/image-provider/references/adapter-template.md`,
 then add the 3D cases:
 
+`Model3dExtras` has about thirty fields and no `Default`, so build a test's
+extras with `Model3dExtras::for_formats` (`providers/mod.rs`, test builds
+only): the formats you pass and every option unset. Set what a test needs
+with struct update syntax.
+
 ```rust
 fn make_extras(formats: &[&str]) -> Model3dExtras {
-    Model3dExtras {
-        output_formats: formats.iter().map(|s| s.to_string()).collect(),
-        texture: None, pbr: None, target_polycount: None, symmetry: None, topology: None, rig: None, extra: None,
-    }
+    Model3dExtras::for_formats(formats)
+}
+
+fn rigged_extras() -> Model3dExtras {
+    Model3dExtras { rig: Some(true), skeleton: Some("humanoid".into()), ..make_extras(&["glb", "fbx"]) }
 }
 
 #[test]
@@ -383,8 +414,10 @@ fn every_catalogued_acme_3d_model_resolves_to_an_endpoint() {
 #[test]
 fn a_format_only_the_vendor_can_make_is_asked_for_and_derivable_ones_source_from_glb() {
     let spec = AcmeModel3dProvider::resolve_spec("acme/mesh-2");
-    assert_eq!(AcmeModel3dProvider::vendor_format(&spec, &["fbx".into()]), Some("fbx".into()));
-    assert_eq!(AcmeModel3dProvider::vendor_format(&spec, &["obj".into(), "stl".into()]), Some("glb".into()));
+    assert_eq!(AcmeModel3dProvider::vendor_format(&spec, &["fbx".into()], None), Some("fbx".into()));
+    assert_eq!(AcmeModel3dProvider::vendor_format(&spec, &["obj".into(), "stl".into()], None), Some("glb".into()));
+    // format_source: glb wants litegen's fbx, made from the vendor's glb.
+    assert_eq!(AcmeModel3dProvider::vendor_format(&spec, &["fbx".into()], Some(Model3dFormatSource::Glb)), Some("glb".into()));
 }
 
 #[tokio::test]
@@ -434,6 +467,14 @@ async fn links_are_read_again_after_a_long_wait_for_the_delivery() {
     // A gate answering Fetch::Go { waited } at or past REFRESH_LINKS_AFTER: the task
     // is read a second time and its fresh URL downloaded, never the stale one (tripo.rs).
 }
+
+#[tokio::test]
+async fn a_job_that_keeps_nothing_checks_each_link_and_downloads_nothing() {
+    // A gate answering Fetch::LinksOnly { waited: Duration::ZERO }: the CDN paths get one
+    // GET each with `Range: bytes=0-0` (answer 206 with a Content-Range), every file comes
+    // back with its source_url, its size_bytes and no bytes, and a dead mesh link is
+    // Failed (as tripo.rs, meshy.rs and fal.rs test it).
+}
 ```
 
 ## Catalog row
@@ -464,6 +505,8 @@ async fn links_are_read_again_after_a_long_wait_for_the_delivery() {
         # Mesh2Input.output_format is a SCALAR → one vendor job → max_items 1.
         enum_values: [glb, fbx, usdz]
         max_items: 1
+        # A job returns the one container it is asked for, so no returned_together
+        # (Meshy's rig, one job naming a glb and an fbx, sets returned_together: [glb, fbx]).
         default: [glb]
         label: Output formats
       texture:

@@ -1,9 +1,11 @@
 # Late and async images
 
-Most image vendors answer in one call. Seven run a job instead and are polled
-until it finishes: BFL, Replicate, Kling, Hunyuan, Leonardo, Luma and Runway.
-For those, litegen never loses an image to its own deadline, and a caller can
-choose not to wait at all.
+Most image vendors answer in one call. Some run a job instead and are polled
+until it finishes: BFL, Replicate, Kling, Hunyuan, Leonardo, Luma and Runway,
+and TokenHub for its Kling and Vidu models (`tokenhub/kling-image-v3`,
+`tokenhub/kling-image-o1`, `tokenhub/kling-image-v3-omni` and
+`tokenhub/vidu-image-q2`). For those, litegen never loses an image to its own
+deadline, and a caller can choose not to wait at all.
 
 ## A job that outlasts the vendor timeout
 
@@ -29,6 +31,13 @@ it when it finishes.
   bucket, or litegen's store), the generation becomes `completed`, and the
   key's webhook fires. `GET /v1/generations/{id}` then serves it, its links
   handed out in the app's access mode ([storage-access.md](storage-access.md)).
+- The vendor asked is the one that took the job. On a model route that is the
+  deployment's vendor, which need not be the model's own: the generation's
+  `provider` names it. The poller asks with the key the job ran on, which
+  `metadata.vendor_account` records: `org:{org_id}` for the org's own key for
+  that vendor, `platform` for the gateway's.
+- On a model route, the deployment's `timeout_seconds` is the time limit, and
+  the job is delivered later only when that deployment's vendor runs jobs.
 - A job the vendor fails ends `failed` with the vendor's reason, refunded,
   with its webhook.
 
@@ -54,7 +63,9 @@ was honoured. Poll `GET /v1/generations/{id}`, or wait for the key's webhook.
 
 litegen honours the preference only when the image can be delivered later:
 
-- the model's vendor runs jobs (the seven above);
+- the model's vendor runs jobs (those above). On a model route, every
+  deployment's vendor must, since which one takes the job isn't known until
+  it runs;
 - the request keeps its output (a request that keeps nothing has nowhere to
   deliver it from);
 - the request isn't an edit that litegen finishes itself (`preserve`, which
@@ -62,6 +73,12 @@ litegen honours the preference only when the image can be delivered later:
 
 Otherwise the call is synchronous, as without the header, and
 `Preference-Applied` is absent. The RFC lets a server ignore a preference.
+
+On a model route the wait holds at the deployment that takes the job, and
+never runs past that deployment's `timeout_seconds`. When the wait runs out
+first, the job runs on at that deployment: it isn't sent to the next one, and
+it doesn't count against the deployment's circuit breaker. The deployment's
+own `timeout_seconds` running out still counts, as without the header.
 
 ## Billing
 

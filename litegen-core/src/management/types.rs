@@ -253,6 +253,12 @@ pub struct SpendLogEntry {
     pub user_id: Option<String>,
     pub end_user: Option<String>,
     pub tags: Vec<String>,
+    /// Whether this request was answered from the cache (an image's
+    /// `X-Litegen-Cache: hit`): the hit has a row of its own, at what it was
+    /// charged. False on every other row, older rows included.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub cache_hit: bool,
 }
 
 /// Response for `GET /v1/spend/logs`.
@@ -349,8 +355,10 @@ impl ProviderSecrets {
     }
 }
 
-/// Non-secret part of a runtime provider config. Unset fields fall back to the
-/// provider's env/YAML config.
+/// The part of a runtime provider config that isn't a key. Unset fields fall
+/// back to the provider's env/YAML config. `extra_headers` values may carry a
+/// gateway's own auth: they are never shown back, and the audit log keeps
+/// only their names.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq)]
 pub struct ProviderSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,6 +392,73 @@ pub struct PutProviderConfigRequest {
     pub settings: ProviderSettings,
 }
 
+/// Request body for `PATCH /v1/admin/providers/{name}`: a field sent is set,
+/// `null` clears it, a field left out keeps its stored value. A key
+/// (`api_key`, `api_keys`, `key_id`, `key_secret`) left out or `null` keeps
+/// its stored value, and one sent as `""` removes it, so the env/YAML key
+/// applies again.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+pub struct PatchProviderConfigRequest {
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_keys: Option<String>,
+    #[serde(default)]
+    pub key_id: Option<String>,
+    #[serde(default)]
+    pub key_secret: Option<String>,
+    #[serde(default, deserialize_with = "crate::types::patch_field")]
+    #[schema(value_type = Option<String>)]
+    pub api_base: Option<Option<String>>,
+    #[serde(default, deserialize_with = "crate::types::patch_field")]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
+    pub model_mapping: Option<Option<std::collections::HashMap<String, String>>>,
+    #[serde(default, deserialize_with = "crate::types::patch_field")]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
+    pub extra_headers: Option<Option<std::collections::HashMap<String, String>>>,
+    #[serde(default, deserialize_with = "crate::types::patch_field")]
+    #[schema(value_type = Option<serde_json::Value>)]
+    pub options: Option<Option<serde_json::Value>>,
+    #[serde(default, deserialize_with = "crate::types::patch_field")]
+    #[schema(value_type = Option<String>)]
+    pub region: Option<Option<String>>,
+    /// False takes the provider out of service until re-enabled.
+    #[serde(default, deserialize_with = "crate::types::patch_field")]
+    #[schema(value_type = Option<bool>)]
+    pub enabled: Option<Option<bool>>,
+}
+
+impl PatchProviderConfigRequest {
+    /// The settings it sends with a value, as a PUT body holds them.
+    pub fn sent_settings(&self) -> ProviderSettings {
+        ProviderSettings {
+            api_base: self.api_base.clone().flatten(),
+            model_mapping: self.model_mapping.clone().flatten(),
+            extra_headers: self.extra_headers.clone().flatten(),
+            options: self.options.clone().flatten(),
+            region: self.region.clone().flatten(),
+            enabled: self.enabled.flatten(),
+        }
+    }
+
+    /// `stored` with this PATCH applied: for each field it sends, the value in
+    /// `sent` (its [`Self::sent_settings`] as the save reads them; `None` for
+    /// a field sent as `null`), and the stored one for each it leaves out.
+    pub fn applied_to(&self, stored: ProviderSettings, sent: ProviderSettings) -> ProviderSettings {
+        fn pick<T, U>(field: &Option<U>, sent: Option<T>, stored: Option<T>) -> Option<T> {
+            if field.is_some() { sent } else { stored }
+        }
+        ProviderSettings {
+            api_base: pick(&self.api_base, sent.api_base, stored.api_base),
+            model_mapping: pick(&self.model_mapping, sent.model_mapping, stored.model_mapping),
+            extra_headers: pick(&self.extra_headers, sent.extra_headers, stored.extra_headers),
+            options: pick(&self.options, sent.options, stored.options),
+            region: pick(&self.region, sent.region, stored.region),
+            enabled: pick(&self.enabled, sent.enabled, stored.enabled),
+        }
+    }
+}
+
 /// A runtime provider config as stored.
 #[derive(Debug, Clone)]
 pub struct StoredProviderConfig {
@@ -409,11 +484,17 @@ pub struct ProviderConfigView {
     /// Last 4 characters of the effective key, e.g. `…a1b2`. Never the secret.
     pub key_hint: Option<String>,
     pub has_secret: bool,
+    /// The api_base in force, with `[redacted]` for its user info
+    /// (`https://[redacted]@host/v1`). Sent back unchanged in a PUT or PATCH,
+    /// it keeps the URL in force.
     pub api_base: Option<String>,
     pub region: Option<String>,
     pub model_mapping: std::collections::HashMap<String, String>,
     /// Header names only; values can carry secrets.
     pub extra_header_names: Vec<String>,
+    /// The options in force, with `[redacted]` for the user info of each URL
+    /// in them, as for `api_base`. Sent back unchanged in a PUT or PATCH, such
+    /// a URL keeps the one in force.
     pub options: Option<serde_json::Value>,
     pub enabled: bool,
     pub updated_at: Option<DateTime<Utc>>,
@@ -514,6 +595,11 @@ pub struct GatewaySettings {
     /// bytes, 1048576 to 68719476736. Overrides `cache.max_bytes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_max_bytes: Option<u64>,
+    /// Whether a cache hit is charged the cached answer's price (default
+    /// true). False makes hits free, as LiteLLM does; either way the hit's log
+    /// row says `cache_hit`. Overrides `cache.charge_hits`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_charge_hits: Option<bool>,
     /// Tries after the first for a retryable vendor error, 0 to 5. Overrides `retries.max_retries`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_max_retries: Option<u32>,
@@ -532,6 +618,19 @@ pub struct GatewaySettings {
     /// Seconds an open breaker stays open, 1 to 3600. Overrides `circuit_breaker.open_for_seconds`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circuit_breaker_open_for_seconds: Option<u64>,
+    /// Encrypt the credentials inside runtime provider configs at rest (the
+    /// keys are always encrypted): each `extra_headers` value, and the user
+    /// info of `api_base` and of the URLs in `options`, are stored with the
+    /// config's encrypted keys, and the row keeps `[redacted]` in their place.
+    /// Needs `LITEGEN__SECRETS_KEY`. Off (the default), they are stored in
+    /// plain text, as versions before 2026-11-15 read them. Unlike the other
+    /// fields, a PUT that leaves it out keeps its stored value; `null` or
+    /// `false` turns it off. Each save of these settings stores every runtime
+    /// provider config again as this says. Turn it on once every replica runs
+    /// this version, and off before a rollback.
+    #[serde(default, deserialize_with = "crate::types::patch_field", skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<bool>)]
+    pub encrypt_provider_credentials: Option<Option<bool>>,
 }
 
 /// The cache in force (`GET /v1/admin/settings`).
@@ -542,6 +641,10 @@ pub struct EffectiveCache {
     pub max_items: u64,
     /// About how many bytes each replica's cache may hold.
     pub max_bytes: u64,
+    /// Whether a cache hit is charged the cached answer's price (default
+    /// true). False makes hits free, as LiteLLM does; either way the hit's log
+    /// row says `cache_hit`.
+    pub charge_hits: bool,
 }
 
 /// Retries in force (`GET /v1/admin/settings`).
@@ -557,6 +660,64 @@ pub struct EffectiveRetries {
 pub struct EffectiveBreaker {
     pub threshold: u32,
     pub open_for_seconds: u64,
+}
+
+/// The lowest and the highest value a setting takes, both allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SettingRange {
+    pub min: u64,
+    pub max: u64,
+}
+
+impl SettingRange {
+    const fn new(min: u64, max: u64) -> Self {
+        SettingRange { min, max }
+    }
+
+    /// Whether `v` lies in the range.
+    pub fn holds(self, v: u64) -> bool {
+        (self.min..=self.max).contains(&v)
+    }
+}
+
+/// The range of each numeric gateway setting, named as the setting is: what
+/// `PUT /v1/admin/settings` holds it to, served so a client need not keep a
+/// copy. `default_end_user_max_budget_usd` has no upper bound, so it has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GatewaySettingLimits {
+    pub cost_markup_percent: SettingRange,
+    pub cache_ttl_seconds: SettingRange,
+    pub cache_max_items: SettingRange,
+    pub cache_max_bytes: SettingRange,
+    pub retry_max_retries: SettingRange,
+    pub retry_backoff_ms: SettingRange,
+    pub retry_max_backoff_ms: SettingRange,
+    pub vendor_timeout_seconds: SettingRange,
+    pub circuit_breaker_threshold: SettingRange,
+    pub circuit_breaker_open_for_seconds: SettingRange,
+    pub storage_access_signed_url_ttl_seconds: SettingRange,
+    pub storage_access_retention_days: SettingRange,
+}
+
+impl GatewaySettingLimits {
+    /// The ranges `management::runtime::validate_gateway_settings` checks.
+    pub const ALLOWED: Self = GatewaySettingLimits {
+        cost_markup_percent: SettingRange::new(0, 1000),
+        cache_ttl_seconds: SettingRange::new(1, 604_800),
+        cache_max_items: SettingRange::new(1, 1_000_000),
+        cache_max_bytes: SettingRange::new(1_048_576, 68_719_476_736),
+        retry_max_retries: SettingRange::new(0, 5),
+        retry_backoff_ms: SettingRange::new(0, 60_000),
+        retry_max_backoff_ms: SettingRange::new(0, 60_000),
+        vendor_timeout_seconds: SettingRange::new(5, 3600),
+        circuit_breaker_threshold: SettingRange::new(1, 1000),
+        circuit_breaker_open_for_seconds: SettingRange::new(1, 3600),
+        storage_access_signed_url_ttl_seconds: SettingRange::new(
+            crate::access::MIN_SIGNED_URL_TTL_SECONDS as u64,
+            crate::access::MAX_SIGNED_URL_TTL_SECONDS as u64,
+        ),
+        storage_access_retention_days: SettingRange::new(0, crate::access::MAX_RETENTION_DAYS as u64),
+    };
 }
 
 /// Response for `GET /v1/admin/settings`: the stored overrides plus the
@@ -578,4 +739,9 @@ pub struct GatewaySettingsView {
     pub effective_vendor_timeout_seconds: u64,
     /// The circuit breaker in force.
     pub effective_circuit_breaker: EffectiveBreaker,
+    /// The range of each numeric setting, both ends allowed, as `PUT
+    /// /v1/admin/settings` checks them: a value outside its range is a 400
+    /// `invalid_settings`. `retry_max_backoff_ms` must also be at least
+    /// `retry_backoff_ms`.
+    pub limits: GatewaySettingLimits,
 }

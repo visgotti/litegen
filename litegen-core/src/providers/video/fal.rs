@@ -95,30 +95,46 @@ struct EndpointSpec {
     fps_values: &'static [u32],
 }
 
+/// The endpoint shape a request's images choose ([`FalVideoProvider::route`]).
+enum Shape {
+    /// No image: text to video.
+    Text,
+    /// A start frame, and a last frame where image-to-video takes one.
+    Image,
+    /// A first and a last frame, on the first-last endpoint.
+    FirstLast,
+    /// Keyframes: each one's frame on the vendor's clock, in the order the
+    /// request lists them.
+    Keyframes(Vec<u32>),
+}
+
 /// The frames a request sends, as the fields of the endpoint it goes to.
 enum Frames {
     None,
     /// `image_url`, plus `end_image_url` where image-to-video takes a last frame.
-    Image { first: String, last: Option<String> },
+    Image { first: Option<String>, last: Option<String> },
     /// `start_image_url` and `end_image_url`.
-    FirstLast { first: String, last: String },
+    FirstLast { first: Option<String>, last: Option<String> },
     /// `keyframes`: `(frame_index, image_url)`, in frame order.
     Keyframes(Vec<(u32, String)>),
 }
 
 impl Frames {
     fn write(self, body: &mut Value) {
+        fn set(body: &mut Value, field: &str, url: Option<String>) {
+            if let Some(url) = url {
+                body[field] = Value::String(url);
+            }
+        }
         match self {
             Frames::None => {}
             Frames::Image { first, last } => {
-                body["image_url"] = Value::String(first);
-                if let Some(last) = last {
-                    body["end_image_url"] = Value::String(last);
-                }
+                set(body, "image_url", first);
+                set(body, "end_image_url", last);
             }
             Frames::FirstLast { first, last } => {
-                body["start_image_url"] = Value::String(first);
-                body["end_image_url"] = Value::String(last);
+                set(body, "start_image_url", first);
+                set(body, "end_image_url", last);
             }
             Frames::Keyframes(pinned) => {
                 body["keyframes"] = Value::Array(
@@ -307,17 +323,20 @@ impl FalVideoProvider {
         }
     }
 
-    /// The endpoint a request goes to, chosen by its frames: keyframes, a
-    /// first and a last frame, one image, or none. What the model's endpoints
-    /// can't take, or fal doesn't price, is refused here, before anything is
-    /// sent.
-    fn route(model: &str, spec: &EndpointSpec, extras: &VideoExtras, materialized: &MaterializedRequest) -> Result<(&'static str, Frames), ProviderError> {
+    /// The endpoint a request goes to, chosen by its images' roles:
+    /// keyframes, a first and a last frame, one image, or none. What the
+    /// model's endpoints can't take, or fal doesn't price, is refused here.
+    /// One copy: the `preflight` the quote runs and the submit both ask it,
+    /// so a request is refused at both or at neither, in the same words.
+    /// `keyframe_times` are the keyframes' `time_s`, in the order the request
+    /// lists them.
+    fn route(model: &str, spec: &EndpointSpec, extras: &VideoExtras, roles: &[&str], keyframe_times: &[Option<f64>]) -> Result<(&'static str, Shape), ProviderError> {
         let refuse = |why: String| ProviderError::InvalidRequest(format!("{model}: {why}"));
-        let keyframes: Vec<&MaterializedRef> = materialized.refs.iter().filter(|r| r.role == "keyframe").collect();
-        let last = materialized.refs.iter().filter(|r| r.role == "last_frame").find_map(Self::image_url);
+        let keyframes = roles.contains(&"keyframe");
+        let last = roles.contains(&"last_frame");
         // The start frame is any other image: `first_frame`, or `init` on the
         // rows that took one before first_frame existed.
-        let first = materialized.refs.iter().filter(|r| r.role != "keyframe" && r.role != "last_frame").find_map(Self::image_url);
+        let first = roles.iter().any(|r| *r != "keyframe" && *r != "last_frame");
         // fal prices FLUX 3's first-last and keyframe endpoints at fewer
         // resolutions than text and image.
         let priced = |endpoint: &'static str| match extras.resolution.as_deref() {
@@ -327,42 +346,77 @@ impl FalVideoProvider {
             ))),
             _ => Ok(endpoint),
         };
-        if !keyframes.is_empty() {
+        let routed = if keyframes {
             let endpoint = spec.keyframes_to_video.ok_or_else(|| refuse("takes no keyframes".into()))?;
-            if first.is_some() || last.is_some() {
+            if first || last {
                 return Err(refuse("keyframes don't mix with a first or last frame: send those as keyframes at 0 s and at the end".into()));
             }
-            let mut pinned = Vec::with_capacity(keyframes.len());
-            for r in keyframes {
-                let t = r.time_s.ok_or_else(|| refuse("every keyframe needs time_s".into()))?;
-                let url = Self::image_url(r).ok_or_else(|| refuse("a keyframe must be an image URL or bytes".into()))?;
+            let mut at = Vec::with_capacity(keyframe_times.len());
+            for t in keyframe_times {
+                let t = t.ok_or_else(|| refuse("every keyframe needs time_s".into()))?;
                 // The nearest frame on the vendor's clock; the validator keeps
                 // each time within the clip.
-                pinned.push(((t.max(0.0) * f64::from(spec.keyframe_fps)).round() as u32, url));
+                at.push((t.max(0.0) * f64::from(spec.keyframe_fps)).round() as u32);
             }
-            pinned.sort_by_key(|(frame, _)| *frame);
-            if let Some(w) = pinned.windows(2).find(|w| w[0].0 == w[1].0) {
-                return Err(refuse(format!("two keyframes fall on frame {} at {} fps", w[0].0, spec.keyframe_fps)));
+            let mut sorted = at.clone();
+            sorted.sort_unstable();
+            if let Some(w) = sorted.windows(2).find(|w| w[0] == w[1]) {
+                return Err(refuse(format!("two keyframes fall on frame {} at {} fps", w[0], spec.keyframe_fps)));
             }
-            return Ok((priced(endpoint)?, Frames::Keyframes(pinned)));
-        }
-        if let Some(last) = last {
-            let first = first.ok_or_else(|| refuse("a last frame needs a first frame".into()))?;
+            (priced(endpoint)?, Shape::Keyframes(at))
+        } else if last {
+            if !first {
+                return Err(refuse("a last frame needs a first frame".into()));
+            }
             if spec.end_image_on_image_to_video {
-                return Ok((spec.image_to_video, Frames::Image { first, last: Some(last) }));
+                (spec.image_to_video, Shape::Image)
+            } else {
+                let endpoint = spec.first_last_to_video.ok_or_else(|| refuse("takes no last frame".into()))?;
+                (priced(endpoint)?, Shape::FirstLast)
             }
-            let endpoint = spec.first_last_to_video.ok_or_else(|| refuse("takes no last frame".into()))?;
-            return Ok((priced(endpoint)?, Frames::FirstLast { first, last }));
+        } else if first {
+            (spec.image_to_video, Shape::Image)
+        } else {
+            (spec.text_to_video, Shape::Text)
+        };
+        // The discrete values an endpoint takes (each row's `values`, or its
+        // whole seconds, say them as well).
+        if spec.supports_duration && extras.duration_seconds > 0.0 && !spec.duration_values.is_empty() {
+            Self::one_of(model, "duration", extras.duration_seconds, spec.duration_values)?;
         }
-        Ok(match first {
-            Some(first) => (spec.image_to_video, Frames::Image { first, last: None }),
-            None => (spec.text_to_video, Frames::None),
-        })
+        if let Some(fps) = extras.fps.filter(|_| !spec.fps_values.is_empty()) {
+            Self::one_of(model, "fps", f64::from(fps), spec.fps_values)?;
+        }
+        Ok(routed)
+    }
+
+    /// The materialized images as the fields of the endpoint [`Self::route`]
+    /// chose; it refuses nothing (`route` did).
+    fn frames(shape: Shape, materialized: &MaterializedRequest) -> Frames {
+        let url = |pick: fn(&str) -> bool| materialized.refs.iter().filter(|r| pick(&r.role)).find_map(Self::image_url);
+        let first = || url(|role| role != "keyframe" && role != "last_frame");
+        let last = || url(|role| role == "last_frame");
+        match shape {
+            Shape::Text => Frames::None,
+            Shape::Image => Frames::Image { first: first(), last: last() },
+            Shape::FirstLast => Frames::FirstLast { first: first(), last: last() },
+            Shape::Keyframes(at) => {
+                let mut pinned: Vec<(u32, String)> = materialized
+                    .refs
+                    .iter()
+                    .filter(|r| r.role == "keyframe")
+                    .zip(at)
+                    .filter_map(|(r, frame)| Some((frame, Self::image_url(r)?)))
+                    .collect();
+                pinned.sort_by_key(|(frame, _)| *frame);
+                Frames::Keyframes(pinned)
+            }
+        }
     }
 
     /// `value` as one of an endpoint's discrete integer values, or an
-    /// InvalidRequest naming the accepted set (the catalog can only express a
-    /// range, so e.g. 7 s passes validation for a 6 | 8 | 10 endpoint).
+    /// InvalidRequest naming the accepted set (the row's `values` refuse the
+    /// rest first; this keeps the adapter right for a row that says less).
     fn one_of(model: &str, param: &str, value: f64, allowed: &[u32]) -> Result<u32, ProviderError> {
         allowed
             .iter()
@@ -402,6 +456,16 @@ impl VideoProvider for FalVideoProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
+    /// What fal would refuse, or doesn't price, on the endpoint the images
+    /// choose: [`FalVideoProvider::route`], which the submit asks too. An id
+    /// with no arm is the submit's `ModelNotSupported`, not this.
+    fn preflight(&self, model: &ModelSchema, base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(spec) = Self::resolve_spec(&model.id) else { return Ok(()) };
+        let times: Vec<Option<f64>> =
+            base.reference_images.iter().filter(|r| r.role.as_deref() == Some("keyframe")).map(|r| r.time_s).collect();
+        Self::route(&model.id, &spec, extras, roles, &times).map(drop)
+    }
+
     /// Submit a job to the Fal queue (`POST {queue.fal.run}/{endpoint}`),
     /// returning a `request_id` (plus `status_url`/`response_url`) to poll.
     ///
@@ -419,8 +483,12 @@ impl VideoProvider for FalVideoProvider {
         let spec = Self::resolve_spec(&model.id)
             .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
 
-        // The endpoint that takes these frames, and the frames as its fields.
-        let (endpoint, frames) = Self::route(&model.id, &spec, extras, materialized)?;
+        // The endpoint the images' roles choose, refused as the quote refused
+        // it, and the images as its fields.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        let times: Vec<Option<f64>> = materialized.refs.iter().filter(|r| r.role == "keyframe").map(|r| r.time_s).collect();
+        let (endpoint, shape) = Self::route(&model.id, &spec, extras, &roles, &times)?;
+        let frames = Self::frames(shape, materialized);
         // fal names the model by its endpoint: a mapping replaces the path.
         let endpoint = crate::providers::wire_model(self.config.as_ref(), &model.id, endpoint);
         let url = format!("{}/{}", self.api_base(), endpoint);
@@ -431,10 +499,11 @@ impl VideoProvider for FalVideoProvider {
         }
 
         if spec.supports_duration && extras.duration_seconds > 0.0 {
+            // An integer where the endpoint takes a list (`route` held it to one).
             body["duration"] = if spec.duration_values.is_empty() {
                 json!(extras.duration_seconds)
             } else {
-                json!(Self::one_of(&model.id, "duration", extras.duration_seconds, spec.duration_values)?)
+                json!(extras.duration_seconds as u32)
             };
         }
 
@@ -446,10 +515,8 @@ impl VideoProvider for FalVideoProvider {
             }
         }
 
-        if !spec.fps_values.is_empty() {
-            if let Some(fps) = extras.fps {
-                body["fps"] = json!(Self::one_of(&model.id, "fps", f64::from(fps), spec.fps_values)?);
-            }
+        if let Some(fps) = extras.fps.filter(|_| !spec.fps_values.is_empty()) {
+            body["fps"] = json!(fps);
         }
 
         if spec.supports_aspect_ratio {
@@ -1020,8 +1087,9 @@ mod tests {
         assert_eq!(body["duration"], json!(8));
     }
 
-    /// duration is 6 | 8 | 10 and fps 24 | 25 | 48 | 50; the catalog can only
-    /// express ranges, so the adapter rejects the gaps without calling fal.
+    /// duration is 6 | 8 | 10 and fps 24 | 25 | 48 | 50: the row's `values`
+    /// refuse the gaps first, and the adapter's `route` (its preflight and
+    /// its submit) refuses them too, without calling fal.
     #[tokio::test]
     async fn ltx_2_3_rejects_duration_and_fps_outside_their_enums() {
         let server = MockServer::start().await;

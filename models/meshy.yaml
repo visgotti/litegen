@@ -67,6 +67,9 @@ models:
         kind: string_array
         enum_values: [glb, fbx]
         max_items: 1
+        # One rigging task returns both: `result.rigged_character_glb_url`
+        # and `result.rigged_character_fbx_url` (docs.meshy.ai/en/api/rigging).
+        returned_together: [glb, fbx]
         default: [glb]
         label: Output formats
         description: Meshy returns glb and fbx; litegen derives the rest.
@@ -809,6 +812,9 @@ models:
         kind: string_array
         enum_values: [glb, fbx]
         max_items: 1
+        # One animation task returns both: `result.animation_glb_url` and
+        # `result.animation_fbx_url` (docs.meshy.ai/en/api/animation).
+        returned_together: [glb, fbx]
         default: [glb]
         label: Output formats
         description: Meshy returns glb and fbx; litegen derives the rest.

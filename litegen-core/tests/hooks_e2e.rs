@@ -383,19 +383,34 @@ fn litegen_refuses_to_start_on_a_missing_or_broken_hook() {
     if !installed("python3") {
         return;
     }
+    // Each refusal names the entry: its place in `hooks:` and its path.
     let (status, out) = refuses("hooks:\n  - path: hooks/missing.py\n", &[]);
-    assert!(!status.success() && out.contains("hook file not found"), "{status}: {out}");
+    assert!(!status.success() && out.contains("hooks[0] (hooks/missing.py): hook file not found"), "{status}: {out}");
 
     let (status, out) = refuses("hooks:\n  - path: hooks/broken.py\n", &[fixture("broken.py")]);
     assert!(!status.success() && out.contains("broken.py") && out.contains("SyntaxError"), "{status}: {out}");
 
     let (status, out) = refuses("hooks:\n  - path: hooks/behaviour.py\n    runtime: cobol\n", &[fixture("behaviour.py")]);
-    assert!(!status.success() && out.contains("defines hooks but did not load"), "{status}: {out}");
+    assert!(!status.success() && out.contains("defines hooks but did not load: hooks[0] (hooks/behaviour.py): "), "{status}: {out}");
+    // When the hooks are what failed, their error is the config's: said once.
+    assert_eq!(out.matches("hooks[0] (hooks/behaviour.py): ").count(), 1, "{out}");
 
     // Valid hooks beside a config that won't load: the default-config fallback
     // would drop them, so litegen refuses instead.
     let (status, out) = refuses("cost_markup_percent: lots\nhooks:\n  - path: hooks/behaviour.py\n", &[fixture("behaviour.py")]);
     assert!(!status.success() && out.contains("defines hooks but did not load"), "{status}: {out}");
+}
+
+/// `routes` on a file that defines only `file_access` does nothing: litegen
+/// still starts, and its log says so, naming the entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn litegen_warns_about_routes_on_a_file_access_only_hook() {
+    if !installed("python3") {
+        return;
+    }
+    let server = start("hooks:\n  - path: hooks/file_only.py\n    routes: [files]\n", &[fixture("file_only.py")]).await;
+    let log = server.log();
+    assert!(log.contains("hooks[0] (hooks/file_only.py): routes has no effect"), "{log}");
 }
 
 // ─── Stored outputs (docs/storage-access.md) ─────────────────────────────────

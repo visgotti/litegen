@@ -635,10 +635,11 @@ async fn invitations_a_removed_admin_sent_end_with_them() {
     let (app, _dir) = app().await;
     let owner = owner(&app).await;
     let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
-    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    // An Admin invites Members and Viewers only (review round 3b, S4).
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "member").await;
     remove(&app, &owner, &org_id, &admin_id).await;
     let r = accept(&app, &sock).await;
-    assert!(no_such_invitation(&r), "a removed admin's invitation still admits an admin: {} {:?}", r.status, r.body);
+    assert!(no_such_invitation(&r), "a removed admin's invitation still admits a member: {} {:?}", r.status, r.body);
 }
 
 #[tokio::test]
@@ -646,11 +647,12 @@ async fn invitations_a_deactivated_admin_sent_end_with_them() {
     let (app, _dir) = app().await;
     let owner = owner(&app).await;
     let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
-    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    // An Admin invites Members and Viewers only (review round 3b, S4).
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "member").await;
     let r = owner.call(&app, "DELETE", &format!("/v1/users/{admin_id}"), None).await;
     assert!(r.status.is_success(), "deactivate: {:?}", r.body);
     let r = accept(&app, &sock).await;
-    assert!(no_such_invitation(&r), "a deactivated admin's invitation still admits an admin: {} {:?}", r.status, r.body);
+    assert!(no_such_invitation(&r), "a deactivated admin's invitation still admits a member: {} {:?}", r.status, r.body);
 }
 
 #[tokio::test]
@@ -658,11 +660,12 @@ async fn invitations_a_demoted_admin_sent_end_with_their_admin_role() {
     let (app, _dir) = app().await;
     let owner = owner(&app).await;
     let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
-    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    // An Admin invites Members and Viewers only (review round 3b, S4).
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "member").await;
     let r = owner.call(&app, "PATCH", &format!("/v1/orgs/{org_id}/members/{admin_id}"), Some(json!({ "role": "member" }))).await;
     assert_eq!(r.status, StatusCode::OK, "demote: {:?}", r.body);
     let r = accept(&app, &sock).await;
-    assert!(no_such_invitation(&r), "a demoted admin's invitation still admits an admin: {} {:?}", r.status, r.body);
+    assert!(no_such_invitation(&r), "a demoted admin's invitation still admits a member: {} {:?}", r.status, r.body);
 }
 
 /// The users page deactivates (`PATCH /v1/users/{id}` with `is_active: false`)
@@ -672,11 +675,12 @@ async fn invitations_an_admin_deactivated_on_the_users_page_sent_end_with_them()
     let (app, _dir) = app().await;
     let owner = owner(&app).await;
     let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
-    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    // An Admin invites Members and Viewers only (review round 3b, S4).
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "member").await;
     let r = owner.call(&app, "PATCH", &format!("/v1/users/{admin_id}"), Some(json!({ "is_active": false }))).await;
     assert_eq!(r.status, StatusCode::OK, "deactivate: {:?}", r.body);
     let r = accept(&app, &sock).await;
-    assert!(no_such_invitation(&r), "an admin deactivated on the users page still admits an admin: {} {:?}", r.status, r.body);
+    assert!(no_such_invitation(&r), "an admin deactivated on the users page still admits a member: {} {:?}", r.status, r.body);
 }
 
 /// In single-tenant mode the users page sets the role in the deployment's
@@ -687,16 +691,18 @@ async fn invitations_an_admin_demoted_on_the_users_page_sent_end_with_their_admi
     let (app, _dir) = app().await;
     let owner = owner(&app).await;
     let (admin, org_id, admin_id) = invited(&app, &owner, "admin@example.com", "admin").await;
-    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "admin").await;
+    // An Admin invites Members and Viewers only (review round 3b, S4).
+    let sock = invitation(&app, &admin, &org_id, "sock@example.com", "member").await;
     let r = owner.call(&app, "PATCH", &format!("/v1/users/{admin_id}"), Some(json!({ "role": "member" }))).await;
     assert_eq!(r.status, StatusCode::OK, "demote: {:?}", r.body);
     let r = accept(&app, &sock).await;
-    assert!(no_such_invitation(&r), "an admin demoted on the users page still admits an admin: {} {:?}", r.status, r.body);
+    assert!(no_such_invitation(&r), "an admin demoted on the users page still admits a member: {} {:?}", r.status, r.body);
 }
 
-/// A PATCH that deactivates someone revokes the invitations they sent before
-/// it changes anything: when that fails (a 500), their role is as it was
-/// too, so the PATCH can be sent again whole.
+/// A PATCH that deactivates someone revokes the invitations they sent in the
+/// deactivation's transaction, before their role moves: when that fails (a
+/// 500), the account is still active and their role is as it was, so the
+/// PATCH can be sent again whole.
 #[tokio::test]
 async fn a_deactivation_whose_invitations_cannot_be_revoked_changes_nothing() {
     use litegen::db::DatabaseStore;

@@ -59,15 +59,19 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.locator('[data-testid="users-invite-btn"]').click();
   await page.locator('[data-testid="invite-email"]').fill(MEMBER_EMAIL);
   await page.locator('[data-testid="invite-role"]').selectOption('member');
+  // No email goes out: the page hands over the invitation's link to copy, to
+  // this dashboard's own accept page.
+  const invited = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/v1/users');
   await page.locator('[data-testid="invite-send"]').click();
-  const tokenLocator = page.locator('[data-testid="invite-dev-token"]');
-  await expect(tokenLocator).toBeVisible({ timeout: 10_000 });
-  const inviteToken = (await tokenLocator.textContent())!.trim();
-  expect(inviteToken.length).toBeGreaterThan(20);
+  const invitation = (await (await invited).json()) as { token: string };
+  const linkLocator = page.getByTestId('invite-link');
+  await expect(linkLocator).toHaveValue(`http://127.0.0.1:5174/invite/${invitation.token}`, { timeout: 10_000 });
+  const inviteLink = await linkLocator.inputValue();
+  await expect(page.getByTestId('invite-modal')).not.toContainText('Invitation sent');
 
   // Close the invite modal (it's a fixed overlay; must close before interacting with UserMenu)
-  await page.locator('[data-testid="invite-dev-token-close"]').click();
-  await expect(tokenLocator).not.toBeVisible({ timeout: 5_000 });
+  await page.getByTestId('invite-close').click();
+  await expect(linkLocator).toHaveCount(0);
 
   // 4. Sign out owner
   await page.locator('[data-testid="user-menu-toggle"]').click();
@@ -75,7 +79,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.waitForURL('**/login');
 
   // 5. Accept invitation
-  await page.goto(`/invite/${inviteToken}`);
+  await page.goto(inviteLink);
   await expect(page.locator('[data-testid="accept-email"]')).toContainText(MEMBER_EMAIL, { timeout: 10_000 });
   await expect(page.locator('[data-testid="accept-role"]')).toContainText(/member/i);
   await page.locator('[data-testid="accept-password"]').fill(MEMBER_PW);
@@ -98,6 +102,19 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.locator('[data-testid="login-password"]').fill(OWNER_PW);
   await page.locator('[data-testid="login-submit"]').click();
   await page.waitForURL('**/');
+
+  // 7b. A password reset link for the member: no email is sent, so the page
+  // shows the link to hand over, to this dashboard's reset page.
+  await feature('Users — a password reset link for a user, shown once to hand over');
+  await page.goto('/users');
+  const issued = nextCall(page, 'POST', /^\/v1\/users\/[^/]+\/password-reset$/);
+  await page.getByTestId(`user-reset-password-${MEMBER_EMAIL}`).click();
+  const issuedAnswer = await issued;
+  expect(issuedAnswer.status(), await issuedAnswer.text()).toBe(200);
+  const { token: resetToken } = (await issuedAnswer.json()) as { token: string };
+  await expect(page.getByTestId('reset-link')).toHaveValue(`http://127.0.0.1:5174/reset-password/${resetToken}`);
+  await page.getByTestId('reset-close').click();
+  await expect(page.getByTestId('reset-link')).toHaveCount(0);
 
   // 8. Promote member to admin
   await feature('Promote to admin; transfer ownership');
@@ -918,8 +935,9 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
       headers: { Authorization: `Bearer ${rotatedWebhookSecret}` },
     })).json()) as { status: string }).status, { timeout: 30_000 }).toBe('completed');
     await expect.poll(() => hook.received.find(r => r.body?.id === hookedId)?.body?.status, { timeout: 30_000 }).toBe('completed');
-  } finally {
+  } catch (e) {
     await new Promise<void>((resolve) => hook.server.close(() => resolve()));
+    throw e;
   }
   await page.getByRole('link', { name: 'API Keys' }).click();
   await page.waitForURL('**/keys');
@@ -950,6 +968,30 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(deliveries.first()).toBeVisible({ timeout: 10_000 });
   await expect(deliveries.first()).toContainText('200');
 
+  await feature('Redeliver — the delivery sent again under its own id, and a second ask refused in the server\'s words');
+  try {
+    const sameDelivery = (r: Delivery) => r.headers['x-litegen-delivery-id'];
+    const deliveryId = sameDelivery(hook.received.find(r => r.body?.id === hookedId)!) as string;
+    expect(deliveryId, 'the receiver got the delivery id').toMatch(/^whd-/);
+    const redeliverRoute = new RegExp(`^/v1/keys/${deliveryKeyId}/webhook-deliveries/${deliveryId}/redeliver$`);
+    const redelivered = nextCall(page, 'POST', redeliverRoute);
+    await page.getByTestId(`delivery-redeliver-${deliveryId}`).click();
+    const accepted = await redelivered;
+    expect(accepted.status(), await accepted.text()).toBe(202);
+    await expect(page.getByTestId(`delivery-redeliver-result-${deliveryId}`)).toContainText('Sent again');
+    await expect.poll(() => hook.received.filter(r => sameDelivery(r) === deliveryId).length, { timeout: 30_000 }).toBe(2);
+    // Asked again at once: still being sent (409) or within the minute's
+    // cooldown (429). Either way the page shows the server's own words.
+    const again = nextCall(page, 'POST', redeliverRoute);
+    await page.getByTestId(`delivery-redeliver-${deliveryId}`).click();
+    const refused = await again;
+    expect([409, 429]).toContain(refused.status());
+    const said = ((await refused.json()) as { error: { message: string } }).error.message;
+    await expect(page.getByTestId(`delivery-redeliver-result-${deliveryId}`)).toContainText(said);
+  } finally {
+    await new Promise<void>((resolve) => hook.server.close(() => resolve()));
+  }
+
   // ─── Cluster 3e: Backpressure sanity ping ────────────────────────────────────
   await feature('The gateway still serves after everything above');
   // Lib tests cover backpressure logic; just verify the route is still healthy.
@@ -978,4 +1020,19 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.goto('/');
   await expect(page.getByTestId('auth-status')).toBeVisible({ timeout: 5_000 });
   await expect(page.getByTestId('auth-status')).toContainText('Authenticated ✓');
+
+  // ─── The Owner's own reset link, from the master key ─────────────────────────
+  // The way back for an Owner who forgot their password: the master key may
+  // issue a reset link for any account, the deployment's Owner included, and
+  // the page leaves who may to the server. The member became the Owner in step 9.
+  await feature('Users — the master key makes a reset link for the Owner');
+  await page.goto('/users');
+  await expect(page.getByTestId(`user-role-${MEMBER_EMAIL}`)).toContainText(/owner/i, { timeout: 10_000 });
+  const ownerReset = nextCall(page, 'POST', /^\/v1\/users\/[^/]+\/password-reset$/);
+  await page.getByTestId(`user-reset-password-${MEMBER_EMAIL}`).click({ timeout: 15_000 });
+  const ownerAnswer = await ownerReset;
+  expect(ownerAnswer.status(), await ownerAnswer.text()).toBe(200);
+  const { token: ownerToken } = (await ownerAnswer.json()) as { token: string };
+  await expect(page.getByTestId('reset-link')).toHaveValue(`http://127.0.0.1:5174/reset-password/${ownerToken}`);
+  await page.getByTestId('reset-close').click();
 });

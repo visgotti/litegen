@@ -1,0 +1,27 @@
+-- 039: the artifacts of the cache hits a generation answered, found by its id.
+--
+-- A cache hit's artifact names the generation it was served from
+-- (`output_kind = 'generation'`, the generation's id in `output_value`) and
+-- carries that generation's prompt and params. Deleting the generation
+-- (`DELETE /v1/generations/{id}`, `redact_generation_request`) deletes those
+-- artifacts too: `WHERE output_kind = 'generation' AND output_value = $1`,
+-- which without this index reads all of request_artifacts each time. The
+-- index is partial: only those rows are in it.
+--
+-- Built plainly, in the migration's transaction, not CONCURRENTLY: 023's
+-- header says why. sqlx 0.8 holds its advisory lock for the whole run, and a
+-- replica that boots meanwhile waits for it inside a statement. A concurrent
+-- build waits out that statement's snapshot, so the two deadlock, Postgres
+-- cancels the build, and the invalid index it leaves is skipped by `IF NOT
+-- EXISTS` on every later start (reproduced 2026-11-15). A plain build can't
+-- deadlock that way, and it makes a valid index or none.
+--
+-- What it costs: until the build ends, writes to request_artifacts wait (each
+-- request writes one), and the build is one pass over the table plus a sort
+-- of the cache hits' rows. 2M rows take well under a second; a table of tens
+-- of millions of rows can take minutes, longer than the 30 s a request waits
+-- for a lock. Such a deployment can build the index itself beforehand, with
+-- litegen running (docs/RUNBOOK.md, "Migration failures on upgrade"); this
+-- migration then finds it and does nothing.
+CREATE INDEX IF NOT EXISTS idx_request_artifacts_served_generation
+    ON request_artifacts (output_value) WHERE output_kind = 'generation';

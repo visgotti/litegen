@@ -5,11 +5,54 @@ parameters without telling us. This check compares what every provider
 **publishes** against what we **carry** in `models/*.yaml`, once a week.
 
 ```bash
-node scripts/model-drift/check.mjs            # report + refresh snapshots/
-node scripts/model-drift/check.mjs --json     # machine-readable (the /model-drift skill uses this)
-node scripts/model-drift/check.mjs --provider runway,openai --no-write
+node scripts/model-drift/pipeline.mjs         # the whole weekly run, on a copy of snapshots/ (start here)
+node scripts/model-drift/check.mjs --json --snapshots "$D"   # the check alone, into a folder of your own
+node scripts/model-drift/review.mjs --fresh "$D"            # what changed in "$D" against snapshots/, by section
+node scripts/model-drift/quotes.mjs           # quoted vendor strings in models/*.yaml vs the pages they cite
 node --test 'scripts/model-drift/test/*.test.mjs'
 ```
+
+## The pipeline: one command
+
+`pipeline.mjs` runs every step and prints what to do next, in order. It never
+writes `snapshots/`: it copies them into `<out>/snapshots` and checks there
+(other sessions may have edits in `snapshots/`, and a run rewrites every
+snapshot it fetches). `<out>` defaults to
+`.superpowers/sdd/<date>-drift/run-<time>/` (the local date and time), which
+git ignores and a restart keeps.
+
+| Step | Output | What you do with it |
+|---|---|---|
+| 1. check (`check.mjs` logic) | `report.txt`, `drift.json` | the findings below |
+| 2. **repair** | the "Repair first" block | every FAILED source, before anything else (see below) |
+| 3. review (`review.mjs`) | `review.md` | each changed snapshot section as JSON paths (`~ path: old → new`, `+ path[] value`), sections that only moved between files left out, and never-reviewed sections printed whole |
+| 4. quotes (`quotes.mjs`) | `quotes.txt`, `quotes.json` | quotes no longer on their page (a price or rule changed: fix the row and the quote) and cited pages that died (fix the `@see`) |
+| 5. adopt | the `cp` / `rm` lines | copy each snapshot into `snapshots/` only after reviewing it, file by file |
+
+Pipeline exit codes: 0 clean · 1 drift or changed quotes · 2 a source,
+definition or cited page is broken, or the command line is (a `--provider`
+list that names no provider or one the catalog doesn't know, or a
+`--max-lines` that is not a whole number: a usage message, nothing runs) · 3
+the pipeline itself crashed (a bug in these scripts: fix it, run the node
+tests, rerun).
+
+### Repairing a broken source is part of the run
+
+A source breaks when the vendor moves or restructures a page. The run does not
+stop there: the report ends with a **Repair first** block that gives, for each
+FAILED item, the commands to reproduce it (`curl -sIL` on its URL), where to
+look for the move (the vendor's `llms.txt`, the adapter's `@see` URLs, the
+sitemap or changelog), which definition to edit, and the verify line (two
+passes into one fresh folder, then the node tests). Fix the definition, rerun
+the pipeline, and only then read the drift for that provider. A cited page
+that died in `quotes.txt` is repaired the same way, in the row's `@see`.
+
+### Quotes a script cannot verify
+
+`quotes-known.txt` lists quotes a script cannot check (a JS-rendered page, a
+login wall, a quote that is not the vendor's), one per line:
+`<model id> | <fragment>  # why`. The quote check skips them, and reports a
+line that no longer applies (found again, or no such quote) as stale.
 
 In Claude Code, run **`/model-drift`** instead. The skill
 (`.claude/skills/model-drift/SKILL.md`) runs the check, investigates anything
@@ -158,6 +201,20 @@ export default {
   `extract`'s ids, never read as missing, and reported as `deprecated
   upstream` until the catalog records the deprecation. fal's carried-endpoint
   sources use it for the registry status `deprecated`.
+- **`gone: (parsed, body) => ids`** (optional): the ids a source asked the
+  vendor about directly and heard are unknown. That answer outranks a listing
+  in another source, so a carried one reads `missing upstream` and none reads
+  `new`. A source whose every id is gone (a fal chunk that left the registry
+  whole) still answered: its ids are missing, not a FAILED source. fal's find
+  mode uses it: on 2026-11-16 its catalog page still listed
+  `fal-ai/stable-diffusion-v35-medium` while find mode, the queue OpenAPI and
+  the model page all answered 404.
+- **`fetch: (url, get) => response`** (optional): for a vendor API that needs
+  more than one request to answer. `get(url)` fetches like the plain source
+  (headers, timeout, retries) and returns `{ status, contentType, body }` or
+  `{ error }`; the hook returns the same shape. fal's find mode answers 404
+  for a whole batch once one id has left its registry, so its carried sources
+  ask id by id after such a 404.
 - **Source preference:** an official machine-readable spec or list first. Next
   is a docs site's markdown twin (`llms.txt` → `<page>.md`). Last is
   server-rendered HTML.

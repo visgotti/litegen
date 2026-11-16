@@ -15,12 +15,22 @@ describe('accessBody', () => {
     expect(accessBody({ ...BLANK, ownerScope: 'org' })).toEqual({ body: { owner_scope: 'org' } });
   });
 
-  it('refuses a link life outside a minute to a week, or not a whole number', () => {
+  // The ranges are the server's, as GET /v1/admin/settings serves them
+  // (`limits`); the page keeps no copy.
+  const LIMITS = { ttl: { min: 60, max: 604_800 }, retentionDays: { min: 0, max: 36_500 } };
+
+  it('refuses a link life outside the served range, or not a whole number', () => {
     for (const ttl of ['59', '604801', '1.5', 'soon', '-60']) {
-      expect(accessBody({ ...BLANK, mode: 'signed', ttl }).error, ttl).toMatch(/60 and 604800/);
+      expect(accessBody({ ...BLANK, mode: 'signed', ttl }, LIMITS).error, ttl).toMatch(/60 to 604800/);
     }
-    expect(accessBody({ ...BLANK, ttl: '60' }).body).toEqual({ signed_url_ttl_seconds: 60 });
-    expect(accessBody({ ...BLANK, ttl: '604800' }).body).toEqual({ signed_url_ttl_seconds: 604800 });
+    expect(accessBody({ ...BLANK, ttl: '60' }, LIMITS).body).toEqual({ signed_url_ttl_seconds: 60 });
+    expect(accessBody({ ...BLANK, ttl: '604800' }, LIMITS).body).toEqual({ signed_url_ttl_seconds: 604800 });
+    expect(accessBody({ ...BLANK, ttl: '90' }, { ttl: { min: 120, max: 600 } }).error).toMatch(/120 to 600/);
+  });
+
+  it('sends a whole number as typed where no range is served: the server says its range', () => {
+    expect(accessBody({ ...BLANK, ttl: '10', retentionDays: '99999' })).toEqual({ body: { signed_url_ttl_seconds: 10, retention_days: 99999 } });
+    expect(accessBody({ ...BLANK, ttl: '1.5' }).error).toMatch(/whole number/);
   });
 
   it('sends keeping, retention and who signs links when set', () => {
@@ -30,9 +40,9 @@ describe('accessBody', () => {
     expect(accessBody({ ...BLANK, keepOutputs: 'true', retentionDays: '0' })).toEqual({ body: { keep_outputs: true, retention_days: 0 } });
   });
 
-  it('refuses a retention that is not 0 to 36500 whole days', () => {
+  it('refuses a retention outside the served range of whole days', () => {
     for (const days of ['-1', '36501', '1.5', 'week']) {
-      expect(accessBody({ ...BLANK, retentionDays: days }).error, days).toMatch(/0 and 36500/);
+      expect(accessBody({ ...BLANK, retentionDays: days }, LIMITS).error, days).toMatch(/0 to 36500/);
     }
   });
 });

@@ -75,7 +75,8 @@ def sync_detailed(
     """PUT /v1/admin/providers/{name} — Set a provider's keys, api_base, model
     mapping, headers, options or enabled flag at runtime. Secret fields left
     out keep their stored value; every unset field falls back to env/YAML.
-    In-flight jobs finish on the instance they started with.
+    In-flight jobs finish on the instance they started with. To change some
+    fields and keep the rest, use PATCH.
 
     Args:
         name (str):
@@ -112,7 +113,8 @@ def sync(
     """PUT /v1/admin/providers/{name} — Set a provider's keys, api_base, model
     mapping, headers, options or enabled flag at runtime. Secret fields left
     out keep their stored value; every unset field falls back to env/YAML.
-    In-flight jobs finish on the instance they started with.
+    In-flight jobs finish on the instance they started with. To change some
+    fields and keep the rest, use PATCH.
 
     Args:
         name (str):
@@ -144,7 +146,8 @@ async def asyncio_detailed(
     """PUT /v1/admin/providers/{name} — Set a provider's keys, api_base, model
     mapping, headers, options or enabled flag at runtime. Secret fields left
     out keep their stored value; every unset field falls back to env/YAML.
-    In-flight jobs finish on the instance they started with.
+    In-flight jobs finish on the instance they started with. To change some
+    fields and keep the rest, use PATCH.
 
     Args:
         name (str):
@@ -179,7 +182,8 @@ async def asyncio(
     """PUT /v1/admin/providers/{name} — Set a provider's keys, api_base, model
     mapping, headers, options or enabled flag at runtime. Secret fields left
     out keep their stored value; every unset field falls back to env/YAML.
-    In-flight jobs finish on the instance they started with.
+    In-flight jobs finish on the instance they started with. To change some
+    fields and keep the rest, use PATCH.
 
     Args:
         name (str):

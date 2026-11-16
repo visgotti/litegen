@@ -38,6 +38,20 @@ request log. You need no bucket and no disk for outputs.
   converting a file it keeps, so a request for a format the vendor doesn't
   make itself answers 400 `format_needs_keeping`, before any vendor call, and
   names the formats the vendor makes.
+  - The same goes for formats the vendor makes but won't return for that
+    request. Most 3D vendors make one container per job (Tripo, Rodin), so a
+    request can name one of them; Meshy returns a glb and an fbx together
+    (`output_formats.returned_together` in `GET /v1/models/{id}`). With
+    `format_source: glb` litegen would make the fbx or usdz from the glb, so
+    only the glb can be promised.
+  - Nothing is downloaded. litegen checks each of the vendor's links with a
+    one-byte request (a `GET` of the first byte; signed links refuse `HEAD`).
+    Each asset's `size_bytes` is the size the vendor's host reports, when it
+    reports one.
+  - A dead link to the mesh fails the job, as a failed download does when
+    litegen keeps files. So does a dead link to any other format the request
+    asked for: litegen can't make it without keeping a file. A dead preview
+    or texture is left out.
 - **The access mode still decides how a vendor's file is handed out,** so
   keeping nothing never opens anything a mode closes:
   - `public`: the vendor's link itself;
@@ -205,7 +219,14 @@ curl -X PUT http://localhost:4000/v1/apps/$APP_ID/access \
   were made; 0 (the default) keeps them until they are deleted. An app's own
   value, 0 included, wins over the gateway's.
   - Every replica sweeps hourly, deleting each file from the store that holds
-    it: the app's bucket or litegen's. A sweep has a pass for each app with a
+    it: the app's bucket or litegen's. Ages are judged on the database's
+    clock, so a replica whose own clock runs ahead deletes nothing early. The
+    same sweep deletes the webhook log once `webhooks.log_retention_days` is
+    set ([management API](management-api.md#key-webhooks)), and the request
+    log and its artifacts once `logs` sets a retention
+    ([runbook](RUNBOOK.md#database-growing-what-grows-and-how-to-bound-it));
+    unset, both are kept for good.
+    A sweep has a pass for each app with a
     retention of its own, and one with the gateway's for every other app. The
     passes take turns, 500 generations at a time, and a pass goes on while it
     deletes, for up to 10 minutes in all, so a backlog is worked off in one
@@ -219,6 +240,13 @@ curl -X PUT http://localhost:4000/v1/apps/$APP_ID/access \
   - The record stays. `files_deleted_at` and `files_deleted_reason`
     (`retention`) appear on the generation, and the file route answers 410
     `files_deleted`.
+  - The request log's copy of the output goes with the files. An image's
+    artifact kept up to 2 MiB of it inline; now its `output_value` is
+    cleared and its `output_kind` says `deleted`
+    (`GET /v1/logs/{id}/artifact`). The prompt and params stay: delete the
+    generation to remove them. The copy is cleared before the row is
+    marked, so a failure leaves the row due for the next try. Migration 040
+    clears the copies that sweeps before it left.
   - litegen's local disk store also keeps its own cap,
     `image_storage.retention_days` (at least 7 days), whatever an app sets.
     For a longer retention, raise it, or use a bucket.
@@ -231,8 +259,45 @@ curl -X PUT http://localhost:4000/v1/apps/$APP_ID/access \
     must pass the app's owner scope.
   - Files in an app's own bucket are deleted too. A vendor's own file
     (`kept: false`) is the vendor's to delete.
-- **Deleting an app or an org** deletes its files in litegen's own store, in
-  the background. Files in the app's own bucket are yours, so they stay.
+  - The request log's entries of the cache hits it answered go too: their
+    artifacts carry the same prompt and params. Their log rows (billing
+    records) stay. On the dashboard, "Delete files" on a hit's trace deletes
+    the generation it was served.
+  - **Not covered: `Idempotency-Key` replays.** A request sent with an
+    `Idempotency-Key` stores its whole answer (inline images included), and
+    the same key and request within 24 hours replays it, even after the
+    generation was deleted. A stored answer is never replayed once it is 24
+    hours old, and is deleted then (by the next request that carries an
+    `Idempotency-Key`).
+- **The image cache never serves a deleted generation**, whichever way its
+  files went. A hit is checked against its generation first: once the files
+  are deleted, the cached answer is dropped and the same request goes to the
+  vendor ([the cache](gateway-settings.md#the-cache)). A cache hit's own
+  entry in the request log names the generation it was served
+  (`output_kind: "generation"`) and never holds a copy of the image.
+- **Deleting an org or an app** deletes its files in litegen's own store.
+  Files in the app's own bucket are yours, so they stay.
+  - The delete records each file litegen kept for its generations in the
+    transaction that deletes their rows (migration 031). So once it has
+    answered, the files are deleted whatever happens next: a stop, a crash or
+    a store that is down only delays it.
+  - The replica that deleted it starts at once, and every replica takes what
+    is left every minute. A file whose delete fails is tried again after 1
+    minute, then 2, 4 and so on, up to every 6 hours, until it is gone.
+  - Two replicas never take the same file at once. A file deleted twice (by a
+    replica that died before it could record the delete) does no harm.
+  - A job still running at the delete is stopped at its vendor. One that was
+    already storing its files finds its row gone when it finishes, and what
+    it stored is deleted the same way. An image request still running gets
+    its image, and leaves no row behind: what it kept is deleted the same way.
+    No other request leaves a row (its log row, spend tags or artifact)
+    either: a segmentation or a failed request still answers, a video or 3D
+    job submitted at the delete is stopped at its vendor and fails with
+    `generation_record_failed`, and a late image answers
+    `504 vendor_timeout` with no generation to poll.
+  - The delete runs to its end even if the caller hangs up (a proxy that
+    times out on a large org, say). Ask again: a 404 means it went through.
+  - What is still to be deleted, and why: [RUNBOOK](RUNBOOK.md#a-deleted-orgs-or-apps-files).
 
 ## Revoking links
 

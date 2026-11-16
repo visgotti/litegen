@@ -142,11 +142,15 @@ models:
         description: litegen keys the delivered clips at this rate (Tripo takes none).
       output_formats:
         kind: string_array
-        enum_values: [glb, fbx]
+        # glb only: litegen always asks the retarget for `out_format: glb`,
+        # since an fbx litegen reads keeps one take and Tripo's fbx of several
+        # clips would fail delivery after Tripo billed it (`submit_retarget`).
+        # Every other container, fbx too, is derived from the glb.
+        enum_values: [glb]
         max_items: 1
         default: [glb]
         label: Output formats
-        description: Mesh containers. Tripo emits glb or fbx; litegen derives the rest.
+        description: Mesh containers. Tripo's retarget returns a glb; litegen derives the rest.
     extra_allowlist: []
     tags: [animation, 3d-operation]
 

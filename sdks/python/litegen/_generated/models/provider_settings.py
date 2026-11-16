@@ -19,8 +19,10 @@ T = TypeVar("T", bound="ProviderSettings")
 
 @_attrs_define
 class ProviderSettings:
-    """Non-secret part of a runtime provider config. Unset fields fall back to the
-    provider's env/YAML config.
+    """The part of a runtime provider config that isn't a key. Unset fields fall
+    back to the provider's env/YAML config. `extra_headers` values may carry a
+    gateway's own auth: they are never shown back, and the audit log keeps
+    only their names.
 
         Attributes:
             api_base (Union[None, Unset, str]):

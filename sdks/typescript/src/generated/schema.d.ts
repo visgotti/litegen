@@ -223,7 +223,8 @@ export interface paths {
          * PUT /v1/admin/providers/{name} — Set a provider's keys, api_base, model
          *     mapping, headers, options or enabled flag at runtime. Secret fields left
          *     out keep their stored value; every unset field falls back to env/YAML.
-         *     In-flight jobs finish on the instance they started with.
+         *     In-flight jobs finish on the instance they started with. To change some
+         *     fields and keep the rest, use PATCH.
          */
         put: operations["admin_put_provider"];
         post?: never;
@@ -234,7 +235,16 @@ export interface paths {
         delete: operations["admin_delete_provider"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * PATCH /v1/admin/providers/{name} — Change some of a provider's runtime
+         *     config and keep the rest. A field sent is set, `null` clears it (it
+         *     falls back to env/YAML), and a field left out keeps its stored value.
+         *     A key left out or `null` keeps its stored value, and one sent as `""`
+         *     removes it (the env/YAML key applies again). A map (`model_mapping`,
+         *     `extra_headers`) or `options` sent replaces the stored one whole.
+         *     In-flight jobs finish on the instance they started with.
+         */
+        patch: operations["admin_patch_provider"];
         trace?: never;
     };
     "/v1/admin/revoke-links": {
@@ -287,7 +297,8 @@ export interface paths {
         get: operations["admin_get_settings"];
         /**
          * PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
-         *     webhook, default end-user budget). An omitted field is cleared.
+         *     webhook, default end-user budget). An omitted field is cleared, except
+         *     `encrypt_provider_credentials`, which keeps its stored value.
          */
         put: operations["admin_put_settings"];
         post?: never;
@@ -1170,6 +1181,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver — Send one of the key's webhook deliveries again.
+         *     Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver -H "Authorization: Bearer sk_live_..."`
+         */
+        post: operations["redeliver_webhook_delivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/limits": {
         parameters: {
             query?: never;
@@ -1503,6 +1534,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/orgs/{id}/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs/{id}/invitations — List an org's pending invitations (requires member:invite). */
+        get: operations["list_invitations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{id}/invitations/{invitation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /v1/orgs/{id}/invitations/{invitation_id} — Revoke an invitation (requires invitation:revoke). */
+        delete: operations["revoke_invitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs/{id}/limits": {
         parameters: {
             query?: never;
@@ -1799,6 +1864,23 @@ export interface paths {
         head?: never;
         /** PATCH /v1/users/{id} — Update user role or active status (requires user:write:any). */
         patch: operations["patch_user"];
+        trace?: never;
+    };
+    "/v1/users/{id}/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/users/{id}/password-reset — Issue a password reset link for an account (the master key, or a person who outranks the account in every org it belongs to). */
+        post: operations["issue_password_reset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/utils/models3d/convert": {
@@ -2217,9 +2299,19 @@ export interface components {
         AuditLogEntry: {
             /** @description Action identifier, e.g. `"key.create"`, `"generation.cancel"`. */
             action: string;
-            /** @description The API key ID of the actor. None when the master key was used. */
+            /**
+             * @description The API key that acted. Null for the master key, a signed-in person
+             *     (a browser session, or an app signed in with OAuth) and litegen
+             *     itself.
+             */
             actor_key_id?: string | null;
-            /** @description Human-readable actor label: `"master-key"` or the key's name. */
+            /**
+             * @description Who acted: a signed-in person's email, an API key's id (as in
+             *     `actor_key_id`), `master-key` for the master key, or `system` for
+             *     litegen itself (a budget alert). Since 2026-11-15 an account's email
+             *     must be an address, so a new account can't be labelled `master-key`
+             *     or `system`.
+             */
             actor_label: string;
             /** @description JSON snapshot of the entity state *after* the action (None on delete/revoke). */
             after_json?: string | null;
@@ -2229,13 +2321,23 @@ export interface components {
             created_at: string;
             id: string;
             /**
-             * @description Tenant (organization) this audit entry belongs to. None falls back to the
-             *     default org at the DB layer (single-tenant); set from the caller's active org.
+             * @description The organization this entry is filed under: the one whose object the
+             *     action changed, else the one the caller acted in. Absent for an entry
+             *     filed under no org: in hosted mode, the master key's changes to the
+             *     gateway and to accounts, and an account change by a person who belongs
+             *     to no org. Only the master key reads those.
              */
             org_id?: string | null;
             /** @description Target entity ID. */
             target_id: string;
-            /** @description Target entity type: `"api_key"` or `"generation"`. */
+            /**
+             * @description What the action changed: `api_key`, `generation`, `user`,
+             *     `invitation`, `membership`, `organization`, `application`,
+             *     `provider_credential`, `end_user`, `oauth_client`, a budget
+             *     (`key_limits`, `org_limits`, `app_limits`, `member_limits`,
+             *     `end_user_limits`), or the gateway's `model`, `provider`, `routes` and
+             *     `settings`.
+             */
             target_type: string;
         };
         AuthConfigResponse: {
@@ -2243,11 +2345,21 @@ export interface components {
             /** @description Whether email/password signup + login is enabled. */
             password_enabled: boolean;
             /**
+             * Format: int32
+             * @description The shortest password signup, invitations, password changes and
+             *     resets accept.
+             */
+            password_min_length: number;
+            /**
              * @description OAuth providers with both CLIENT_ID and CLIENT_SECRET configured
              *     (e.g. `["github", "google"]`).
              */
             providers_enabled: string[];
-            /** @description Whether self-service signup is open (true in hosted mode). */
+            /**
+             * @description Whether self-service signup is open: always in hosted mode; in
+             *     single-tenant mode while no account exists and password signup is on
+             *     (the first signup makes the Owner).
+             */
             signup_open: boolean;
         };
         AuthResponse: {
@@ -2419,7 +2531,8 @@ export interface components {
             name: string;
             /**
              * Format: int32
-             * @description Requests-per-minute cap; None = unlimited.
+             * @description Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to
+             *     stop a key, block it); None = unlimited.
              */
             rpm_limit?: number | null;
             /**
@@ -2436,7 +2549,7 @@ export interface components {
              * @description USD budget cap; None = unlimited.
              */
             token_quota?: number | null;
-            /** @description Webhook URL for async callbacks. */
+            /** @description Webhook URL for async callbacks; `""` or none sets no webhook. */
             webhook_url?: string | null;
         };
         CreateAppRequest: {
@@ -2539,6 +2652,12 @@ export interface components {
         };
         /** @description The cache in force (`GET /v1/admin/settings`). */
         EffectiveCache: {
+            /**
+             * @description Whether a cache hit is charged the cached answer's price (default
+             *     true). False makes hits free, as LiteLLM does; either way the hit's log
+             *     row says `cache_hit`.
+             */
+            charge_hits: boolean;
             enabled: boolean;
             /**
              * Format: int64
@@ -2728,10 +2847,35 @@ export interface components {
          * @enum {string}
          */
         FramesSetShape: "always" | "without_references";
+        /**
+         * @description The range of each numeric gateway setting, named as the setting is: what
+         *     `PUT /v1/admin/settings` holds it to, served so a client need not keep a
+         *     copy. `default_end_user_max_budget_usd` has no upper bound, so it has none.
+         */
+        GatewaySettingLimits: {
+            cache_max_bytes: components["schemas"]["SettingRange"];
+            cache_max_items: components["schemas"]["SettingRange"];
+            cache_ttl_seconds: components["schemas"]["SettingRange"];
+            circuit_breaker_open_for_seconds: components["schemas"]["SettingRange"];
+            circuit_breaker_threshold: components["schemas"]["SettingRange"];
+            cost_markup_percent: components["schemas"]["SettingRange"];
+            retry_backoff_ms: components["schemas"]["SettingRange"];
+            retry_max_backoff_ms: components["schemas"]["SettingRange"];
+            retry_max_retries: components["schemas"]["SettingRange"];
+            storage_access_retention_days: components["schemas"]["SettingRange"];
+            storage_access_signed_url_ttl_seconds: components["schemas"]["SettingRange"];
+            vendor_timeout_seconds: components["schemas"]["SettingRange"];
+        };
         /** @description Gateway-wide settings editable at runtime. */
         GatewaySettings: {
             /** @description URL that receives budget alerts (soft budget crossed, hard budget hit). */
             alert_webhook_url?: string | null;
+            /**
+             * @description Whether a cache hit is charged the cached answer's price (default
+             *     true). False makes hits free, as LiteLLM does; either way the hit's log
+             *     row says `cache_hit`. Overrides `cache.charge_hits`.
+             */
+            cache_charge_hits?: boolean | null;
             /** @description Whether image answers are cached. Overrides `cache.enabled`. */
             cache_enabled?: boolean | null;
             /**
@@ -2772,6 +2916,19 @@ export interface components {
              * @description Default hard budget (USD) for an end user with no limits of its own.
              */
             default_end_user_max_budget_usd?: number | null;
+            /**
+             * @description Encrypt the credentials inside runtime provider configs at rest (the
+             *     keys are always encrypted): each `extra_headers` value, and the user
+             *     info of `api_base` and of the URLs in `options`, are stored with the
+             *     config's encrypted keys, and the row keeps `[redacted]` in their place.
+             *     Needs `LITEGEN__SECRETS_KEY`. Off (the default), they are stored in
+             *     plain text, as versions before 2026-11-15 read them. Unlike the other
+             *     fields, a PUT that leaves it out keeps its stored value; `null` or
+             *     `false` turns it off. Each save of these settings stores every runtime
+             *     provider config again as this says. Turn it on once every replica runs
+             *     this version, and off before a rollback.
+             */
+            encrypt_provider_credentials?: boolean | null;
             /**
              * Format: int64
              * @description The longest first wait before a retry, 0 to 60000 ms. Overrides `retries.backoff_ms`.
@@ -2838,6 +2995,13 @@ export interface components {
              * @description The vendor call timeout in force, in seconds.
              */
             effective_vendor_timeout_seconds: number;
+            /**
+             * @description The range of each numeric setting, both ends allowed, as `PUT
+             *     /v1/admin/settings` checks them: a value outside its range is a 400
+             *     `invalid_settings`. `retry_max_backoff_ms` must also be at least
+             *     `retry_backoff_ms`.
+             */
+            limits: components["schemas"]["GatewaySettingLimits"];
             settings: components["schemas"]["GatewaySettings"];
         };
         /** @description A DB-backed generation row (video or image, currently used for video). */
@@ -3201,11 +3365,29 @@ export interface components {
             email: string;
             role: components["schemas"]["Role"];
         };
+        /**
+         * @description A new invitation. Its `token` and `invite_url` are shown only in this
+         *     answer: litegen sends no email, so give one of them to the invitee.
+         */
         InviteResponse: {
             email: string;
             expires_at: string;
             id: string;
+            /**
+             * @description The dashboard's page that accepts it: `/invite/{token}` on the origin
+             *     of `server.public_base_url`; null when it isn't set: build it from
+             *     `token` on the dashboard's origin.
+             */
+            invite_url: string | null;
+            /** @description The organization the invitee joins on accepting. */
+            org_id: string;
             role: string;
+            /**
+             * @description Accepts the invitation once, until `expires_at`
+             *     (`POST /v1/auth/invitations/{token}/accept`): whoever holds it joins
+             *     the org as `role`, so give it only to the invitee.
+             */
+            token: string;
         };
         /** @description Response for key block/unblock. */
         KeyActiveResponse: {
@@ -3430,7 +3612,9 @@ export interface components {
             sha256?: string | null;
             /**
              * Format: int64
-             * @description Size of the stored file.
+             * @description Size of the file in bytes: the stored file's, or for a file litegen
+             *     didn't keep (`kept: false`) the size the vendor's host reported when
+             *     litegen checked its link.
              */
             size_bytes?: number | null;
             /**
@@ -4172,9 +4356,19 @@ export interface components {
             data: {
                 /** @description Action identifier, e.g. `"key.create"`, `"generation.cancel"`. */
                 action: string;
-                /** @description The API key ID of the actor. None when the master key was used. */
+                /**
+                 * @description The API key that acted. Null for the master key, a signed-in person
+                 *     (a browser session, or an app signed in with OAuth) and litegen
+                 *     itself.
+                 */
                 actor_key_id?: string | null;
-                /** @description Human-readable actor label: `"master-key"` or the key's name. */
+                /**
+                 * @description Who acted: a signed-in person's email, an API key's id (as in
+                 *     `actor_key_id`), `master-key` for the master key, or `system` for
+                 *     litegen itself (a budget alert). Since 2026-11-15 an account's email
+                 *     must be an address, so a new account can't be labelled `master-key`
+                 *     or `system`.
+                 */
                 actor_label: string;
                 /** @description JSON snapshot of the entity state *after* the action (None on delete/revoke). */
                 after_json?: string | null;
@@ -4184,13 +4378,23 @@ export interface components {
                 created_at: string;
                 id: string;
                 /**
-                 * @description Tenant (organization) this audit entry belongs to. None falls back to the
-                 *     default org at the DB layer (single-tenant); set from the caller's active org.
+                 * @description The organization this entry is filed under: the one whose object the
+                 *     action changed, else the one the caller acted in. Absent for an entry
+                 *     filed under no org: in hosted mode, the master key's changes to the
+                 *     gateway and to accounts, and an account change by a person who belongs
+                 *     to no org. Only the master key reads those.
                  */
                 org_id?: string | null;
                 /** @description Target entity ID. */
                 target_id: string;
-                /** @description Target entity type: `"api_key"` or `"generation"`. */
+                /**
+                 * @description What the action changed: `api_key`, `generation`, `user`,
+                 *     `invitation`, `membership`, `organization`, `application`,
+                 *     `provider_credential`, `end_user`, `oauth_client`, a budget
+                 *     (`key_limits`, `org_limits`, `app_limits`, `member_limits`,
+                 *     `end_user_limits`), or the gateway's `model`, `provider`, `routes` and
+                 *     `settings`.
+                 */
                 target_type: string;
             }[];
             /** Format: int32 */
@@ -4255,6 +4459,12 @@ export interface components {
         };
         PaginatedResponse_RequestLog: {
             data: {
+                /**
+                 * @description Whether this request was answered from the cache (an image's
+                 *     `X-Litegen-Cache: hit`): the hit has a row of its own, at what it was
+                 *     charged. False on every other row, older rows included.
+                 */
+                cache_hit: boolean;
                 /** Format: double */
                 cost_usd: number;
                 /** Format: date-time */
@@ -4284,6 +4494,13 @@ export interface components {
                 attempt_number: number;
                 /** Format: date-time */
                 created_at: string;
+                /**
+                 * @description The delivery this attempt belongs to, `whd-` and a UUID: the
+                 *     `X-Litegen-Delivery-Id` the receiver got. Every attempt of one
+                 *     delivery has the same one. `null` on attempts recorded before
+                 *     migration 029.
+                 */
+                delivery_id?: string | null;
                 error_message?: string | null;
                 generation_id: string;
                 id: string;
@@ -4406,6 +4623,12 @@ export interface components {
              * @description The most pixels it adds to one side.
              */
             max_px?: number | null;
+            /**
+             * @description The row grows a canvas and nothing else: a request without `expand`
+             *     is refused with `param_required` (param `expand`) before anything is
+             *     quoted or reserved. Absent (false): `expand` is optional.
+             */
+            required?: boolean;
         };
         ParamSpecFloat: {
             /** Format: double */
@@ -4621,6 +4844,15 @@ export interface components {
              *     `None` means no limit.
              */
             max_items?: number | null;
+            /**
+             * @description For `output_formats`: the containers one vendor job returns together
+             *     (Meshy's rig names a glb and an fbx at once); empty: a job returns the
+             *     one container it is asked for. A generation that keeps nothing
+             *     (`keep_outputs: false`) converts nothing, so it can be promised only
+             *     what its vendor job returns; anything more is refused, 400
+             *     `format_needs_keeping`.
+             */
+            returned_together?: string[];
         };
         /** @description `time_range` on a video operation (3D doc §5): the windows it takes. */
         ParamSpecTimeRange: {
@@ -4639,6 +4871,13 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             expires_at: string;
+            /**
+             * @description Who issued the link: a person's account id, or `None` for the master
+             *     key (and for the dev flag's self-service tokens, local tests only).
+             *     Confirming re-checks that this issuer may still issue it (review round
+             *     4, findings 4 and 5).
+             */
+            issued_by?: string | null;
             token: string;
             /** Format: date-time */
             used_at?: string | null;
@@ -4647,6 +4886,28 @@ export interface components {
         PasswordResetConfirmBody: {
             new_password: string;
             token: string;
+        };
+        /**
+         * @description A password reset link issued for an account. Shown only in this answer:
+         *     litegen sends no email, so give `reset_url` or `token` to the account's
+         *     owner.
+         */
+        PasswordResetLink: {
+            email: string;
+            expires_at: string;
+            /**
+             * @description The dashboard's page that sets the password: `/reset-password/{token}`
+             *     on the origin of `server.public_base_url`; null when it isn't set:
+             *     build it from `token` on the dashboard's origin.
+             */
+            reset_url: string | null;
+            /**
+             * @description Sets the account's password once, until `expires_at` (1 hour), with
+             *     `POST /v1/auth/password-reset/confirm`. Whoever holds it can take over
+             *     the account, so give it only to its owner.
+             */
+            token: string;
+            user_id: string;
         };
         PasswordResetRequestBody: {
             email: string;
@@ -4659,9 +4920,48 @@ export interface components {
         PatchModelStateRequest: {
             disabled: boolean;
         };
+        /**
+         * @description Request body for `PATCH /v1/admin/providers/{name}`: a field sent is set,
+         *     `null` clears it, a field left out keeps its stored value. A key
+         *     (`api_key`, `api_keys`, `key_id`, `key_secret`) left out or `null` keeps
+         *     its stored value, and one sent as `""` removes it, so the env/YAML key
+         *     applies again.
+         */
+        PatchProviderConfigRequest: {
+            api_base?: string | null;
+            api_key?: string | null;
+            api_keys?: string | null;
+            /** @description False takes the provider out of service until re-enabled. */
+            enabled?: boolean | null;
+            extra_headers?: {
+                [key: string]: string;
+            } | null;
+            key_id?: string | null;
+            key_secret?: string | null;
+            model_mapping?: {
+                [key: string]: string;
+            } | null;
+            options?: unknown;
+            region?: string | null;
+        };
         PatchUserRequest: {
             is_active?: boolean | null;
             role?: null | components["schemas"]["Role"];
+        };
+        /**
+         * @description An invitation not yet accepted or expired. Its token is shown only when
+         *     it is made: to send a lost link again, revoke the invitation and invite
+         *     anew.
+         */
+        PendingInvitation: {
+            created_at: string;
+            email: string;
+            expires_at: string;
+            id: string;
+            /** @description The account that sent it; null when the master key did. */
+            invited_by: string | null;
+            org_id: string;
+            role: string;
         };
         /** @description The smallest and largest output edge, in pixels (PixelGenie L16). */
         PixelSize: {
@@ -4789,6 +5089,11 @@ export interface components {
         ProviderConfigView: {
             /** @description Whether a live instance is registered and serving requests. */
             active: boolean;
+            /**
+             * @description The api_base in force, with `[redacted]` for its user info
+             *     (`https://[redacted]@host/v1`). Sent back unchanged in a PUT or PATCH,
+             *     it keeps the URL in force.
+             */
             api_base?: string | null;
             enabled: boolean;
             /** @description Header names only; values can carry secrets. */
@@ -4802,6 +5107,11 @@ export interface components {
                 [key: string]: string;
             };
             name: string;
+            /**
+             * @description The options in force, with `[redacted]` for the user info of each URL
+             *     in them, as for `api_base`. Sent back unchanged in a PUT or PATCH, such
+             *     a URL keeps the one in force.
+             */
             options?: unknown;
             region?: string | null;
             /** @description Where the effective config comes from: `env`, `runtime` or `none`. */
@@ -4831,8 +5141,10 @@ export interface components {
             provider: string;
         };
         /**
-         * @description Non-secret part of a runtime provider config. Unset fields fall back to the
-         *     provider's env/YAML config.
+         * @description The part of a runtime provider config that isn't a key. Unset fields fall
+         *     back to the provider's env/YAML config. `extra_headers` values may carry a
+         *     gateway's own auth: they are never shown back, and the audit log keeps
+         *     only their names.
          */
         ProviderSettings: {
             api_base?: string | null;
@@ -5015,13 +5327,25 @@ export interface components {
              */
             native_grow?: boolean;
             /**
-             * @description On a video model's `last_frame` role: its vendor ends a clip on a
-             *     last frame only when the clip starts from a first frame, so a request
-             *     with a `last_frame` and no `first_frame` (or `init`) image is refused
-             *     with `ref_role_required` before anything is quoted or reserved.
-             *     Absent (false): a last frame alone goes to the vendor.
+             * @description On a video model's `last_frame` or `reference` role: its vendor takes
+             *     an image of this role only in a clip that starts from a first frame
+             *     (it ends a clip on a last frame only after a first one; Runway's
+             *     Kling O3 takes reference images only on image-to-video), so a request
+             *     with an image of this role and no `first_frame` (or `init`) image is
+             *     refused with `ref_role_required` before anything is quoted or
+             *     reserved. Absent (false): an image of this role goes to the vendor
+             *     without a first frame.
              */
             needs_first_frame?: boolean;
+            /**
+             * @description Roles this role can't be sent with in one request: its vendor takes
+             *     one or the other (Vidu: first/last frames, or reference images), so
+             *     a request with an image of this role and one of a role named here is
+             *     refused with `ref_role_conflict` before anything is quoted or
+             *     reserved. Absent (empty): images of any roles go to the vendor
+             *     together.
+             */
+            not_with?: string[];
             required?: boolean;
             /**
              * Format: double
@@ -5071,7 +5395,19 @@ export interface components {
             media_type: string;
             negative_prompt?: string | null;
             org_id?: string | null;
-            /** @description "b64" | "url" | "error" */
+            /**
+             * @description What `output_value` holds:
+             *     - `b64`: the image, base64 (at most 2 MiB; `output_truncated` says
+             *       when it was cut);
+             *     - `url`: a link to the output, when the request had one (a job's
+             *       output is on its generation);
+             *     - `generation`: a cache hit's: the id of the generation whose answer
+             *       it was served, which holds the image (no copy here);
+             *     - `not_kept`: nothing: the request kept nothing (`keep_outputs: false`);
+             *     - `deleted`: nothing: the output's files were deleted (retention); the
+             *       prompt and params stay;
+             *     - `error`: nothing: the request failed (`error_message`).
+             */
             output_kind: string;
             output_mime?: string | null;
             output_truncated: boolean;
@@ -5082,6 +5418,12 @@ export interface components {
             request_id: string;
         };
         RequestLog: {
+            /**
+             * @description Whether this request was answered from the cache (an image's
+             *     `X-Litegen-Cache: hit`): the hit has a row of its own, at what it was
+             *     charged. False on every other row, older rows included.
+             */
+            cache_hit: boolean;
             /** Format: double */
             cost_usd: number;
             /** Format: date-time */
@@ -5335,12 +5677,11 @@ export interface components {
             user_id: string;
         };
         /**
-         * @description Public session info. `id` is a NON-secret SHA-256 fingerprint of the session
-         *     token — never the raw token. The session row's primary key IS the bearer
-         *     credential (it's the `litegen_session` cookie value), so returning it
-         *     verbatim would let any response-body capture (e.g. XSS — which HttpOnly is
-         *     meant to stop) harvest usable session tokens for all the user's devices.
-         *     Revocation resolves the fingerprint back to the row.
+         * @description Public session info. `id` is the SHA-256 hash of the session token, never
+         *     the token: it is all the database keeps of the session, and sent as the
+         *     `litegen_session` cookie it doesn't sign in. So neither a response body
+         *     (e.g. an XSS, which HttpOnly is meant to stop) nor a copy of the database
+         *     yields a working session. Revoking takes this id.
          */
         SessionInfo: {
             created_at: string;
@@ -5357,6 +5698,13 @@ export interface components {
         };
         SetOrgAllowedModelsRequest: {
             models: string[];
+        };
+        /** @description The lowest and the highest value a setting takes, both allowed. */
+        SettingRange: {
+            /** Format: int64 */
+            max: number;
+            /** Format: int64 */
+            min: number;
         };
         /**
          * @description Who signs a signed link.
@@ -5434,6 +5782,12 @@ export interface components {
         /** @description One request in the spend log, with its attribution. */
         SpendLogEntry: {
             app_id?: string | null;
+            /**
+             * @description Whether this request was answered from the cache (an image's
+             *     `X-Litegen-Cache: hit`): the hit has a row of its own, at what it was
+             *     charged. False on every other row, older rows included.
+             */
+            cache_hit: boolean;
             /** Format: double */
             cost_usd: number;
             /** Format: date-time */
@@ -5504,13 +5858,26 @@ export interface components {
         TransferOwnerRequest: {
             new_owner_id: string;
         };
-        /** @description Request body for PATCH /v1/keys/{id}. */
+        /**
+         * @description Request body for PATCH /v1/keys/{id}, a JSON merge patch: a field left
+         *     out stays as it is, `null` clears `token_quota`, `rpm_limit`,
+         *     `webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and
+         *     `is_active` can't be cleared: `null` leaves them as they are.
+         */
         UpdateApiKeyRequest: {
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description When the key stops working; `null` removes the expiry (it never
+             *     expires).
+             */
             expires_at?: string | null;
             is_active?: boolean | null;
             name?: string | null;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to
+             *     stop a key, block it); `null` removes it (no limit).
+             */
             rpm_limit?: number | null;
             /**
              * @description Replace the key's scopes: the same values and the same privilege check
@@ -5518,8 +5885,15 @@ export interface components {
              *     403).
              */
             scopes?: string | null;
-            /** Format: double */
+            /**
+             * Format: double
+             * @description USD budget cap; `null` removes it (no cap).
+             */
             token_quota?: number | null;
+            /**
+             * @description The key's webhook URL, held to the same address rules as on create;
+             *     `null` or `""` removes it (the key then shows `webhook_url: null`).
+             */
             webhook_url?: string | null;
         };
         UpdateAppRequest: {
@@ -5679,6 +6053,13 @@ export interface components {
             attempt_number: number;
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description The delivery this attempt belongs to, `whd-` and a UUID: the
+             *     `X-Litegen-Delivery-Id` the receiver got. Every attempt of one
+             *     delivery has the same one. `null` on attempts recorded before
+             *     migration 029.
+             */
+            delivery_id?: string | null;
             error_message?: string | null;
             generation_id: string;
             id: string;
@@ -5695,6 +6076,53 @@ export interface components {
             success: boolean;
             url: string;
         };
+        /**
+         * @description A key's webhook delivery: one terminal webhook of a job, sent until an
+         *     attempt is answered 2xx or its retries run out (docs/management-api.md,
+         *     "Key webhooks").
+         */
+        WebhookDeliveryState: {
+            /**
+             * Format: int32
+             * @description The attempts sent in the current series; a redeliver starts a new
+             *     series at 0.
+             */
+            attempts: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description `whd-` and a UUID: the `X-Litegen-Delivery-Id` of every attempt. */
+            delivery_id: string;
+            /**
+             * Format: date-time
+             * @description When it ended (`delivered` or `failed`).
+             */
+            finished_at?: string | null;
+            /** @description The job whose webhook this is. */
+            generation_id: string;
+            /** @description Why the latest attempt failed, or why the delivery can't be sent. */
+            last_error?: string | null;
+            /**
+             * Format: int32
+             * @description The latest attempt's HTTP status, when it got an answer.
+             */
+            last_status_code?: number | null;
+            /**
+             * Format: date-time
+             * @description When the next attempt is due, while `pending`.
+             */
+            next_attempt_at: string;
+            /**
+             * Format: date-time
+             * @description When it was last redelivered.
+             */
+            redelivered_at?: string | null;
+            status: components["schemas"]["WebhookDeliveryStatus"];
+        };
+        /**
+         * @description Where a webhook delivery stands.
+         * @enum {string}
+         */
+        WebhookDeliveryStatus: "pending" | "delivered" | "failed";
         WebhookTestResult: {
             delivered: boolean;
             error?: string | null;
@@ -5760,7 +6188,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Health check results: one entry per provider and modality, each checked with the gateway's own keys */
+            /** @description Every provider answered healthy, or none is configured with the gateway's own keys: one entry per provider and modality, each checked with the gateway's own keys */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5776,6 +6204,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `status: degraded`: at least one provider answered unhealthy. The same report as the 200, with what each vendor answered */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthResponse"];
                 };
             };
         };
@@ -5871,7 +6308,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated profile */
+            /** @description Password changed: in the same step your other sessions end, your apps' OAuth sign-ins and their unredeemed codes are revoked, and the unused reset links you issued are deleted; the session that sent this stays signed in. The invitations you sent stay pending (a reset or a deactivation revokes them, a password change doesn't): `GET /v1/orgs/{id}/invitations` lists them, and `DELETE /v1/orgs/{id}/invitations/{invitation_id}` (or the Members page) revokes one you don't want. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5889,7 +6326,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Not authenticated or wrong password */
+            /** @description Not authenticated, a wrong current password (`wrong_password`), or `sign_in_ended`: your sign-in ended while the change ran (a reset, a deactivation or another password change committed, or the session is gone), and nothing was written. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6339,6 +6776,51 @@ export interface operations {
                 };
             };
             /** @description Unknown provider or no runtime config */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_patch_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider adapter name, e.g. openai */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchProviderConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Provider config applied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderConfigView"];
+                };
+            };
+            /** @description Invalid config */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unknown provider */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -7134,6 +7616,8 @@ export interface operations {
                 per_page?: number;
                 /** @description Set to `csv` for a CSV export */
                 format?: string;
+                /** @description The master key only: the organization whose entries to read. Omit for the org the caller acts in (the hosted master key: the entries filed under no org). Anyone else may name only their own. */
+                org_id?: string;
             };
             header?: never;
             path?: never;
@@ -7150,7 +7634,7 @@ export interface operations {
                     "application/json": components["schemas"]["PaginatedResponse_AuditLogEntry"];
                 };
             };
-            /** @description Forbidden (audit:read required) */
+            /** @description Forbidden (audit:read required, or `org_id` names another organization) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7274,7 +7758,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Invalid, expired, or already used */
+            /** @description Invalid, expired or already used; `invitation_revoked` when whoever sent it may no longer invite to its role (demoted, removed or deactivated since it was sent: ask for a new invitation); or (an invitation made before addresses were checked) `invalid_email` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7541,14 +8025,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Password updated, all sessions revoked */
+            /** @description Password updated, and a deactivated account reactivated. In the same step the account's sessions end and its apps' OAuth sign-ins and unredeemed codes are revoked; its API keys keep working. */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Invalid or expired token */
+            /** @description Invalid, expired or already used token (`invalid_token`, `token_expired`), a link whose issuer may no longer issue it (`invalid_token`: no longer active, no longer above the account in every organization, or no longer allowed to reactivate it), or a short password (`password_too_short`). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7603,7 +8087,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuthResponse"];
                 };
             };
-            /** @description Bad request (short password) */
+            /** @description Bad request (`password_too_short`, `invalid_email`) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8130,7 +8614,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The generation as it now stands: its kept files deleted (`files_deleted_at`), its request (prompt and params) removed from it and from the request log. The billing record stays. Files in an app's own bucket are deleted too; a vendor's own files (`kept: false`) are the vendor's. */
+            /** @description The generation as it now stands: its kept files deleted (`files_deleted_at`), its request (prompt and params) removed from it and from the request log, including the artifacts of the cache hits it answered, which carry the same request. The billing records stay, the hits' too. Files in an app's own bucket are deleted too; a vendor's own files (`kept: false`) are the vendor's. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8307,7 +8791,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Forbidden */
+            /** @description `forbidden_scope`: the key or sign-in holds neither the `generate` nor the `read` scope; `forbidden`: no active organization, or no permission to read the generation; `not_file_owner`: the file belongs to a key, app or org outside the app's owner scope; `refused_by_hook`: an operator's hook refused (403 unless the hook names another status from 400 to 599) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8316,8 +8800,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description No such generation or asset */
+            /** @description No such generation or asset, or the file is no longer in its store */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `files_deleted`: the generation's files were deleted, on request or after its app's retention (`files_deleted_at`); `vendor_file_gone`: the vendor no longer has a file litegen didn't keep (`keep_outputs: false`) */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8327,6 +8820,33 @@ export interface operations {
             };
             /** @description `range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes *\/<length>` when the length is known */
             416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The generation could not be read; retry shortly */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description litegen could not read the file from its store or the app's bucket, or a store answered a range outside the file (`provider_error`); `vendor_file_unreachable`: a file litegen didn't keep could not be fetched from the vendor (not a public address, a network error, a status other than 200, 403, 404 or 410, or over 1 GiB) */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `hook_failed`: an operator's hook on this route (its `file_access`, or a `pre_call` or `post_call` whose `routes` name `files`) failed, and its `on_error` is `refuse` */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8371,6 +8891,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description The file is held by storage litegen does not read back (an S3 image store); follow `Location` */
+            307: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description `invalid_link`, `link_expired` or `link_revoked` */
             403: {
                 headers: {
@@ -8380,7 +8907,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description No such generation or asset */
+            /** @description No such generation or asset, the app's files are `private` (the file route only), or the file is no longer in its store */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8389,7 +8916,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description `vendor_file_gone`: the vendor no longer has a file litegen didn't keep */
+            /** @description `files_deleted`: the generation's files were deleted, on request or after its app's retention (`files_deleted_at`); `vendor_file_gone`: the vendor no longer has a file litegen didn't keep (`keep_outputs: false`) */
             410: {
                 headers: {
                     [name: string]: unknown;
@@ -8400,6 +8927,24 @@ export interface operations {
             };
             /** @description `range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes *\/<length>` when the length is known */
             416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The generation, or whether its links were revoked, could not be read; retry shortly */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description litegen could not read the file from its store or the app's bucket, or a store answered a range outside the file (`provider_error`); `vendor_file_unreachable`: a file litegen didn't keep could not be fetched from the vendor (not a public address, a network error, a status other than 200, 403, 404 or 410, or over 1 GiB) */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8520,7 +9065,7 @@ export interface operations {
                 "Idempotency-Key"?: string | null;
                 /** @description `false` keeps nothing for this request: no copy of the output is stored anywhere, and the answer carries the image itself or the vendor's own link (docs/storage-access.md). A request can keep less than its app does, never more; any other value is a 400 `invalid_keep_outputs_header`. */
                 "X-Litegen-Keep-Outputs"?: string | null;
-                /** @description RFC 7240. `respond-async` answers 202 as soon as the vendor has the job; `wait=N` waits up to N seconds (at most the vendor timeout) and answers 202 if the job is still running then. Honoured only for a model whose vendor runs jobs, a request that keeps its output and isn't an edit litegen finishes itself; otherwise the call is synchronous (`Preference-Applied` absent). See docs/async-images.md. */
+                /** @description RFC 7240. `respond-async` answers 202 as soon as the vendor has the job; `wait=N` waits up to N seconds (at most the vendor timeout; on a model route, the deployment's `timeout_seconds`) and answers 202 if the job is still running then. Honoured only for a model whose vendor runs jobs (on a model route, every deployment's vendor), a request that keeps its output and isn't an edit litegen finishes itself; otherwise the call is synchronous (`Preference-Applied` absent). See docs/async-images.md. */
                 Prefer?: string | null;
             };
             path?: never;
@@ -8826,7 +9371,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiKeyCreatedResponse"];
                 };
             };
-            /** @description An unknown scope, or `invalid_webhook_url`: a `webhook_url` this key may not use. It must be a public address unless, in single-tenant mode, the key is the deployment's own (made with the master key, or by an Owner or Admin of its org; `webhooks.internal_targets`) */
+            /** @description An unknown scope; `invalid_limits` for an `rpm_limit` of 0 (to stop a key, block it); or `invalid_webhook_url`: a `webhook_url` this key may not use. It must be a public address unless, in single-tenant mode, the key is the deployment's own (made with the master key, or by an Owner or Admin of its org; `webhooks.internal_targets`) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8926,7 +9471,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiKeyDetail"];
                 };
             };
-            /** @description An unknown scope, or `invalid_webhook_url`: a `webhook_url` the key may not use (a public address unless, in single-tenant mode, the key's owner is an Owner or Admin of the deployment's org, or it has none) */
+            /** @description An unknown scope; `invalid_limits` for an `rpm_limit` of 0 (to stop a key, block it); or `invalid_webhook_url`: a `webhook_url` the key may not use (a public address unless, in single-tenant mode, the key's owner is an Owner or Admin of the deployment's org, or it has none) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -9250,7 +9795,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paginated webhook deliveries. A delivery's `payload_json` is the webhook as sent when the reader is inside the app's owner scope for its generation (or the app's files are `public`); for any other reader it is the generation as stored now, presented for that reader, or `{}` once it is gone. */
+            /** @description Paginated webhook delivery attempts, newest first; `delivery_id` names each attempt's delivery. The payload is kept once per delivery, so every attempt of one delivery shows the payload of its latest attempt (each attempt is built when it is sent, its signed links fresh). That `payload_json` is the webhook as sent when the reader is inside the app's owner scope for its generation (or the app's files are `public`); for any other reader it is the generation as stored now, presented for that reader, or `{}` once it is gone. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9261,6 +9806,76 @@ export interface operations {
             };
             /** @description Key not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    redeliver_webhook_delivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key ID */
+                id: string;
+                /** @description The delivery's id, `whd-` and a UUID: `delivery_id` in the list of the key's webhook deliveries */
+                delivery_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The delivery is due again: a fresh series of attempts under the same delivery id, numbered from 1 again in the list, on the full retry schedule. A replica sends its first attempt within about a second, with the key's webhook_url and the address rules of that moment (checked again at send time, as every attempt is). The body is the delivery's state now. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryState"];
+                };
+            };
+            /** @description `no_webhook_configured`: the key has no webhook_url; or `invalid_webhook_url`: one the key may not use any more (its owner was demoted or left) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `forbidden`: the caller may not read this key's deliveries or send its webhook (`key:test_webhook:own` for one's own key, `key:test_webhook:any`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Key not found, or the key has no delivery with that id (a finished delivery is kept for good, or `webhooks.log_retention_days` once that is set) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `delivery_pending`: the delivery is still being sent; its next attempt is due at `next_attempt_at` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `redeliver_too_soon`: the delivery was redelivered less than a minute ago (`Retry-After` is set) */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10268,6 +10883,88 @@ export interface operations {
             };
         };
     };
+    list_invitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The org's invitations not yet accepted or expired, newest first, without their tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingInvitation"][];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_invitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+                /** @description Invitation ID */
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked: its token no longer accepts */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No invitation with this id in this org. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `invitation_accepted`: the invitation was already accepted; remove the member instead. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_org_limits: {
         parameters: {
             query?: never;
@@ -10462,9 +11159,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["InviteResponse"];
+                };
             };
-            /** @description Cannot invite owner directly */
+            /** @description Bad request (`cannot_invite_owner`, `invalid_email`) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -10473,7 +11172,16 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Forbidden */
+            /** @description Not authenticated, or `sign_in_ended`: your sign-in ended while this request ran (a reset, a deactivation or another password change committed), and no invitation was stored. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden: the invited role must be below your own in the organization (an Admin invites Members and Viewers, an Owner Admins too). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10514,7 +11222,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Forbidden */
+            /** @description Forbidden: you must outrank the member to remove them, unless you remove yourself (leave). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10568,7 +11276,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Forbidden */
+            /** @description Forbidden: you must outrank the member's current role, and may not grant a role at or above your own. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11114,7 +11822,7 @@ export interface operations {
                     "application/json": components["schemas"]["InviteResponse"];
                 };
             };
-            /** @description Bad request (e.g. owner role not allowed) */
+            /** @description Bad request (`cannot_invite_owner`, `invalid_email`) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -11123,7 +11831,16 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Forbidden */
+            /** @description Not authenticated, or `sign_in_ended`: your sign-in ended while this request ran (a reset, a deactivation or another password change committed), and no invitation was stored. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden: the invited role must be below your own in the organization (an Admin invites Members and Viewers, an Owner Admins too). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11153,6 +11870,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description `transfer_owner_per_org`: in hosted mode each organization has its own Owner; transfer one with `POST /v1/orgs/{id}/transfer-owner`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description Forbidden (not owner) */
             403: {
@@ -11186,7 +11912,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description User deactivated */
+            /** @description User deactivated: in the same step its sessions end, its apps' OAuth sign-ins and unredeemed codes are revoked, its unused reset links and the ones it issued are deleted, and the pending invitations it sent, in every organization, are revoked (each in the audit log). */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -11202,7 +11928,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Forbidden */
+            /** @description Forbidden (deactivating needs a role above the user's own, so never your own) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11256,7 +11982,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Forbidden */
+            /** @description Forbidden (a role change needs a role above the user's own, and never grants one at or above yours; deactivating or reactivating needs a role above the user's own, so never your own) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11266,6 +11992,56 @@ export interface operations {
                 };
             };
             /** @description User not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    issue_password_reset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description User ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The link, shown only in this answer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordResetLink"];
+                };
+            };
+            /** @description Not authenticated, or `sign_in_ended`: your sign-in ended while this request ran (a reset, a deactivation or another password change committed), and no link was stored. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden: only the master key, or a person who outranks the account in every organization it belongs to; never for your own account (change it with `PATCH /v1/account`, which asks for the current password); for a deactivated account, only one who may reactivate it, since confirming the link reactivates it. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `user_not_found` */
             404: {
                 headers: {
                     [name: string]: unknown;

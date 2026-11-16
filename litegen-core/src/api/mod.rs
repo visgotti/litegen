@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod cors;
 #[cfg(test)]
 mod error_text_scan_tests;

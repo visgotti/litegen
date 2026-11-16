@@ -1,0 +1,67 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值 | 支持能力 | 输入上限 | 尺寸约束 | 简要说明 |
+| Hy-Image-3.5-preview | hy-image-v3.5-preview | 文生图 / 参考生图 / 多轮编辑（同步） | 100k tokens | 宽高 ∈ [256, 8192]，面积 ≤ 16777216（4K，4096×4096） | Chat/Messages 协议，支持多模态输入、多轮编辑上下文、外部搜索增强、按面积档位自动决定尺寸，最高支持 4K 输出。 |
+| Hy-Image-3.0 | hy-image-v3 | 文生图 / 参考生图（同步） | 8192 字符 | 宽高 ∈ [512, 2048]，面积 ≤ 1024×1024 | 支持 prompt 自动改写、37 组预设尺寸、自定义水印脚注。 |
+
+## Hy-Image-3.5-preview 图片生成（文生图 / 图生图 / 多轮编辑） › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v35-generation
+
+## Hy-Image-3.5-preview 图片生成（文生图 / 图生图 / 多轮编辑） › 2. 输入参数 › 2.1 顶层参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型 ID。取值：hy-image-v3.5-preview |
+| messages | 是 | array[object] | 多轮会话内容，时间从旧到新排列。 服务端会取数组中最后一个 role=user 的消息作为本轮生图指令，其余对象作为历史上下文一并透传（用于多轮编辑）。元素结构见 2.2 messages 元素结构。 |
+| size | 否 | string | 生成尺寸，格式 ${宽}x${高}。 约束： 1. 宽、高均为正整数，取值范围 [256, 8192]。 2. 宽 × 高（面积）不超过 16777216，即最高支持 4096×4096（4K）。 不传或传空串时由模型基于 prompt 语义与 generate_max_pixels 自主决定尺寸；传入具体值时强制按指定尺寸出图。需要 4K 输出时，直接传 "size": "4096x4096" 即可。 |
+| seed | 否 | integer | 生成种子，int64 类型，范围 [0, 2^63-1]；为 0 或不传时服务端随机分配。负值将被拒绝。 |
+| generate_max_pixels | 否 | integer | 指定生成图片的目标面积（像素数），仅在未传 size 时生效。 支持 3 个枚举档位：1048576（1K，1024×1024）、2359296（1.5K，默认）、4194304（2K）；传入非枚举中间值时按最近面积归档。 注：该参数最高档位为 2K，需要更高分辨率请改用 size 指定。 |
+| resize_max_pixels | 否 | integer | 输入参考图面积上限（像素数）。原图面积 ≤ 阈值时原样透传；> 阈值时按比例等比缩放到 ≈ 阈值后再送入模型，用于控制大图（4K/6K）带来的上下文 token 消耗。 不传默认 1048576（1024×1024）。 |
+| session | 否 | string | 会话 ID，用于推理服务一致性哈希调度（同 session 的多轮请求会落到同一推理实例，提升 KV-cache 命中率）。多轮对话建议整条会话保持同一 session 值。 |
+| footnote | 否 | string | 业务自定义水印内容，最长 16 字符（按 utf8.RuneCount 计算，不区分中英文），生成在图片右下角。 |
+| use_search_tool | 否 | object | 外部搜索增强开关，结构固定为 {"value": true} 或 {"value": false}。当前默认关闭。 |
+
+## Hy-Image-3.5-preview 图片生成（文生图 / 图生图 / 多轮编辑） › 2. 输入参数 › 2.2 messages 元素结构
+| 参数名 | 必选 | 类型 | 描述 |
+| role | 是 | string | 角色，支持 user / assistant / tool。 tool 角色仅在「把上一轮生图结果回灌作为下一轮上下文」时出现。 |
+| content | 否 | array[object] | 该轮的具体内容，元素结构见 2.3 content 元素结构。 assistant 仅触发工具调用、不发文本时可省略。 |
+| reasoning | 否 | string | 仅 role=assistant 多轮回灌时使用，透传上一轮响应中的思维链原文。 |
+| tool_calls | 否 | array | 仅 role=assistant 多轮回灌时使用；元素结构为标准 OpenAI tool_call：{id, type:"function", function:{name, arguments}}，其中 arguments 为 JSON 字符串。 |
+| tool_call_id | 否 | string | 仅 role=tool 多轮回灌时使用；须与上一条 assistant.tool_calls[i].id 字符级一致。 |
+
+## Hy-Image-3.5-preview 图片生成（文生图 / 图生图 / 多轮编辑） › 2. 输入参数 › 2.3 content 元素结构
+| 参数名 | 必选 | 类型 | 描述 |
+| type | 是 | string | 内容类型，text 或 image_url。 |
+| text | 否 | string | 当 type=text 时使用，表示具体文本。 |
+| image_url | 否 | object | 当 type=image_url 时使用，结构为 {"url": "..."}。 支持 http(s) 公网 URL 或 data:image/...;base64,... 形态；单图大小 ≤ 20MB，图片总数量 ≤ 20 张（超过时服务端按轮次由远到近自动截断）。 |
+| is_generate | 否 | bool | 仅 role=tool 回灌生图 content 时填 true，标记「这是上一轮 generate 工具产出的图」。其它场景不传。 |
+
+## Hy-Image-3.5-preview 图片生成（文生图 / 图生图 / 多轮编辑） › 4. 输出参数
+| 参数名 | 类型 | 描述 |
+| id | string | 此次请求的 traceID，整流唯一。 |
+| object | string | 固定 image.chat.completion.chunk。 |
+| created | integer | Unix 秒级时间戳。 |
+| model | string | 原厂实际服务返回的内部版本标识（形如 HY-Image-3.5-preview-4090-Tob-vX.Y），会随上游发布变化，不等同于请求体中传入的 hy-image-v3.5-preview，仅供参考，不建议客户端取此字段做业务分支判断。 |
+| round | integer | 本帧所属 LLM 轮次，从 0 起算。 |
+| choices | list | 固定长度 1。 |
+| choices[0].delta | object | 主图载体，结构为 {"type":"image", "image":{"url":"...", "width":..., "height":..., "source":"generate", "tool_call_id":"generate@call_0"}}。 choices[0].delta.image.url 即为本次生图的最终交付 URL，客户端应优先读取此字段。 |
+| choices[0].finish_reason | string \| null | 成功终态帧下往往为 null（原厂将图片作为最后一帧 delta 下发后直接关流，不额外发送完结帧）；仅在内容安全拦截 / 业务错误时会为 error 等非空值。 业务侧判断是否成功建议依据 choices[0].delta.image.url 是否存在，而非 finish_reason。 |
+| usage.total_tokens | integer | 本次任务消耗的 token 总量（原厂依据，v3.5 目前不拆分 prompt / completion）。 |
+| tokenhub_usage.total_tokens | integer | TokenHub 网关侧计费/对账使用的 token 消耗，一般与 usage.total_tokens 保持一致。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+| assembled_history | list | 服务端拼好的「下一轮回灌消息序列」，结构与请求体 messages 元素完全一致，典型为 3 条对象： 1. role=assistant（含 reasoning + tool_calls，描述本轮思考与工具调用） 2. role=tool（含工具产出图的中间 URL，tool_call_id 与 ① 一致） 3. role=assistant（只含收尾文本，例如「你请求的图片已完成。」） 多轮编辑时直接把该数组原样追加到下一轮 messages 即可。 |
+| error | object | 仅失败终态帧才带，OpenAI 风格 {type, code, message, request_id}。 |
+
+## 附录 › Hy-Image-3.0 预设尺寸列表
+| 2048 x 512 | 1984 x 512 | 1920 x 512 | 1856 x 512 |
+| 1792 x 512 | 1728 x 512 | 1664 x 512 | 1600 x 512 |
+| 1536 x 512 | 1472 x 576 | 1408 x 640 | 1344 x 704 |
+| 1280 x 768 | 1216 x 832 | 1152 x 896 | 1088 x 960 |
+| 1024 x 1024 | 960 x 1088 | 896 x 1152 | 832 x 1216 |
+| 768 x 1280 | 704 x 1344 | 640 x 1408 | 576 x 1472 |
+| 512 x 1536 | 512 x 1600 | 512 x 1664 | 512 x 1728 |
+| 512 x 1792 | 512 x 1856 | 512 x 1920 | 512 x 1984 |
+| 512 x 2048 | 768 x 1024 | 720 x 1280 | 1024 x 768 |
+| 1280 x 720 | - | - | - |
+
+## 附录 › 参考图输入约束
+| 模型 | 支持格式 | 单图大小 | 数量 |
+| Hy-Image-3.0 | png / jpeg / jpg，支持图片 URL 或 Base64 | ≤ 10MB | 0~3 张 |
+| Hy-Image-3.5-preview | png / jpeg / jpg，支持图片 URL 或 Base64 | ≤ 20MB | ≤ 20 张 |

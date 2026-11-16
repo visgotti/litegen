@@ -1,0 +1,49 @@
+-- The files of deleted orgs and apps that are still to be deleted from
+-- litegen's own store (docs/storage-access.md, "Deleting an org or an app";
+-- docs/RUNBOOK.md, "A deleted org's or app's files").
+--
+-- Who records them: deleting an org or an app (`delete_organization`,
+-- `delete_application`), in the transaction that deletes its rows, one row per
+-- file litegen kept for one of its generations whose files aren't deleted yet:
+-- the URL the generation recorded (its `assets`; a row from before litegen
+-- kept results, its `result_url`). A file litegen didn't keep (`kept: false`)
+-- is the vendor's and isn't recorded. So a delete that commits can't lose its
+-- files, and one that rolls back records nothing.
+--
+-- Who deletes them: the replica that deleted the org or app starts at once,
+-- and every replica's worker (src/proxy/tenant_files.rs) takes the due rows
+-- every minute. A claim counts an attempt and moves `next_attempt_at` ahead by
+-- the claim's hold in one statement, so no other worker takes the row until
+-- then, and a worker that dies leaves it due again once the hold has passed. A
+-- file deleted is its row deleted; a delete that fails makes the row due again
+-- after a wait that grows with its attempts (at most 6 hours), with
+-- `last_error`. Deleting a file that is gone already is no error, so a file
+-- deleted twice (by a worker that died before it could remove the row) does
+-- no harm.
+--
+-- Only litegen's own store: a URL it doesn't recognise (a file in an app's own
+-- bucket, which is the customer's and stays; a vendor's link) is let go
+-- without a delete.
+--
+-- Times are SQLite's own `strftime('%Y-%m-%d %H:%M:%f', 'now', ...)` text,
+-- written and compared only in that format, as the poll claims are (023).
+CREATE TABLE IF NOT EXISTS tenant_file_deletions (
+    -- Never reused (AUTOINCREMENT): a worker whose hold lapsed may still
+    -- delete its row by id once it has deleted the file.
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- What was deleted: 'org' or 'app', and its id.
+    scope TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    -- The generation that kept the file, and the file's URL as it recorded it.
+    generation_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    -- The tries so far: each claim counts one.
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT,
+    created_at TEXT NOT NULL
+);
+-- The workers' claim reads the rows by when they are due.
+CREATE INDEX IF NOT EXISTS idx_tenant_file_deletions_due ON tenant_file_deletions(next_attempt_at);
+-- The deleting replica's first pass reads its own org's or app's rows.
+CREATE INDEX IF NOT EXISTS idx_tenant_file_deletions_tenant ON tenant_file_deletions(scope, tenant_id);

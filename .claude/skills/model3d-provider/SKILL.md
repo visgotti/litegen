@@ -95,6 +95,14 @@ parsed as untrusted input. Read this whole skill before writing code.
   to the URL every file was downloaded from**. Such a request may promise
   only the formats the vendor makes itself (400 `format_needs_keeping`
   otherwise), and may not ask for packages (400 `option_needs_keeping`).
+  Of those, it gets only what its one vendor job returns
+  (`ModelSchema::keep_nothing_refusal`): the one container the job is asked
+  for, or, on a row with `output_formats.returned_together`, its glb and
+  each container of that list the vendor is asked for (an fbx under
+  `format_source: glb` is not); asking for more is refused with
+  `format_needs_keeping` too. Its files aren't downloaded: the delivery gate
+  answers `Fetch::LinksOnly` and the adapter checks each link instead (see
+  [Poll](#writing-the-adapter)).
 - **Billing** is a flat `base_cost_usd` per generation.
 - **The consumer contract.** aipix, the first 3D consumer, coded against
   wire shapes that are now fixed:
@@ -126,6 +134,12 @@ been paid.
     not how many formats a caller may name. A scalar format field means
     `max_items: 1`.
   - `default` is `[glb]`.
+  - `returned_together` lists the containers one vendor job returns
+    together, when it returns several: Meshy's rig and animate and fal's
+    Meshy rig name a glb and an fbx at once (`[glb, fbx]`). Set it only
+    then; left out, a job returns the one container it is asked for. The
+    loader checks it sits within `enum_values` and holds `glb`. It decides
+    what a generation that keeps nothing can be promised (above).
 - **The API advertises** what can be delivered: the native formats, plus
   every container litegen can derive, as long as at least one native format
   is readable. It also exposes `derivable_values`, and serves as `default`
@@ -190,7 +204,8 @@ been paid.
   compressed vendor file converts like a plain one, under the reader's
   limits (`mesh/draco.rs`: a Draco primitive past 24 MB of decoded
   attributes, the ceiling set to bound the decoder's memory on the shapes
-  measured, strips and grids, with a faces-per-point pre-check still open; a
+  measured, strips and grids, or past its header's faces-per-point
+  pre-check, 5 by default, each limit configurable in `mesh.draco`; a
   primitive in any mode but TRIANGLES or TRIANGLE_STRIP, a point cloud or a
   pre-2.2 bitstream is refused by name). What litegen delivers is never
   compressed; the vendor's compressed file is kept as `original`. A
@@ -345,6 +360,19 @@ SF3D and SPAR3D use the `stability` key, for example), and you're adding
   - `Fetch::Go { waited }` with `waited >= REFRESH_LINKS_AFTER` (10 s): read
     the job again before you download, since signed URLs can expire while the
     poller waits for a delivery slot (Tripo and Meshy do this).
+  - `Fetch::LinksOnly { waited }`: the job keeps nothing (`keep_outputs:
+    false`), so its vendor links are handed out and nothing is downloaded.
+    Call `download::fetch_or_check(.., links_only)` for each file in place
+    of the download: one ranged GET per file (`Range: bytes=0-0`, never
+    HEAD, since a presigned link's signature covers the method; the body is
+    never read), with the size from `Content-Range` in
+    `Model3dFile.size_bytes` and `bytes` left empty, and the same Gone and
+    Transient rules as a download. `waited` works as for `Go`. A dead mesh
+    link fails the job and a dead preview or texture is skipped, as in a
+    download; a requested container the vendor makes (Meshy's fbx) whose
+    link is dead fails the job too, since nothing converts it.
+    `a_job_that_keeps_nothing_checks_each_link_and_downloads_nothing` in
+    `tripo.rs`, `meshy.rs` and `fal.rs` is the test.
 
   An adapter that downloads nothing in its poll (a synchronous vendor's
   stashed bytes) keeps the trait's default, which never asks: the caller
@@ -385,8 +413,9 @@ SF3D and SPAR3D use the `stability` key, for example), and you're adding
     a 401 or 404 on the status call. The poller reaps those rows: failed,
     refunded and webhooked, with the poll error as their only reason.
 
-  `fetch_asset` in `model3d/fal.rs` returns `AssetError::{Transient, Gone}`
-  so that its caller can map each case correctly.
+  `fetch_or_check` (and `fetch_asset`) in `model3d/download.rs`, which every
+  3D adapter calls, returns `AssetError::{Transient, Gone}` so that its
+  caller can map each case correctly.
 - **Progress** is the vendor's percentage when given. fal reports only queue
   position, so it uses a fixed 50 rather than inventing a curve.
 
@@ -477,6 +506,9 @@ Write these in the adapter's `#[cfg(test)] mod tests`, using the idioms in
 - [ ] **Vendor format choice**:
   - a format `prefers_vendor_native` selects (fbx, usdz, or anything
     litegen can't derive) is asked of the vendor;
+  - with `format_source: glb`, a promised fbx or usdz asks for the glb
+    (`asks_vendor_for`; `an_fbx_made_from_the_glb_asks_tripo_for_its_glb`
+    in `tripo.rs` is the test);
   - derivable requests ask for glb when it's offered;
   - an endpoint without a format field gets no field.
 - [ ] **Submit**:
@@ -492,6 +524,9 @@ Write these in the adapter's `#[cfg(test)] mod tests`, using the idioms in
   - a gate that says `StandAside` downloads nothing and answers
     `processing`; after a long wait for the gate, the job's links are read
     again;
+  - a gate that says `LinksOnly` downloads nothing: each file comes back
+    with its link, its `size_bytes` and no bytes, and a dead mesh link
+    fails the job;
   - success with an error → `Failed` carrying the vendor message;
   - success with no mesh → `Failed`;
   - a texture that fails to download is skipped, not fatal;

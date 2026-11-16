@@ -44,6 +44,7 @@ fn request(client_id: &str, now: DateTime<Utc>) -> AuthRequest {
         code_hash: None,
         decided_at: None,
         consumed_at: None,
+        sign_in_epoch: None,
     }
 }
 
@@ -56,6 +57,7 @@ fn approve(code_hash: &str, now: DateTime<Utc>) -> Decision {
         code_hash: code_hash.to_string(),
         code_expires_at: now + Duration::seconds(60),
         at: now,
+        sign_in_epoch: 0,
     }
 }
 
@@ -71,6 +73,7 @@ fn grant(client_id: &str, user_id: &str, now: DateTime<Utc>) -> Grant {
         created_at: now,
         last_used_at: None,
         revoked_at: None,
+        sign_in_epoch: 0,
     }
 }
 
@@ -303,11 +306,11 @@ async fn claim_grant_keeps_one_live_grant(db: &dyn DatabaseStore) {
     let now = stored_now();
     let (client, user) = (uid("lgc"), uid("user"));
     let first = grant(&client, &user, now);
-    assert_eq!(s.claim_grant(&first).await.unwrap(), first, "the first claim inserts");
+    assert_eq!(s.claim_grant(&first).await.unwrap().expect("claimed"), first, "the first claim inserts");
 
     // Signing in again: the same grant, holding the new scopes.
     let again = Grant { scopes: vec!["ai:read".into()], ..grant(&client, &user, now) };
-    let claimed = s.claim_grant(&again).await.unwrap();
+    let claimed = s.claim_grant(&again).await.unwrap().expect("claimed");
     assert_eq!(claimed.id, first.id);
     assert_eq!(claimed.scopes, vec!["ai:read".to_string()]);
     assert_eq!(s.get_grant(&first.id).await.unwrap().unwrap().scopes, vec!["ai:read".to_string()]);
@@ -319,10 +322,10 @@ async fn claim_grant_keeps_one_live_grant(db: &dyn DatabaseStore) {
 
     // Another app is another grant, and so is one after a revocation.
     let appless = Grant { app_id: None, ..grant(&client, &user, now) };
-    assert_eq!(s.claim_grant(&appless).await.unwrap().id, appless.id);
+    assert_eq!(s.claim_grant(&appless).await.unwrap().expect("claimed").id, appless.id);
     s.revoke_grant(&first.id, now).await.unwrap();
     let fresh = grant(&client, &user, now);
-    assert_eq!(s.claim_grant(&fresh).await.unwrap().id, fresh.id);
+    assert_eq!(s.claim_grant(&fresh).await.unwrap().expect("claimed").id, fresh.id);
 }
 
 async fn concurrent_claims_share_one_grant(db: &dyn DatabaseStore) {
@@ -332,7 +335,7 @@ async fn concurrent_claims_share_one_grant(db: &dyn DatabaseStore) {
         let (client, user) = (uid("lgc"), uid("user"));
         let (a, b) = (grant(&client, &user, now), grant(&client, &user, now));
         let (a, b) = tokio::join!(s.claim_grant(&a), s.claim_grant(&b));
-        assert_eq!(a.unwrap().id, b.unwrap().id, "two first sign-ins at once end with one grant");
+        assert_eq!(a.unwrap().expect("claimed").id, b.unwrap().expect("claimed").id, "two first sign-ins at once end with one grant");
     }
 }
 

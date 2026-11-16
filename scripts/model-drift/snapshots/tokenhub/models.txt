@@ -1,0 +1,93 @@
+图像生成 | Hy-Image-3.5-preview | hy-image-v3.5-preview | 文生图 图生图
+图像生成 | MiniMax H3-Image Highspeed | minimax-image-h3-highspeed | 文生图 图生图
+图像生成 | MiniMax H3-Image | minimax-image-h3 | 文生图 图生图
+图像生成 | WAND-Vega-Image-1.0-Lite | wand-vega-image-lite | 文生图 图生图
+图像生成 | WAND-Vega-Image-1.0-Flash | wand-vega-image-flash | 文生图 图生图
+图像生成 | WAND-Vega-Image-1.0-Pro | wand-vega-image-pro | 文生图 图生图
+图像生成 | HiDream-O1-Image-1.5 | hidream-image-o1-1.5 | 文生图
+图像生成 | HiDream-O1-Image-Edit-1.5 | hidream-image-o1-1.5-edit | 图生图
+图像生成 | Kling-Image-v3 | kling-image-v3 | 文生图 图生图
+图像生成 | Kling-Image-o1 | kling-image-o1 | 文生图 图生图
+图像生成 | Kling-Image-v3-omni | kling-image-v3-omni | 文生图 图生图
+图像生成 | Vidu-Image-q2 | vidu-image-q2 | 文生图 图生图
+图像生成 | Seedream-Image-v5.5 | seedream-image-v5.5 | 文生图 图生图
+图像生成 | Seedream-Image-v5.0-flash | seedream-image-v5.0-flash | 文生图 图生图
+图像生成 | Seedream-Image-v5.0-pro | seedream-image-v5.0-pro | 文生图 图生图
+图像生成 | Seedream-Image-v5.0-lite （2026-11-24 下线） | seedream-image-v5.0-lite | 文生图 图生图
+图像生成 | HY-Image-V3.0 （2026-09-15下线） | hy-image-v3.0 | 文生图 图生图
+图像生成 | HY-Image-Lite （2026-09-15下线） | hy-image-lite | 文生图
+图像生成 | Hy-Image-3.0 （2026-11-12 下线） | hy-image-v3 | 文生图 图生图
+视频生成 | WAND-Vega-Video-1.0-Lite | wand-vega-video-1.0-lite | 文生视频 图生视频 参考生视频
+视频生成 | MiniMax-Video-H3-Highspeed | minimax-video-h3-highspeed | 文生视频 图生视频 参考生视频
+视频生成 | MiniMax-Video-H3-Lite | minimax-video-h3-lite | 文生视频 图生视频 参考生视频
+视频生成 | MiniMax-Video-H3-Max | minimax-video-h3-max | 文生视频 图生视频
+视频生成 | MiniMax-Video-H3 | minimax-video-h3 | 文生视频 图生视频 参考生视频
+视频生成 | MiniMax-Video-v2.3 | minimax-video-v2.3 | 文生视频 图生视频
+视频生成 | MiniMax-Video-v2.3-fast | minimax-video-v2.3-fast | 文生视频 图生视频
+视频生成 | Kling-Video-v4 | kling-video-v4 | 文生视频 图生视频 参考生视频
+视频生成 | Kling-Video-v4-flash | kling-video-v4-flash | 文生视频 图生视频 参考生视频
+视频生成 | Kling-Video-motion-control-v3.0 | kling-video-motion-control-v3.0 | 动作控制
+视频生成 | Kling-Video-motion-control-v2.6 | kling-video-motion-control-v2.6 | 动作控制
+视频生成 | Kling-Video-V3 | kling-video-v3 | 文生视频 图生视频
+视频生成 | Kling-Video-V3-omni | kling-video-v3-omni | 文生视频 图生视频 参考生视频
+视频生成 | Kling-Video-V3-turbo | kling-video-v3-turbo | 文生视频 图生视频
+视频生成 | Kling-Video-V2.6 | kling-video-v2.6 | 文生视频 图生视频
+视频生成 | Kling-Video-V2.5-turbo | kling-video-v2.5-turbo | 文生视频 图生视频
+视频生成 | Kling-Video-O1 | kling-video-o1 | 文生视频 图生视频 参考生视频
+视频生成 | Vidu-Video-q4-preview | vidu-video-q4-preview | 文生视频 图生视频 参考生视频
+视频生成 | Vidu-Video-q3.0-pro | vidu-video-q3-pro | 文生视频 图生视频
+视频生成 | Vidu-Video-q3.0-turbo | vidu-video-q3-turbo | 文生视频 图生视频 参考生视频
+视频生成 | Vidu-Video-q3.0 | vidu-video-q3 | 文生视频 图生视频 参考生视频
+视频生成 | Vidu-Video-q2.0 | vidu-video-q2 | 文生视频 图生视频 参考生视频
+视频生成 | Vidu-Video-q2.0-pro | vidu-video-q2-pro | 文生视频 图生视频 参考生视频
+视频生成 | Vidu-Video-q2.0-turbo | vidu-video-q2-turbo | 文生视频 图生视频
+视频生成 | PixVerse-Video-v6-max | pixverse-video-v6.0-max | 文生视频 图生视频
+视频生成 | PixVerse-Video-v6 | pixverse-video-v6.0 | 文生视频 图生视频
+视频生成 | PixVerse-Video-v5.6 | pixverse-video-v5.6 | 文生视频 图生视频
+视频生成 | PixVerse-Video-c1 | pixverse-video-c1 | 文生视频 图生视频
+视频生成 | HY-Video-1.5 | hy-video-1.5 | 文生视频 图生视频
+视频生成 | YT-Video-2.0 | yt-video-2.0 | 图生视频
+视频生成 | YT-Video-HumanActor | yt-video-humanactor | 图生视频
+视频生成 | YT-Video-FX | yt-video-fx | 图生视频
+视频生成 | Kling-Video-v3 （2026-09-15下线） | kl-video-v3 | 文生视频 图生视频
+视频生成 | Kling-Video-v2.6 （2026-09-15下线） | kl-video-v2-6 | 文生视频 图生视频
+视频生成 | Kling-Video-v2.5-turbo （2026-09-15下线） | kl-video-v2-5-turbo | 文生视频 图生视频
+视频生成 | Kling-Video-v2.1-master （2026-09-15下线） | kl-video-v2-1-master | 文生视频 图生视频
+视频生成 | Kling-Video-v2.1 （2026-09-15下线） | kl-video-v2-1 | 文生视频 图生视频
+视频生成 | Kling-Video-v2-master （2026-09-15下线） | kl-video-v2-master | 文生视频 图生视频
+视频生成 | Kling-Video-v1.6 （2026-09-15下线） | kl-video-v1-6 | 文生视频 图生视频
+视频生成 | Kling-Video-v1.5 （2026-09-15下线） | kl-video-v1-5 | 文生视频 图生视频
+视频生成 | Kling-Video-v1 （2026-09-15下线） | kl-video-v1 | 文生视频 图生视频
+视频生成 | Vidu-Video-q3-pro （2026-09-15下线） | vd-video-q3-pro | 文生视频 图生视频
+视频生成 | Vidu-Video-q3-turbo （2026-09-15下线） | vd-video-q3-turbo | 文生视频 图生视频
+视频生成 | Vidu-Video-q2-pro （2026-09-15下线） | vd-video-q2-pro | 文生视频 图生视频
+视频生成 | Vidu-Video-q2-pro-fast （2026-09-15下线） | vd-video-q2-pro-fast | 文生视频 图生视频
+视频生成 | Vidu-Video-q2-turbo （2026-09-15下线） | vd-video-q2-turbo | 文生视频 图生视频
+视频生成 | Vidu-Video-q2 （2026-09-15下线） | vd-video-q2 | 文生视频 图生视频
+3D 生成 | Hy-World-2.1-panorama | hy-world2-panorama | 文生全景图 图生全景图
+3D 生成 | Hy-World-2.1-scene | hy-world2-scene | 文生3D 场景 图生3D 场景
+3D 生成 | HY-3D-3.0 | hy-3d-3.0 | 文生3D 图生3D
+3D 生成 | HY-3D-3.1 | hy-3d-3.1 | 文生3D 图生3D
+3D 生成 | HY-3D-Express | hy-3d-express | 文生3D 图生3D
+3D 生成 | HY-3D-Component | hy-3d-component | 组件拆分
+3D 生成 | HY-3D-Format | hy-3d-format | 格式转换
+3D 生成 | HY-3D-Motion | hy-3d-motion | 文生3D
+3D 生成 | HY-3D-Retopology | hy-3d-retopology | 拓扑重构
+3D 生成 | HY-3D-Rigging | hy-3d-rigging | 绑骨蒙皮
+3D 生成 | HY-3D-Texture | hy-3d-texture | 纹理生成
+3D 生成 | HY-3D-UV | hy-3d-uv | UV 展开
+3D 生成 | HY-3d-polygen-mesh | hy-3d-polygen-mesh | 智能减面
+3D 生成 | HY-3d-polygen-image | hy-3d-polygen-image | 图生3D智能减面
+3D 生成 | Miora-3D | miora-3d | 文生3D 图生3D
+3D 生成 | Miora-3D-1.2 | miora-3d-1.2 | 文生3D 图生3D
+3D 生成 | Miora-3d-T1 | miora-3d-t1 | 文生3D 图生3D
+3D 生成 | Tripo-3D-3.1 | tripo-3d-3.1 | 文生3D 图生3D
+3D 生成 | Tripo-3D-P1 | tripo-3d-p1 | 文生3D 图生3D
+3D 生成 | Tripo-3D-P2 | tripo-3d-p2 | 文生3D 图生3D
+3D 生成 | Tripo-3D-Rigging-Check | tripo-3d-rigging-check | 绑骨前检查
+3D 生成 | Tripo-3D-Rigging | tripo-3d-rigging | 自动绑骨
+3D 生成 | Tripo-3D-Animation | tripo-3d-animation | 动画重定向
+3D 生成 | Tripo-3D-Format | tripo-3d-format | 格式转换
+3D 生成 | Hi3D-2.1 | hi3d-2.1 | 图生3D
+3D 生成 | Hi3D-3.0 | hi3d-3.0 | 图生3D
+3D 生成 | Rodin-Gen-3D-2.5 | rodin-gen-3d-2.5 | 文生3D 图生3D

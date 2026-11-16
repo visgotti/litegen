@@ -4,8 +4,11 @@ import type { Generation, RequestLog, RequestArtifact } from '@litegen/sdk';
 import GenerationOutput from './GenerationOutput';
 import { useFileSrc } from '../file-src';
 import { showToast } from './toast-store';
+import { formatCost } from './model-detail';
 import {
   POLL_INTERVAL_MS,
+  artifactNote,
+  deleteTarget,
   httpStatusOf,
   nextTransientStreak,
   resolvesViaGeneration,
@@ -61,11 +64,14 @@ export default function TracePanel({ logId, onClose }: TracePanelProps) {
   const current = logId && loaded?.id === logId ? loaded : null;
 
   // Delete the generation's kept files and its request (docs/storage-access.md):
-  // the billing record stays. The server checks the permission.
+  // the billing record stays. A cache hit's is the generation it was served.
+  // The server checks the permission.
   const deleteFiles = async () => {
-    if (!logId || !window.confirm("Delete this generation's files and its prompt? Its billing record stays.")) return;
+    if (!logId) return;
+    const target = deleteTarget(logId, current?.artifact ?? null);
+    if (!window.confirm(target.confirm)) return;
     try {
-      await client.generations.delete(logId);
+      await client.generations.delete(target.generationId);
       setLoaded({ id: logId, log: current?.log ?? null, artifact: null, error: '' });
       showToast('Files and request deleted', 'info');
     } catch (e) {
@@ -233,6 +239,17 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
     return (
       <div data-testid="trace-visual-not-kept" style={{ color: '#8b949e', fontSize: 13 }}>
         Not kept: this request kept nothing (<code>keep_outputs: false</code>), so litegen has no copy of its output.
+      </div>
+    );
+  }
+
+  // A cache hit (its answer is an earlier generation's) or an output whose
+  // files were deleted: the log keeps no copy of either.
+  const note = artifactNote(artifact);
+  if (note) {
+    return (
+      <div data-testid={note.testId} style={{ color: '#8b949e', fontSize: 13 }}>
+        {note.text}
       </div>
     );
   }
@@ -505,7 +522,7 @@ function ParamsTab({ artifact, log }: { artifact: RequestArtifact | null; log: R
                 ['Provider', log.provider],
                 ['Status', log.status],
                 ['Media type', log.media_type],
-                ['Cost', `$${log.cost_usd.toFixed(4)}`],
+                ['Cost', formatCost(log.cost_usd)],
                 ['Latency', `${log.latency_ms}ms`],
                 ['Time', new Date(log.created_at).toLocaleString()],
               ].map(([k, v]) => (

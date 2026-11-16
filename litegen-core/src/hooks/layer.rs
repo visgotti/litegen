@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use super::process::{HookCallError, HookFn, HookOutcome, Refusal};
 use super::request::{apply_answer, check_answer, headers_view, hook_view, merge_headers, readable};
-use super::{Hook, HookSet, OnError};
+use super::{Hook, HookSet, OnError, RouteGroup};
 
 /// The request as `pre_call` left it, for `post_call` to see without reading
 /// the body again.
@@ -25,12 +25,14 @@ pub(crate) struct PreCallView(pub Value);
 const NOT_FROM_A_REFUSAL: [&str; 9] =
     ["content-type", "content-length", "transfer-encoding", "connection", "keep-alive", "proxy-connection", "upgrade", "te", "trailer"];
 
-/// Runs every hook's `pre_call` on the raw request, before authentication.
-pub async fn pre_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, next: Next) -> Response {
-    if !hooks.defines(HookFn::PreCall) {
+/// Runs the `pre_call` of every hook that runs on `group` (its `routes:`) on
+/// the raw request, before authentication. Each group of hooked routes has
+/// layers of its own (`api::handlers::create_router_with_hooks`).
+pub async fn pre_call_layer(State((hooks, group)): State<(Arc<HookSet>, RouteGroup)>, req: Request, next: Next) -> Response {
+    if !hooks.defines_on(HookFn::PreCall, group) {
         return next.run(req).await;
     }
-    let reads_body = readable(req.method(), req.uri().path());
+    let reads_body = readable(req.method(), group);
     // With every slot taken, refuse now rather than after the upload, as
     // backpressure does on the routes without hooks.
     if reads_body && hooks.buffering.available_permits() == 0 {
@@ -38,7 +40,7 @@ pub async fn pre_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, nex
     }
     // The body first, charged to the hook layer's budget as it arrives and
     // within its deadline: a client still sending holds only what it sent.
-    let (hooked, original) = match hook_view(req, &hooks.body).await {
+    let (hooked, original) = match hook_view(req, group, &hooks.body).await {
         Ok(view) => view,
         Err(response) => return response,
     };
@@ -52,7 +54,7 @@ pub async fn pre_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, nex
     };
     let mut current = original;
     let mut changed = false;
-    for hook in hooks.with(HookFn::PreCall) {
+    for hook in hooks.on(HookFn::PreCall, group) {
         match hook.process.call(HookFn::PreCall, vec![current.clone()], hook.timeout).await {
             Ok(HookOutcome::Unchanged) => {}
             Ok(HookOutcome::Replaced(next_view)) => match check_answer(&hooked, &next_view) {
@@ -76,7 +78,7 @@ pub async fn pre_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, nex
     }
     // The view holds the whole body: it goes along only for a post_call to
     // read, rather than costing every request a second copy.
-    let keep = hooks.defines(HookFn::PostCall).then(|| current.clone());
+    let keep = hooks.defines_on(HookFn::PostCall, group).then(|| current.clone());
     match apply_answer(hooked, changed.then_some(current)) {
         Ok(mut req) => {
             if let Some(seen) = keep {
@@ -88,14 +90,15 @@ pub async fn pre_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, nex
     }
 }
 
-/// Runs every hook's `post_call` on the response the handler produced,
-/// inside authentication, so the hooks know the caller. Only a JSON body is
-/// read; any other body (the converter's file) streams through untouched.
-pub async fn post_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, next: Next) -> Response {
-    if !hooks.defines(HookFn::PostCall) {
+/// Runs the `post_call` of every hook that runs on `group` (its `routes:`) on
+/// the response the handler produced, inside authentication, so the hooks
+/// know the caller. Only a JSON body is read; any other body (the
+/// converter's file) streams through untouched.
+pub async fn post_call_layer(State((hooks, group)): State<(Arc<HookSet>, RouteGroup)>, req: Request, next: Next) -> Response {
+    if !hooks.defines_on(HookFn::PostCall, group) {
         return next.run(req).await;
     }
-    let reads_body = readable(req.method(), req.uri().path());
+    let reads_body = readable(req.method(), group);
     let caller = caller_view(&req);
     // With every slot taken, refuse before the upload (as in pre_call_layer).
     if reads_body && hooks.post_buffering.available_permits() == 0 {
@@ -104,7 +107,7 @@ pub async fn post_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, ne
     // The body first, when no pre_call read it already (as in pre_call_layer).
     let (req, request_view) = match req.extensions().get::<PreCallView>().map(|v| v.0.clone()) {
         Some(view) => (req, view),
-        None => match hook_view(req, &hooks.body).await {
+        None => match hook_view(req, group, &hooks.body).await {
             Ok((hooked, view)) => match apply_answer(hooked, None) {
                 Ok(req) => (req, view),
                 Err(m) => return hook_failed("post_call", &HookCallError::Malformed(m)),
@@ -138,7 +141,7 @@ pub async fn post_call_layer(State(hooks): State<Arc<HookSet>>, req: Request, ne
 
     let mut current = original.clone();
     let mut changed = false;
-    for hook in hooks.with(HookFn::PostCall) {
+    for hook in hooks.on(HookFn::PostCall, group) {
         let args = vec![request_view.clone(), current.clone(), caller.clone()];
         match hook.process.call(HookFn::PostCall, args, hook.timeout).await {
             Ok(HookOutcome::Unchanged) => {}
@@ -341,16 +344,16 @@ mod tests {
         std::process::Command::new("python3").arg("--version").output().is_ok_and(|o| o.status.success())
     }
 
-    /// Whether the request reaching the handler still carries the view
-    /// `pre_call` built, when the hooks are just `file`.
-    async fn view_kept_with(file: &str) -> String {
+    /// Whether the request reaching the handler (a generation route) still
+    /// carries the view `pre_call` built, with these hook entries.
+    async fn view_kept_with(entries: &[Value]) -> String {
         let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks");
-        let configs = vec![serde_json::from_value::<HookConfig>(json!({ "path": file })).unwrap()];
+        let configs: Vec<HookConfig> = entries.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
         let hooks = HookSet::start(&configs, &fixtures, 4, std::time::Duration::from_secs(60)).await.unwrap().unwrap();
         let probe = |req: Request| async move { if req.extensions().get::<PreCallView>().is_some() { "kept" } else { "dropped" } };
         let app = axum::Router::new()
             .route("/v1/images/generations", post(probe))
-            .layer(axum::middleware::from_fn_with_state(hooks, pre_call_layer));
+            .layer(axum::middleware::from_fn_with_state((hooks, RouteGroup::Generations), pre_call_layer));
         let req = Request::post("/v1/images/generations")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"prompt":"a fox"}"#))
@@ -367,8 +370,46 @@ mod tests {
             eprintln!("SKIPPED: python3 not installed");
             return;
         }
-        assert_eq!(view_kept_with("pre_only.py").await, "dropped");
-        assert_eq!(view_kept_with("behaviour.py").await, "kept");
+        assert_eq!(view_kept_with(&[json!({ "path": "pre_only.py" })]).await, "dropped");
+        assert_eq!(view_kept_with(&[json!({ "path": "behaviour.py" })]).await, "kept");
+        // Nor for a post_call that doesn't run on the route (its `routes:`).
+        let elsewhere = [json!({ "path": "pre_only.py" }), json!({ "path": "behaviour.py", "routes": ["cost"] })];
+        assert_eq!(view_kept_with(&elsewhere).await, "dropped");
+    }
+
+    /// The route group decides whether a hook reads a request's body, not the
+    /// path: a POST's is read unless its group streams (`convert`, the upload;
+    /// `files`, the file). The same POST to the same path, mounted in each
+    /// group in turn: a streaming route added to a group needs no list of
+    /// paths beside the group.
+    #[tokio::test]
+    async fn the_route_group_decides_whether_a_hook_reads_the_body() {
+        if !python() {
+            eprintln!("SKIPPED: python3 not installed");
+            return;
+        }
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks");
+        let configs = vec![serde_json::from_value::<HookConfig>(json!({ "path": "behaviour.py" })).unwrap()];
+        let hooks = HookSet::start(&configs, &fixtures, 4, std::time::Duration::from_secs(60)).await.unwrap().unwrap();
+        let mut seen = Vec::new();
+        for group in RouteGroup::ALL {
+            let app = axum::Router::new()
+                .route("/v1/probe", post(|| async { "handled" }))
+                .layer(axum::middleware::from_fn_with_state((hooks.clone(), group), pre_call_layer));
+            let req = Request::post("/v1/probe")
+                .header("content-type", "application/json")
+                .header("x-test-action", "report")
+                .body(Body::from(r#"{"probe":1}"#))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let answer: Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+            assert_eq!(status, StatusCode::IM_A_TEAPOT, "{}: {answer}", group.name());
+            let view: Value = serde_json::from_str(answer["error"]["message"].as_str().unwrap_or("null")).unwrap();
+            seen.push((group.name(), view["body"].clone()));
+        }
+        let read = json!({ "probe": 1 });
+        assert_eq!(seen, vec![("generations", read.clone()), ("cost", read.clone()), ("status", read), ("convert", Value::Null), ("files", Value::Null)]);
     }
 
     /// With every slot of a hook layer taken, a request with a body is refused
@@ -401,9 +442,10 @@ mod tests {
                 }
             };
             let routes = axum::Router::new().route("/v1/images/generations", post(handler));
+            let state = (hooks, RouteGroup::Generations);
             let app = match layer {
-                "pre_call" => routes.layer(axum::middleware::from_fn_with_state(hooks, pre_call_layer)),
-                _ => routes.layer(axum::middleware::from_fn_with_state(hooks, post_call_layer)),
+                "pre_call" => routes.layer(axum::middleware::from_fn_with_state(state, pre_call_layer)),
+                _ => routes.layer(axum::middleware::from_fn_with_state(state, post_call_layer)),
             };
             let first = Request::post("/v1/images/generations")
                 .header("content-type", "application/json")

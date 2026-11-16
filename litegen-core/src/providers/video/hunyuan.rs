@@ -39,7 +39,7 @@ const I2V_DESCRIBE_ACTION: &str = "DescribeImageToVideoGeneralJob";
 /// sends one: 720p, the catalog default the row's price is for.
 /// @see <https://cloud.tencent.com/document/product/1616/118994>
 const I2V_DEFAULT_RESOLUTION: &str = "720p";
-/// "生成视频的帧率，从16, 24, 30中选择" — the catalog can only say 16..=30.
+/// "生成视频的帧率，从16, 24, 30中选择" (the row's `values` say it too).
 const I2V_FPS: [u32; 3] = [16, 24, 30];
 
 /// Tencent Hunyuan video generation provider (Video Creation Large Model / vclm).
@@ -139,36 +139,24 @@ impl HunyuanVideoProvider {
         read_tc3(resp, action).await
     }
 
-    /// Request body for `SubmitImageToVideoGeneralJob` (hunyuan-video-i2v).
-    fn i2v_body(
-        base: &BaseGenerationRequest,
-        extras: &VideoExtras,
-        materialized: &MaterializedRequest,
-    ) -> Result<Value, ProviderError> {
-        // Image is required: nested Image{Url} or Image{Base64}.
-        let image = materialized
-            .refs
-            .iter()
-            .find_map(|r| match &r.form {
-                MaterializedRefForm::Url(u) => Some(json!({ "Url": u })),
-                MaterializedRefForm::Base64(b64) => Some(json!({ "Base64": b64 })),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                ProviderError::InvalidRequest(format!("{I2V_MODEL_ID} requires an input image (first_frame)"))
-            })?;
-        let mut body = json!({ "Image": image });
+    /// Request body for `SubmitImageToVideoGeneralJob` (hunyuan-video-i2v);
+    /// the preflight refused what Tencent doesn't take.
+    fn i2v_body(base: &BaseGenerationRequest, extras: &VideoExtras, materialized: &MaterializedRequest) -> Value {
+        let mut body = json!({});
+        // The image: nested Image{Url} or Image{Base64}.
+        if let Some(image) = materialized.refs.iter().find_map(|r| match &r.form {
+            MaterializedRefForm::Url(u) => Some(json!({ "Url": u })),
+            MaterializedRefForm::Base64(b64) => Some(json!({ "Base64": b64 })),
+            _ => None,
+        }) {
+            body["Image"] = image;
+        }
         // Prompt is optional here; an empty one is left out.
         if !base.prompt.trim().is_empty() {
             body["Prompt"] = Value::String(base.prompt.clone());
         }
         body["Resolution"] = Value::String(extras.resolution.as_deref().unwrap_or(I2V_DEFAULT_RESOLUTION).to_string());
         if let Some(fps) = extras.fps {
-            if !I2V_FPS.contains(&fps) {
-                return Err(ProviderError::InvalidRequest(format!(
-                    "{I2V_MODEL_ID} fps must be one of 16, 24 or 30, got {fps}"
-                )));
-            }
             body["Fps"] = Value::Number(fps.into());
         }
         // Rule 11: `extra` never replaces what litegen sends.
@@ -177,7 +165,7 @@ impl HunyuanVideoProvider {
                 obj.insert(k.clone(), v.clone());
             }
         }
-        Ok(body)
+        body
     }
 }
 
@@ -207,6 +195,22 @@ impl VideoProvider for HunyuanVideoProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
+    /// What image-to-video can't take, refused before anything is quoted,
+    /// reserved or sent; `generate` asks it first. Its image is required, and
+    /// its fps one of Tencent's three.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &VideoExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        if model.id != I2V_MODEL_ID {
+            return Ok(());
+        }
+        if roles.is_empty() {
+            return Err(ProviderError::InvalidRequest(format!("{I2V_MODEL_ID} requires an input image (first_frame)")));
+        }
+        if let Some(fps) = extras.fps.filter(|fps| !I2V_FPS.contains(fps)) {
+            return Err(ProviderError::InvalidRequest(format!("{I2V_MODEL_ID} fps must be one of 16, 24 or 30, got {fps}")));
+        }
+        Ok(())
+    }
+
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -216,9 +220,12 @@ impl VideoProvider for HunyuanVideoProvider {
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let creds = self.creds()?;
         let region = self.region(&creds);
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
 
         if model.id == I2V_MODEL_ID {
-            let body = Self::i2v_body(base, extras, materialized)?;
+            let body = Self::i2v_body(base, extras, materialized);
             let resp = self.rpc(&creds, &region, I2V_SUBMIT_ACTION, &body).await?;
             let job_id = resp["Response"]["JobId"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| {
                 ProviderError::RequestFailed {
@@ -690,6 +697,27 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err}");
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// round 3: image-to-video's rules are the preflight's, which the quote
+    /// and the generation run before anything is quoted or reserved (and
+    /// which `generate` asks first): an image, and an fps of 16, 24 or 30.
+    /// The text-to-video row has neither rule.
+    #[test]
+    fn the_image_to_video_rules_are_the_preflights() {
+        let provider = HunyuanVideoProvider::new();
+        let answer = |id: &str, extras: &VideoExtras, roles: &[&str]| match provider.preflight(&ref_schema(id), &make_base("a cat", id), extras, roles) {
+            Ok(()) => None,
+            Err(ProviderError::InvalidRequest(words)) => Some(words),
+            Err(e) => panic!("{id}: {e:?}"),
+        };
+        let fps = |fps| VideoExtras { fps: Some(fps), ..make_extras() };
+        assert_eq!(answer(I2V, &fps(25), &["first_frame"]).as_deref(), Some("hunyuan/hunyuan-video-i2v fps must be one of 16, 24 or 30, got 25"));
+        assert_eq!(answer(I2V, &make_extras(), &[]).as_deref(), Some("hunyuan/hunyuan-video-i2v requires an input image (first_frame)"));
+        for ok in [16, 24, 30] {
+            assert_eq!(answer(I2V, &fps(ok), &["first_frame"]), None, "{ok} fps");
+        }
+        assert_eq!(answer("hunyuan/hunyuan-video", &make_extras(), &[]), None);
     }
 
     #[tokio::test]

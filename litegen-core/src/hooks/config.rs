@@ -1,11 +1,62 @@
 //! The `hooks:` section of `litegen.yaml`, and how each entry resolves to a
 //! file, a runtime and a failure policy.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// A group of hooked routes, as a hook entry's `routes:` names it. Each
+/// hooked route is in exactly one group, given where the router is built
+/// (`api::handlers::create_router_with_hooks`); `docs/hooks.md` lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RouteGroup {
+    /// `POST /v1/images/generations`, `/v1/images/segmentations`,
+    /// `/v1/videos/generations` and `/v1/models3d/generations`.
+    Generations,
+    /// The price checks: `POST /v1/images/cost`, `/v1/videos/cost` and
+    /// `/v1/models3d/cost`.
+    Cost,
+    /// The job status reads: `GET /v1/videos/{id}` and `/v1/models3d/{id}`.
+    Status,
+    /// `POST /v1/utils/models3d/convert`.
+    Convert,
+    /// The stored-file route, `GET /v1/generations/{id}/assets/{index}`.
+    Files,
+}
+
+impl RouteGroup {
+    /// Every group: where a hook entry without `routes:` runs.
+    pub const ALL: [RouteGroup; 5] = [RouteGroup::Generations, RouteGroup::Cost, RouteGroup::Status, RouteGroup::Convert, RouteGroup::Files];
+
+    /// The group's name in `routes:`.
+    pub fn name(self) -> &'static str {
+        match self {
+            RouteGroup::Generations => "generations",
+            RouteGroup::Cost => "cost",
+            RouteGroup::Status => "status",
+            RouteGroup::Convert => "convert",
+            RouteGroup::Files => "files",
+        }
+    }
+}
+
+impl Serialize for RouteGroup {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for RouteGroup {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(d)?;
+        RouteGroup::ALL.into_iter().find(|g| g.name() == name).ok_or_else(|| {
+            let groups = RouteGroup::ALL.map(RouteGroup::name).join(", ");
+            serde::de::Error::custom(format!("routes: no route group is named {name:?}; the groups are {groups}"))
+        })
+    }
+}
 
 /// The runtime a hook file runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +121,23 @@ pub struct HookConfig {
     /// Added to the environment the hook inherits from litegen.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The route groups whose requests the hook's `pre_call` and `post_call`
+    /// see. Unset: every hooked route.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "route_groups")]
+    pub routes: Option<Vec<RouteGroup>>,
+}
+
+/// `routes:` names at least one route group, each once: a hook that runs on
+/// every hooked route leaves the key out.
+fn route_groups<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<RouteGroup>>, D::Error> {
+    let groups = Option::<Vec<RouteGroup>>::deserialize(d)?.unwrap_or_default();
+    if groups.is_empty() {
+        return Err(serde::de::Error::custom("routes: name at least one route group, or leave routes out to hook every route"));
+    }
+    if let Some(twice) = groups.iter().enumerate().find_map(|(i, g)| groups[..i].contains(g).then_some(g)) {
+        return Err(serde::de::Error::custom(format!("routes: {:?} is named twice", twice.name())));
+    }
+    Ok(Some(groups))
 }
 
 /// A hook entry checked against the disk, with every default applied.
@@ -88,6 +156,8 @@ pub struct ResolvedHook {
     /// `file_access` refuses the file when it fails, unless `on_error: allow`.
     pub file_policy: OnError,
     pub env: BTreeMap<String, String>,
+    /// The route groups whose requests reach `pre_call` and `post_call`.
+    pub routes: BTreeSet<RouteGroup>,
 }
 
 /// The time limit when a hook sets none.
@@ -119,6 +189,7 @@ impl HookConfig {
             post_policy: self.on_error.unwrap_or(OnError::Allow),
             file_policy: self.on_error.unwrap_or(OnError::Refuse),
             env: self.env.clone(),
+            routes: self.routes.as_deref().unwrap_or(&RouteGroup::ALL).iter().copied().collect(),
             name,
             path,
             runtime,
@@ -126,12 +197,41 @@ impl HookConfig {
     }
 }
 
+/// How errors and warnings name the entry at `index` of `hooks:`: by its
+/// place in the list, counted from 0 as config-rs counts (`hooks[1]`), and
+/// its `path` as written, when it has one.
+pub(crate) fn entry_name(index: usize, path: Option<&str>) -> String {
+    match path {
+        Some(path) => format!("hooks[{index}] ({path})"),
+        None => format!("hooks[{index}]"),
+    }
+}
+
+/// The entry at `index` of `hooks:`, as config-rs read it, or the error that
+/// refuses it, naming the entry. config-rs adds the key only to its own type
+/// errors, so a message from litegen's checks or from serde (an unknown key)
+/// would name nothing: each entry is read on its own and its error named.
+fn entry(index: usize, value: ::config::Value) -> Result<HookConfig, String> {
+    value.clone().try_deserialize::<HookConfig>().map_err(|e| {
+        let path = value.into_table().ok().and_then(|t| t.get("path").cloned()).and_then(|p| p.into_string().ok());
+        format!("{}: {e}", entry_name(index, path.as_deref()))
+    })
+}
+
+/// `hooks:` as [`crate::config::AppConfig`] reads it (its `deserialize_with`):
+/// each entry on its own, so that its error names it.
+pub(crate) fn hook_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<HookConfig>, D::Error> {
+    let entries = Vec::<::config::Value>::deserialize(d)?;
+    entries.into_iter().enumerate().map(|(i, v)| entry(i, v).map_err(serde::de::Error::custom)).collect()
+}
+
 /// Only the `hooks` key of the config file litegen read (`file`, from
 /// [`crate::config::config_file`]), on its own. When the full config fails to
 /// load, this is how litegen tells that the failure would drop hooks, and
-/// says so. No key is no hooks.
+/// says so. No key is no hooks. An entry's error names the entry.
 pub fn hooks_in_config_file(file: &crate::config::ConfigFile) -> Result<Vec<HookConfig>, String> {
-    file.get::<Vec<HookConfig>>("hooks").map(Option::unwrap_or_default).map_err(|e| e.to_string())
+    let entries = file.get::<Vec<::config::Value>>("hooks").map_err(|e| e.to_string())?.unwrap_or_default();
+    entries.into_iter().enumerate().map(|(i, v)| entry(i, v)).collect()
 }
 
 #[cfg(test)]
@@ -228,6 +328,92 @@ mod tests {
         assert_eq!(env.get("JWKS_URL").map(String::as_str), Some("https://id.example/jwks"));
     }
 
+    /// A hook entry's `routes:`, as written, or the error that refuses it.
+    fn routes_of(routes: serde_json::Value) -> Result<Option<Vec<RouteGroup>>, String> {
+        serde_json::from_value::<HookConfig>(serde_json::json!({ "path": "a.py", "routes": routes }))
+            .map(|h| h.routes)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn routes_names_route_groups() {
+        assert_eq!(routes_of(serde_json::json!(["generations", "status"])), Ok(Some(vec![RouteGroup::Generations, RouteGroup::Status])));
+        assert_eq!(routes_of(serde_json::json!(["generations", "cost", "status", "convert", "files"])), Ok(Some(RouteGroup::ALL.to_vec())));
+    }
+
+    #[test]
+    fn an_unknown_route_group_is_refused_naming_the_groups() {
+        assert_eq!(
+            routes_of(serde_json::json!(["generations", "costs"])),
+            Err(r#"routes: no route group is named "costs"; the groups are generations, cost, status, convert, files"#.to_string())
+        );
+    }
+
+    const NO_ROUTES: &str = "routes: name at least one route group, or leave routes out to hook every route";
+
+    #[test]
+    fn an_empty_routes_list_is_refused() {
+        assert_eq!(routes_of(serde_json::json!([])), Err(NO_ROUTES.to_string()));
+        // `routes:` with nothing after it, in YAML.
+        assert_eq!(routes_of(serde_json::Value::Null), Err(NO_ROUTES.to_string()));
+    }
+
+    #[test]
+    fn a_hook_runs_on_every_route_group_unless_routes_names_fewer() {
+        let dir = dir_with(&["a.py"]);
+        let routes = |v| hook(v).resolve(dir.path()).unwrap().routes;
+        assert_eq!(routes(serde_json::json!({ "path": "a.py" })), std::collections::BTreeSet::from(RouteGroup::ALL));
+        assert_eq!(
+            routes(serde_json::json!({ "path": "a.py", "routes": ["status", "generations"] })),
+            std::collections::BTreeSet::from([RouteGroup::Generations, RouteGroup::Status])
+        );
+    }
+
+    #[test]
+    fn a_route_group_named_twice_is_refused() {
+        assert_eq!(routes_of(serde_json::json!(["cost", "generations", "cost"])), Err(r#"routes: "cost" is named twice"#.to_string()));
+    }
+
+    /// The routes of each hook in `yaml`, loaded as litegen starts in a
+    /// folder holding that `litegen.yaml`, or the error that stops it.
+    fn routes_in_litegen_yaml(yaml: &str) -> Result<Vec<Option<Vec<RouteGroup>>>, String> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("litegen.yaml"), yaml).unwrap();
+        crate::config::load_config_from(dir.path(), None, &std::collections::HashMap::new())
+            .map(|c| c.hooks.into_iter().map(|h| h.routes).collect())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn litegen_does_not_start_on_an_empty_routes_list() {
+        let refused = format!("hooks[0] (hooks/auth.py): {NO_ROUTES}");
+        assert_eq!(routes_in_litegen_yaml("hooks:\n  - path: hooks/auth.py\n    routes: []\n"), Err(refused.clone()));
+        assert_eq!(routes_in_litegen_yaml("hooks:\n  - path: hooks/auth.py\n    routes:\n"), Err(refused));
+    }
+
+    /// config-rs adds the key only to its own type errors, so a message that
+    /// litegen or serde writes about a hook entry named no entry. Each names
+    /// it now, by its place in `hooks:` (from 0, as config-rs counts) and its
+    /// path as written.
+    #[test]
+    fn a_hook_entrys_error_names_the_entry() {
+        let second = |lines: &str| routes_in_litegen_yaml(&format!("hooks:\n  - path: hooks/auth.py\n  - path: hooks/tag.mjs\n{lines}")).unwrap_err();
+        // litegen's own checks.
+        assert_eq!(second("    routes: [cost, cost]\n"), r#"hooks[1] (hooks/tag.mjs): routes: "cost" is named twice"#);
+        assert_eq!(
+            second("    routes: [costs]\n"),
+            r#"hooks[1] (hooks/tag.mjs): routes: no route group is named "costs"; the groups are generations, cost, status, convert, files"#
+        );
+        // serde's (an unknown key) and config-rs's (an unknown runtime, a
+        // number that isn't one), each in its own words after the entry.
+        for (lines, says) in [("    timout_ms: 50\n", "unknown field `timout_ms`"), ("    runtime: cobol\n", "cobol"), ("    timeout_ms: lots\n", "`timeout_ms`")] {
+            let err = second(lines);
+            assert!(err.starts_with("hooks[1] (hooks/tag.mjs): ") && err.contains(says), "{lines}: {err}");
+        }
+        // An entry with no path is named by its place alone.
+        assert_eq!(routes_in_litegen_yaml("hooks:\n  - path: hooks/auth.py\n  - runtime: node\n"), Err("hooks[1]: missing field `path`".to_string()));
+    }
+
     #[test]
     fn an_unknown_key_in_a_hook_entry_is_refused() {
         // A typo such as `timout_ms` must not be dropped silently: hooks fail
@@ -266,6 +452,17 @@ mod tests {
         std::fs::write(dir.path().join("litegen.yaml"), "hooks:\n  - path: a.py\n    runtime: cobol\n").unwrap();
         let err = hooks_in_config_file(&file_in(dir.path()).unwrap()).unwrap_err();
         assert!(err.contains("cobol"), "{err}");
+    }
+
+    /// When the config doesn't load, litegen reads `hooks:` again on its own,
+    /// to say the hooks would be dropped (main's `refuse_to_start`): that
+    /// error names the entry too.
+    #[test]
+    fn hooks_in_config_file_names_the_entry_it_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("litegen.yaml"), "hooks:\n  - path: hooks/auth.py\n  - path: hooks/tag.mjs\n    routes: [cost, cost]\n").unwrap();
+        let err = hooks_in_config_file(&file_in(dir.path()).unwrap()).unwrap_err();
+        assert_eq!(err, r#"hooks[1] (hooks/tag.mjs): routes: "cost" is named twice"#);
     }
 
     #[test]

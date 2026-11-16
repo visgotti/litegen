@@ -46,8 +46,8 @@ fn every_openapi_operation_is_a_tool_or_excluded() {
     let mut stale: Vec<_> = listed.difference(&ops).collect();
     stale.sort();
     assert!(stale.is_empty(), "catalog rows naming operations the API does not have: {stale:?}");
-    assert_eq!(TOOLS.len(), 119);
-    assert_eq!(EXCLUDED.len(), 25);
+    assert_eq!(TOOLS.len(), 123);
+    assert_eq!(EXCLUDED.len(), 26);
 }
 
 fn portable_tool_name(name: &str) -> bool {
@@ -313,8 +313,14 @@ async fn gates_match_principals() {
         assert_eq!(def.toolset, "catalog", "{name} needs a tenant, which the hosted master key lacks");
     }
 
-    // Single-tenant master key: no permissions, so the global user routes refuse it.
-    assert!(!sees(&admin(master(true), MasterKey), &single, "list_users"));
+    // Single-tenant master key: the superuser (README) manages the users as
+    // the deployment's Owner does, invitations included. (It holds no role,
+    // and these routes refused it before 2026-11-15.) The hosted one acts
+    // in no org, so it has nowhere to invite to through `/v1/users`.
+    for tool in ["list_users", "update_user", "delete_user", "transfer_platform_ownership", "invite_user"] {
+        assert!(sees(&admin(master(true), MasterKey), &single, tool), "{tool}");
+    }
+    assert!(!sees(&platform, &hosted, "invite_user"), "the hosted master key acts in no org");
     assert!(sees(&admin(master(true), MasterKey), &single, "list_gateway_models"));
 
     // Dev mode carries the same context as the single-tenant master key.

@@ -373,8 +373,6 @@ impl RunwayImageProvider {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<Value, ProviderError> {
-        let extra = extras.extra.as_ref().and_then(Value::as_object);
-        let switched_on = |key: &str| extra.and_then(|e| e.get(key)) == Some(&Value::Bool(true));
         let mut images = Vec::new();
         let mut mask = None;
         for rf in &materialized.refs {
@@ -390,24 +388,8 @@ impl RunwayImageProvider {
                 images.push(json!({ "uri": uri }));
             }
         }
-        if let Some(key) = r.needs_ref.iter().find(|k| switched_on(k)).filter(|_| images.is_empty()) {
-            return Err(ProviderError::InvalidRequest(format!("{}: `{key}` needs a reference image", model.id)));
-        }
-        // Ideogram 4.5: "`very_low` requires reference images and is not
-        // available with `preciseEdit`".
-        if extras.quality.as_deref() == Some("very_low") && (images.is_empty() || switched_on("preciseEdit")) {
-            return Err(ProviderError::InvalidRequest(format!(
-                "{}: quality very_low needs a reference image and no preciseEdit",
-                model.id
-            )));
-        }
-        let ratio = Self::resold_ratio(r, model, extras)?;
-        if ratio.is_some() && images.len() < r.ratio_min_refs {
-            return Err(ProviderError::InvalidRequest(format!(
-                "{} keeps a single image's framing: an aspect_ratio needs at least {} images",
-                model.id, r.ratio_min_refs
-            )));
-        }
+        // The preflight refused a ratio the branch has no size for.
+        let ratio = Self::resold_ratio(r, model, extras).unwrap_or(None);
 
         // `extra` first, so nothing below can be replaced by it.
         let mut body = json!({});
@@ -604,6 +586,33 @@ impl ImageProvider for RunwayImageProvider {
             .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.key_pool.is_some())
     }
 
+    /// What a model Runway resells can't take, refused before anything is
+    /// quoted, reserved or sent; `generate` asks it first: a switch that
+    /// edits (`edit`, `preciseEdit`) needs a reference image; Ideogram 4.5's
+    /// "`very_low` requires reference images and is not available with
+    /// `preciseEdit`"; a ratio the branch has a size for at the tier; a
+    /// branch that keeps a single image's framing takes a ratio only with
+    /// `ratio_min_refs` images. The images are the request's, a mask aside.
+    fn preflight(&self, model: &ModelSchema, _base: &BaseGenerationRequest, extras: &ImageExtras, roles: &[&str]) -> Result<(), ProviderError> {
+        let Some(Native::Resold(r)) = Self::resolve_model(&model.id) else { return Ok(()) };
+        let extra = extras.extra.as_ref().and_then(Value::as_object);
+        let switched_on = |key: &str| extra.and_then(|e| e.get(key)) == Some(&Value::Bool(true));
+        let images = roles.iter().filter(|role| **role != "mask").count();
+        if let Some(key) = r.needs_ref.iter().find(|k| switched_on(k)).filter(|_| images == 0) {
+            return Err(ProviderError::InvalidRequest(format!("{}: `{key}` needs a reference image", model.id)));
+        }
+        if extras.quality.as_deref() == Some("very_low") && (images == 0 || switched_on("preciseEdit")) {
+            return Err(ProviderError::InvalidRequest(format!("{}: quality very_low needs a reference image and no preciseEdit", model.id)));
+        }
+        if Self::resold_ratio(r, model, extras)?.is_some() && images < r.ratio_min_refs {
+            return Err(ProviderError::InvalidRequest(format!(
+                "{} keeps a single image's framing: an aspect_ratio needs at least {} images",
+                model.id, r.ratio_min_refs
+            )));
+        }
+        Ok(())
+    }
+
     /// Submit `POST /text_to_image`, poll the task, fetch the first output.
     ///
     /// @see <https://docs.dev.runwayml.com/guides/using-the-api/> — `promptText`,
@@ -616,6 +625,9 @@ impl ImageProvider for RunwayImageProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
+        // The quote asked the same before anything was reserved.
+        let roles: Vec<&str> = materialized.refs.iter().map(|r| r.role.as_str()).collect();
+        self.preflight(model, base, extras, &roles)?;
         let url = format!("{}/text_to_image", self.api_base());
         let body = match Self::resolve_model(&model.id) {
             Some(Native::Gen4(native)) => self.gen4_body(native, model, base, extras, materialized)?,

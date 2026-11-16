@@ -1,6 +1,7 @@
-# Catalog rows removed after their vendor shut the model down, kept only so the
-# adapters that still exist stay unit-tested (they load their schema from here
-# instead of models/). Not loaded by the server and never advertised; see
+# Catalog rows removed after their vendor shut the model down (or, for MiniMax
+# S2V-01, after litegen stopped carrying it), kept only so the adapters that
+# still exist stay unit-tested (they load their schema from here instead of
+# models/). Not loaded by the server and never advertised; see
 # `no_retired_model_ids_are_advertised` in tests/catalog_conformance.rs.
 models:
   # Bedrock EOL 2026-09-30 (removed from models/bedrock.yaml 2026-10-12).
@@ -193,3 +194,33 @@ models:
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [personGeneration, negativePrompt]
     tags: [text-to-video, image-to-video, preview, budget]
+
+  # Retired by litegen 2026-11-16 (removed from models/minimax.yaml): MiniMax
+  # still serves S2V-01 but publishes no price for it. video/minimax.rs keeps
+  # its request shape for an operator's runtime row, and its tests load this.
+  - id: minimax/S2V-01
+    provider: minimax
+    media_type: video
+    display_name: MiniMax S2V-01
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-s2v
+    description: Subject-reference video (character consistency from a face photo).
+    # Unverified price: MiniMax publishes none (the catalog's last figure).
+    pricing: { base_cost_usd: 0.65 }
+    # subject_reference is required by the S2V-01 request schema, so a
+    # prompt-only request cannot succeed: not text_to_video.
+    # @see https://platform.minimax.io/docs/api-reference/video-generation-s2v.md
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
+    ref_inputs:
+      max_total: 1
+      default_role: subject
+      provider_format: { form: base64 }
+      roles:
+        # Required; "only one image supported".
+        subject: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [prompt_optimizer]
+    extra_params:
+      prompt_optimizer: { kind: bool }
+    tags: [image-to-video, subject-reference]

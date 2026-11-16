@@ -204,13 +204,12 @@ export interface FormState {
  * Build the request body for one generation, sending only the fields the
  * selected media type actually accepts.
  *
- * `size` and `n` are image-only: `Model3dGenerationRequest` has no `size` at
- * all and a 3D job is billed flat per generation regardless of `n`. Serde
- * drops an unknown `size` silently — including under `strict: true`, where the
- * checkbox promises the request would be rejected — so sending them would tell
- * the user their 4 meshes at 1024x1024 were accepted when one default mesh is
- * what comes back. The form disables both controls for a 3D model for the
- * same reason.
+ * `size` goes to an image model only: a video or 3D request has no such
+ * field, so strict mode refuses it (`param_unsupported`) and `strict: false`
+ * drops it and names it in `X-Litegen-Dropped-Params`. The form disables the
+ * Size control for anything but an image model for the same reason. `n` is
+ * never sent: a request makes one image, video or mesh, and the server
+ * refuses more (L13).
  *
  * `negative_prompt` and `seed` go only to a model whose schema (`declared`,
  * its params) lists them: in strict mode either one is otherwise a 400, and a
@@ -240,9 +239,10 @@ export function buildGenerationBody(
   return body;
 }
 
-/** Same rule as `buildGenerationBody`, applied to a stored history body: an
- *  entry recorded against an image model (or before 3D dropped these fields)
- *  must not resubmit `size`/`n` to the 3D endpoint, which ignores them. */
+/** Same rule as `buildGenerationBody`, applied to a stored history body that
+ *  is resubmitted to a video or 3D model: an entry recorded before the page
+ *  left these fields off must not send them again, since strict mode refuses
+ *  a `size` there and every family refuses an `n` above 1. */
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
 export function omitImageOnlyParams(body: Record<string, unknown>): Record<string, unknown> {
   const rest = { ...body };

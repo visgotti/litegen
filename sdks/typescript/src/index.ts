@@ -381,6 +381,25 @@ export type UpdateOrgRequest = components["schemas"]["UpdateOrgRequest"];
 export type CreateAppRequest = components["schemas"]["CreateAppRequest"];
 export type UpdateAppRequest = components["schemas"]["UpdateAppRequest"];
 export type AddMemberRequest = components["schemas"]["AddMemberRequest"];
+/**
+ * A new invitation, as `orgs.members.invite` and `users.invite` answer it.
+ * litegen sends no email: its `token` and `invite_url` are shown only here.
+ * `invite_url` is null when the server has no `server.public_base_url`; build
+ * the link from `token` on the dashboard's origin (`/invite/{token}`).
+ */
+export type InviteResponse = components["schemas"]["InviteResponse"];
+/** A key's webhook delivery as `keys.redeliverWebhookDelivery` answers it: pending, delivered or failed. */
+export type WebhookDeliveryState = components["schemas"]["WebhookDeliveryState"];
+export type WebhookDeliveryStatus = components["schemas"]["WebhookDeliveryStatus"];
+/**
+ * A password reset link, as `users.passwordResetLink` answers it, shown only
+ * there: litegen sends no email. `reset_url` is null when the server has no
+ * `server.public_base_url`; build the link from `token` on the dashboard's
+ * origin (`/reset-password/{token}`).
+ */
+export type PasswordResetLink = components["schemas"]["PasswordResetLink"];
+/** An invitation not yet accepted or expired (`orgs.invitations.list`), without its token. */
+export type PendingInvitation = components["schemas"]["PendingInvitation"];
 export type UpdateMemberRequest = components["schemas"]["UpdateMemberRequest"];
 export type OrgTransferOwnerRequest = components["schemas"]["OrgTransferOwnerRequest"];
 export type CreateProviderCredentialRequest =
@@ -443,12 +462,17 @@ export type ModelSource = components["schemas"]["ModelSource"];
 export type AdminModelView = components["schemas"]["AdminModelView"];
 export type ProviderSettings = components["schemas"]["ProviderSettings"];
 export type PutProviderConfigRequest = components["schemas"]["PutProviderConfigRequest"];
+/** The body of `admin.providers.patch`: a field sent is set, `null` clears it, a field left out stays. */
+export type PatchProviderConfigRequest = components["schemas"]["PatchProviderConfigRequest"];
 export type ProviderConfigView = components["schemas"]["ProviderConfigView"];
 export type RouteDeployment = components["schemas"]["RouteDeployment"];
 export type RouteSpec = components["schemas"]["RouteSpec"];
 export type RoutesDocument = components["schemas"]["RoutesDocument"];
 export type GatewaySettings = components["schemas"]["GatewaySettings"];
 export type GatewaySettingsView = components["schemas"]["GatewaySettingsView"];
+/** The range each numeric gateway setting takes (`GatewaySettingsView.limits`), as the server checks it. */
+export type GatewaySettingLimits = components["schemas"]["GatewaySettingLimits"];
+export type SettingRange = components["schemas"]["SettingRange"];
 export type {
   ListLimitsOptions,
   EndUserOptions,

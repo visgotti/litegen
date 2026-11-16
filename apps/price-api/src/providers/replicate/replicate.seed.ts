@@ -14,7 +14,7 @@ export const seed: SeedModel[] = [
     id: "replicate/flux-3-image",
     displayName: "FLUX 3 Image (Replicate)",
     mediaType: MediaType.IMAGE,
-    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.024 }],
+    prices: [{ unit: PriceUnit.PER_IMAGE, amountUsd: 0.048 }],
   },
   {
     id: "replicate/flux-dev",

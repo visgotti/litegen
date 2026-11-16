@@ -97,6 +97,7 @@ async fn seed_user(db: &Arc<SqliteDatabase>, email: &str) -> (User, String, Stri
         updated_at: chrono::Utc::now(),
         last_login_at: None,
         is_active: true,
+        sign_in_epoch: 0,
     };
     db.create_user(&user).await.expect("create user");
     let session_token = generate_session_token();
@@ -237,6 +238,457 @@ async fn only_owner_admin_can_invite_members() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "viewer cannot invite");
 
     let _ = owner;
+}
+
+/// Review A2: changing a member's role takes a role above the member's
+/// current one, and never grants one at or above the caller's own; each
+/// change is audited with the role before. An Admin could demote a peer
+/// Admin, reset them while outranking them, and promote them back, unseen.
+#[tokio::test]
+async fn a_member_role_change_needs_a_higher_role_and_is_audited() {
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let (admin, admin_sess, admin_csrf) = seed_user(&db, "admin@test.com").await;
+    let (peer, _, _) = seed_user(&db, "peer@test.com").await;
+    let (member, _, _) = seed_user(&db, "member@test.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let org = new_org(&app, &owner_sess, &owner_csrf, "Acme").await;
+    db.add_org_member(&org, &admin.id, Role::Admin).await.unwrap();
+    db.add_org_member(&org, &peer.id, Role::Admin).await.unwrap();
+    db.add_org_member(&org, &member.id, Role::Member).await.unwrap();
+    let patch = |id: &str, role: &str, sess: &str, csrf: &str| {
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/v1/orgs/{org}/members/{id}"))
+            .header("cookie", cookie(sess))
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&json!({ "role": role })).unwrap()))
+            .unwrap()
+    };
+    for (who, req, expected) in [
+        ("an admin demoting a peer admin", patch(&peer.id, "member", &admin_sess, &admin_csrf), StatusCode::FORBIDDEN),
+        ("an admin promoting a member to admin", patch(&member.id, "admin", &admin_sess, &admin_csrf), StatusCode::FORBIDDEN),
+        ("an admin making a member a viewer", patch(&member.id, "viewer", &admin_sess, &admin_csrf), StatusCode::OK),
+        ("the owner demoting an admin", patch(&peer.id, "member", &owner_sess, &owner_csrf), StatusCode::OK),
+    ] {
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), expected, "{who}");
+    }
+    assert_eq!(db.get_membership(&org, &peer.id).await.unwrap(), Some(Role::Member));
+    assert_eq!(db.get_membership(&org, &member.id).await.unwrap(), Some(Role::Viewer));
+    let mut entries = audit_with(&db, &org, "org.member.update").await;
+    for _ in 0..200 {
+        if entries.iter().filter(|e| e.action == "org.member.update").count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        entries = db.list_audit_log_for_tenant(&org, 1, 100).await.unwrap().0;
+    }
+    let changes: Vec<(String, String, String)> = entries
+        .iter()
+        .filter(|e| e.action == "org.member.update")
+        .map(|e| {
+            let after: serde_json::Value = serde_json::from_str(e.after_json.as_deref().unwrap_or("null")).unwrap();
+            (e.target_id.clone(), after["previous_role"].as_str().unwrap_or("").to_string(), after["role"].as_str().unwrap_or("").to_string())
+        })
+        .collect();
+    for change in [(member.id.clone(), "member".to_string(), "viewer".to_string()), (peer.id.clone(), "admin".to_string(), "member".to_string())] {
+        assert!(changes.contains(&change), "{change:?} in {changes:?}");
+    }
+}
+
+/// Round 3b, S4: inviting takes the role rule, or "remove a Member, invite
+/// them back as Admin" promoted past it: an Admin invites Members and
+/// Viewers, an Owner Admins as well; the master key, any role but Owner.
+#[tokio::test]
+async fn inviting_needs_a_role_above_the_invited_one() {
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let (admin, admin_sess, admin_csrf) = seed_user(&db, "admin@test.com").await;
+    let app = create_router(build_state_full(db.clone(), None, Some("platform-master".into())).await);
+    let org = new_org(&app, &owner_sess, &owner_csrf, "Acme").await;
+    db.add_org_member(&org, &admin.id, Role::Admin).await.unwrap();
+    let invite = |email: &str, role: &str, auth: (&str, &str)| {
+        let req = Request::builder().method("POST").uri(format!("/v1/orgs/{org}/members"));
+        let req = match auth {
+            ("master", _) => req.header("authorization", "Bearer platform-master"),
+            (sess, csrf) => req.header("cookie", cookie(sess)).header("x-csrf-token", csrf),
+        };
+        req.header("content-type", "application/json").body(Body::from(serde_json::to_vec(&json!({ "email": email, "role": role })).unwrap())).unwrap()
+    };
+    let (as_admin, as_owner, as_master) = ((admin_sess.as_str(), admin_csrf.as_str()), (owner_sess.as_str(), owner_csrf.as_str()), ("master", ""));
+    let resp = app.clone().oneshot(invite("new-admin@test.com", "admin", as_admin)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "an admin inviting an admin");
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], "forbidden", "{body}");
+    for (who, req) in [
+        ("an admin inviting a member", invite("new-member@test.com", "member", as_admin)),
+        ("an admin inviting a viewer", invite("new-viewer@test.com", "viewer", as_admin)),
+        ("the owner inviting an admin", invite("new-admin@test.com", "admin", as_owner)),
+        ("the master key inviting an admin", invite("other-admin@test.com", "admin", as_master)),
+    ] {
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK, "{who}");
+    }
+}
+
+/// The outrank rule (review A2), for removal: removing a member and
+/// inviting them back lower is a demotion by another door, so a person
+/// removes only a member they outrank in the org. Leaving (removing
+/// yourself) stays allowed, and the master key may remove anyone but the
+/// Owner.
+#[tokio::test]
+async fn removing_a_member_needs_a_higher_role_and_leaving_stays_allowed() {
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let (admin, admin_sess, admin_csrf) = seed_user(&db, "admin@test.com").await;
+    let (peer, _, _) = seed_user(&db, "peer@test.com").await;
+    let (other, _, _) = seed_user(&db, "other@test.com").await;
+    let (member, _, _) = seed_user(&db, "member@test.com").await;
+    let app = create_router(build_state_full(db.clone(), None, Some("platform-master".into())).await);
+    let org = new_org(&app, &owner_sess, &owner_csrf, "Acme").await;
+    for (who, role) in [(&admin, Role::Admin), (&peer, Role::Admin), (&other, Role::Admin), (&member, Role::Member)] {
+        db.add_org_member(&org, &who.id, role).await.unwrap();
+    }
+    let remove = |id: &str, auth: (&str, &str)| {
+        let req = Request::builder().method("DELETE").uri(format!("/v1/orgs/{org}/members/{id}"));
+        let req = match auth {
+            ("master", _) => req.header("authorization", "Bearer platform-master"),
+            (sess, csrf) => req.header("cookie", cookie(sess)).header("x-csrf-token", csrf),
+        };
+        req.body(Body::empty()).unwrap()
+    };
+    let (as_admin, as_owner, as_master) = ((admin_sess.as_str(), admin_csrf.as_str()), (owner_sess.as_str(), owner_csrf.as_str()), ("master", ""));
+    let resp = app.clone().oneshot(remove(&peer.id, as_admin)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "an admin removing a peer admin");
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], "forbidden", "{body}");
+    assert_eq!(db.get_membership(&org, &peer.id).await.unwrap(), Some(Role::Admin), "the peer stays");
+    for (who, req) in [
+        ("an admin removing a member", remove(&member.id, as_admin)),
+        ("an admin leaving", remove(&admin.id, as_admin)),
+        ("the owner removing an admin", remove(&peer.id, as_owner)),
+        ("the master key removing an admin", remove(&other.id, as_master)),
+    ] {
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NO_CONTENT, "{who}");
+    }
+    for gone in [&member.id, &admin.id, &peer.id, &other.id] {
+        assert_eq!(db.get_membership(&org, gone).await.unwrap(), None, "{gone} removed");
+    }
+}
+
+/// Follow-up item 4: an org, its maker's Owner membership and its first app
+/// are made together. One whose app can't be written leaves nothing behind;
+/// before, the org and the membership stayed, with no app.
+#[tokio::test]
+async fn an_org_that_fails_to_be_made_leaves_nothing_behind() {
+    let db = build_db().await;
+    let (owner, sess, csrf) = seed_user(&db, "owner@test.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/orgs")
+        .header("cookie", cookie(&sess))
+        .header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Acme" })).unwrap()))
+        .unwrap();
+    sqlx::query("ALTER TABLE applications RENAME TO applications_away").execute(db.pool()).await.unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    sqlx::query("ALTER TABLE applications_away RENAME TO applications").execute(db.pool()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(db.list_orgs_for_user(&owner.id).await.unwrap().is_empty(), "no org or membership left behind");
+    assert!(db.get_org_by_slug("acme").await.unwrap().is_none(), "no org left behind");
+
+    let id = new_org(&app, &sess, &csrf, "Acme").await;
+    assert_eq!(db.get_organization(&id).await.unwrap().expect("made").slug, "acme", "the slug is free again");
+}
+
+/// An org's invitation takes only an address as the invitee's email: the
+/// account it makes is labelled by it in the audit log.
+#[tokio::test]
+async fn an_org_invitation_to_what_is_not_an_address_is_refused() {
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/orgs")
+        .header("cookie", cookie(&owner_sess))
+        .header("x-csrf-token", &owner_csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Acme" })).unwrap()))
+        .unwrap();
+    let org = body_json(app.clone().oneshot(req).await.unwrap()).await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    for email in ["nobody", "first last@test.com"] {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/orgs/{org_id}/members"))
+            .header("cookie", cookie(&owner_sess))
+            .header("x-csrf-token", &owner_csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&json!({ "email": email, "role": "member" })).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{email}");
+        let body = body_json(resp).await;
+        assert_eq!(body["error"]["code"], "invalid_email", "{email}: {body}");
+    }
+    assert!(db.list_invitations().await.unwrap().is_empty(), "no invitation stored");
+}
+
+// ─── Invitations: listed and revoked ───────────────────────────────────────────
+
+/// A new org, made by the session `sess`: its id.
+async fn new_org(app: &axum::Router, sess: &str, csrf: &str, name: &str) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/orgs")
+        .header("cookie", cookie(sess))
+        .header("x-csrf-token", csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": name })).unwrap()))
+        .unwrap();
+    body_json(app.clone().oneshot(req).await.unwrap()).await["id"].as_str().expect("an org id").to_string()
+}
+
+/// An invitation to `org_id`, made `age` ago and good for `ttl` from then.
+fn stored_invitation(org_id: &str, email: &str, age: chrono::Duration, ttl: chrono::Duration) -> crate::types::Invitation {
+    let made = chrono::Utc::now() - age;
+    crate::types::Invitation {
+        id: Uuid::new_v4().to_string(),
+        email: email.to_string(),
+        role: Role::Member,
+        token: generate_session_token(),
+        invited_by: None,
+        org_id: org_id.to_string(),
+        expires_at: made + ttl,
+        used_at: None,
+        created_at: made,
+    }
+}
+
+/// The org's audit log once `action` is in it (entries are written in the
+/// background).
+async fn audit_with(db: &SqliteDatabase, org_id: &str, action: &str) -> Vec<crate::types::AuditLogEntry> {
+    for _ in 0..200 {
+        let (entries, _) = db.list_audit_log_for_tenant(org_id, 1, 100).await.unwrap();
+        if entries.iter().any(|e| e.action == action) {
+            return entries;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("no {action} audit entry in {org_id}");
+}
+
+/// An org's pending invitations are listed to those who may invite there,
+/// and to the master key: newest first and without their tokens (a token is
+/// shown only in the answer that makes the invitation). Accepted and expired
+/// ones, and another org's, aren't listed.
+#[tokio::test]
+async fn an_orgs_pending_invitations_are_listed_without_their_tokens() {
+    use chrono::Duration;
+    let db = build_db().await;
+    let (owner, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let (member, member_sess, _) = seed_user(&db, "member@test.com").await;
+    let app = create_router(build_state_full(db.clone(), None, Some("mk".into())).await);
+    let org_id = new_org(&app, &owner_sess, &owner_csrf, "Acme").await;
+    let other_org = new_org(&app, &owner_sess, &owner_csrf, "Other").await;
+    db.add_org_member(&org_id, &member.id, Role::Member).await.unwrap();
+    let older = crate::types::Invitation {
+        invited_by: Some(owner.id.clone()),
+        ..stored_invitation(&org_id, "older@test.com", Duration::hours(2), Duration::days(7))
+    };
+    let newer = stored_invitation(&org_id, "newer@test.com", Duration::hours(1), Duration::days(7));
+    let expired = stored_invitation(&org_id, "expired@test.com", Duration::days(8), Duration::days(7));
+    let accepted = stored_invitation(&org_id, "accepted@test.com", Duration::hours(3), Duration::days(7));
+    let elsewhere = stored_invitation(&other_org, "elsewhere@test.com", Duration::hours(1), Duration::days(7));
+    for inv in [&older, &newer, &expired, &accepted, &elsewhere] {
+        db.create_invitation(inv).await.unwrap();
+    }
+    assert!(db.mark_invitation_used(&accepted.token).await.unwrap());
+
+    let list = |auth: (&'static str, String)| {
+        Request::builder().uri(format!("/v1/orgs/{org_id}/invitations")).header(auth.0, auth.1).body(Body::empty()).unwrap()
+    };
+    for (who, auth) in [("the owner", ("cookie", cookie(&owner_sess))), ("the master key", ("authorization", "Bearer mk".to_string()))] {
+        let resp = app.clone().oneshot(list(auth)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{who}");
+        let listed = body_json(resp).await;
+        let items = listed.as_array().unwrap_or_else(|| panic!("{who}: a list: {listed}"));
+        let ids: Vec<&str> = items.iter().map(|i| i["id"].as_str().unwrap_or("")).collect();
+        assert_eq!(ids, [newer.id.as_str(), older.id.as_str()], "{who}: {listed}");
+        assert!(items.iter().all(|i| i.get("token").is_none()), "{who}: no tokens: {listed}");
+        assert_eq!(items[1]["email"], "older@test.com");
+        assert_eq!(items[1]["role"], "member");
+        assert_eq!(items[1]["org_id"], org_id.as_str());
+        assert_eq!(items[1]["invited_by"], owner.id.as_str());
+        assert_eq!(items[0]["invited_by"], json!(null));
+        assert!(items[1]["created_at"].is_string() && items[1]["expires_at"].is_string(), "{listed}");
+    }
+    let resp = app.clone().oneshot(list(("cookie", cookie(&member_sess)))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "a member may not invite, so lists none");
+}
+
+/// A revoked invitation no longer accepts. Through an org's path only that
+/// org's invitations not yet accepted can be revoked, and only by those
+/// whose role there may (`invitation:revoke`).
+#[tokio::test]
+async fn a_revoked_invitation_no_longer_accepts() {
+    use chrono::Duration;
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let (member, member_sess, member_csrf) = seed_user(&db, "member@test.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let org_id = new_org(&app, &owner_sess, &owner_csrf, "Acme").await;
+    let other_org = new_org(&app, &owner_sess, &owner_csrf, "Other").await;
+    db.add_org_member(&org_id, &member.id, Role::Member).await.unwrap();
+    let mine = stored_invitation(&org_id, "mine@test.com", Duration::hours(1), Duration::days(7));
+    let theirs = stored_invitation(&other_org, "theirs@test.com", Duration::hours(1), Duration::days(7));
+    let accepted = stored_invitation(&org_id, "accepted@test.com", Duration::hours(1), Duration::days(7));
+    for inv in [&mine, &theirs, &accepted] {
+        db.create_invitation(inv).await.unwrap();
+    }
+    assert!(db.mark_invitation_used(&accepted.token).await.unwrap());
+    let revoke = |id: &str, sess: &str, csrf: &str| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/v1/orgs/{org_id}/invitations/{id}"))
+            .header("cookie", cookie(sess))
+            .header("x-csrf-token", csrf)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let resp = app.clone().oneshot(revoke(&mine.id, &member_sess, &member_csrf)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "a member may not revoke");
+    // Review A6: an accepted invitation is a 409 (remove the member instead),
+    // told apart from one the org doesn't have.
+    for (inv, why, status, code) in [
+        (&theirs, "another org's", StatusCode::NOT_FOUND, "invitation_not_found"),
+        (&accepted, "an accepted one", StatusCode::CONFLICT, "invitation_accepted"),
+    ] {
+        let resp = app.clone().oneshot(revoke(&inv.id, &owner_sess, &owner_csrf)).await.unwrap();
+        assert_eq!(resp.status(), status, "{why}");
+        assert_eq!(body_json(resp).await["error"]["code"], code, "{why}");
+        assert!(db.get_invitation(&inv.token).await.unwrap().is_some(), "{why} stays");
+    }
+    let resp = app.clone().oneshot(revoke(&mine.id, &owner_sess, &owner_csrf)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let resp = app.clone().oneshot(revoke(&mine.id, &owner_sess, &owner_csrf)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "revoked already");
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/auth/invitations/{}/accept", mine.token))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "password": "a-long-enough-password" })).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "a revoked token accepts nothing");
+    assert!(db.get_user_by_email("mine@test.com").await.unwrap().is_none(), "no account made");
+}
+
+/// The org's audit log has an invitation made through the org's route (as
+/// `POST /v1/users` already wrote) and its revocation.
+#[tokio::test]
+async fn an_orgs_invitations_and_their_revocation_are_audited() {
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let org_id = new_org(&app, &owner_sess, &owner_csrf, "Acme").await;
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/orgs/{org_id}/members"))
+        .header("cookie", cookie(&owner_sess))
+        .header("x-csrf-token", &owner_csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "email": "New@Test.com", "role": "member" })).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let made = body_json(resp).await;
+    let id = made["id"].as_str().expect("an id").to_string();
+    let token = made["token"].as_str().unwrap_or_else(|| panic!("the inviter gets the token: {made}"));
+    assert!(db.get_invitation(token).await.unwrap().is_some(), "{made}");
+    assert_eq!(made["org_id"], org_id.as_str());
+    assert!(made.get("invite_url").is_some_and(|u| u.is_null()), "no public URL configured: {made}");
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/orgs/{org_id}/invitations/{id}"))
+        .header("cookie", cookie(&owner_sess))
+        .header("x-csrf-token", &owner_csrf)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NO_CONTENT);
+
+    let entries = audit_with(&db, &org_id, "invitation.revoke").await;
+    for action in ["invitation.create", "invitation.revoke"] {
+        let entry = entries.iter().find(|e| e.action == action).unwrap_or_else(|| panic!("{action}: {entries:?}"));
+        assert_eq!((entry.target_type.as_str(), entry.target_id.as_str()), ("invitation", id.as_str()), "{action}");
+        assert_eq!(entry.actor_label, "owner@test.com", "{action}");
+        assert!(entry.after_json.as_deref().is_some_and(|a| a.contains("new@test.com")), "{action}: {:?}", entry.after_json);
+    }
+}
+
+/// Review round 6, finding 6: a demotion to a role that can't invite and a
+/// removal revoke invitations (SEC-INVITES), and each revoke is in the org's
+/// audit log with its reason, as a deactivation's is.
+#[tokio::test]
+async fn a_demotion_and_a_removal_audit_the_invitations_they_revoke() {
+    use chrono::Duration;
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@test.com").await;
+    let (admin, _, _) = seed_user(&db, "admin@test.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let org_id = new_org(&app, &owner_sess, &owner_csrf, "Acme").await;
+    db.add_org_member(&org_id, &admin.id, Role::Admin).await.unwrap();
+    let sent_before_demotion = crate::types::Invitation {
+        invited_by: Some(admin.id.clone()),
+        ..stored_invitation(&org_id, "first@test.com", Duration::hours(1), Duration::days(7))
+    };
+    db.create_invitation(&sent_before_demotion).await.unwrap();
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/orgs/{org_id}/members/{}", admin.id))
+        .header("cookie", cookie(&owner_sess))
+        .header("x-csrf-token", &owner_csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "role": "member" })).unwrap()))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK, "the owner demotes the admin");
+
+    let sent_before_removal = crate::types::Invitation {
+        invited_by: Some(admin.id.clone()),
+        ..stored_invitation(&org_id, "second@test.com", Duration::hours(1), Duration::days(7))
+    };
+    let to_them = stored_invitation(&org_id, "admin@test.com", Duration::hours(1), Duration::days(7));
+    for inv in [&sent_before_removal, &to_them] {
+        db.create_invitation(inv).await.unwrap();
+    }
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/orgs/{org_id}/members/{}", admin.id))
+        .header("cookie", cookie(&owner_sess))
+        .header("x-csrf-token", &owner_csrf)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NO_CONTENT, "the owner removes them");
+    assert!(db.list_invitations().await.unwrap().is_empty(), "all three revoked");
+
+    // Written before each answer went out (review round 7, cleanup): one
+    // read, no polling.
+    let (entries, _) = db.list_audit_log_for_tenant(&org_id, 1, 100).await.unwrap();
+    let revokes = entries.into_iter().filter(|e| e.action == "invitation.revoke").collect::<Vec<_>>();
+    for (inv, reason) in [(&sent_before_demotion, "inviter_role_changed"), (&sent_before_removal, "member_removed"), (&to_them, "member_removed")] {
+        let entry = revokes.iter().find(|e| e.target_id == inv.id).unwrap_or_else(|| panic!("{}: {revokes:?}", inv.email));
+        assert!(entry.after_json.as_deref().is_some_and(|a| a.contains(&format!(r#""reason":"{reason}""#))), "{}: {:?}", inv.email, entry.after_json);
+        assert_eq!(entry.actor_label, "owner@test.com", "{}", inv.email);
+    }
 }
 
 // ─── Non-member is denied (require_member_perm) ────────────────────────────────

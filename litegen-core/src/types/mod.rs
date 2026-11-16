@@ -1346,7 +1346,9 @@ pub struct Model3dAsset {
     /// vocabulary; textures and previews their image format (`png`, `jpg`,
     /// `webp`). A plain string so a client tolerates a format added later.
     pub format: String,
-    /// Size of the stored file.
+    /// Size of the file in bytes: the stored file's, or for a file litegen
+    /// didn't keep (`kept: false`) the size the vendor's host reported when
+    /// litegen checked its link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
     /// Triangle count, on meshes whose vendor reports one. A container litegen
@@ -2157,6 +2159,12 @@ pub struct RequestLog {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Whether this request was answered from the cache (an image's
+    /// `X-Litegen-Cache: hit`): the hit has a row of its own, at what it was
+    /// charged. False on every other row, older rows included.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub cache_hit: bool,
 }
 
 /// Latency percentiles for the last N minutes.
@@ -2581,19 +2589,48 @@ pub struct ApiKeyDetail {
     pub webhook_url: Option<String>,
 }
 
-/// Request body for PATCH /v1/keys/{id}.
+/// Request body for PATCH /v1/keys/{id}, a JSON merge patch: a field left
+/// out stays as it is, `null` clears `token_quota`, `rpm_limit`,
+/// `webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and
+/// `is_active` can't be cleared: `null` leaves them as they are.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateApiKeyRequest {
     pub name: Option<String>,
-    pub token_quota: Option<f64>,
-    pub rpm_limit: Option<u32>,
+    /// USD budget cap; `null` removes it (no cap).
+    #[serde(default, deserialize_with = "patch_field", skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<f64>)]
+    pub token_quota: Option<Option<f64>>,
+    /// Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to
+    /// stop a key, block it); `null` removes it (no limit).
+    #[serde(default, deserialize_with = "patch_field", skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<u32>, minimum = 1)]
+    pub rpm_limit: Option<Option<u32>>,
     /// Replace the key's scopes: the same values and the same privilege check
     /// as on create (an unknown scope is a 400, one the caller may not grant a
     /// 403).
     pub scopes: Option<String>,
-    pub webhook_url: Option<String>,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The key's webhook URL, held to the same address rules as on create;
+    /// `null` or `""` removes it (the key then shows `webhook_url: null`).
+    #[serde(default, deserialize_with = "patch_field", skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub webhook_url: Option<Option<String>>,
+    /// When the key stops working; `null` removes the expiry (it never
+    /// expires).
+    #[serde(default, deserialize_with = "patch_field", skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<chrono::DateTime<chrono::Utc>>)]
+    pub expires_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
     pub is_active: Option<bool>,
+}
+
+/// A field of a JSON merge patch, with `#[serde(default, deserialize_with =
+/// "patch_field")]`: left out it is `None` (unchanged), `null` is
+/// `Some(None)` (cleared), and a value is `Some(Some(value))`.
+pub fn patch_field<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// Response for `POST /v1/keys/{id}/rotate`. Carries the freshly-minted secret,
@@ -2720,13 +2757,24 @@ pub struct CacheClearedResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuditLogEntry {
     pub id: String,
-    /// The API key ID of the actor. None when the master key was used.
+    /// The API key that acted. Null for the master key, a signed-in person
+    /// (a browser session, or an app signed in with OAuth) and litegen
+    /// itself.
     pub actor_key_id: Option<String>,
-    /// Human-readable actor label: `"master-key"` or the key's name.
+    /// Who acted: a signed-in person's email, an API key's id (as in
+    /// `actor_key_id`), `master-key` for the master key, or `system` for
+    /// litegen itself (a budget alert). Since 2026-11-15 an account's email
+    /// must be an address, so a new account can't be labelled `master-key`
+    /// or `system`.
     pub actor_label: String,
     /// Action identifier, e.g. `"key.create"`, `"generation.cancel"`.
     pub action: String,
-    /// Target entity type: `"api_key"` or `"generation"`.
+    /// What the action changed: `api_key`, `generation`, `user`,
+    /// `invitation`, `membership`, `organization`, `application`,
+    /// `provider_credential`, `end_user`, `oauth_client`, a budget
+    /// (`key_limits`, `org_limits`, `app_limits`, `member_limits`,
+    /// `end_user_limits`), or the gateway's `model`, `provider`, `routes` and
+    /// `settings`.
     pub target_type: String,
     /// Target entity ID.
     pub target_id: String,
@@ -2735,8 +2783,11 @@ pub struct AuditLogEntry {
     /// JSON snapshot of the entity state *after* the action (None on delete/revoke).
     pub after_json: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Tenant (organization) this audit entry belongs to. None falls back to the
-    /// default org at the DB layer (single-tenant); set from the caller's active org.
+    /// The organization this entry is filed under: the one whose object the
+    /// action changed, else the one the caller acted in. Absent for an entry
+    /// filed under no org: in hosted mode, the master key's changes to the
+    /// gateway and to accounts, and an account change by a person who belongs
+    /// to no org. Only the master key reads those.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
 }
@@ -2765,7 +2816,17 @@ pub struct RequestArtifact {
     pub negative_prompt: Option<String>,
     pub params_json: Option<serde_json::Value>,
     pub refs_meta_json: Option<serde_json::Value>,
-    /// "b64" | "url" | "error"
+    /// What `output_value` holds:
+    /// - `b64`: the image, base64 (at most 2 MiB; `output_truncated` says
+    ///   when it was cut);
+    /// - `url`: a link to the output, when the request had one (a job's
+    ///   output is on its generation);
+    /// - `generation`: a cache hit's: the id of the generation whose answer
+    ///   it was served, which holds the image (no copy here);
+    /// - `not_kept`: nothing: the request kept nothing (`keep_outputs: false`);
+    /// - `deleted`: nothing: the output's files were deleted (retention); the
+    ///   prompt and params stay;
+    /// - `error`: nothing: the request failed (`error_message`).
     pub output_kind: String,
     pub output_value: Option<String>,
     pub output_mime: Option<String>,
@@ -2793,6 +2854,11 @@ pub struct WebhookDelivery {
     pub error_message: Option<String>,
     pub payload_json: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// The delivery this attempt belongs to, `whd-` and a UUID: the
+    /// `X-Litegen-Delivery-Id` the receiver got. Every attempt of one
+    /// delivery has the same one. `null` on attempts recorded before
+    /// migration 029.
+    pub delivery_id: Option<String>,
 }
 
 // ─── User / Session / Invitation / PasswordReset ────────────────────────────
@@ -2810,6 +2876,11 @@ pub struct User {
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub last_login_at: Option<chrono::DateTime<chrono::Utc>>,
     pub is_active: bool,
+    /// The account's sign-in epoch, read in the same row as its password
+    /// hash and active flag (review round 5, finding 2): a sign-in that
+    /// checks the hash stamps its session with this, never a later read.
+    #[serde(skip_serializing, default)]
+    pub sign_in_epoch: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -2853,7 +2924,7 @@ pub struct Session {
     pub csrf_token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Invitation {
     pub id: String,
     pub email: String,
@@ -2876,6 +2947,11 @@ pub struct PasswordReset {
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Who issued the link: a person's account id, or `None` for the master
+    /// key (and for the dev flag's self-service tokens, local tests only).
+    /// Confirming re-checks that this issuer may still issue it (review round
+    /// 4, findings 4 and 5).
+    pub issued_by: Option<String>,
 }
 
 #[cfg(test)]

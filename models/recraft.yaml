@@ -200,12 +200,25 @@ models:
   # "Image to image, create style | No"; raster as WebP or PNG (litegen asks
   # for png, as for every raster model).
   # @see https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash.md (2026-11-03)
+  #
+  # Replaced, 2026-11-16: the release history reads "| November 2026 | [V4.1
+  # Flash V2](…) | Replaced V4.1 Flash: about 1.1 seconds and \$0.007 per image,
+  # better with text in images and fine details |", the old model page answers
+  # 307 to the Flash V2 page, and neither the alias list nor the OpenAPI names
+  # `recraftv4_1_flash` any more (the drift run reports it missing). Recraft
+  # gives no shutdown date, so the row stays, deprecated, until the vendor
+  # refuses the id; Recraft's release month is the only date it publishes.
+  # @see https://www.recraft.ai/docs/api-reference/models.md (2026-11-16)
   - id: recraft/recraftv4_1_flash
     provider: recraft
     media_type: image
     display_name: Recraft V4.1 Flash
-    description: Recraft V4.1 Flash — fast, low-cost raster image generation (no styles).
+    description: "DEPRECATED: Recraft replaced V4.1 Flash with V4.1 Flash V2 (November 2026);
+      migrate to recraft/recraftv4_1_flash_v2. Recraft V4.1 Flash — fast, low-cost raster
+      image generation (no styles)."
     docs_url: https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash
+    deprecated_at: 2026-11-16
+    replaced_by: recraft/recraftv4_1_flash_v2
     # "| [V4.1 Flash](…) | $0.007 | — | — | — |" (raster, per image).
     # @see https://www.recraft.ai/docs/api-reference/pricing.md (2026-11-03)
     pricing: { base_cost_usd: 0.007 }
@@ -229,6 +242,49 @@ models:
         kind: size
         mode: enum
         # "1K models: recraftv4_1, recraftv4_1_utility, recraftv4_1_flash": the V4.1 sizes.
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    extra_allowlist: [controls]
+    tags: [text-to-image, fast]
+
+  # Recraft V4.1 Flash V2 (carried 2026-11-16), the successor of V4.1 Flash:
+  # "The fastest and cheapest Recraft API model: about 1.1 seconds and $0.007
+  # per image, with quality close to V4.1. Raster only, no styles."; `model`
+  # value `recraftv4\_1\_flash\_v2`, "1K | raster, WebP or PNG". The same
+  # contract as V4.1 Flash: "`prompt` | string, **required** | What to
+  # generate. Up to 10,000 characters.", `size` an "Aspect ratio (`1:1`,
+  # `16:9`, `3:4`, ...) or exact size", "`random_seed` | integer | Seed for
+  # reproducible results.", "`controls.colors` | array of colors | Preferred
+  # colors"; "Not supported by Flash V2: `style`, `style_id`, `style_match`,
+  # style references, `negative_prompt`, and `text_layout`."; "| Image to
+  # image, create style | No |". image/recraft.rs sends the id's suffix as
+  # `model` unchanged.
+  # @see https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash-v2.md (2026-11-16)
+  - id: recraft/recraftv4_1_flash_v2
+    provider: recraft
+    media_type: image
+    display_name: Recraft V4.1 Flash V2
+    description: Recraft V4.1 Flash V2 — Recraft's fastest, cheapest raster image generation (no styles); replaces V4.1 Flash.
+    docs_url: https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash-v2
+    # "| [V4.1 Flash V2](…) | \$0.007 | — | — | — |" (raster, per image).
+    # @see https://www.recraft.ai/docs/api-reference/pricing.md (2026-11-16)
+    pricing: { base_cost_usd: 0.007 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      # PixelGenie L16, a hint: controls.colors, "Preferred colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # Sent as `size`; an exact `size` the caller also sends wins.
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md (2026-11-03)
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "6:10", "14:10", "10:14", "16:9", "9:16"]
+        label: Aspect ratio
+        description: Sent as Recraft's size in w:h form; an exact size wins.
+      size:
+        kind: size
+        mode: enum
+        # "1K | raster": the V4.1 sizes, as on V4.1 Flash.
         values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
     extra_allowlist: [controls]
     tags: [text-to-image, fast]

@@ -361,6 +361,27 @@ async fn deleting_a_generation_deletes_its_files_and_request() {
     assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::GONE, Some("files_deleted")), "{v}");
 }
 
+/// A link litegen signed to a file since deleted answers as the file route
+/// does, 410 `files_deleted`, as its OpenAPI entry says (round 3): the link
+/// still checks out, its file is gone.
+#[tokio::test]
+async fn a_signed_link_to_deleted_files_answers_410() {
+    let (app, _state, _db, _dir) = app().await;
+    let (s, v) = call(&app, "PUT", &format!("/v1/apps/{DEFAULT_APP_ID}/access"), Some(serde_json::json!({ "mode": "signed", "signed_links": "litegen" }))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = mesh(&app).await;
+    let gen = generation(&app, &id).await;
+    let url = gen["metadata"]["assets"][0]["url"].as_str().unwrap_or_default().to_string();
+    let link = url.find("/v1/").map(|i| url[i..].to_string()).unwrap_or_default();
+    assert!(link.contains("/assets/0/signed?"), "litegen's own link: {gen}");
+    let (s, _) = call(&app, "GET", &link, None).await;
+    assert_eq!(s, StatusCode::OK, "the link works before the delete");
+    let (s, v) = call(&app, "DELETE", &format!("/v1/generations/{id}"), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = call(&app, "GET", &link, None).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::GONE, Some("files_deleted")), "{v}");
+}
+
 #[tokio::test]
 async fn a_running_generation_is_not_deleted() {
     let (app, _state, _db, _dir) = app().await;
@@ -437,4 +458,128 @@ async fn deleting_an_app_deletes_its_files_in_litegens_store() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(files_for(&dir, id).is_empty(), "the app's files in litegen's store went with it");
+}
+
+// ─── No copy of a deleted image survives: the request log, the cache ───────
+
+/// [`app`] with the image cache on.
+async fn caching_app() -> (Router, Arc<AppState>) {
+    let dir = tempfile::tempdir().expect("asset dir").keep();
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    harness::app_and_state_over_with(db, &dir, |c| c.cache.enabled = true).await
+}
+
+/// A `mock/image-gen` image for `prompt` (inline `b64_json`: the harness has
+/// no object storage): its status, its `X-Litegen-Cache` and its body.
+async fn image(app: &Router, prompt: &str) -> (StatusCode, String, serde_json::Value) {
+    let body = serde_json::json!({ "model": "mock/image-gen", "prompt": prompt });
+    let req = Request::post("/v1/images/generations").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let cache = resp.headers().get("x-litegen-cache").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024).await.unwrap();
+    (status, cache, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+}
+
+/// Retention deletes an image's files, and with them the request log's copy
+/// of the image (its artifact keeps up to 2 MiB of it inline): the output
+/// goes (`output_kind: "deleted"`, no value), the prompt and params stay.
+/// Retention promises files; deleting the generation removes its request.
+#[tokio::test]
+async fn a_sweep_clears_the_request_logs_copy_of_an_image_whose_files_it_deletes() {
+    let (app, state, _db, _dir) = app().await;
+    set_retention(&app, 1.into()).await;
+    let (s, _, made) = image(&app, "a red cube").await;
+    assert_eq!(s, StatusCode::OK, "{made}");
+    let id = made["id"].as_str().unwrap().to_string();
+    let (s, before) = call(&app, "GET", &format!("/v1/logs/{id}/artifact"), None).await;
+    assert_eq!((s, before["output_kind"].as_str()), (StatusCode::OK, Some("b64")), "the log keeps the image inline: {before}");
+
+    let report = sweep(&state, chrono::Utc::now() + DAY * 2, 500).await;
+    assert_eq!(report.generations, 1, "{report:?}");
+    let (s, after) = call(&app, "GET", &format!("/v1/logs/{id}/artifact"), None).await;
+    assert_eq!(s, StatusCode::OK, "the request log's row stays: {after}");
+    assert_eq!(after["output_kind"], "deleted", "{after}");
+    assert!(after["output_value"].is_null(), "no copy of the image is left: {after}");
+    assert_eq!(after["prompt"], "a red cube", "the prompt stays: {after}");
+    assert_eq!(after["params_json"], before["params_json"], "and the params");
+}
+
+/// A deleted generation's image is never handed out again from the cache:
+/// the same request after `DELETE /v1/generations/{id}` is a miss the vendor
+/// answers afresh, not the deleted bytes.
+#[tokio::test]
+async fn a_deleted_generations_cached_answer_is_never_served() {
+    let (app, _state) = caching_app().await;
+    let (s, cache, first) = image(&app, "a red cube").await;
+    assert_eq!((s, cache.as_str()), (StatusCode::OK, "miss"), "{first}");
+    assert_eq!(image(&app, "a red cube").await.1, "hit", "cached");
+    let id = first["id"].as_str().unwrap();
+    let (s, v) = call(&app, "DELETE", &format!("/v1/generations/{id}"), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    let (s, cache, again) = image(&app, "a red cube").await;
+    assert_eq!((s, cache.as_str()), (StatusCode::OK, "miss"), "{again}");
+    assert_ne!(again["id"], first["id"], "the vendor answered afresh: {again}");
+    assert_eq!(image(&app, "a red cube").await.1, "hit", "and its answer is cached in place of the deleted one");
+}
+
+/// The same once retention has deleted the generation's files.
+#[tokio::test]
+async fn a_cached_answer_whose_files_retention_deleted_is_never_served() {
+    let (app, state) = caching_app().await;
+    set_retention(&app, 1.into()).await;
+    let (s, cache, first) = image(&app, "a blue cube").await;
+    assert_eq!((s, cache.as_str()), (StatusCode::OK, "miss"), "{first}");
+    let report = sweep(&state, chrono::Utc::now() + DAY * 2, 500).await;
+    assert_eq!(report.generations, 1, "{report:?}");
+
+    let (s, cache, again) = image(&app, "a blue cube").await;
+    assert_eq!((s, cache.as_str()), (StatusCode::OK, "miss"), "{again}");
+    assert_ne!(again["id"], first["id"], "the vendor answered afresh: {again}");
+}
+
+/// And once the generation's row is gone (its org or app was deleted, or
+/// its write failed): the answer is not served, and no row is written again
+/// under the gone generation's id.
+#[tokio::test]
+async fn a_cached_answer_whose_generation_row_is_gone_is_never_served() {
+    let (app, state) = caching_app().await;
+    let (s, cache, first) = image(&app, "a grey cube").await;
+    assert_eq!((s, cache.as_str()), (StatusCode::OK, "miss"), "{first}");
+    let id = first["id"].as_str().unwrap();
+    state.db.forget_request_rows(Some(id), id).await.unwrap();
+
+    let (s, cache, again) = image(&app, "a grey cube").await;
+    assert_eq!((s, cache.as_str()), (StatusCode::OK, "miss"), "{again}");
+    assert_ne!(again["id"], first["id"], "the vendor answered afresh: {again}");
+    assert!(state.db.get_generation(id).await.unwrap().is_none(), "the gone row stays gone");
+}
+
+/// The ids of the request log's rows that were cache hits.
+async fn hit_rows(app: &Router) -> Vec<String> {
+    let (s, logs) = call(app, "GET", "/v1/logs?page=1&per_page=100", None).await;
+    assert_eq!(s, StatusCode::OK, "{logs}");
+    logs["data"].as_array().unwrap().iter().filter(|r| r["cache_hit"] == true).map(|r| r["id"].as_str().unwrap().to_string()).collect()
+}
+
+/// Deleting a generation deletes the request-log copies of the cache hits it
+/// answered too: a hit's artifact names the generation and carries its
+/// prompt and params, the same request. The hits' log rows (their billing
+/// records) stay.
+#[tokio::test]
+async fn deleting_a_generation_deletes_the_request_log_copies_of_its_hits() {
+    let (app, _state) = caching_app().await;
+    let (s, cache, first) = image(&app, "a pink cube").await;
+    assert_eq!((s, cache.as_str()), (StatusCode::OK, "miss"), "{first}");
+    assert_eq!(image(&app, "a pink cube").await.1, "hit");
+    let hits = hit_rows(&app).await;
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(artifact_status(&app, &hits[0]).await, StatusCode::OK, "the hit's artifact, before the delete");
+
+    let id = first["id"].as_str().unwrap();
+    let (s, v) = call(&app, "DELETE", &format!("/v1/generations/{id}"), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(artifact_status(&app, &hits[0]).await, StatusCode::NOT_FOUND, "the hit's copy of the request is gone");
+    assert_eq!(hit_rows(&app).await, hits, "its log row, the billing record, stays");
 }

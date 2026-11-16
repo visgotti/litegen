@@ -18,12 +18,12 @@ frames `integer`
 framespersecond `integer`
 generate_audio `boolean`
   values: `true`, `false`
-output_formatnew `string`
+output_format `string`
 priority `integer`
   supported models: Dreamina Seedance 2.0 series
 ratio `string`
 resolution `string`
-safety_identifiernew `string`
+safety_identifier `string`
 seed `integer`
 service_tier `string`
 updated_at `integer`

@@ -80,7 +80,10 @@ const PRECISE_EDIT = [
 
 // 2026-11-10, the video models Ideogram resells: `/v2/video/generate/{model}-
 // {text,image,reference}-to-video` (video/ideogram.rs), ids `video/{model}`.
-const V2_VIDEO = /^\/v2\/video\/generate\/(.+?)-(?:text|image|reference)-to-video$/;
+// A model served on one endpoint for every mode is read whole, so it surfaces
+// too: Kling 4.0's `/v2/video/generate/kling-4` (in the v2 spec by 2026-11-16)
+// matched neither suffix and went unreported.
+const V2_VIDEO = /^\/v2\/video\/generate\/(.+?)(?:-(?:text|image|reference)-to-video)?$/;
 const VIDEO_MODELS = ['kling-3-standard', 'minimax-h3', 'seedance-2', 'seedance-2-5'];
 const VIDEO_ENDPOINTS = VIDEO_MODELS.flatMap((m) =>
   ['text', 'image', ...(m.startsWith('kling') ? [] : ['reference'])].map((mode) => `/v2/video/generate/${m}-${mode}-to-video`),

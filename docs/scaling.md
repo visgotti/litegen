@@ -22,7 +22,11 @@ Give every replica the same configuration, the same `LITEGEN__MASTER_KEY` and
 storage credentials kept in the database, and signs file links when it's set.
 Replicas with different keys can't read each other's stored credentials or
 verify each other's links, and with different master keys they accept
-different bearer tokens.
+different bearer tokens. Whether the provider configs' header values and
+URL user info are encrypted too is one gateway setting for all replicas,
+`encrypt_provider_credentials`: a version before 2026-11-15 can't read the
+rows it encrypts, so turn it on once every replica runs a later version,
+and off before rolling back ([RUNBOOK.md](RUNBOOK.md#provider-credentials-at-rest)).
 
 Point the load balancer's health check at `GET /health/ready` and the
 liveness probe at `GET /health/live`.
@@ -39,9 +43,8 @@ messages.
 ## Several replicas
 
 With Redis set, the replicas share the first five things below. Without it,
-each of the five is that replica's own. The last three go through the
-database, so they work without Redis too, and config sync is only slower
-without it.
+each of the five is that replica's own. The rest go through the database,
+so they work without Redis too, and config sync is only slower without it.
 
 - **Rate limits.** Each limit is one token bucket in Redis: a key's
   `rpm_limit`, and the rpm of an org, app, member or end user. Taking a token
@@ -103,7 +106,148 @@ without it.
   replica renews the claims on the jobs it is polling every 10 seconds, so no
   other replica asks the vendor about them meanwhile. A job still waiting for
   one of the tick's 8 slots after 10 seconds is re-claimed before it is polled,
-  and skipped if its claim lapsed and another replica took it.
+  and skipped if its claim lapsed and another replica took it. A vendor has
+  30 seconds to answer a status check. One that takes longer is asked again
+  at the next tick (the job isn't failed for it), so a vendor that hangs holds
+  a slot for 30 seconds, not for as long as its client waits (up to 600 s).
+  Downloading a finished job's files isn't counted: that has limits of its own.
+  This holds for a late image too ([async-images.md](async-images.md)): its
+  vendor hands the image over in the same call, and the 30 seconds stop when
+  the image's download starts. A tick's jobs take turns by vendor: the first
+  job of each vendor, then the second of each, and so on, each vendor's jobs
+  in the order they were claimed. So the jobs of a vendor that hangs can't
+  take all 8 slots while another vendor's jobs wait behind them. A finished
+  3D job or video waits at most 30 seconds for one of the replica's delivery
+  slots. After that the poller leaves the job in flight for the next tick. A
+  3D job that keeps nothing only has its links checked, which takes no
+  delivery slot. A job skipped for want of its org's key warns at its first
+  skip and once at each 10-minute mark of its age, whichever replica polls
+  it: the job's row records the last mark warned at (migration 035).
+- **Webhook deliveries.** A job's terminal webhook is saved in the database
+  with its outcome: the guarded terminal write that ends the job (the
+  poller's, a reap's, a client poll's or a cancel's) records a pending
+  delivery in `webhook_outbox`, in the same statement. A trigger on
+  `generations` does it (migration 029, replaced by 032): it fires when a job
+  moves from `pending` or `processing` to `completed`, `failed` or
+  `cancelled`, has a key with a `webhook_url` (not `""`), and isn't a sync
+  image result, which is where litegen sends a terminal webhook. Every
+  replica runs a dispatcher. The replica whose write ended the job settles
+  it, then sends the first attempt at once; the delivery is due to the other
+  replicas only 30 seconds after the job ended, so none sends a webhook
+  before its job's refund. Every second each dispatcher renews its claims,
+  looks for a due delivery (a read, so an idle replica writes nothing), and
+  only then claims the due deliveries nobody holds (up to 256 at once, 16 of
+  one org), each with a lease of 60 seconds on the database's clock. Two
+  replicas never send one delivery at once, and a replica that dies loses
+  its deliveries to another within a minute. A failed attempt's next one is
+  due at a time saved with the delivery, so a restart resumes the schedule
+  where it was. A graceful stop claims no more, lets the attempts in flight
+  finish within the grace, and gives back its claims on the deliveries it
+  isn't sending; an attempt still sending keeps its claim until it ends or
+  lapses. A delivery whose job's webhook was answered 2xx already (by a
+  replica from before the outbox, during a rolling upgrade) is marked
+  delivered without a request. `POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver`
+  makes an ended delivery due again, and the hourly retention sweep deletes
+  ended deliveries and attempts after `webhooks.log_retention_days` once that
+  is set (unset, they are kept for good).
+  Delivery is at least once (an attempt cut by a stop or a crash is sent
+  again), so receivers drop repeats by `X-Litegen-Delivery-Id`. A database
+  restored without the trigger records no deliveries: each replica then sends
+  each terminal webhook from memory, as before 029, and warns `no outbox
+  delivery was recorded for a terminal webhook` ([RUNBOOK](RUNBOOK.md#webhook-deliveries-failing)).
+- **A deleted org's or app's files.** Deleting an org or an app records each
+  file litegen kept for it in `tenant_file_deletions` (migration 031), in the
+  transaction that deletes its rows. The replica that deleted it starts on
+  them at once, and every minute each replica works off the due ones, 4 at a
+  time, each held for 5 minutes on the database's clock: four deletes of up
+  to a minute each end within that hold. Two replicas never take one file at
+  once, a replica that dies leaves its files to the others once the hold has
+  passed, and one that stops claims no more.
+  A delete that fails is tried again after 1 minute, then 2, 4 and so on, up
+  to every 6 hours, until the file is gone ([storage and access](storage-access.md#retention-and-deleting)).
+- **A deleted org's or app's requests.** A request still running when its
+  org or app is deleted, on any replica, removes the rows it wrote once it
+  sees the tenant gone. On Postgres a request's spend tag also references its
+  log row (migration 037, `ON DELETE CASCADE`), so a tag written while the
+  delete runs goes with that row or is refused. During the upgrade, migration
+  037 adds that key without checking the tags already there, under a brief
+  lock on both tables (it waits for writes in progress, and writes wait for
+  it). Migration 038 then deletes the tags whose log row is gone and checks
+  the rest while writes go on.
+- **Reservations.** A billed request reserves its price before it calls the
+  vendor, on its key's quota and on each budget it counts against, and
+  settles that to what the request cost when it ends. Each reservation is
+  recorded in the database (`reservations`, migration 030) in the step that
+  takes it, and the record is deleted in the step that settles it or gives it
+  back. While the request runs, its replica renews the record's lease: 2
+  minutes on the database's clock, renewed every 20 seconds. Every replica
+  sweeps as it starts and every 20 seconds after. A record whose lease lapsed
+  belongs to a request that can no longer finish, because its replica crashed
+  or was killed: the sweep gives the amount back and deletes the record in one
+  step, so of two replicas sweeping at once exactly one gives it back.
+  Nothing is given back at a start, so a replica that restarts never frees
+  what another replica's requests still hold. A replica that dies leaves its
+  requests' prices held for about two minutes. A request whose replica
+  couldn't renew its lease for two minutes may find its record swept when it
+  settles; it is then charged its whole cost, since the sweep gave back what
+  it held. A settlement that fails (the database didn't answer) is tried
+  again after a few seconds, then every 30 seconds until it lands, its
+  reservation still held and renewed; one that landed with its answer lost
+  finds its record gone and charges nothing more. A stop cuts the retries at
+  the end of its grace, and the sweep then gives that reservation back.
+  On Postgres a sweep gives back its rows one at a time in a fixed order (keys
+  by id, then limits rows), so two replicas' sweeps never deadlock. An
+  `Idempotency-Key` in progress is held the same way: the retry of a request
+  whose replica died runs once the lease lapses, instead of answering 409 for
+  15 minutes, and a request still running keeps its key for as long as it
+  runs. A request whose lease lapsed while it still ran, and whose key a
+  retry took over, leaves the retry's record alone when it finishes. A graceful stop gives back what the requests it cuts
+  hold before it exits ([RUNBOOK](RUNBOOK.md#graceful-shutdown-not-happening)).
+  Parallel slots are leases in Redis already (above), and rate-limit tokens
+  are never given back. On SQLite the reservation is taken by a trigger,
+  `reservations_take`, as its record is inserted; litegen logs an error at
+  startup if a restored database lacks it ([RUNBOOK](RUNBOOK.md#reservations-recorded-but-not-taken-sqlite)).
+  Postgres takes it in one statement with no trigger.
+- **Reset links follow roles.** A password reset link's issuer was checked
+  against the account's roles when it was issued, so any later change to
+  those roles deletes the account's unused links, and a change to the
+  issuer's deletes the links it issued. Triggers do it (migrations 042 and
+  043), in the transaction of the change, whichever replica or code path
+  makes it:
+  - on `organization_members`: a membership added (the member's links), or
+    removed, or its role, org or account changed (the member's links and the
+    ones it issued): joining, leaving, an owner transfer, an org's deletion;
+  - on `users`: a change to the account's own `role` (the deployment's owner
+    transfer included), or any write of `is_active` false, also to an account
+    already inactive (its links and the ones it issued).
+  Other writes to `users`, such as signing in, don't fire them. Confirming a
+  link also checks its issuer again, inside its transaction, with the
+  account's row locked on Postgres. Deactivating also ends the account's
+  sessions, OAuth grants and unredeemed codes, in the same transaction, in
+  litegen's own code. A database restored without the triggers keeps such
+  links until they expire, within the hour; the confirm's check still holds.
+- **Sign-in epochs.** Each account's `sign_in_epoch` (migration 043) moves on
+  in the transaction of a confirmed reset, a deactivation or a change of one's
+  own password. Sessions, OAuth approvals and grants record the epoch they
+  began under, and the session check (in its join with the account), the code
+  redemption and every use or refresh of a grant accept only a matching one.
+  So a login, an approval or a code exchange that began on one replica before
+  such a change and lands on any replica after it is refused. Login, invitation
+  accept and social login take the epoch from the account row whose password
+  hash or identity they check, and an MCP grant's use compares it in the row
+  `live_member` reads. Reactivating an account moves the epoch on too. A
+  password change writes only at the epoch of the session sending it. A grant
+  claim made under an older epoch than the person's, or than the live grant's,
+  is refused and revokes nothing; a live grant of an older epoch is revoked
+  when a newer claim lands. A used code presented again revokes the live
+  grant it led to only when that grant isn't newer than the code's epoch, so
+  a code from before a reset can't take down the grant made after it. The
+  session list shows the current epoch's sessions only. A reset link or an
+  invitation is stored only while the sign-in sending it is live, in one
+  statement whose check (on Postgres) takes a share lock on the sender's
+  account row. A reset or a deactivation of that account, on any replica,
+  either commits first, and the insert is refused (`401 sign_in_ended`), or
+  waits for the insert's commit and then deletes or revokes what it stored.
 - **The stored link key.** When `LITEGEN__SECRETS_KEY` isn't set, litegen
   generates one signing key for its own file links, stores it in the database,
   and every replica uses it, so a link signed on one opens on the others and
@@ -114,21 +258,25 @@ without it.
 
 The database already shared the rest: budgets and key quotas, API keys (a
 revoked key stops on every replica at once), login lockout, idempotency keys,
-link revocation, MCP sign-in grants and each job's outcome (so its webhook goes
-out once).
+link revocation, MCP sign-in grants and each job's outcome (so its webhook is
+recorded once).
 
-The times replicas compare are the database's: poll claims, the lease on a
+The times replicas compare are the database's: poll claims, a webhook
+delivery's lease, when its next attempt is due (its first-attempt grace
+included) and a redeliver's cooldown, the retention sweep's cutoffs, the lease on a
 finished 3D job's delivery or a finished video's keeping (taken before any of
-its files are downloaded, so one replica downloads them), a 3D stage's claim, an `Idempotency-Key` still in
-progress, and a job's age, after which the poller fails it (2 hours). They are
+its files are downloaded, so one replica downloads them), a 3D stage's claim, the lease of an
+`Idempotency-Key` still in progress and of a reservation, and a job's age,
+after which the poller fails it (2 hours). They are
 stamped and judged on the database's clock, never a replica's own, so a
 replica whose clock drifts doesn't take over another's delivery, fail a stage
 another replica is starting, or run an idempotent request a second time.
 
 A few things stay per replica on purpose: the cap on requests in flight in one
 process (backpressure) and its budget for request bodies, the caps on webhook
-deliveries (16 at once for one org, 256 in all; the rest wait their turn in
-memory, so one org's slow receiver can't hold up the others), the latency samples
+attempts (16 at once for one org, 256 in all; a replica claims no more than
+that, the rest wait in the database, so one org's slow receiver can't hold up
+the others), the latency samples
 behind lowest-latency routing, the AWS STS and JWKS caches, the cursors that
 rotate through a provider's keys, and the Prometheus metrics: each replica
 serves its own counters at its metrics path, so scrape every replica. That
@@ -200,6 +348,10 @@ Redis is set. What litegen does while Redis can't be reached is described under
 | `LITEGEN_REDIS_SLOW_CALL_MS` | Milliseconds: an answer Redis takes this long or longer to give counts as a breaker failure, so a slow Redis opens the breaker as a dead one does. Default 250. `0` turns it off. A value of 500 or more has the same effect, since a call times out at 500 ms. |
 
 ### Database (Postgres)
+
+litegen needs PostgreSQL 13 or later: the webhook outbox (migration 029) makes
+its delivery ids with `gen_random_uuid()`, which is built in from 13 on. The
+compose files ship 16.
 
 Every name below is accepted spelled both ways, `LITEGEN_DATABASE_*` and
 `LITEGEN_DB_*`. The parts always build a Postgres URL.
@@ -288,6 +440,28 @@ Edge cases:
 The older `LITEGEN__DATABASE_URL` stays in use in `docker-compose.yml`,
 `deploy/docker-compose.prod.yml` and the test setups. Prefer the new names in
 new deployments.
+
+#### Statement and lock timeouts
+
+On Postgres, litegen limits each statement on the connections of its pool:
+
+- a statement runs for at most **5 minutes** (`statement_timeout`);
+- it waits for a lock for at most **30 seconds** (`lock_timeout`).
+
+A statement past either fails, as on any database error, rather than hold a
+connection (and in the poller, a slot) for as long as it runs or another
+transaction holds its rows. The poller asks about that job again at its next
+tick. The migrations at startup run first, on a connection of their own
+without these limits, so a long one is never cut.
+
+A limit you set yourself wins. litegen sets each one only on a connection
+where nothing else has: the URL's `options`
+(`?options=-c%20statement_timeout%3D15min`), `PGOPTIONS`, or a setting of the
+role, the database or the server (`ALTER ROLE litegen SET lock_timeout =
+'1min'`). A `0` set this way turns the limit off. Deleting an org or an app
+is the one exception to the statement limit: its transaction runs without
+one (`SET LOCAL statement_timeout = 0`), so an org or an app with millions of
+logs or jobs is deleted all the same. Its lock limit stays.
 
 ## When Redis is down
 

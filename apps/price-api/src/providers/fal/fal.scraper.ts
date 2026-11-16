@@ -9,9 +9,8 @@ const ALIASES: PriceAlias[] = [
   { modelId: 'fal/flux-dev', match: /flux\.?1?\s*\[?dev\]?/i, unit: PriceUnit.PER_IMAGE },
   { modelId: 'fal/flux-schnell', match: /flux\.?1?\s*\[?schnell\]?/i, unit: PriceUnit.PER_IMAGE },
   { modelId: 'fal/sdxl', match: /sdxl/i, unit: PriceUnit.PER_IMAGE },
-  { modelId: 'fal/sd35-medium', match: /sd\s*3\.5\s*medium/i, unit: PriceUnit.PER_IMAGE },
+  // fal/sd35-medium and fal/auraflow left litegen's catalog 2026-11-16 (fal removed both).
   { modelId: 'fal/recraft-v3', match: /recraft\s*v?3/i, unit: PriceUnit.PER_IMAGE },
-  { modelId: 'fal/auraflow', match: /auraflow/i, unit: PriceUnit.PER_IMAGE },
 ];
 
 /**

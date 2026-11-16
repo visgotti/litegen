@@ -7,8 +7,10 @@ bfl/flux-3-image
 bfl/flux-3-video
 bytedance/seedance-2.5
 bytedance/seedream-5.0-flash
+bytedance/video-upscaler
 concept-art
 dialogue-v3
+elevenlabs/eleven-v4
 flux-dev
 flux-kontext-max
 flux-kontext-pro
@@ -16,7 +18,6 @@ flux-pro-2.0
 flux-schnell
 gemini-2.5-flash-image
 gemini-image-2
-gemini-omni-flash
 google/gemini-omni-1.1-flash-preview
 google/nano-banana-2.1
 gpt-image-1.5
@@ -52,6 +53,7 @@ ltxv-2.3-pro
 lucid-origin
 lucid-realism
 meshy/meshy-7
+minimax/h3-image
 motion_2.0
 motion_2.0-fast
 music-v1
@@ -59,11 +61,14 @@ nano-banana-2
 nano-banana-2-lite
 openai/gpt-image-2.5-flare
 openai/gpt-image-2.5-sunburst
+openai/gpt-image-2.6-flare
+openai/gpt-image-2.6-sunburst
 phoenix-v0.9
 phoenix-v1.0
 portrait-perfect
 recraft-v4
 recraft-v4-pro
+recraft/recraft-4.1
 remove-bg
 rodin-v2
 seed-audio-1.0

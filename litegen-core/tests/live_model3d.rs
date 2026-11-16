@@ -20,7 +20,7 @@ use litegen::capabilities::CapabilityRegistry;
 use litegen::providers::model3d::fal::FalModel3dProvider;
 use litegen::providers::{Model3dExtras, Model3dProvider, ProviderInstanceConfig};
 use litegen::proxy::materializer::{Cleanup, MaterializedRef, MaterializedRefForm, MaterializedRequest};
-use litegen::proxy::model3d_deliver::{deliver, DeliveryPlan};
+use litegen::proxy::model3d_deliver::{deliver_with, DeliveryPlan};
 use litegen::types::{BaseGenerationRequest, GenerationStatus, Model3dAssetKind};
 
 /// fal's own example input for TRELLIS, from `TrellisInput.image_url.examples`
@@ -105,8 +105,10 @@ async fn live_fal_trellis_delivers_four_containers_from_one_glb() {
     assert_eq!(&mesh.bytes[0..4], b"glTF", "a real binary glTF");
 
     // TRELLIS emits glb only; the rest must come out of litegen's delivery
-    // step, as production derives them, each read back into its manifest.
-    let delivered = deliver(done.files.clone(), &DeliveryPlan { requested_formats: requested.clone(), ..Default::default() });
+    // step, as production derives them (under the default `mesh.draco`), each
+    // read back into its manifest.
+    let draco = litegen::config::DracoConfig::default().options();
+    let delivered = deliver_with(done.files.clone(), &DeliveryPlan { requested_formats: requested.clone(), ..Default::default() }, draco);
     assert!(delivered.fatal.is_none() && delivered.failures.is_empty(), "{:?} {:?}", delivered.fatal, delivered.failures);
     for f in &requested {
         let m = delivered

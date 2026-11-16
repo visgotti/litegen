@@ -965,6 +965,8 @@ models:
       expand:
         kind: expand
         max_px: 512
+        # Required: the mock grows a canvas and nothing else ("mock/expand-image needs expand").
+        required: true
         label: Expand
         description: Pixels to add to each side of the canvas.
     ref_inputs:

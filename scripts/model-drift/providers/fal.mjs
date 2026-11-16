@@ -1,7 +1,8 @@
 // fal.ai — an aggregator (~1,500 endpoints), so "new" is scoped to the model
-// families we carry: FLUX, Stable Diffusion / SDXL, Recraft, AuraFlow, SAM
+// families we carry: FLUX, Stable Diffusion / SDXL, Recraft, SAM
 // (segmentation), Bria and BiRefNet (background removal), LTX Video, and the 3D families Hyper3D Rodin, TRELLIS,
-// Hunyuan3D, Meshy and Tripo, matched on
+// Hunyuan3D, Meshy and Tripo, plus AuraFlow (carried until fal removed
+// fal-ai/aura-flow, 2026-11-16, so a new AuraFlow endpoint still shows), matched on
 // the endpoint id, minus training endpoints (LoRA trainers are not generation
 // models). Sources are fal's public Platform API (api.fal.ai/v1/models — no
 // key needed, but unauthenticated calls are rate-limited, so this stays at five
@@ -14,7 +15,8 @@
 //  - carried-image/-video/-3d: find mode for exactly our endpoint ids with
 //    expand=openapi-3.0 — their registry status plus each endpoint's input
 //    schema (the typings snapshot). An id the registry no longer knows comes
-//    back without metadata and counts as absent. Find mode also returns an
+//    back without metadata and counts as absent (since 2026-11 fal refuses the
+//    whole call for it, so the chunk is asked id by id: `findChunk`). Find mode also returns an
 //    endpoint fal marks deprecated (status "deprecated": still served, the
 //    list mode above drops it), and `deprecated` reports it as such rather
 //    than gone; a shutdown date or replacement fal sets on it (`retires_at`,
@@ -65,7 +67,6 @@ const IMAGE = {
   'fal/flux-3-image-klein-base': ['blackforestlabs/flux-3/klein/base/text-to-image/lora', 'blackforestlabs/flux-3/klein/base/edit-image/lora'],
   'fal/flux-schnell': 'fal-ai/flux/schnell',
   'fal/sdxl': 'fal-ai/fast-sdxl',
-  'fal/sd35-medium': 'fal-ai/stable-diffusion-v35-medium',
   // Renamed from fal-ai/recraft-v3 (no longer in the model registry; its page 308-redirects here).
   'fal/recraft-v3': ['fal-ai/recraft/v3/text-to-image', 'fal-ai/recraft/v3/image-to-image'],
   // Recraft V2 (the listed fal-ai/recraft-20b) and V4 / V4.1 (2026-11-04).
@@ -88,7 +89,6 @@ const IMAGE = {
   'fal/recraft-vectorize': 'fal-ai/recraft/vectorize',
   'fal/recraft-upscale-crisp': 'fal-ai/recraft/upscale/crisp',
   'fal/recraft-upscale-creative': 'fal-ai/recraft/upscale/creative',
-  'fal/auraflow': 'fal-ai/aura-flow',
   // Segmentation (image/fal.rs `SEGMENT_MODELS`), appended so the chunks above keep their ids.
   'fal/sam-3': 'fal-ai/sam-3/image',
   'fal/sam-3.1': 'fal-ai/sam-3-1/image',
@@ -208,6 +208,39 @@ const SPEC_ALIAS = {
   'recraft/v4/style/pro/text-to-vector': 'fal-ai/recraft/v4/style/pro/text-to-vector',
 };
 
+const findUrl = (ids) => `${API}?${ids.map((id) => `endpoint_id=${encodeURIComponent(id)}`).join('&')}&expand=openapi-3.0`;
+// fal's "unknown endpoint" answer: {"error":{"type":"not_found","message":"Endpoint(s) not found"}}.
+const unknownEndpoint = (res) => res.status === 404 && /"type"\s*:\s*"not_found"/.test(res.body ?? '');
+
+/**
+ * Find mode for one chunk of carried ids. Since 2026-11 fal answers 404
+ * "Endpoint(s) not found" for the whole call once a single id has left its
+ * registry (seen 2026-11-16 for fal-ai/aura-flow and
+ * fal-ai/stable-diffusion-v35-medium), which used to come back as an entry
+ * without metadata. Then the chunk is asked again id by id: an id fal does not
+ * know comes back as `{ endpoint_id, metadata: null }` ("not in the model
+ * registry": absent, so `missing upstream`, or `(typings)` while a catalog page
+ * still lists it), and the others keep their schemas. Any other answer passes
+ * through as it is, so a moved API still fails the source.
+ */
+async function findChunk(ids, url, get) {
+  const res = await get(url);
+  if (!unknownEndpoint(res)) return res;
+  const models = [];
+  for (const id of ids) {
+    const one = await get(findUrl([id]));
+    if (unknownEndpoint(one)) {
+      models.push({ endpoint_id: id, metadata: null });
+      continue;
+    }
+    if (one.error || one.status >= 400) return one;
+    const parsed = JSON.parse(one.body);
+    if (!Array.isArray(parsed.models)) throw new Error(`${id}: response has no \`models\` array`);
+    models.push(...parsed.models);
+  }
+  return { status: 200, contentType: 'application/json', body: JSON.stringify({ models }) };
+}
+
 // Registry status and input schema of each carried endpoint, sorted by id.
 function carriedSnapshot(res, ours) {
   return [...res.models]
@@ -256,14 +289,18 @@ export default {
     // disappearing from the snapshot diff.
     ...carriedChunks.map(({ key, ids }) => ({
       key,
-      url: `${API}?${ids.map((id) => `endpoint_id=${encodeURIComponent(id)}`).join('&')}&expand=openapi-3.0`,
+      url: findUrl(ids),
+      fetch: (url, get) => findChunk(ids, url, get),
       expect: 'json',
       extract: (res) => {
         if (!Array.isArray(res.models)) throw new Error('response has no `models` array');
         return res.models.filter((m) => m.metadata?.status === 'active').map((m) => m.endpoint_id);
       },
-      // Still served (fal-ai/aura-flow since 2026-10-27): not active, not gone.
+      // Still served (fal-ai/aura-flow from 2026-10-27 until it left the registry): not active, not gone.
       deprecated: (res) => res.models.filter((m) => m.metadata?.status === 'deprecated').map((m) => m.endpoint_id),
+      // Asked by id and unknown to the registry: gone, even while a catalog
+      // page still lists it (fal-ai/stable-diffusion-v35-medium, 2026-11-16).
+      gone: (res) => res.models.filter((m) => !m.metadata).map((m) => m.endpoint_id),
       snapshot: (res, _body, { ours }) => carriedSnapshot(res, ours),
     })),
   ],
@@ -327,6 +364,13 @@ export default {
       pattern:
         /^fal-ai\/(?:fast-fooocus-sdxl|fast-lightning-sdxl|fast-sdxl-controlnet-canny|sdxl-controlnet-union)(?:\/|$)|^fal-ai\/fast-sdxl\/|^fal-ai\/stable-diffusion-v(?:15|3-medium|35-large)(?:\/|$)/,
       reason: 'skipped 2026-09-11: SDXL and SD 1.5/3/3.5 variants',
+    },
+    {
+      // Carried as fal/sd35-medium until 2026-11-16. Find mode, the queue
+      // OpenAPI and the model page no longer know it, but the catalog list
+      // still lists it as active, so unmapped it would read as new.
+      id: 'fal-ai/stable-diffusion-v35-medium',
+      reason: 'retired 2026-11-16 (fal/sd35-medium): fal removed it; find mode, the queue OpenAPI and the model page answer 404, though the catalog list still shows it as active',
     },
     // Recraft V2 (the listed fal-ai/recraft-20b), V3 with its image-to-image
     // twin, V4, V4.1, the V4 style endpoints, vectorize and upscale are carried

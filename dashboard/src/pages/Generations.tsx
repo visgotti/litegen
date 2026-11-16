@@ -6,6 +6,7 @@ import ModelPreview from '../components/ModelPreview';
 import { assetsOf, previewOf } from '../components/model3d-assets';
 import { httpStatusOf } from '../components/generation-output';
 import { showToast } from '../components/toast-store';
+import { formatCost } from '../components/model-detail';
 
 const ACTIVE_STATUSES = new Set(['pending', 'processing']);
 
@@ -168,7 +169,7 @@ export default function Generations() {
                     <MediaPreview g={g} thumb />
                   </td>
                   <td><StatusBadge id={g.id} status={g.status} /></td>
-                  <td>${(g.cost_usd ?? 0).toFixed(4)}</td>
+                  <td>{formatCost(g.cost_usd ?? 0)}</td>
                   <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                     {new Date(g.created_at).toLocaleString()}
                   </td>

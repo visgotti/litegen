@@ -107,6 +107,7 @@ struct SpendLogRow {
     key_id: Option<String>,
     user_id: Option<String>,
     end_user: Option<String>,
+    cache_hit: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -412,11 +413,20 @@ macro_rules! impl_management_store {
                     .execute(self.pool())
                     .await?;
                 if !a.tags.is_empty() {
+                    // A tag hangs off its request's log row (on Postgres, a
+                    // foreign key: migration 037), so a request with no row
+                    // gets none, and one whose row is deleted while it is
+                    // tagged (its org or app deleted) has nothing to tag.
                     let ins = $sql(
-                        "INSERT INTO request_log_tags (request_id, tag) VALUES (?, ?) ON CONFLICT (request_id, tag) DO NOTHING",
+                        "INSERT INTO request_log_tags (request_id, tag) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM request_logs WHERE id = ?) \
+                         ON CONFLICT (request_id, tag) DO NOTHING",
                     );
                     for tag in &a.tags {
-                        sqlx::query(&ins).bind(request_id).bind(tag).execute(self.pool()).await?;
+                        match sqlx::query(&ins).bind(request_id).bind(tag).bind(request_id).execute(self.pool()).await {
+                            Ok(_) => {}
+                            Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => return Ok(()),
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
                 Ok(())
@@ -460,7 +470,7 @@ macro_rules! impl_management_store {
                 let offset = crate::api::pagination::offset(page, per_page) as i64;
                 let mut qb = sqlx::QueryBuilder::<$db>::new(
                     "SELECT rl.id, rl.created_at, rl.model, rl.provider, rl.media_type, rl.status, rl.cost_usd, \
-                     rl.latency_ms, rl.org_id, rl.app_id, rl.key_id, rl.user_id, rl.end_user FROM request_logs rl",
+                     rl.latency_ms, rl.org_id, rl.app_id, rl.key_id, rl.user_id, rl.end_user, rl.cache_hit FROM request_logs rl",
                 );
                 push_spend_filters!(qb, filter, $ts);
                 qb.push(" ORDER BY rl.created_at DESC, rl.id DESC LIMIT ")
@@ -500,6 +510,7 @@ macro_rules! impl_management_store {
                         key_id: r.key_id,
                         user_id: r.user_id,
                         end_user: r.end_user,
+                        cache_hit: r.cache_hit,
                     })
                     .collect();
                 Ok((data, total.max(0) as u64))
@@ -590,6 +601,26 @@ macro_rules! impl_management_store {
                     .execute(self.pool())
                     .await?;
                 Ok(())
+            }
+
+            async fn reseal_provider_config(&self, read: &StoredProviderConfig, sealed: &StoredProviderConfig) -> Result<bool, sqlx::Error> {
+                // A save since the read rewrote one of these at least: new keys
+                // come with a new nonce, new settings with a new text.
+                let sql = $sql(
+                    "UPDATE provider_configs SET ciphertext = ?, nonce = ?, settings_json = ? \
+                     WHERE provider = ? AND settings_json = ? AND COALESCE(ciphertext, '') = ? AND COALESCE(nonce, '') = ?",
+                );
+                let r = sqlx::query(&sql)
+                    .bind(&sealed.ciphertext)
+                    .bind(&sealed.nonce)
+                    .bind(&sealed.settings_json)
+                    .bind(&read.provider)
+                    .bind(&read.settings_json)
+                    .bind(read.ciphertext.as_deref().unwrap_or(""))
+                    .bind(read.nonce.as_deref().unwrap_or(""))
+                    .execute(self.pool())
+                    .await?;
+                Ok(r.rows_affected() > 0)
             }
 
             async fn delete_provider_config(&self, provider: &str) -> Result<bool, sqlx::Error> {

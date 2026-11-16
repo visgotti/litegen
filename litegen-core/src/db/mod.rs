@@ -8,8 +8,11 @@ pub use postgres::PostgresDatabase;
 pub use sqlite::SqliteDatabase;
 pub use trait_def::{
     key_owner_by_lookups, lease_is_free, leases_patch, merge_metadata, stage_claim_record, DatabaseStore, GenerationWrite, IdempotencyBegin, KeyOwner, RequestLogFilter,
-    StoredResponse, TenantAuditFilter, IDEMPOTENCY_IN_PROGRESS_STALE, IDEMPOTENCY_TTL,
+    StoredResponse, TenantAuditFilter, AuditLogOrg, OrgOwner, PasswordChange, ResetConfirm, SignIn, IDEMPOTENCY_IN_PROGRESS_STALE, IDEMPOTENCY_TTL,
 };
+pub use trait_def::{OutboxAttempt, OutboxDelivery, OutboxOutcome, OutboxRecord, Redelivery, WebhookLogPurged};
+pub use trait_def::TenantFileDeletion;
+pub(crate) use trait_def::kept_file_urls;
 
 /// Connect to the appropriate database backend based on the URL scheme.
 ///

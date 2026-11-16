@@ -180,6 +180,20 @@ async fn ownership_goes_only_to_a_member_of_the_default_org() {
     assert_eq!(role_of(&member_roles(&app, &o).await, &o.user_id), "owner");
 }
 
+/// Review of round 8: in single-tenant mode a role change on the Members page
+/// moves the account's own role too, as `PATCH /v1/users/{id}` does: the
+/// Users page, `/v1/auth/me` and hooks report `users.role`.
+#[tokio::test]
+async fn a_members_page_role_change_moves_the_account_role_too() {
+    let (app, _db, _dir) = app().await;
+    let o = owner(&app).await;
+    let a = invited(&app, &o, "admin-a@example.com", "admin").await;
+    let r = o.call(&app, "PATCH", &format!("/v1/orgs/{DEFAULT_ORG_ID}/members/{}", a.user_id), Some(json!({ "role": "member" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(role_of(&member_roles(&app, &o).await, &a.user_id), "member");
+    assert_eq!(account_role(&app, &o, &a.user_id).await, "member", "users.role follows the membership");
+}
+
 /// Review of security fix 3: both transfer routes refuse an inactive account,
 /// which no one could then sign in as.
 #[tokio::test]

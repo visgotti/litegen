@@ -1,0 +1,114 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值 | 支持能力 | 视频时长（秒） | 清晰度档位 | 画面宽高比（文生/全能） | 选型建议 |
+| Kling-Video-v4-flash | kling-video-v4-flash | 文生 / 图生（首帧）/ 全能视频生成（参考图、参考视频、主体输入） | 3 ~ 20 | 720p | 21:9、16:9、9:16、1:1；全能另支持 adaptive | 生成时长大幅度缩短，性价比高 |
+| Kling-Video-v4 | kling-video-v4 | 文生 / 图生（含首尾帧）/ 全能视频生成（参考图、参考视频、主体、音色混合输入） | 3 ~ 30 | 720p / 1080p | 21:9、16:9、9:16、1:1；全能另支持 adaptive | 新一代旗舰：单次最长 30 秒，支持 21:9 宽画幅，全能视频生成单任务最多组合 15 项参考素材 |
+| Kling-Video-V3 | kling-video-v3 | 文生 / 图生（含首尾帧、元素） | 3 ~ 15 | 720p / 1080p / 4K | 16:9、9:16、1:1 | 支持原生音频、多镜头、元素引用与 4K |
+| Kling-Video-V3-omni | kling-video-v3-omni | 全能视频生成（文/图/视频多模态输入、视频编辑） | 3 ~ 15 | 720p / 1080p / 4K | 16:9、9:16、1:1 | 需要参考视频、视频编辑等多模态混合输入场景 |
+| Kling-Video-V3-turbo | kling-video-v3-turbo | 文生 / 图生 | 3 ~ 15 | 720p / 1080p | 16:9、9:16、1:1 | V3 快速版，生成更快、成本更低，适合批量生成；参数精简（无音频、多镜头） |
+| Kling-Video-O1 | kling-video-o1 | 全能视频生成（多模态统一入口） | 3 ~ 10 | 720p / 1080p | 16:9、9:16、1:1 | O1 系列多模态统一生成入口 |
+| Kling-Video-V2.6 | kling-video-v2.6 | 文生 / 图生（含首尾帧） | 5 / 10 | 720p / 1080p | 16:9、9:16、1:1 | 支持原生音频的成熟方案 |
+| Kling-Video-V2.5-turbo | kling-video-v2.5-turbo | 文生 / 图生（含首尾帧） | 5 / 10 | 720p / 1080p | 16:9、9:16、1:1 | 参数最精简的入门款，成本敏感场景 |
+| Kling-Video-Motion-Control-V3.0 | kling-video-motion-control-v3.0 | 动作控制（形象参考图 + 动作参考视频，支持引用主体） | 跟随动作参考视频（3 ~ 30s） | 720p / 1080p | 跟随输入素材 | 让形象参考图中的人物复刻参考视频的动作；支持引用 1 个主体 |
+| Kling-Video-Motion-Control-V2.6 | kling-video-motion-control-v2.6 | 动作控制（形象参考图 + 动作参考视频） | 跟随动作参考视频（3 ~ 30s） | 720p / 1080p | 跟随输入素材 | 动作控制上一代版本，不支持引用主体 |
+
+## 文生视频 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/kling/text-to-video
+
+## 文生视频 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型版本。取值：kling-video-v4-flash、kling-video-v4、kling-video-v2.5-turbo、kling-video-v2.6、kling-video-v3-turbo、kling-video-v3 |
+| prompt | 是 | string | 提示词，可包含正向与负向描述。v4：纯英文 ≤ 26000 字符，纯非英文 ≤ 11000 字符，中英混合时需满足 英文字符数 ÷ 26000 + 非英文字符数 ÷ 11000 ≤ 1；V3：≤ 3072 字符（建议 ≤ 2500），支持多镜头模板语法；V3 Turbo / V2.6 / V2.5 Turbo：≤ 2500 字符。 |
+| settings | 否 | object | 输出配置，子字段见下表（各模型支持的字段不同）。 |
+| options | 否 | object | 通用配置，子字段见下表。 |
+| 子字段 | 适用模型 | 描述 |
+| resolution | 全部 | 清晰度。v4-flash：720p；v3：720p / 1080p / 4k；其余：720p / 1080p。默认值：v4 为 1080p，其余为 720p。 |
+| aspect_ratio | 全部 | 画面宽高比。枚举：16:9 / 9:16 / 1:1（v4 /v4-flash 另支持 21:9）。 |
+| duration | 全部 | 时长（秒）。v4-flash：3~20 整数；v4：3~30 整数；V3 / V3 Turbo：3~15 整数；V2.6 / V2.5 Turbo：5 / 10。未指定时若 prompt 中含明确时长要求则按 prompt 识别结果取值；v4 / v4-flash 均未识别到时默认 10 秒，其余模型默认 5 秒。 |
+| multi_shot | 仅 V3 | 是否生成多镜头视频，默认 true；设为 false 时多镜头提示词不产生多镜头输出。 |
+| audio | 仅 V3 / V2.6 | 音频。枚举：native（生成与画面匹配的原生音频）/ off（默认）。注意：V2.6 文生视频在 audio=native 时仅支持 1080p。 |
+| 子字段 | 必选 | 描述 |
+| external_task_id | 否 | 自定义任务 ID，账号内唯一，支持通过该 ID 查询任务。 |
+| watermark_info | 否 | 水印配置。结构：{"enabled": true/false}，true 为开启水印。 |
+
+## 文生视频 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| code | int | 业务错误码；0 表示成功，其它值见 附录：统一错误码。 |
+| message | string | 错误或提示信息；成功时为 "SUCCEED"。 |
+| request_id | string | 请求 ID，由系统生成，用于问题追踪与排查。 |
+| data | object | 任务数据对象。 |
+| data.id | string | 系统生成的任务 ID，用于后续任务查询。 |
+| data.status | string | 任务状态；提交成功时固定为 submitted，后续状态通过查询接口获取。 |
+| data.message | string | 任务状态信息；任务失败时展示失败原因。 |
+| data.create_time | long | 任务创建时间；Unix 时间戳，单位毫秒。 |
+| data.update_time | long | 任务更新时间；Unix 时间戳，单位毫秒。 |
+
+## 图生视频 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/kling/image-to-video
+
+## 图生视频 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型版本。取值：kling-video-v4-flash、kling-video-v4、kling-video-v2.5-turbo、kling-video-v2.6、kling-video-v3-turbo、kling-video-v3 |
+| contents | 是 | array | 参考素材集合，同一素材的字段放在同一对象内；至少包含一个 prompt 与一个 first_frame。子字段见下表。 |
+| settings | 否 | object | 输出配置，子字段见下表。注意：图生视频无 aspect_ratio 参数，画幅由输入图片决定。 |
+| options | 否 | object | 通用配置，同「文生视频」。 |
+| 参数名 | 必选 | 类型 | 描述 |
+| type | 是 | string | 素材类型。各模型支持：v4-flash：prompt / first_frame ；v4：prompt / first_frame / middle_frame / last_frame；V3：prompt / first_frame / last_frame / element；V2.6：prompt / first_frame / last_frame / voice；V3 Turbo：prompt / first_frame；V2.5 Turbo：prompt / first_frame / last_frame。 |
+| text | 条件必选 | string | 文本提示词，type=prompt 时必选。≤ 2500 字符；（v4 长度限制同文生视频）；V3 支持多镜头模板语法与 @元素 引用；可通过 @id 引用音色素材。 |
+| url | 条件必选 | string | 图片 contents[].url（type=first_frame/last_frame）：支持 1张-2张图片输入，支持 URL 和 Base64格式，图片格式：jpg/jpeg/png，宽高≥300px，宽高比 1：2.5~2.5：1；单张图片大小<=50MB，（v4 单张 ≤ 30MB） 1. Base64：所有图片大小和<75MB，转为 Base64大小和<=100MB；格式要求：data:image/<图片格式>;base64。 2. URL：需要公网可访问（http/https）。 |
+| element_id | 条件必选 | string | 元素引用（JSON 定义），type=element 时必选，仅 V3；最多 3 个，在 prompt 中以 @xxx 引用。 |
+| voice_id | 条件必选 | string | 音色 ID，type=voice 时必选。由「音色管理」创建后查询获得，也可使用系统预置音色。 |
+| id | 条件必选 | string | 素材索引 ID，type=voice 时必选；同一任务内不得重复，在 prompt 中以 @id 形式引用该音色。 |
+| 子字段 | 适用模型 | 描述 |
+| resolution | 全部 | 清晰度。v4-flash：720p；V3：720p / 1080p / 4k；其余：720p / 1080p。「默认值：v4 为 1080p，其余为 720p。」注意：V2.6 使用首尾帧生成时仅支持 720p、audio=native 时仅支持 1080p；V2.5 Turbo 使用首尾帧生成时仅支持 1080p。 |
+| duration | 全部 | 时长（秒）。v4-flash：3~20 整数；v4：3~30 整数；V3 / V3 Turbo：3~15 整数；V2.6 / V2.5 Turbo：5 / 10。未指定时若 prompt 中含明确时长要求则按 prompt 识别结果取值；v4 / v4-flash 均未识别到时默认 10 秒，其余模型默认 5 秒。 |
+| multi_shot | 仅 V3 | 是否生成多镜头视频，默认 true。 |
+| audio | 仅 V3 / V2.6 | 音频。枚举：native / off（默认 off）。注意：V2.6 图生视频在 audio=native 时仅支持 1080p。 |
+
+## 全能视频生成（Omni Video） › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/kling/omni-video
+
+## 全能视频生成（Omni Video） › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型版本。取值：kling-video-v4-flash、kling-video-v4、kling-video-v3-omni、kling-video-o1 |
+| contents | 是 | array | 多模态参考素材集合，同一素材的字段放在同一对象内。子字段见下表。 |
+| settings | 否 | object | 输出配置，子字段见下表。 |
+| options | 否 | object | 通用配置，同「文生视频」。 |
+| 参数名 | 必选 | 类型 | 描述 |
+| type | 是 | string | 素材类型。枚举：prompt / first_frame / middle_frame / last_frame / refer_image / feature_video（特征参考视频）/ base_video（待编辑基础视频）/ element / voice（音色）。v4-flash 不支持 middle_frame / last_frame / voice。 |
+| text | 条件必选 | string | 文本提示词，type=prompt 时必选。≤ 2500 字符（V3 Omni 建议 ≤ 2500，上限 3072）；v4 / v4-flash 长度限制同文生视频；支持 @xxx 素材引用与多镜头语法（V3 Omni）；可通过 @id 引用音色素材。 |
+| url | 条件必选 | string | 图片 contents[].url（type=first_frame/last_frame）：支持 1张-2张图片输入， 支持 URL 和 Base64格式，图片格式：jpg/jpeg/png，宽高≥300px，宽高比 1：2.5~2.5：1；单张图片大小<=50MB 1. Base64：所有图片大小和<75MB，转为 Base64大小和<=100MB ；格式要求：data:image/<图片格式>;base64。 2. URL：需要公网可访问（http/https）。 视频 contents[].url（type=feature_video/base_video）：支持 1个-6个视频输入， 支持 URL 和 Base64格式，视频格式：mp4/mov，视频时长3秒-15.5秒，视频的宽度和高度尺寸应介于 700 像素和 4553 像素之间，总像素面积<= 8294400。视频的宽高比应介于 0.4 和 2 之间，视频帧速率基于 24fps 至 60fps，最多可添加 1 个参考视频，添加参考视频后，最多可添加一个视频角色元素；单个文件大小<=200MB（v4：视频仅支持 URL，单个 ≤ 300MB，单段及总时长 3~30 秒，参考视频最多 5 段；图片单张 ≤ 30MB、最多 10 张）； 1. Base64：所有视频大小和<=75MB，转为 Base64大小和<=100MB；格式要求：data:video/<视频格式>;base64。注：视频为 mov 时视频格式填 quicktime。 2. URL：需要公网可访问（http/https）。 |
+| element_id | 条件必选 | string | 元素 ID（由元素管理接口创建），type=element 时必选。O1 当前仅支持多图元素。 |
+| voice_id | 条件必选 | string | 音色 ID，type=voice 时必选。由「音色管理」创建后查询获得，也可使用系统预置音色。 |
+| id | 条件必选 | string | 素材索引 ID，type=voice 时必选；同一任务内不得重复，在 prompt 中以 @id 形式引用该音色。 |
+| 子字段 | 必选 | 描述 |
+| resolution | 否 | 清晰度。v4-flash：720p；v4 / V3 Omni：720p / 1080p；O1：720p / 1080p。V3 Omni 另支持 4k，v4 暂不支持 4k。默认值：v4 为 1080p，V3 Omni / O1 为 720p。 |
+| aspect_ratio | 条件必选 | 画面宽高比。v4 / v4-flash：21:9 / 16:9 / 9:16 / 1:1 / adaptive，默认 adaptive；V3 Omni / O1：16:9 / 9:16 / 1:1，默认 16:9。V3 Omni / O1 在无首帧且无参考视频时必填。 |
+| duration | 否 | 时长（秒）。v4-flash：3~20；v4：3~30；V3 Omni：3~15；O1：3~10（O1 仅用首帧且无其他参考时仅支持 5 / 10）。v4 / v4-flash 未指定且未传入 base_video 时默认 10 秒（传入 base_video 时取其时长四舍五入）；其余模型默认值：5。 |
+| multi_shot | 否 | 仅 V3 Omni。是否生成多镜头视频，默认 true。 |
+| audio | 否 | 音频。v4 / v4-flash：native / original（默认 native）；V3 Omni：native / original / off（默认 off）；O1：original / off（默认 off）。original=保留参考视频原声。 |
+
+## 查询任务结果 › 1. 接口描述
+GET https://tokenhub.tencentmaas.com/v1/wand/kling/tasks/{task_id}
+
+## 查询任务结果 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| task_id | 是 | string | 任务 ID（路径参数），即提交任务时返回的 data.id |
+
+## 查询任务结果 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| code | int | 业务错误码；0 表示成功。 |
+| message | string | 错误或提示信息。 |
+| request_id | string | 请求 ID。 |
+| data | array | 任务结果列表。 |
+| data[].id | string | 任务 ID。 |
+| data[].status | string | 任务状态：processing / succeeded / failed。 |
+| data[].message | string | 任务状态信息；任务失败时展示失败原因。 |
+| data[].outputs | array | 视频结果列表。 |
+| data[].outputs[].type | string | 生成结果类型；当前视频结果为 video。 |
+| data[].outputs[].id | string | 视频 ID。 |
+| data[].outputs[].url | string | 视频文件地址，为临时地址，请及时下载转存。 |
+| data[].outputs[].duration | string | 视频时长（秒）。 |
+| data[].create_time | long | 任务创建时间；Unix 毫秒时间戳。 |
+| data[].update_time | long | 任务更新时间；Unix 毫秒时间戳。 |
+| tokenhub_usage | object | 用量消耗。 |
+| tokenhub_usage.total_tokens | integer | 本次任务消耗的 token 数，用于计费/对账。 |

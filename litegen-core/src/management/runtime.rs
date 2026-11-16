@@ -16,6 +16,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use super::store::ManagementStore;
@@ -52,9 +53,12 @@ pub async fn load_routes(store: &dyn ManagementStore) -> Result<Option<Vec<Route
 }
 
 pub fn validate_gateway_settings(s: &GatewaySettings) -> Result<(), String> {
+    // The ranges the settings view serves (`limits`), so the two can't drift.
+    let limits = GatewaySettingLimits::ALLOWED;
     if let Some(m) = s.cost_markup_percent {
-        if !m.is_finite() || !(0.0..=1000.0).contains(&m) {
-            return Err("cost_markup_percent must be between 0 and 1000".into());
+        let r = limits.cost_markup_percent;
+        if !m.is_finite() || !(r.min as f64..=r.max as f64).contains(&m) {
+            return Err(format!("cost_markup_percent must be between {} and {}", r.min, r.max));
         }
     }
     if let Some(url) = &s.alert_webhook_url {
@@ -71,34 +75,31 @@ pub fn validate_gateway_settings(s: &GatewaySettings) -> Result<(), String> {
     if let Some(d) = &s.default_end_user_budget_duration {
         super::budget::parse_duration(d)?;
     }
-    let range = |v: Option<u64>, field: &str, lo: u64, hi: u64| match v {
-        Some(v) if !(lo..=hi).contains(&v) => Err(format!("{field} must be between {lo} and {hi}")),
+    let range = |v: Option<u64>, field: &str, r: SettingRange| match v {
+        Some(v) if !r.holds(v) => Err(format!("{field} must be between {} and {}", r.min, r.max)),
         _ => Ok(()),
     };
-    range(s.cache_ttl_seconds, "cache_ttl_seconds", 1, 604_800)?;
-    range(s.cache_max_items, "cache_max_items", 1, 1_000_000)?;
-    range(s.cache_max_bytes, "cache_max_bytes", 1_048_576, 68_719_476_736)?;
-    range(s.retry_max_retries.map(u64::from), "retry_max_retries", 0, 5)?;
-    range(s.retry_backoff_ms, "retry_backoff_ms", 0, 60_000)?;
-    range(s.retry_max_backoff_ms, "retry_max_backoff_ms", 0, 60_000)?;
+    range(s.cache_ttl_seconds, "cache_ttl_seconds", limits.cache_ttl_seconds)?;
+    range(s.cache_max_items, "cache_max_items", limits.cache_max_items)?;
+    range(s.cache_max_bytes, "cache_max_bytes", limits.cache_max_bytes)?;
+    range(s.retry_max_retries.map(u64::from), "retry_max_retries", limits.retry_max_retries)?;
+    range(s.retry_backoff_ms, "retry_backoff_ms", limits.retry_backoff_ms)?;
+    range(s.retry_max_backoff_ms, "retry_max_backoff_ms", limits.retry_max_backoff_ms)?;
     if let (Some(first), Some(longest)) = (s.retry_backoff_ms, s.retry_max_backoff_ms) {
         if longest < first {
             return Err("retry_max_backoff_ms must be at least retry_backoff_ms".into());
         }
     }
-    range(s.vendor_timeout_seconds, "vendor_timeout_seconds", 5, 3600)?;
-    range(s.circuit_breaker_threshold.map(u64::from), "circuit_breaker_threshold", 1, 1000)?;
-    range(s.circuit_breaker_open_for_seconds, "circuit_breaker_open_for_seconds", 1, 3600)?;
+    range(s.vendor_timeout_seconds, "vendor_timeout_seconds", limits.vendor_timeout_seconds)?;
+    range(s.circuit_breaker_threshold.map(u64::from), "circuit_breaker_threshold", limits.circuit_breaker_threshold)?;
+    range(s.circuit_breaker_open_for_seconds, "circuit_breaker_open_for_seconds", limits.circuit_breaker_open_for_seconds)?;
     if let Some(t) = s.storage_access_signed_url_ttl_seconds {
-        if !crate::access::ttl_in_range(i64::from(t)) {
-            return Err(format!(
-                "storage_access_signed_url_ttl_seconds must be between {} and {} seconds",
-                crate::access::MIN_SIGNED_URL_TTL_SECONDS,
-                crate::access::MAX_SIGNED_URL_TTL_SECONDS,
-            ));
+        let r = limits.storage_access_signed_url_ttl_seconds;
+        if !r.holds(u64::from(t)) {
+            return Err(format!("storage_access_signed_url_ttl_seconds must be between {} and {} seconds", r.min, r.max));
         }
     }
-    range(s.storage_access_retention_days.map(u64::from), "storage_access_retention_days", 0, u64::from(crate::access::MAX_RETENTION_DAYS))?;
+    range(s.storage_access_retention_days.map(u64::from), "storage_access_retention_days", limits.storage_access_retention_days)?;
     Ok(())
 }
 
@@ -264,9 +265,32 @@ pub fn validate_runtime_model(state: &AppState, m: &ModelSchema) -> Result<(), S
 
 // ─── Provider configs ────────────────────────────────────────────────────────
 
-/// Decrypt a stored config's secrets.
-pub fn decrypt_secrets(state: &AppState, stored: &StoredProviderConfig) -> Result<ProviderSecrets, String> {
-    let (Some(ct), Some(nonce)) = (&stored.ciphertext, &stored.nonce) else { return Ok(ProviderSecrets::default()) };
+/// What the admin API, the audit log and `provider_configs.settings_json`
+/// hold in place of a value they keep back: an extra header's value, the
+/// user info of an `api_base` or of a URL in `options`.
+pub const REDACTED: &str = "[redacted]";
+
+/// What a stored config's ciphertext holds: its keys and, when its
+/// credentials are encrypted (`encrypt_provider_credentials`, 2026-11-15),
+/// its extra headers' values by name, its api_base when that has user info
+/// and its options when a URL in them has, while `settings_json` keeps
+/// [`REDACTED`] in their place. A ciphertext with the keys alone, as every
+/// version before wrote and this one writes with the setting off, reads the
+/// same.
+#[derive(Default, Serialize, Deserialize)]
+struct Sealed {
+    #[serde(flatten)]
+    keys: ProviderSecrets,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extra_headers: Option<HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_base: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    options: Option<serde_json::Value>,
+}
+
+fn open_sealed(state: &AppState, stored: &StoredProviderConfig) -> Result<Sealed, String> {
+    let (Some(ct), Some(nonce)) = (&stored.ciphertext, &stored.nonce) else { return Ok(Sealed::default()) };
     let key = state.secrets_key.as_ref().ok_or("secrets key not configured (LITEGEN__SECRETS_KEY)")?;
     let plain = crate::auth::secrets::decrypt(key, ct, nonce)?;
     serde_json::from_slice(&plain).map_err(|e| e.to_string())
@@ -274,6 +298,192 @@ pub fn decrypt_secrets(state: &AppState, stored: &StoredProviderConfig) -> Resul
 
 pub fn parse_settings(stored: &StoredProviderConfig) -> ProviderSettings {
     serde_json::from_str(&stored.settings_json).unwrap_or_default()
+}
+
+/// A stored config's keys, and its settings with each credential as set:
+/// from the ciphertext when it is encrypted there, else as `settings_json`
+/// keeps it (a row saved with `encrypt_provider_credentials` off, or by a
+/// version before 2026-11-15).
+pub fn open_config(state: &AppState, stored: &StoredProviderConfig) -> Result<(ProviderSecrets, ProviderSettings), String> {
+    let Sealed { keys, extra_headers, api_base, options } = open_sealed(state, stored)?;
+    let mut settings = parse_settings(stored);
+    if let (Some(headers), Some(values)) = (settings.extra_headers.as_mut(), &extra_headers) {
+        for (name, value) in headers.iter_mut() {
+            if let Some(v) = values.get(name) {
+                value.clone_from(v);
+            }
+        }
+    }
+    if api_base.is_some() {
+        settings.api_base = api_base;
+    }
+    if options.is_some() {
+        settings.options = options;
+    }
+    Ok((keys, settings))
+}
+
+/// A provider config's stored columns, from [`seal_config`].
+pub struct SealedConfig {
+    pub ciphertext: Option<String>,
+    pub nonce: Option<String>,
+    pub settings_json: String,
+}
+
+/// Why [`seal_config`] could not seal a config.
+#[derive(Debug)]
+pub enum SealError {
+    /// There are keys, or credentials, to encrypt and no secrets key.
+    KeyMissing,
+    Failed(String),
+}
+
+/// Whether `gateway` has `encrypt_provider_credentials` on.
+pub fn encrypts_credentials(gateway: &GatewaySettings) -> bool {
+    gateway.encrypt_provider_credentials == Some(Some(true))
+}
+
+/// What `settings_json` keeps of `settings`. With `encrypt`, [`REDACTED`] in
+/// place of each credential: each extra header's value, and the user info of
+/// the api_base and of each URL in the options, as the admin API shows them.
+/// Without, the settings as set.
+fn stored_settings(encrypt: bool, settings: &ProviderSettings) -> ProviderSettings {
+    let mut kept = settings.clone();
+    if encrypt {
+        if let Some(headers) = kept.extra_headers.as_mut() {
+            headers.values_mut().for_each(|v| *v = REDACTED.to_string());
+        }
+        if let Some(base) = kept.api_base.as_mut() {
+            *base = shown_api_base(base);
+        }
+        if let Some(options) = kept.options.as_mut() {
+            *options = shown_options(options);
+        }
+    }
+    kept
+}
+
+/// The stored columns for `keys` and `settings`. The keys are encrypted.
+/// With `encrypt` (`encrypt_provider_credentials`), so are the credentials
+/// in the settings, with them, and `settings_json` keeps [`REDACTED`] in their
+/// place ([`stored_settings`]). Without it, `settings_json` holds the
+/// settings as set and the ciphertext the keys alone, as versions before
+/// 2026-11-15 wrote and read a row. Anything to encrypt needs a secrets key.
+pub fn seal_config(key: Option<&[u8; 32]>, encrypt: bool, keys: &ProviderSecrets, settings: &ProviderSettings) -> Result<SealedConfig, SealError> {
+    let kept = stored_settings(encrypt, settings);
+    let mut sealed = Sealed { keys: keys.clone(), ..Sealed::default() };
+    if encrypt {
+        sealed.extra_headers = settings.extra_headers.clone().filter(|h| !h.is_empty());
+        sealed.api_base = settings.api_base.clone().filter(|_| kept.api_base != settings.api_base);
+        sealed.options = settings.options.clone().filter(|_| kept.options != settings.options);
+    }
+    let settings_json = serde_json::to_string(&kept).unwrap_or_else(|_| "{}".into());
+    if keys.is_empty() && sealed.extra_headers.is_none() && sealed.api_base.is_none() && sealed.options.is_none() {
+        return Ok(SealedConfig { ciphertext: None, nonce: None, settings_json });
+    }
+    let Some(key) = key else { return Err(SealError::KeyMissing) };
+    let plain = serde_json::to_vec(&sealed).map_err(|e| SealError::Failed(e.to_string()))?;
+    let (ciphertext, nonce) = crate::auth::secrets::encrypt(key, &plain).map_err(SealError::Failed)?;
+    Ok(SealedConfig { ciphertext: Some(ciphertext), nonce: Some(nonce), settings_json })
+}
+
+/// What a URL's user info reads as once the admin API shows it.
+pub fn redacted_user_info() -> String {
+    format!("://{REDACTED}@")
+}
+
+/// Whether `settings` (as `settings_json` keeps them) hold [`REDACTED`] in
+/// place of a credential, which only its ciphertext holds.
+fn keeps_redacted(settings: &ProviderSettings) -> bool {
+    fn any_string(v: &serde_json::Value, marker: &str) -> bool {
+        match v {
+            serde_json::Value::String(s) => s.contains(marker),
+            serde_json::Value::Array(items) => items.iter().any(|i| any_string(i, marker)),
+            serde_json::Value::Object(fields) => fields.values().any(|f| any_string(f, marker)),
+            _ => false,
+        }
+    }
+    let marker = redacted_user_info();
+    settings.extra_headers.as_ref().is_some_and(|h| h.values().any(|v| v == REDACTED))
+        || settings.api_base.as_deref().is_some_and(|b| b.contains(&marker))
+        || settings.options.as_ref().is_some_and(|o| any_string(o, &marker))
+}
+
+/// Whether `settings` (as `settings_json` keeps them) hold a credential in
+/// plain text: one [`stored_settings`] would replace with [`REDACTED`].
+fn keeps_plain_credentials(settings: &ProviderSettings) -> bool {
+    stored_settings(true, settings) != *settings
+}
+
+/// Whether `row` keeps its credentials otherwise than `encrypt` says: some in
+/// plain text when they are to be encrypted, or some encrypted when they are
+/// to be stored as set.
+fn stored_otherwise(row: &StoredProviderConfig, encrypt: bool) -> bool {
+    let settings = parse_settings(row);
+    if encrypt { keeps_plain_credentials(&settings) } else { keeps_redacted(&settings) }
+}
+
+/// Store each runtime provider config (or only `only`'s) again as `encrypt`
+/// says, where its row says otherwise: its credentials encrypted
+/// ([`seal_config`]), or the row as versions before 2026-11-15 read it. A
+/// save of the gateway settings runs this after it stored the setting, and
+/// a provider save runs it for its own row when it finds the setting changed
+/// after its write: each writes before it reads the other's, so a save that
+/// races a switch still ends as the stored setting says. A row keeps its
+/// `updated_at`, since its config is the same, so no replica applies it
+/// again; one saved after it was read here is left to that save. One whose
+/// secrets don't open with this replica's secrets key stays as it is, with a
+/// warning. The providers whose rows were stored again, sorted.
+pub async fn store_configs_as(state: &AppState, store: &dyn ManagementStore, encrypt: bool, only: Option<&str>) -> Result<Vec<String>, sqlx::Error> {
+    let rows = match only {
+        Some(name) => store.get_provider_config(name).await?.into_iter().collect(),
+        None => store.list_provider_configs().await?,
+    };
+    let mut again = Vec::new();
+    for row in rows.iter().filter(|r| stored_otherwise(r, encrypt)) {
+        let next = open_config(state, row)
+            .and_then(|(keys, settings)| seal_config(state.secrets_key.as_ref(), encrypt, &keys, &settings).map_err(|e| format!("{e:?}")));
+        match next {
+            Ok(s) => {
+                let next = StoredProviderConfig { ciphertext: s.ciphertext, nonce: s.nonce, settings_json: s.settings_json, ..row.clone() };
+                if store.reseal_provider_config(row, &next).await? {
+                    again.push(row.provider.clone());
+                }
+            }
+            Err(e) => tracing::warn!(
+                provider = %row.provider,
+                error = %e,
+                encrypt_provider_credentials = encrypt,
+                "this runtime provider config's credentials stay as they are stored: its stored secrets don't open with this replica's LITEGEN__SECRETS_KEY, or there is none"
+            ),
+        }
+    }
+    again.sort();
+    Ok(again)
+}
+
+/// [`store_configs_as`] for every row, after a save of the gateway settings
+/// stored `saved` for `encrypt_provider_credentials`, and again for the
+/// stored setting for as long as another save has switched it meanwhile (a
+/// few rounds at most). Each save stores its setting before its pass and
+/// reads the setting again after it, so of two saves at once that switch it
+/// opposite ways, the pass that ends last is for the setting that stands,
+/// and the rows end as it says. The setting the rows were last stored for,
+/// and the providers stored again, sorted, each once.
+pub async fn store_configs_after_save(state: &AppState, store: &dyn ManagementStore, saved: bool) -> Result<(bool, Vec<String>), sqlx::Error> {
+    let mut encrypt = saved;
+    let mut again = Vec::new();
+    for _ in 0..3 {
+        again.extend(store_configs_as(state, store, encrypt, None).await?);
+        let stands = encrypts_credentials(&load_gateway_settings(store).await?);
+        if stands == encrypt {
+            break;
+        }
+        encrypt = stands;
+    }
+    again.sort();
+    again.dedup();
+    Ok((encrypt, again))
 }
 
 fn blank_env_config() -> ProviderEnvConfig {
@@ -312,7 +522,7 @@ pub async fn apply_provider(state: &AppState, store: &dyn ManagementStore, name:
     let stored = store.get_provider_config(name).await.map_err(|e| e.to_string())?;
     let env = env_config(state, name);
     let (secrets, settings) = match &stored {
-        Some(s) => (decrypt_secrets(state, s)?, parse_settings(s)),
+        Some(s) => open_config(state, s)?,
         None => (ProviderSecrets::default(), ProviderSettings::default()),
     };
     if stored.is_none() && env.is_none() {
@@ -326,6 +536,38 @@ pub async fn apply_provider(state: &AppState, store: &dyn ManagementStore, name:
         return Ok(false);
     }
     Ok(state.router.registry.configure_provider(name, instance).await)
+}
+
+/// `api_base` as the admin API and the audit log show it: with [`REDACTED`]
+/// in place of its user info (`https://[redacted]@host/v1`), which is a
+/// credential (a proxy's basic auth, a token as the user name), and as set
+/// when it has none.
+pub fn shown_api_base(base: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(base) else { return base.to_string() };
+    if url.username().is_empty() && url.password().is_none() {
+        return base.to_string();
+    }
+    if url.set_username("").is_err() || url.set_password(None).is_err() {
+        return REDACTED.to_string();
+    }
+    match url.as_str().split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://{REDACTED}@{rest}"),
+        None => REDACTED.to_string(),
+    }
+}
+
+/// `options` as the admin API and the audit log show them: each URL in them,
+/// wherever it sits (fal's `platform_api_base` and `sync_api_base`,
+/// Bedrock's `s3_api_base`), as [`shown_api_base`] shows an api_base, with
+/// [`REDACTED`] for its user info. Everything else as set.
+pub fn shown_options(options: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match options {
+        Value::String(s) => Value::String(shown_api_base(s)),
+        Value::Array(items) => Value::Array(items.iter().map(shown_options).collect()),
+        Value::Object(fields) => Value::Object(fields.iter().map(|(k, v)| (k.clone(), shown_options(v))).collect()),
+        other => other.clone(),
+    }
 }
 
 /// `…a1b2` for a secret, never more than its last four characters.
@@ -343,7 +585,7 @@ pub async fn provider_view(state: &AppState, store: &dyn ManagementStore, name: 
     let env = env_config(state, name);
     let (secrets, settings) = match &stored {
         // A view must render even if the secret no longer decrypts.
-        Some(s) => (decrypt_secrets(state, s).unwrap_or_default(), parse_settings(s)),
+        Some(s) => open_config(state, s).unwrap_or_else(|_| (ProviderSecrets::default(), parse_settings(s))),
         None => (ProviderSecrets::default(), ProviderSettings::default()),
     };
     let effective = effective_config(env.as_ref(), &secrets, &settings);
@@ -367,11 +609,11 @@ pub async fn provider_view(state: &AppState, store: &dyn ManagementStore, name: 
         source: if stored.is_some() { "runtime" } else if env.is_some() { "env" } else { "none" }.to_string(),
         key_hint: stored.as_ref().and_then(|s| s.display_hint.clone()).or_else(|| secret.as_deref().and_then(key_hint)),
         has_secret: secret.is_some() || effective.key_secret.is_some(),
-        api_base: effective.api_base.clone(),
+        api_base: effective.api_base.as_deref().map(shown_api_base),
         region: effective.region.clone(),
         model_mapping: effective.model_mapping.clone(),
         extra_header_names: header_names,
-        options: effective.options.clone(),
+        options: effective.options.as_ref().map(shown_options),
         enabled: effective.enabled,
         updated_at: stored.map(|s| s.updated_at),
     })
@@ -699,6 +941,67 @@ fn runtime_model_of(state: &AppState, row: &StoredRuntimeModel) -> Option<ModelS
     None
 }
 
+/// Say once, at each start, which stored provider configs keep their
+/// credentials otherwise than `encrypt_provider_credentials` (`encrypt`) and
+/// the secrets key would have them, and what to do, never naming a value. A
+/// start stores no row again (review #1, 2026-11-15): which way the rows are
+/// stored changes only with a save of the gateway settings, so replicas on
+/// two versions never undo each other's rows.
+pub async fn provider_credentials_notice(state: &AppState, store: &dyn ManagementStore, encrypt: bool) -> Result<(), sqlx::Error> {
+    let rows = store.list_provider_configs().await?;
+    let named = |keeps: fn(&ProviderSettings) -> bool| -> Vec<String> {
+        rows.iter().filter(|r| keeps(&parse_settings(r))).map(|r| r.provider.clone()).collect()
+    };
+    let (plain, redacted) = (named(keeps_plain_credentials), named(keeps_redacted));
+    let keyed = state.secrets_key.is_some();
+    if !keyed && !plain.is_empty() {
+        tracing::warn!(
+            providers = ?plain,
+            "these runtime provider configs keep credentials (extra_headers values, URL user info) in plain text in the database \
+             (provider_configs.settings_json): set LITEGEN__SECRETS_KEY, then turn on the gateway setting encrypt_provider_credentials to have them encrypted"
+        );
+    }
+    if !keyed && encrypt {
+        tracing::warn!(
+            "the gateway setting encrypt_provider_credentials is on, but LITEGEN__SECRETS_KEY isn't set on this replica: \
+             it can't read encrypted credentials, and refuses provider saves that hold credentials"
+        );
+    }
+    if keyed && !encrypt {
+        if !redacted.is_empty() {
+            tracing::warn!(
+                providers = ?redacted,
+                "these runtime provider configs keep encrypted credentials although encrypt_provider_credentials is off, and a version \
+                 before 2026-11-15 would send [redacted] in their place: before a rollback, save the gateway settings \
+                 (PUT /v1/admin/settings) to store them as older versions read them"
+            );
+        }
+        if plain.is_empty() {
+            tracing::info!(
+                "the gateway setting encrypt_provider_credentials is off, so provider configs saved through the admin API keep their \
+                 extra_headers values and URL user info in plain text in the database: turn it on (PUT /v1/admin/settings) once every \
+                 replica runs this version; a single replica can turn it on now"
+            );
+        } else {
+            tracing::warn!(
+                providers = ?plain,
+                "these runtime provider configs keep credentials (extra_headers values, URL user info) in plain text in the database, \
+                 since the gateway setting encrypt_provider_credentials is off: turn it on (PUT /v1/admin/settings) once every replica \
+                 runs this version; a single replica can turn it on now"
+            );
+        }
+    }
+    if keyed && encrypt && !plain.is_empty() {
+        tracing::warn!(
+            providers = ?plain,
+            "these runtime provider configs keep credentials in plain text although encrypt_provider_credentials is on (saved by a \
+             version before 2026-11-15, or by a replica without LITEGEN__SECRETS_KEY): save the gateway settings (PUT /v1/admin/settings) \
+             to encrypt them"
+        );
+    }
+    Ok(())
+}
+
 /// Apply everything the management API stored to a freshly built gateway.
 /// Invalid rows are logged and skipped; they never stop the server starting.
 pub async fn apply_at_boot(state: &AppState) -> Result<BootReport, sqlx::Error> {
@@ -706,6 +1009,7 @@ pub async fn apply_at_boot(state: &AppState) -> Result<BootReport, sqlx::Error> 
     let mut report = BootReport::default();
 
     let gateway = load_gateway_settings(store).await?;
+    let encrypt = encrypts_credentials(&gateway);
     let routes = load_routes(store).await?;
     report.routes_overridden = routes.is_some();
     state.router.set_overrides(crate::proxy::router::RuntimeOverrides {
@@ -729,6 +1033,10 @@ pub async fn apply_at_boot(state: &AppState) -> Result<BootReport, sqlx::Error> 
         }
     }
 
+    // Said once; the start stores no provider row again (review #1).
+    if let Err(e) = provider_credentials_notice(state, store, encrypt).await {
+        tracing::warn!(error = %e, "could not read the runtime provider configs to say how their credentials are stored");
+    }
     for row in store.list_provider_configs().await? {
         match apply_provider(state, store, &row.provider).await {
             Ok(_) => {

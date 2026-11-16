@@ -3,6 +3,8 @@ import type { RequestArtifact } from '@litegen/sdk';
 import {
   MAX_NOT_FOUND_POLLS,
   MAX_TRANSIENT_ERROR_STREAK,
+  artifactNote,
+  deleteTarget,
   httpStatusOf,
   isTerminalStatus,
   isTransientError,
@@ -146,6 +148,48 @@ describe('resolvesViaGeneration', () => {
     expect(resolvesViaGeneration(artifact({ media_type: 'image' }))).toBe(false);
     expect(resolvesViaGeneration(artifact({ media_type: 'video', output_kind: 'error' }))).toBe(false);
     expect(resolvesViaGeneration(artifact({ media_type: 'model3d', output_kind: 'b64' }))).toBe(false);
+  });
+
+  it('does not resolve a cache hit or a deleted output', () => {
+    expect(resolvesViaGeneration(artifact({ media_type: 'image', output_kind: 'generation', output_value: 'litegen-img-1' }))).toBe(false);
+    expect(resolvesViaGeneration(artifact({ media_type: 'model3d', output_kind: 'deleted' }))).toBe(false);
+  });
+});
+
+describe('artifactNote', () => {
+  it('names the generation a cache hit was served, which holds its image', () => {
+    expect(artifactNote(artifact({ media_type: 'image', output_kind: 'generation', output_value: 'litegen-img-abc' }))).toEqual({
+      testId: 'trace-visual-from-cache',
+      text: 'Served from the cache: generation litegen-img-abc',
+    });
+  });
+
+  it('says an output whose files were deleted is gone, and what stays', () => {
+    expect(artifactNote(artifact({ media_type: 'image', output_kind: 'deleted', output_value: null }))).toEqual({
+      testId: 'trace-visual-deleted',
+      text: 'Deleted: the files of this output were deleted, so litegen keeps no copy of it. The prompt and params stay.',
+    });
+  });
+
+  it.each(['b64', 'url', 'error', 'not_kept'])('has nothing to say for %s, which the tab shows itself', kind => {
+    expect(artifactNote(artifact({ media_type: 'image', output_kind: kind, output_value: 'x' }))).toBeNull();
+  });
+});
+
+describe('deleteTarget', () => {
+  it("deletes a cache hit's generation, and asks naming it", () => {
+    const target = deleteTarget('litegen-img-hit', artifact({ request_id: 'litegen-img-hit', media_type: 'image', output_kind: 'generation', output_value: 'litegen-img-made' }));
+    expect(target.generationId).toBe('litegen-img-made');
+    expect(target.confirm).toBe(
+      'This request was served from the cache, from generation litegen-img-made. Delete that generation\'s files and prompt? '
+      + 'The log entries of the requests served from it go too. Billing records stay.',
+    );
+  });
+
+  it('deletes the generation of any other request, itself', () => {
+    const expected = { generationId: 'litegen-img-1', confirm: "Delete this generation's files and its prompt? Its billing record stays." };
+    expect(deleteTarget('litegen-img-1', artifact({ request_id: 'litegen-img-1', media_type: 'image', output_kind: 'b64', output_value: 'AAAA' }))).toEqual(expected);
+    expect(deleteTarget('litegen-img-1', null)).toEqual(expected);
   });
 });
 

@@ -451,9 +451,10 @@ mod ship_tests {
             ("ideogram/ideogram-4-5", serde_json::json!({}), refs(1), 0.06),
             ("ideogram/ideogram-4-5", serde_json::json!({ "quality": "high" }), refs(2), 0.22),
             ("ideogram/ideogram-4-5", serde_json::json!({ "quality": "very_low" }), refs(1), 0.008),
-            // FLUX 3 Image on Replicate: "$0.0205 … when target resolution equals 768sq", … $0.3035 at 4k.
-            ("replicate/flux-3-image", serde_json::json!({}), none.clone(), 0.024),
-            ("replicate/flux-3-image", serde_json::json!({ "resolution": "4K" }), none.clone(), 0.3035),
+            // FLUX 3 Image on Replicate: "$0.048 per output image … when target resolution equals 1k", … $0.607 at 4k
+            // (doubled on Replicate since 2026-11-03; the 2026-11-16 drift run).
+            ("replicate/flux-3-image", serde_json::json!({}), none.clone(), 0.048),
+            ("replicate/flux-3-image", serde_json::json!({ "resolution": "4K" }), none.clone(), 0.607),
             // FLUX 3 Image and Klein: per image, by `resolution` (1k when omitted).
             ("bfl/flux-3-image", serde_json::json!({}), none.clone(), 0.048),
             ("bfl/flux-3-image", serde_json::json!({ "resolution": "4K" }), none.clone(), 0.607),

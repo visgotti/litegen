@@ -280,6 +280,73 @@ async fn a_3d_request_for_a_converted_format_is_refused_when_keeping_nothing() {
     assert!(v["error"]["message"].as_str().is_some_and(|m| m.contains("glb")), "names what the model makes: {v}");
 }
 
+/// The full app with Tripo and Meshy on `vendor` (wiremock), so a request
+/// litegen lets through reaches it.
+async fn app_with_rig_vendors(vendor: &wiremock::MockServer) -> (Router, std::path::PathBuf) {
+    let base = vendor.uri();
+    app(move |c| {
+        for name in ["tripo", "meshy"] {
+            c.providers.insert(
+                name.into(),
+                serde_json::from_value(serde_json::json!({ "enabled": true, "api_key": "vendor-key", "api_base": base })).unwrap(),
+            );
+        }
+    })
+    .await
+}
+
+/// A rig by `model` of an inline glb, promising `formats`, that keeps nothing.
+async fn rig_keeping_nothing(app: &Router, model: &str, formats: &[&str], format_source: Option<&str>) -> (StatusCode, serde_json::Value) {
+    use base64::Engine;
+    let glb = litegen::providers::model3d::glb::generate_cube_glb("a knight");
+    let mut body = serde_json::json!({
+        "model": model,
+        "output_formats": formats,
+        "source_model": { "type": "base64", "value": base64::engine::general_purpose::STANDARD.encode(glb), "format": "glb" },
+    });
+    if let Some(source) = format_source {
+        body["format_source"] = source.into();
+    }
+    let (s, _, v) = call(app, "POST", "/v1/models3d/generations", &[("x-litegen-keep-outputs", "false")], Some(body)).await;
+    (s, v)
+}
+
+/// Tripo makes one container per job (its own fbx when one is promised), so
+/// a request that keeps nothing can't be promised a glb and an fbx: litegen
+/// would have to convert one. Refused before anything is sent or billed.
+#[tokio::test]
+async fn two_containers_from_a_one_container_vendor_are_refused_when_keeping_nothing() {
+    let vendor = wiremock::MockServer::start().await;
+    let (app, _dir) = app_with_rig_vendors(&vendor).await;
+    let (s, v) = rig_keeping_nothing(&app, "tripo/rig", &["glb", "fbx"], None).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("format_needs_keeping")), "{v}");
+    assert!(v["error"]["message"].as_str().is_some_and(|m| m.contains("returns only fbx")), "names what Tripo returns: {v}");
+    assert!(vendor.received_requests().await.unwrap().is_empty(), "nothing reached the vendor");
+}
+
+/// With `format_source: glb`, litegen makes the fbx from the vendor's glb;
+/// keeping nothing, it makes nothing, so Meshy's rig refuses the fbx up
+/// front, though Meshy returns an fbx of its own beside its glb.
+#[tokio::test]
+async fn an_fbx_made_from_the_glb_is_refused_when_keeping_nothing() {
+    let vendor = wiremock::MockServer::start().await;
+    let (app, _dir) = app_with_rig_vendors(&vendor).await;
+    let (s, v) = rig_keeping_nothing(&app, "meshy/rig", &["fbx"], Some("glb")).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("format_needs_keeping")), "{v}");
+    assert!(v["error"]["message"].as_str().is_some_and(|m| m.contains("format_source")), "says why: {v}");
+    assert!(vendor.received_requests().await.unwrap().is_empty(), "nothing reached the vendor");
+}
+
+/// Meshy's rig returns a glb and an fbx from one job, so a request that
+/// keeps nothing can be promised both.
+#[tokio::test]
+async fn a_vendor_job_that_returns_a_glb_and_an_fbx_can_keep_nothing_of_both() {
+    let vendor = wiremock::MockServer::start().await;
+    let (app, _dir) = app_with_rig_vendors(&vendor).await;
+    let (s, v) = rig_keeping_nothing(&app, "meshy/rig", &["glb", "fbx"], None).await;
+    assert_ne!(v["error"]["code"], "format_needs_keeping", "{s}: {v}");
+}
+
 #[tokio::test]
 async fn a_3d_job_that_keeps_nothing_hands_out_the_vendors_files() {
     let (app, dir) = app(|_| {}).await;
@@ -301,6 +368,38 @@ async fn a_3d_job_that_keeps_nothing_hands_out_the_vendors_files() {
     for a in assets {
         assert!(a["url"].as_str().is_some_and(|u| u.starts_with("https://example.com/mock-3d/")), "the vendor's link: {a}");
         assert_eq!(a["kept"], false, "{a}");
+        assert!(a["size_bytes"].as_u64().is_some_and(|n| n > 0), "the size its link check found, not a download: {a}");
+    }
+    assert!(files_for(&dir, &id).is_empty(), "nothing written: {:?}", files_for(&dir, &id));
+}
+
+/// The poller, not a client's poll, sees a keep-nothing 3D job finish: it
+/// hands out the vendor's files with the sizes their link checks found, and
+/// writes nothing.
+#[tokio::test]
+async fn a_3d_job_the_poller_finishes_keeping_nothing_hands_out_the_vendors_files() {
+    use litegen::db::DatabaseStore;
+    let dir = tempfile::tempdir().expect("asset dir").keep();
+    let db = Arc::new(litegen::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let (app, state) = harness::app_and_state_in(db.clone(), &dir, |_| {}, Some(MASTER), litegen::config::Mode::SingleTenant).await;
+    let body = serde_json::json!({ "model": "mock/mesh-3d", "prompt": "a cube", "output_formats": ["glb"] });
+    let (s, _, v) = call(&app, "POST", "/v1/models3d/generations", &[("x-litegen-keep-outputs", "false")], Some(body)).await;
+    assert!(s.is_success(), "{s} {v}");
+    let id = v["id"].as_str().unwrap().to_string();
+    for _ in 0..20 {
+        litegen::proxy::poller::poll_once_presenting(&state.db, &state.router.registry, state.secrets_key, state.mode, &state.router.model3d_store, None).await;
+        if db.get_generation(&id).await.unwrap().unwrap().status.is_terminal() {
+            break;
+        }
+    }
+    let (_, _, done) = call(&app, "GET", &format!("/v1/models3d/{id}"), &[], None).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let assets = done["assets"].as_array().expect("assets");
+    assert!(assets.iter().any(|a| a["kind"] == "mesh"), "{done}");
+    for a in assets {
+        assert!(a["url"].as_str().is_some_and(|u| u.starts_with("https://example.com/mock-3d/")), "the vendor's link: {a}");
+        assert_eq!(a["kept"], false, "{a}");
+        assert!(a["size_bytes"].as_u64().is_some_and(|n| n > 0), "the size its link check found, not a download: {a}");
     }
     assert!(files_for(&dir, &id).is_empty(), "nothing written: {:?}", files_for(&dir, &id));
 }
@@ -423,6 +522,111 @@ async fn a_vendor_link_to_a_private_address_is_not_fetched() {
     assert!(v["error"]["message"].as_str().is_some_and(|m| m.contains("public")), "{v}");
 }
 
+// ─── Handing out a vendor's 3D file ─────────────────────────────────────────
+
+/// A finished 3D generation of the default app whose mesh litegen did not
+/// keep: the vendor's link is `vendor_url`.
+async fn kept_nothing_mesh(db: &litegen::db::sqlite::SqliteDatabase, id: &str, vendor_url: &str) {
+    use litegen::db::DatabaseStore;
+    db.insert_generation(id, None, "mock/mesh-3d", "mock", "model3d", None, 0.0, Some(litegen::api::middleware::DEFAULT_ORG_ID), Some(DEFAULT_APP_ID)).await.unwrap();
+    let meta = serde_json::json!({
+        "keep_outputs": false,
+        "requested_formats": ["glb"],
+        "assets": [{ "kind": "mesh", "format": "glb", "url": vendor_url, "size_bytes": 17, "kept": false }],
+    });
+    db.update_generation_if_active(id, "completed", 100, Some(vendor_url), None, Some(chrono::Utc::now()), Some(&meta)).await.unwrap();
+}
+
+/// [`vendor`], also serving a mesh at `/out/model.glb` and a gone one at
+/// `/out/gone.glb`.
+async fn mesh_vendor() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    let server = vendor().await;
+    wiremock::Mock::given(method("GET"))
+        .and(path("/out/model.glb"))
+        .respond_with(wiremock::ResponseTemplate::new(200).insert_header("content-type", "model/gltf-binary").set_body_bytes(b"vendor-mesh-bytes".to_vec()))
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(method("GET")).and(path("/out/gone.glb")).respond_with(wiremock::ResponseTemplate::new(404)).mount(&server).await;
+    server
+}
+
+/// A 3D generation that kept nothing lists its files as the vendor's:
+/// `GET /v1/generations/{id}/assets` says `kept: false` on each, as its
+/// `GET /v1/models3d/{id}` answer does.
+#[tokio::test]
+async fn a_3d_generation_that_keeps_nothing_lists_its_files_as_not_kept() {
+    let (app, _dir) = app(|_| {}).await;
+    keep_nothing(&app).await;
+    let (s, v) = submit_3d(&app, &["glb"]).await;
+    assert!(s.is_success(), "{s} {v}");
+    let id = v["id"].as_str().unwrap().to_string();
+    for _ in 0..20 {
+        let (_, _, v) = call(&app, "GET", &format!("/v1/models3d/{id}"), &[], None).await;
+        if v["status"] == "completed" || v["status"] == "failed" {
+            assert_eq!(v["status"], "completed", "{v}");
+            break;
+        }
+    }
+    let (s, _, listed) = call(&app, "GET", &format!("/v1/generations/{id}/assets"), &[], None).await;
+    assert_eq!(s, StatusCode::OK, "{listed}");
+    let files = listed["data"].as_array().expect("the files");
+    assert!(!files.is_empty(), "{listed}");
+    for a in files {
+        assert_eq!(a["kept"], false, "the vendor's file, not one litegen kept: {a}");
+        assert!(a["url"].as_str().is_some_and(|u| u.starts_with("https://example.com/mock-3d/")), "the vendor's link: {a}");
+    }
+}
+
+/// A private app's 3D generation that kept nothing is served by litegen's
+/// file route, which streams the vendor's mesh as it does a vendor's video:
+/// the vendor's link never leaves litegen.
+#[tokio::test]
+async fn a_private_app_streams_the_vendors_3d_file() {
+    let server = mesh_vendor().await;
+    let (app, db) = app_reaching("private").await;
+    kept_nothing_mesh(&db, "litegen-3d-kn-private", &format!("{}/out/model.glb", server.uri())).await;
+    let (s, _, v) = call(&app, "GET", "/v1/models3d/litegen-3d-kn-private", &[], None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let url = v["assets"][0]["url"].as_str().unwrap();
+    assert!(url.ends_with("/v1/generations/litegen-3d-kn-private/assets/0"), "the file route: {v}");
+    assert!(!v.to_string().contains(&server.uri()), "the vendor's link never leaves litegen: {v}");
+    let req = Request::get(path_of(url)).header("authorization", format!("Bearer {MASTER}")).body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "sent on to {:?}", resp.headers().get("location"));
+    assert_eq!(resp.headers().get("x-content-type-options").unwrap(), "nosniff");
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&body[..], b"vendor-mesh-bytes");
+}
+
+/// A signed app gets litegen's own signed link to a 3D generation's vendor
+/// mesh, which streams it to anyone holding the link.
+#[tokio::test]
+async fn a_signed_app_gets_a_litegen_link_to_the_vendors_3d_file() {
+    let server = mesh_vendor().await;
+    let (app, db) = app_reaching("signed").await;
+    kept_nothing_mesh(&db, "litegen-3d-kn-signed", &format!("{}/out/model.glb", server.uri())).await;
+    let (_, _, v) = call(&app, "GET", "/v1/models3d/litegen-3d-kn-signed", &[], None).await;
+    let url = v["assets"][0]["url"].as_str().unwrap();
+    assert!(url.contains("/assets/0/signed?"), "litegen's own link: {v}");
+    assert!(!v.to_string().contains(&server.uri()), "{v}");
+    let (s, headers, body) = get_anonymously(&app, path_of(url)).await;
+    assert_eq!(s, StatusCode::OK, "sent on to {:?}", headers.get("location"));
+    assert_eq!(&body[..], b"vendor-mesh-bytes");
+}
+
+/// The vendor deleted a 3D generation's mesh litegen did not keep: its file
+/// route answers 410, as for a video.
+#[tokio::test]
+async fn a_vendors_3d_file_that_is_gone_answers_410() {
+    let server = mesh_vendor().await;
+    let (app, db) = app_reaching("private").await;
+    kept_nothing_mesh(&db, "litegen-3d-kn-gone", &format!("{}/out/gone.glb", server.uri())).await;
+    let (s, headers, v) = call(&app, "GET", "/v1/generations/litegen-3d-kn-gone/assets/0", &[], None).await;
+    assert_eq!(s, StatusCode::GONE, "{v} (sent on to {:?})", headers.get("location"));
+    assert_eq!(v["error"]["code"], "vendor_file_gone", "{v}");
+}
+
 // ─── A cached answer's links ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -489,5 +693,48 @@ async fn a_video_model_with_no_link_to_hand_out_refuses_keeping_nothing_up_front
 
     // Keeping, it goes ahead.
     let (s, v) = submit_video(&app, "google/veo-3.0-generate-001", &[]).await;
+    assert!(s.is_success(), "{s}: {v}");
+}
+
+/// OpenAI's Sora hands its video out at `/videos/{id}/content`, which answers
+/// only a call with the vendor's key: no link litegen could hand out, so a
+/// request that keeps nothing is refused before Sora is called, as for Veo.
+/// No catalog row uses the adapter (Sora left the catalog), so the row here
+/// is an operator's.
+#[tokio::test]
+async fn a_sora_video_refuses_keeping_nothing_up_front() {
+    let vendor = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "video_1", "status": "queued" })))
+        .mount(&vendor)
+        .await;
+    let uri = vendor.uri();
+    let (app, _dir) = app(move |cfg| {
+        cfg.providers.insert(
+            "openai".into(),
+            serde_json::from_value(serde_json::json!({ "enabled": true, "api_key": "sk-openai", "api_base": uri })).unwrap(),
+        );
+    })
+    .await;
+    let row = serde_json::json!({
+        "id": "openai/sora-2",
+        "provider": "openai",
+        "media_type": "video",
+        "display_name": "Sora 2",
+        "pricing": { "base_cost_usd": 0.5 },
+        "capabilities": { "text_to_video": true },
+        "prompt": { "required": true, "max_length": 4000 },
+        "params": {}
+    });
+    let (s, _, v) = call(&app, "POST", "/v1/admin/models", &[], Some(row)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    let (s, v) = submit_video(&app, "openai/sora-2", &[("x-litegen-keep-outputs", "false")]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["error"]["code"], "keep_outputs_unsupported", "{v}");
+    assert!(vendor.received_requests().await.unwrap().is_empty(), "nothing reached Sora");
+
+    // Keeping, it goes ahead.
+    let (s, v) = submit_video(&app, "openai/sora-2", &[]).await;
     assert!(s.is_success(), "{s}: {v}");
 }

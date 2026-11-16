@@ -1,3 +1,4 @@
+pub mod email;
 pub mod lockout;
 pub mod oauth;
 pub mod password;

@@ -4,6 +4,8 @@
 
 pub mod budget;
 pub mod enforce;
+pub mod reservations;
+mod reservations_sql;
 pub mod runtime;
 pub mod settings;
 pub mod slots;
@@ -11,5 +13,7 @@ pub mod slug;
 pub mod sql;
 pub mod store;
 pub mod types;
+#[cfg(test)]
+pub(crate) mod reservations_tests;
 #[cfg(test)]
 mod store_tests;

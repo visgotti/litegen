@@ -36,6 +36,7 @@ use utoipa::OpenApi;
         crate::api::handlers::rotate_api_key,
         crate::api::handlers::test_webhook,
         crate::api::handlers::list_webhook_deliveries,
+        crate::api::handlers::redeliver_webhook_delivery,
         crate::api::handlers::clear_cache,
         crate::api::handlers::list_audit,
         // Readiness probe
@@ -75,6 +76,7 @@ use utoipa::OpenApi;
         crate::api::handlers::users::patch_user,
         crate::api::handlers::users::delete_user,
         crate::api::handlers::users::transfer_owner,
+        crate::api::handlers::users::issue_password_reset,
         // Account
         crate::api::handlers::account::get_account,
         crate::api::handlers::account::patch_account,
@@ -91,6 +93,8 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::invite_member,
         crate::api::handlers::orgs::patch_member,
         crate::api::handlers::orgs::remove_member,
+        crate::api::handlers::orgs::list_invitations,
+        crate::api::handlers::orgs::revoke_invitation,
         crate::api::handlers::orgs::transfer_owner,
         // Applications (under orgs + top-level by app id)
         crate::api::handlers::orgs::list_apps,
@@ -156,6 +160,7 @@ use utoipa::OpenApi;
         crate::api::handlers::management::admin::list_providers,
         crate::api::handlers::management::admin::get_provider,
         crate::api::handlers::management::admin::put_provider,
+        crate::api::handlers::management::admin::patch_provider,
         crate::api::handlers::management::admin::delete_provider,
         crate::api::handlers::management::admin::get_routes,
         crate::api::handlers::management::admin::put_routes,
@@ -262,6 +267,8 @@ use utoipa::OpenApi;
         crate::types::RotatedKeyResponse,
         crate::types::WebhookDelivery,
         crate::api::handlers::WebhookTestResult,
+        crate::api::handlers::WebhookDeliveryState,
+        crate::api::handlers::WebhookDeliveryStatus,
         // Generations + audit + artifacts + readiness
         crate::types::Generation,
         crate::types::CancelledGeneration,
@@ -297,6 +304,7 @@ use utoipa::OpenApi;
         crate::api::handlers::users::AcceptInvitationRequest,
         crate::api::handlers::users::PatchUserRequest,
         crate::api::handlers::users::TransferOwnerRequest,
+        crate::api::handlers::users::PasswordResetLink,
         // Account handler schemas
         crate::api::handlers::account::AccountUser,
         crate::api::handlers::account::SessionInfo,
@@ -311,6 +319,7 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::OrgView,
         crate::api::handlers::orgs::OrgSummary,
         crate::api::handlers::orgs::MemberView,
+        crate::api::handlers::orgs::PendingInvitation,
         crate::api::handlers::orgs::CreateOrgRequest,
         crate::api::handlers::orgs::UpdateOrgRequest,
         crate::api::handlers::orgs::CreateAppRequest,
@@ -377,6 +386,7 @@ use utoipa::OpenApi;
         crate::management::types::PatchModelStateRequest,
         crate::management::types::ProviderSettings,
         crate::management::types::PutProviderConfigRequest,
+        crate::management::types::PatchProviderConfigRequest,
         crate::management::types::ProviderConfigView,
         crate::management::types::ProviderConfigListResponse,
         crate::management::types::RouteDeployment,
@@ -865,6 +875,10 @@ mod tests {
         for f in ["centered_only", "max_px"] {
             property(&s["ParamSpecExpand"], f);
         }
+        // round 3: a row that grows a canvas and nothing else requires its expand.
+        let required = property(&s["ParamSpecExpand"], "required");
+        assert!(mentions(required, "boolean") && mentions(required, "param_required"), "{required}");
+        assert!(!required_of(&s["ParamSpecExpand"]).contains(&json!("required")), "the flag itself is optional");
         assert!(mentions(&s["ParamSpec"], "\"expand\""), "the union names the new kind");
     }
 
@@ -1483,7 +1497,7 @@ mod tests {
         let d = doc();
         let s = &d["components"]["schemas"];
         for f in [
-            "cache_enabled", "cache_ttl_seconds", "cache_max_items", "cache_max_bytes",
+            "cache_enabled", "cache_ttl_seconds", "cache_max_items", "cache_max_bytes", "cache_charge_hits",
             "retry_max_retries", "retry_backoff_ms", "retry_max_backoff_ms",
             "vendor_timeout_seconds", "circuit_breaker_threshold", "circuit_breaker_open_for_seconds",
         ] {
@@ -1493,16 +1507,133 @@ mod tests {
             property(&s["GatewaySettingsView"], f);
         }
         for (schema, fields) in [
-            ("EffectiveCache", &["enabled", "ttl_seconds", "max_items", "max_bytes"][..]),
+            ("EffectiveCache", &["enabled", "ttl_seconds", "max_items", "max_bytes", "charge_hits"][..]),
             ("EffectiveRetries", &["max_retries", "backoff_ms", "max_backoff_ms"][..]),
             ("EffectiveBreaker", &["threshold", "open_for_seconds"][..]),
+            // A cache hit's row says so, wherever a request's row is read.
+            ("RequestLog", &["cache_hit"][..]),
+            ("SpendLogEntry", &["cache_hit"][..]),
         ] {
             for f in fields {
                 property(&s[schema], f);
             }
         }
+        // Every row carries `cache_hit`, so the SDKs type it required (its
+        // serde default only reads rows from before it).
+        for schema in ["RequestLog", "SpendLogEntry"] {
+            let required = s[schema]["required"].as_array().cloned().unwrap_or_default();
+            assert!(required.iter().any(|r| r == "cache_hit"), "{schema}.cache_hit is required: {required:?}");
+        }
         let h = &d["paths"]["/v1/images/generations"]["post"]["responses"]["200"]["headers"]["X-Litegen-Cache"];
         assert!(h.is_object(), "the image answer documents X-Litegen-Cache");
+    }
+
+    /// Round 3 (2026-11-15): the settings view says the range of each numeric
+    /// setting, typed, so a client (the dashboard's Gateway form) reads it
+    /// rather than keeping a copy (tests/gateway_settings_api.rs holds the PUT
+    /// to exactly these ranges).
+    #[test]
+    fn the_settings_view_documents_each_settings_range() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert!(required_of(&s["GatewaySettingsView"]).contains(&json!("limits")), "{}", s["GatewaySettingsView"]);
+        assert!(mentions(property(&s["GatewaySettingsView"], "limits"), "#/components/schemas/GatewaySettingLimits"));
+        let limits = &s["GatewaySettingLimits"];
+        let fields: Vec<String> = limits["properties"].as_object().map(|p| p.keys().cloned().collect()).unwrap_or_default();
+        assert!(!fields.is_empty(), "{limits}");
+        for f in &fields {
+            property(&s["GatewaySettings"], f);
+            assert!(mentions(property(limits, f), "#/components/schemas/SettingRange"), "{f}: {limits}");
+        }
+        assert_eq!(required_of(limits).len(), fields.len(), "every range is always sent: {limits}");
+        assert_eq!(required_of(&s["SettingRange"]), [json!("min"), json!("max")], "{}", s["SettingRange"]);
+    }
+
+    /// Each answer `GET path` documents: its status, the schema its JSON body
+    /// names (`None` for a file, a stream or a redirect) and its description.
+    fn answers_of(d: &Value, path: &str) -> std::collections::BTreeMap<String, (Option<String>, String)> {
+        let responses = d["paths"][path]["get"]["responses"].as_object().cloned().unwrap_or_default();
+        responses
+            .into_iter()
+            .map(|(status, r)| {
+                let body = r["content"]["application/json"]["schema"]["$ref"].as_str().map(|s| s.trim_start_matches("#/components/schemas/").to_string());
+                (status, (body, r["description"].as_str().unwrap_or_default().to_string()))
+            })
+            .collect()
+    }
+
+    /// `GET path` documents exactly the answers `want` lists: each status,
+    /// its body's schema, and the codes its description names.
+    fn assert_answers(path: &str, want: &[(&str, Option<&str>, &[&str])]) {
+        let got = answers_of(&doc(), path);
+        let statuses: Vec<&str> = got.keys().map(String::as_str).collect();
+        assert_eq!(statuses, want.iter().map(|(s, _, _)| *s).collect::<Vec<_>>(), "{path}: {got:#?}");
+        for (status, body, codes) in want {
+            let (documented, text) = &got[*status];
+            assert_eq!(documented.as_deref(), *body, "{path} {status}'s body");
+            for code in *codes {
+                assert!(text.contains(&format!("`{code}`")), "{path} {status} names `{code}`: {text}");
+            }
+        }
+    }
+
+    /// Round 3 (the 11-14 triage's item 14): every answer of `GET /health`. It
+    /// documented 200 and 403 only, and answers 503 with the same report when
+    /// a provider is unhealthy (`api::handlers::health_tests`).
+    #[test]
+    fn the_health_check_documents_every_answer() {
+        assert_answers(
+            "/health",
+            &[("200", Some("HealthResponse"), &[]), ("403", Some("ErrorResponse"), &[]), ("503", Some("HealthResponse"), &["status: degraded"])],
+        );
+    }
+
+    /// Every answer of the file route (`get_generation_asset`, its
+    /// `file_access` hooks, `serve_generation_file`, `vendor_file_response`).
+    /// It left out the 410s (`files_deleted`: tests/retention_api.rs;
+    /// `vendor_file_gone`: tests/keep_nothing_api.rs), the 502s (a store that
+    /// failed: `stored_file_tests`; `vendor_file_unreachable`:
+    /// tests/keep_nothing_api.rs), the 500 of a generation that could not be
+    /// read and the 503 of a hook that failed (tests/hooks_api.rs).
+    #[test]
+    fn the_file_route_documents_every_answer() {
+        assert_answers(
+            "/v1/generations/{id}/assets/{index}",
+            &[
+                ("200", None, &[]),
+                ("206", None, &[]),
+                ("307", None, &[]),
+                ("403", Some("ErrorResponse"), &["forbidden", "not_file_owner", "refused_by_hook"]),
+                ("404", Some("ErrorResponse"), &[]),
+                ("410", Some("ErrorResponse"), &["files_deleted", "vendor_file_gone"]),
+                ("416", Some("ErrorResponse"), &["range_not_satisfiable"]),
+                ("500", Some("ErrorResponse"), &[]),
+                ("502", Some("ErrorResponse"), &["provider_error", "vendor_file_unreachable"]),
+                ("503", Some("ErrorResponse"), &["hook_failed"]),
+            ],
+        );
+    }
+
+    /// Every answer of a link litegen signed (`get_signed_generation_asset`,
+    /// then `serve_generation_file`): the file route's, less its credentials'
+    /// and hooks' answers, plus the link's own. It left out the 307 (an image
+    /// in an S3 image store), `files_deleted`, the 500s and the 502s.
+    #[test]
+    fn the_signed_file_route_documents_every_answer() {
+        assert_answers(
+            "/v1/generations/{id}/assets/{index}/signed",
+            &[
+                ("200", None, &[]),
+                ("206", None, &[]),
+                ("307", None, &[]),
+                ("403", Some("ErrorResponse"), &["invalid_link", "link_expired", "link_revoked"]),
+                ("404", Some("ErrorResponse"), &["private"]),
+                ("410", Some("ErrorResponse"), &["files_deleted", "vendor_file_gone"]),
+                ("416", Some("ErrorResponse"), &["range_not_satisfiable"]),
+                ("500", Some("ErrorResponse"), &[]),
+                ("502", Some("ErrorResponse"), &["provider_error", "vendor_file_unreachable"]),
+            ],
+        );
     }
 
     /// The schema a `$ref` (or the `allOf` utoipa wraps a described `$ref`
@@ -1574,5 +1705,28 @@ mod tests {
         assert!(mentions(flag, "boolean") && mentions(flag, "ref_role_required") && mentions(flag, "first_frame"), "{flag}");
         let required = required_of(&d["components"]["schemas"]["RefRoleSpec"]);
         assert!(!required.contains(&json!("needs_first_frame")), "{required:?}");
+    }
+
+    /// k3d-links: a 3D model's `output_formats` names the containers one
+    /// vendor job returns together, which is what a request that keeps
+    /// nothing can be promised.
+    #[test]
+    fn an_output_formats_spec_names_the_containers_one_vendor_job_returns() {
+        let d = doc();
+        let list = property(&d["components"]["schemas"]["ParamSpecStringArray"], "returned_together");
+        assert!(mentions(list, "array") && mentions(&list["items"], "string") && mentions(list, "format_needs_keeping"), "{list}");
+        let required = required_of(&d["components"]["schemas"]["ParamSpecStringArray"]);
+        assert!(!required.contains(&json!("returned_together")), "{required:?}");
+    }
+
+    /// vidu-mix: a role names the roles its vendor never takes beside it in
+    /// one request, and says what refusing the mix looks like.
+    #[test]
+    fn a_role_says_which_roles_it_is_never_sent_with() {
+        let d = doc();
+        let list = property(&d["components"]["schemas"]["RefRoleSpec"], "not_with");
+        assert!(mentions(list, "array") && mentions(&list["items"], "string") && mentions(list, "ref_role_conflict"), "{list}");
+        let required = required_of(&d["components"]["schemas"]["RefRoleSpec"]);
+        assert!(!required.contains(&json!("not_with")), "{required:?}");
     }
 }

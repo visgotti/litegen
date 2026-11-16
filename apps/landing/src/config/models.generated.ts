@@ -33,8 +33,15 @@ export interface ModelParam {
   maxMasks?: number;
   /** An expand: the most pixels added to one side. */
   maxPx?: number;
+  /** An expand the row requires (`required`): it grows a canvas and nothing else, so a request without one is refused. */
+  required?: boolean;
   /** A layout: each text box holds one word. */
   singleWordText?: boolean;
+  /**
+   * `output_formats`: the containers one vendor job returns together. A
+   * generation that keeps nothing (`keep_outputs: false`) gets only what its job returns.
+   */
+  returnedTogether?: string[];
 }
 
 /** A freeform size's bounds, in pixels. */
@@ -71,7 +78,7 @@ export type ModalityKey =
 export interface AspectRatioFrames {
   /** The row's frame roles (first_frame, last_frame, init). */
   roles: string[];
-  /** A `reference` image beside the frame lifts the rule. */
+  /** A `reference` image beside the frame lifts the rule (never on a row that takes no reference beside a frame: `not_with`). */
   unlessReference: boolean;
   /** The role an image sent without one takes, when it is a frame role. */
   defaultRole?: string;
@@ -89,6 +96,10 @@ export interface ModelRefRole {
   required: boolean;
   min: number;
   max: number;
+  /** The roles an image of this one is never sent with in one request (`not_with`): the vendor takes one or the other. */
+  notWith?: string[];
+  /** Images of this role go only with a first_frame (or init) image (`needs_first_frame`): a last frame the vendor ends a clip on only after a first frame, or reference images it takes only in a clip that starts from one. */
+  needsFirstFrame?: boolean;
 }
 
 /**
@@ -2299,7 +2310,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -2430,7 +2442,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -2808,72 +2821,6 @@ export const MODELS: ModelEntry[] = [
       "image-to-image"
     ],
     "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/image-generation-api"
-  },
-  {
-    "id": "fal/auraflow",
-    "provider": "fal",
-    "displayName": "AuraFlow (Fal)",
-    "description": "",
-    "mediaType": "image",
-    "output": "image",
-    "task": "generate",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false,
-      "backgroundRemoval": false,
-      "nativePixelArt": false
-    },
-    "modalities": [
-      "textToImage"
-    ],
-    "lifecycle": {
-      "deprecatedAt": "2026-10-27"
-    },
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 0,
-    "refRoles": [],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 5000
-    },
-    "params": [
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
-      },
-      {
-        "name": "steps",
-        "kind": "int",
-        "default": 50,
-        "min": 20,
-        "max": 50
-      },
-      {
-        "name": "guidance_scale",
-        "kind": "float",
-        "default": 3.5,
-        "min": 0,
-        "max": 20
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.02,
-      "unit": "image",
-      "rules": []
-    },
-    "tags": [
-      "text-to-image"
-    ],
-    "referenceUrl": "https://fal.ai/models/fal-ai/aura-flow/api"
   },
   {
     "id": "fal/birefnet-v2",
@@ -4633,7 +4580,8 @@ export const MODELS: ModelEntry[] = [
         "kind": "expand",
         "label": "Expand",
         "description": "Pixels to add to each side (fal's expand_left, expand_top, expand_right, expand_bottom).",
-        "maxPx": 2048
+        "maxPx": 2048,
+        "required": true
       },
       {
         "name": "output_format",
@@ -5107,6 +5055,24 @@ export const MODELS: ModelEntry[] = [
           "webp"
         ],
         "default": "png"
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 3.5,
+        "min": 0,
+        "max": 20
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 50,
+        "min": 4,
+        "max": 50
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
       }
     ],
     "pricing": {
@@ -5184,7 +5150,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "keyframe",
@@ -5304,7 +5271,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "keyframe",
@@ -5446,7 +5414,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "keyframe",
@@ -6939,7 +6908,11 @@ export const MODELS: ModelEntry[] = [
           "glb"
         ],
         "label": "Output formats",
-        "description": "Meshy returns glb and fbx; litegen derives the rest."
+        "description": "Meshy returns glb and fbx; litegen derives the rest.",
+        "returnedTogether": [
+          "glb",
+          "fbx"
+        ]
       }
     ],
     "pricing": {
@@ -8453,91 +8426,6 @@ export const MODELS: ModelEntry[] = [
       "segmentation"
     ],
     "referenceUrl": "https://fal.ai/models/fal-ai/sam-3-1/image/api"
-  },
-  {
-    "id": "fal/sd35-medium",
-    "provider": "fal",
-    "displayName": "SD 3.5 Medium (Fal)",
-    "description": "",
-    "mediaType": "image",
-    "output": "image",
-    "task": "generate",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false,
-      "backgroundRemoval": false,
-      "nativePixelArt": false
-    },
-    "modalities": [
-      "textToImage"
-    ],
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 0,
-    "refRoles": [],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 5000
-    },
-    "params": [
-      {
-        "name": "output_format",
-        "kind": "string",
-        "enum": [
-          "png",
-          "jpeg"
-        ],
-        "default": "jpeg"
-      },
-      {
-        "name": "negative_prompt",
-        "kind": "string",
-        "maxLength": 5000
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
-      },
-      {
-        "name": "steps",
-        "kind": "int",
-        "default": 40,
-        "min": 1,
-        "max": 50
-      },
-      {
-        "name": "guidance_scale",
-        "kind": "float",
-        "default": 4.5,
-        "min": 0,
-        "max": 20
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.02,
-      "unit": "image",
-      "rules": [
-        {
-          "when": [],
-          "effect": {
-            "kind": "perMegapixel",
-            "value": 0.02
-          }
-        }
-      ]
-    },
-    "tags": [
-      "text-to-image"
-    ],
-    "referenceUrl": "https://fal.ai/models/fal-ai/stable-diffusion-v35-medium/api"
   },
   {
     "id": "fal/sdxl",
@@ -10738,7 +10626,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -10834,7 +10723,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 9,
@@ -10849,13 +10738,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -11063,12 +10957,6 @@ export const MODELS: ModelEntry[] = [
           "4K"
         ],
         "default": "1K"
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 2147483647
       }
     ],
     "pricing": {
@@ -11175,12 +11063,6 @@ export const MODELS: ModelEntry[] = [
           "4K"
         ],
         "default": "1K"
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 2147483647
       }
     ],
     "pricing": {
@@ -11483,13 +11365,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -11590,7 +11477,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 9,
@@ -11605,13 +11492,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -11901,7 +11793,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -12012,7 +11905,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -12146,7 +12040,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -12382,7 +12277,9 @@ export const MODELS: ModelEntry[] = [
       "21:9",
       "16:9",
       "9:16",
-      "1:1"
+      "1:1",
+      "4:3",
+      "3:4"
     ],
     "aspectRatioFrames": {
       "roles": [
@@ -12404,7 +12301,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -16130,7 +16028,11 @@ export const MODELS: ModelEntry[] = [
           "glb"
         ],
         "label": "Output formats",
-        "description": "Meshy returns glb and fbx; litegen derives the rest."
+        "description": "Meshy returns glb and fbx; litegen derives the rest.",
+        "returnedTogether": [
+          "glb",
+          "fbx"
+        ]
       }
     ],
     "pricing": {
@@ -16238,7 +16140,11 @@ export const MODELS: ModelEntry[] = [
           "glb"
         ],
         "label": "Output formats",
-        "description": "Meshy returns glb and fbx; litegen derives the rest."
+        "description": "Meshy returns glb and fbx; litegen derives the rest.",
+        "returnedTogether": [
+          "glb",
+          "fbx"
+        ]
       }
     ],
     "pricing": {
@@ -16364,7 +16270,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 9,
@@ -16385,7 +16291,11 @@ export const MODELS: ModelEntry[] = [
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -16533,7 +16443,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 9,
@@ -16554,7 +16464,11 @@ export const MODELS: ModelEntry[] = [
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -16702,7 +16616,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 9,
@@ -16723,7 +16637,11 @@ export const MODELS: ModelEntry[] = [
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -16871,7 +16789,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 9,
@@ -16892,7 +16810,11 @@ export const MODELS: ModelEntry[] = [
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -17343,118 +17265,10 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-i2v"
   },
   {
-    "id": "minimax/S2V-01",
-    "provider": "minimax",
-    "displayName": "MiniMax S2V-01",
-    "description": "Subject-reference video (character consistency from a face photo).",
-    "mediaType": "video",
-    "output": "video",
-    "task": "generate",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": true,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false,
-      "backgroundRemoval": false,
-      "nativePixelArt": false
-    },
-    "modalities": [
-      "imageToVideo"
-    ],
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "subject",
-        "required": true,
-        "min": 1,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 2000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 6,
-        "min": 6,
-        "max": 6
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.65,
-      "unit": "video",
-      "rules": []
-    },
-    "tags": [
-      "image-to-video",
-      "subject-reference"
-    ],
-    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-s2v"
-  },
-  {
-    "id": "minimax/T2V-01-Director",
-    "provider": "minimax",
-    "displayName": "MiniMax T2V-01 Director",
-    "description": "Text-to-video with camera-movement instructions.",
-    "mediaType": "video",
-    "output": "video",
-    "task": "generate",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": false,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false,
-      "backgroundRemoval": false,
-      "nativePixelArt": false
-    },
-    "modalities": [
-      "textToVideo"
-    ],
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 0,
-    "refRoles": [],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 2000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 6,
-        "min": 6,
-        "max": 6
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.43,
-      "unit": "video",
-      "rules": []
-    },
-    "tags": [
-      "text-to-video"
-    ],
-    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-t2v"
-  },
-  {
     "id": "openai/gpt-image-2",
     "provider": "openai",
     "displayName": "GPT Image 2",
-    "description": "OpenAI GPT Image 2. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).",
+    "description": "DEPRECATED: 2027-02-10, OpenAI shuts gpt-image-2 down; migrate to openai/gpt-image-2.6-sunburst or openai/gpt-image-2.6-flare. OpenAI GPT Image 2. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
@@ -17475,6 +17289,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage",
       "inpainting"
     ],
+    "lifecycle": {
+      "retiresAt": "2027-02-10",
+      "replacedBy": "openai/gpt-image-2.6-sunburst"
+    },
     "sizes": [],
     "sizeRange": {
       "minWidth": 480,
@@ -17944,6 +17762,310 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://developers.openai.com/api/reference/resources/images/methods/generate"
   },
   {
+    "id": "openai/gpt-image-2.6-flare",
+    "provider": "openai",
+    "displayName": "GPT Image 2.6 Flare",
+    "description": "OpenAI GPT Image 2.6 Flare, image generation and editing for fast iteration. Text-to-image plus prompt-driven editing with up to 16 input images via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1); quality up to `xhigh` and `max`, and a `complexity` setting.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 480,
+      "maxWidth": 3840,
+      "minHeight": 480,
+      "maxHeight": 3840,
+      "multipleOf": 16,
+      "minPixels": 655360,
+      "maxPixels": 8294400,
+      "maxAspect": 3
+    },
+    "aspectRatios": [],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 15
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "auto",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "auto"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0435,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 0.567978
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 1.21187
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 2.154589
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 4.847481
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "multiplyPerMegapixelAbove",
+            "value": 1.048576
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://developers.openai.com/api/reference/resources/images/methods/generate"
+  },
+  {
+    "id": "openai/gpt-image-2.6-sunburst",
+    "provider": "openai",
+    "displayName": "GPT Image 2.6 Sunburst",
+    "description": "OpenAI GPT Image 2.6 Sunburst, image generation and editing for detailed visual work. Text-to-image plus prompt-driven editing with up to 16 input images via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1); quality up to `xhigh` and `max`, and a `complexity` setting.",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage",
+      "imageToImage"
+    ],
+    "sizes": [],
+    "sizeRange": {
+      "minWidth": 480,
+      "maxWidth": 3840,
+      "minHeight": 480,
+      "maxHeight": 3840,
+      "multipleOf": 16,
+      "minPixels": 655360,
+      "maxPixels": 8294400,
+      "maxAspect": 3
+    },
+    "aspectRatios": [],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 15
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "auto",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "auto"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0435,
+      "unit": "image",
+      "rules": [
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 0.567978
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "high"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 1.21187
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "xhigh"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 2.154589
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "max"
+            }
+          ],
+          "effect": {
+            "kind": "multiply",
+            "value": 4.847481
+          }
+        },
+        {
+          "when": [],
+          "effect": {
+            "kind": "multiplyPerMegapixelAbove",
+            "value": 1.048576
+          }
+        }
+      ]
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "premium"
+    ],
+    "referenceUrl": "https://developers.openai.com/api/reference/resources/images/methods/generate"
+  },
+  {
     "id": "pixellab/pixflux",
     "provider": "pixellab",
     "displayName": "PixelLab Pixflux",
@@ -18078,7 +18200,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -18478,7 +18601,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -20188,7 +20312,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -21079,7 +21204,100 @@ export const MODELS: ModelEntry[] = [
     "id": "recraft/recraftv4_1_flash",
     "provider": "recraft",
     "displayName": "Recraft V4.1 Flash",
-    "description": "Recraft V4.1 Flash — fast, low-cost raster image generation (no styles).",
+    "description": "DEPRECATED: Recraft replaced V4.1 Flash with V4.1 Flash V2 (November 2026); migrate to recraft/recraftv4_1_flash_v2. Recraft V4.1 Flash — fast, low-cost raster image generation (no styles).",
+    "mediaType": "image",
+    "output": "image",
+    "task": "generate",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false,
+      "backgroundRemoval": false,
+      "nativePixelArt": false
+    },
+    "modalities": [
+      "textToImage"
+    ],
+    "lifecycle": {
+      "deprecatedAt": "2026-11-16",
+      "replacedBy": "recraft/recraftv4_1_flash_v2"
+    },
+    "sizes": [
+      "1024x1024",
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
+    ],
+    "aspectRatios": [
+      "1:1",
+      "2:1",
+      "1:2",
+      "3:2",
+      "2:3",
+      "4:3",
+      "3:4",
+      "5:4",
+      "4:5",
+      "6:10",
+      "14:10",
+      "10:14",
+      "16:9",
+      "9:16"
+    ],
+    "aspectRatioLabel": "Aspect ratio",
+    "aspectRatioDescription": "Sent as Recraft's size in w:h form; an exact size wins.",
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette",
+        "label": "Palette",
+        "description": "Colours to prefer, as #rrggbb (Recraft's controls.colors).",
+        "maxColors": 10
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.007,
+      "unit": "image",
+      "rules": []
+    },
+    "tags": [
+      "text-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash"
+  },
+  {
+    "id": "recraft/recraftv4_1_flash_v2",
+    "provider": "recraft",
+    "displayName": "Recraft V4.1 Flash V2",
+    "description": "Recraft V4.1 Flash V2 — Recraft's fastest, cheapest raster image generation (no styles); replaces V4.1 Flash.",
     "mediaType": "image",
     "output": "image",
     "task": "generate",
@@ -21162,7 +21380,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "fast"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/models/recraft-v4-1-flash-v2"
   },
   {
     "id": "recraft/recraftv4_1_pro",
@@ -21673,7 +21891,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.024,
+      "baseCostUsd": 0.048,
       "unit": "image",
       "rules": [
         {
@@ -21686,7 +21904,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.0205
+            "value": 0.041
           }
         },
         {
@@ -21699,7 +21917,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.035
+            "value": 0.07
           }
         },
         {
@@ -21712,7 +21930,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.05
+            "value": 0.1
           }
         },
         {
@@ -21725,7 +21943,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.3035
+            "value": 0.607
           }
         }
       ]
@@ -23140,13 +23358,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 5
+        "max": 5,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -23338,13 +23561,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 5
+        "max": 5,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -31412,7 +31640,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -31435,7 +31663,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -31458,7 +31686,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -31481,7 +31709,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -31504,7 +31732,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -31527,7 +31755,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -31550,7 +31778,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -31573,7 +31801,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.02
           }
         },
         {
@@ -31596,7 +31824,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.02
           }
         },
         {
@@ -31619,7 +31847,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.02
           }
         },
         {
@@ -31637,7 +31865,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.08
           }
         },
         {
@@ -31660,7 +31888,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -31683,7 +31911,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -31706,7 +31934,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -31729,7 +31957,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -31752,7 +31980,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -31775,7 +32003,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -31798,7 +32026,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -31821,7 +32049,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -31840,24 +32068,6 @@ export const MODELS: ModelEntry[] = [
               "fact": "aspect_ratio",
               "is": "eq",
               "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.01
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "low"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "4K"
             }
           ],
           "effect": {
@@ -31876,6 +32086,24 @@ export const MODELS: ModelEntry[] = [
               "fact": "resolution",
               "is": "eq",
               "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
             },
             {
               "fact": "aspect_ratio",
@@ -31885,7 +32113,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.06
           }
         },
         {
@@ -31908,7 +32136,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.06
           }
         },
         {
@@ -31931,7 +32159,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.07
           }
         },
         {
@@ -31954,7 +32182,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.07
           }
         },
         {
@@ -31977,7 +32205,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.08
           }
         },
         {
@@ -32000,7 +32228,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.08
           }
         },
         {
@@ -32023,7 +32251,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -32046,7 +32274,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -32065,249 +32293,6 @@ export const MODELS: ModelEntry[] = [
               "fact": "aspect_ratio",
               "is": "eq",
               "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.01
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "2:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:2"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:5"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "5:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "9:16"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "16:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.01
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
             }
           ],
           "effect": {
@@ -32325,214 +32310,30 @@ export const MODELS: ModelEntry[] = [
             {
               "fact": "resolution",
               "is": "eq",
-              "value": "2K"
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
             },
             {
               "fact": "aspect_ratio",
               "is": "eq",
               "value": "2:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:2"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:5"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "5:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "9:16"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "16:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "4K"
             }
           ],
           "effect": {
@@ -32550,6 +32351,433 @@ export const MODELS: ModelEntry[] = [
             {
               "fact": "resolution",
               "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
               "value": "4K"
             },
             {
@@ -32560,7 +32788,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.11
           }
         },
         {
@@ -32583,7 +32811,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.11
           }
         },
         {
@@ -32606,7 +32834,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.12
           }
         },
         {
@@ -32629,7 +32857,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.12
           }
         },
         {
@@ -32652,7 +32880,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.13
           }
         },
         {
@@ -32675,7 +32903,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.13
           }
         },
         {
@@ -32698,7 +32926,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.03
+            "value": 0.09
           }
         },
         {
@@ -32721,7 +32949,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.03
+            "value": 0.09
           }
         },
         {
@@ -32744,7 +32972,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.06
           }
         },
         {
@@ -33719,7 +33947,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -33742,7 +33970,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -33765,7 +33993,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -33788,7 +34016,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -33811,7 +34039,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -33834,7 +34062,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -33857,7 +34085,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -33880,7 +34108,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.02
           }
         },
         {
@@ -33903,7 +34131,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.02
           }
         },
         {
@@ -33926,7 +34154,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.02
           }
         },
         {
@@ -33944,7 +34172,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.08
           }
         },
         {
@@ -33967,7 +34195,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -33990,7 +34218,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.04
           }
         },
         {
@@ -34013,7 +34241,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -34036,7 +34264,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -34059,7 +34287,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -34082,7 +34310,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -34105,7 +34333,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -34128,7 +34356,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.01
+            "value": 0.03
           }
         },
         {
@@ -34147,24 +34375,6 @@ export const MODELS: ModelEntry[] = [
               "fact": "aspect_ratio",
               "is": "eq",
               "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.01
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "low"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "4K"
             }
           ],
           "effect": {
@@ -34183,6 +34393,24 @@ export const MODELS: ModelEntry[] = [
               "fact": "resolution",
               "is": "eq",
               "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "low"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
             },
             {
               "fact": "aspect_ratio",
@@ -34192,7 +34420,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.06
           }
         },
         {
@@ -34215,7 +34443,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.06
           }
         },
         {
@@ -34238,7 +34466,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.07
           }
         },
         {
@@ -34261,7 +34489,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.07
           }
         },
         {
@@ -34284,7 +34512,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.08
           }
         },
         {
@@ -34307,7 +34535,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.08
           }
         },
         {
@@ -34330,7 +34558,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -34353,7 +34581,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.05
           }
         },
         {
@@ -34372,249 +34600,6 @@ export const MODELS: ModelEntry[] = [
               "fact": "aspect_ratio",
               "is": "eq",
               "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.01
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "2:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:2"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:5"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "5:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "9:16"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "16:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "1K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.01
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
             }
           ],
           "effect": {
@@ -34632,214 +34617,30 @@ export const MODELS: ModelEntry[] = [
             {
               "fact": "resolution",
               "is": "eq",
-              "value": "2K"
+              "value": "1K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
             },
             {
               "fact": "aspect_ratio",
               "is": "eq",
               "value": "2:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:2"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "3:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:3"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "4:5"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "5:4"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.03
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "9:16"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "16:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "2K"
-            },
-            {
-              "fact": "aspect_ratio",
-              "is": "eq",
-              "value": "21:9"
-            }
-          ],
-          "effect": {
-            "kind": "usd",
-            "value": 0.02
-          }
-        },
-        {
-          "when": [
-            {
-              "fact": "quality",
-              "is": "eq",
-              "value": "medium"
-            },
-            {
-              "fact": "resolution",
-              "is": "eq",
-              "value": "4K"
             }
           ],
           "effect": {
@@ -34857,6 +34658,433 @@ export const MODELS: ModelEntry[] = [
             {
               "fact": "resolution",
               "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.06
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "1K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.03
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.13
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "2:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:2"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.07
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "3:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:3"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.08
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "4:5"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "5:4"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.09
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "9:16"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "16:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.05
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "2K"
+            },
+            {
+              "fact": "aspect_ratio",
+              "is": "eq",
+              "value": "21:9"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.04
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
+              "value": "4K"
+            }
+          ],
+          "effect": {
+            "kind": "usd",
+            "value": 0.16
+          }
+        },
+        {
+          "when": [
+            {
+              "fact": "quality",
+              "is": "eq",
+              "value": "medium"
+            },
+            {
+              "fact": "resolution",
+              "is": "eq",
               "value": "4K"
             },
             {
@@ -34867,7 +35095,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.11
           }
         },
         {
@@ -34890,7 +35118,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.11
           }
         },
         {
@@ -34913,7 +35141,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.12
           }
         },
         {
@@ -34936,7 +35164,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.12
           }
         },
         {
@@ -34959,7 +35187,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.13
           }
         },
         {
@@ -34982,7 +35210,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.04
+            "value": 0.13
           }
         },
         {
@@ -35005,7 +35233,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.03
+            "value": 0.09
           }
         },
         {
@@ -35028,7 +35256,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.03
+            "value": 0.09
           }
         },
         {
@@ -35051,7 +35279,7 @@ export const MODELS: ModelEntry[] = [
           ],
           "effect": {
             "kind": "usd",
-            "value": 0.02
+            "value": 0.06
           }
         },
         {
@@ -35965,7 +36193,7 @@ export const MODELS: ModelEntry[] = [
       "roles": [
         "first_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 8,
@@ -35980,7 +36208,10 @@ export const MODELS: ModelEntry[] = [
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "notWith": [
+          "first_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -36485,7 +36716,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -36593,13 +36825,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -37315,7 +37552,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
@@ -37515,7 +37753,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -37606,7 +37845,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -37689,7 +37929,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -37785,7 +38026,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -37881,13 +38123,15 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -37971,13 +38215,15 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -38061,13 +38307,15 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -38329,13 +38577,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -38477,13 +38730,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 30
+        "max": 30,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -38624,13 +38882,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -38744,13 +39007,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -39110,7 +39378,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -39229,7 +39498,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -39351,13 +39621,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 10
+        "max": 10,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -39477,13 +39752,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 10
+        "max": 10,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -39810,7 +40090,8 @@ export const MODELS: ModelEntry[] = [
         "kind": "expand",
         "label": "Expand",
         "description": "Pixels to add to each side (Stability's left, up, right, down).",
-        "maxPx": 2000
+        "maxPx": 2000,
+        "required": true
       },
       {
         "name": "seed",
@@ -40351,7 +40632,7 @@ export const MODELS: ModelEntry[] = [
         "name": "seed",
         "kind": "seed",
         "min": 0,
-        "max": 4294967294
+        "max": 4294967295
       },
       {
         "name": "steps",
@@ -41091,7 +41372,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -41198,7 +41480,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -41309,7 +41592,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -41438,7 +41722,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -41595,7 +41880,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -41853,7 +42139,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -41948,7 +42235,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 9,
@@ -41963,13 +42250,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -42132,7 +42424,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -42227,7 +42520,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -42431,7 +42725,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 7,
@@ -42446,13 +42740,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -42653,7 +42952,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 7,
@@ -42668,13 +42967,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -42883,7 +43187,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 7,
@@ -42898,13 +43202,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -43908,7 +44217,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 3,
@@ -43923,13 +44232,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 3
+        "max": 3,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -44210,7 +44524,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -44507,7 +44822,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -44626,7 +44942,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 3,
@@ -44641,13 +44957,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 3
+        "max": 3,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -44814,7 +45135,7 @@ export const MODELS: ModelEntry[] = [
       "roles": [
         "first_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 15,
@@ -44829,7 +45150,10 @@ export const MODELS: ModelEntry[] = [
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 15
+        "max": 15,
+        "notWith": [
+          "first_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -44984,13 +45308,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 9
+        "max": 9,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -45341,14 +45670,13 @@ export const MODELS: ModelEntry[] = [
         "name": "output_formats",
         "kind": "string_array",
         "enum": [
-          "glb",
-          "fbx"
+          "glb"
         ],
         "default": [
           "glb"
         ],
         "label": "Output formats",
-        "description": "Mesh containers. Tripo emits glb or fbx; litegen derives the rest."
+        "description": "Mesh containers. Tripo's retarget returns a glb; litegen derives the rest."
       }
     ],
     "pricing": {
@@ -45572,7 +45900,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 7,
@@ -45587,18 +45915,23 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 2000
     },
     "params": [
       {
@@ -45690,7 +46023,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "reference-to-video"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/overview/model-map"
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-2-0/image-to-video"
   },
   {
     "id": "vidu/viduq1",
@@ -45729,7 +46062,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 7,
@@ -45744,13 +46077,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -45832,7 +46170,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -46058,7 +46397,7 @@ export const MODELS: ModelEntry[] = [
         "first_frame",
         "last_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 7,
@@ -46073,13 +46412,18 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       },
       {
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 7
+        "max": 7,
+        "notWith": [
+          "first_frame",
+          "last_frame"
+        ]
       }
     ],
     "promptLimits": {
@@ -46337,7 +46681,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -46457,7 +46802,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -46855,7 +47201,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -47090,7 +47437,8 @@ export const MODELS: ModelEntry[] = [
         "name": "last_frame",
         "required": false,
         "min": 0,
-        "max": 1
+        "max": 1,
+        "needsFirstFrame": true
       }
     ],
     "promptLimits": {
@@ -47207,7 +47555,7 @@ export const MODELS: ModelEntry[] = [
       "roles": [
         "first_frame"
       ],
-      "unlessReference": true,
+      "unlessReference": false,
       "defaultRole": "first_frame"
     },
     "maxRefImages": 15,
@@ -47222,7 +47570,10 @@ export const MODELS: ModelEntry[] = [
         "name": "reference",
         "required": false,
         "min": 0,
-        "max": 15
+        "max": 15,
+        "notWith": [
+          "first_frame"
+        ]
       }
     ],
     "promptLimits": {

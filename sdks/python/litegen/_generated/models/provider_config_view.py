@@ -38,9 +38,13 @@ class ProviderConfigView:
         model_mapping (ProviderConfigViewModelMapping):
         name (str):
         source (str): Where the effective config comes from: `env`, `runtime` or `none`.
-        api_base (Union[None, Unset, str]):
+        api_base (Union[None, Unset, str]): The api_base in force, with `[redacted]` for its user info
+            (`https://[redacted]@host/v1`). Sent back unchanged in a PUT or PATCH,
+            it keeps the URL in force.
         key_hint (Union[None, Unset, str]): Last 4 characters of the effective key, e.g. `…a1b2`. Never the secret.
-        options (Union[Unset, Any]):
+        options (Union[Unset, Any]): The options in force, with `[redacted]` for the user info of each URL
+            in them, as for `api_base`. Sent back unchanged in a PUT or PATCH, such
+            a URL keeps the one in force.
         region (Union[None, Unset, str]):
         updated_at (Union[None, Unset, datetime.datetime]):
     """

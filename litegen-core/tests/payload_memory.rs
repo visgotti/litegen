@@ -223,6 +223,7 @@ async fn keeping_3d_files_makes_no_copy_of_them() {
         height: None,
         manifest: None,
         source_url: None,
+        size_bytes: None,
     };
     let base = reset_peak();
     let kept = litegen::proxy::router::rehost_model3d_files(&store, None, "g", vec![mesh]).await;

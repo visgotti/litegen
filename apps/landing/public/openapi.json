@@ -75,7 +75,7 @@
                 "operationId": "health_check",
                 "responses": {
                     "200": {
-                        "description": "Health check results: one entry per provider and modality, each checked with the gateway's own keys",
+                        "description": "Every provider answered healthy, or none is configured with the gateway's own keys: one entry per provider and modality, each checked with the gateway's own keys",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -90,6 +90,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`status: degraded`: at least one provider answered unhealthy. The same report as the 200, with what each vendor answered",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
                                 }
                             }
                         }
@@ -197,7 +207,7 @@
                 },
                 "responses": {
                     "200": {
-                        "description": "Updated profile",
+                        "description": "Password changed: in the same step your other sessions end, your apps' OAuth sign-ins and their unredeemed codes are revoked, and the unused reset links you issued are deleted; the session that sent this stays signed in. The invitations you sent stay pending (a reset or a deactivation revokes them, a password change doesn't): `GET /v1/orgs/{id}/invitations` lists them, and `DELETE /v1/orgs/{id}/invitations/{invitation_id}` (or the Members page) revokes one you don't want.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -217,7 +227,7 @@
                         }
                     },
                     "401": {
-                        "description": "Not authenticated or wrong password",
+                        "description": "Not authenticated, a wrong current password (`wrong_password`), or `sign_in_ended`: your sign-in ended while the change ran (a reset, a deactivation or another password change committed, or the session is gone), and nothing was written.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -687,7 +697,7 @@
                 "tags": [
                     "Gateway"
                 ],
-                "summary": "PUT /v1/admin/providers/{name} \u2014 Set a provider's keys, api_base, model\nmapping, headers, options or enabled flag at runtime. Secret fields left\nout keep their stored value; every unset field falls back to env/YAML.\nIn-flight jobs finish on the instance they started with.",
+                "summary": "PUT /v1/admin/providers/{name} \u2014 Set a provider's keys, api_base, model\nmapping, headers, options or enabled flag at runtime. Secret fields left\nout keep their stored value; every unset field falls back to env/YAML.\nIn-flight jobs finish on the instance they started with. To change some\nfields and keep the rest, use PATCH.",
                 "operationId": "admin_put_provider",
                 "parameters": [
                     {
@@ -773,6 +783,66 @@
                     },
                     "404": {
                         "description": "Unknown provider or no runtime config",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "tags": [
+                    "Gateway"
+                ],
+                "summary": "PATCH /v1/admin/providers/{name} \u2014 Change some of a provider's runtime\nconfig and keep the rest. A field sent is set, `null` clears it (it\nfalls back to env/YAML), and a field left out keeps its stored value.\nA key left out or `null` keeps its stored value, and one sent as `\"\"`\nremoves it (the env/YAML key applies again). A map (`model_mapping`,\n`extra_headers`) or `options` sent replaces the stored one whole.\nIn-flight jobs finish on the instance they started with.",
+                "operationId": "admin_patch_provider",
+                "parameters": [
+                    {
+                        "name": "name",
+                        "in": "path",
+                        "description": "Provider adapter name, e.g. openai",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PatchProviderConfigRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Provider config applied",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProviderConfigView"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid config",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Unknown provider",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -918,7 +988,7 @@
                 "tags": [
                     "Gateway"
                 ],
-                "summary": "PUT /v1/admin/settings \u2014 Replace the gateway settings (markup, budget alert\nwebhook, default end-user budget). An omitted field is cleared.",
+                "summary": "PUT /v1/admin/settings \u2014 Replace the gateway settings (markup, budget alert\nwebhook, default end-user budget). An omitted field is cleared, except\n`encrypt_provider_credentials`, which keeps its stored value.",
                 "operationId": "admin_put_settings",
                 "requestBody": {
                     "content": {
@@ -1808,6 +1878,15 @@
                         "schema": {
                             "type": "string"
                         }
+                    },
+                    {
+                        "name": "org_id",
+                        "in": "query",
+                        "description": "The master key only: the organization whose entries to read. Omit for the org the caller acts in (the hosted master key: the entries filed under no org). Anyone else may name only their own.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -1822,7 +1901,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden (audit:read required)",
+                        "description": "Forbidden (audit:read required, or `org_id` names another organization)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1971,7 +2050,7 @@
                         "description": "Account created and session set"
                     },
                     "400": {
-                        "description": "Invalid, expired, or already used",
+                        "description": "Invalid, expired or already used; `invitation_revoked` when whoever sent it may no longer invite to its role (demoted, removed or deactivated since it was sent: ask for a new invitation); or (an invitation made before addresses were checked) `invalid_email`",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2274,10 +2353,10 @@
                 },
                 "responses": {
                     "204": {
-                        "description": "Password updated, all sessions revoked"
+                        "description": "Password updated, and a deactivated account reactivated. In the same step the account's sessions end and its apps' OAuth sign-ins and unredeemed codes are revoked; its API keys keep working."
                     },
                     "400": {
-                        "description": "Invalid or expired token",
+                        "description": "Invalid, expired or already used token (`invalid_token`, `token_expired`), a link whose issuer may no longer issue it (`invalid_token`: no longer active, no longer above the account in every organization, or no longer allowed to reactivate it), or a short password (`password_too_short`).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2342,7 +2421,7 @@
                         }
                     },
                     "400": {
-                        "description": "Bad request (short password)",
+                        "description": "Bad request (`password_too_short`, `invalid_email`)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3116,7 +3195,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "The generation as it now stands: its kept files deleted (`files_deleted_at`), its request (prompt and params) removed from it and from the request log. The billing record stays. Files in an app's own bucket are deleted too; a vendor's own files (`kept: false`) are the vendor's.",
+                        "description": "The generation as it now stands: its kept files deleted (`files_deleted_at`), its request (prompt and params) removed from it and from the request log, including the artifacts of the cache hits it answered, which carry the same request. The billing records stay, the hits' too. Files in an app's own bucket are deleted too; a vendor's own files (`kept: false`) are the vendor's.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3330,7 +3409,7 @@
                         "description": "The file is held by storage litegen does not read back (an S3 image store); follow `Location`"
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "`forbidden_scope`: the key or sign-in holds neither the `generate` nor the `read` scope; `forbidden`: no active organization, or no permission to read the generation; `not_file_owner`: the file belongs to a key, app or org outside the app's owner scope; `refused_by_hook`: an operator's hook refused (403 unless the hook names another status from 400 to 599)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3340,7 +3419,17 @@
                         }
                     },
                     "404": {
-                        "description": "No such generation or asset",
+                        "description": "No such generation or asset, or the file is no longer in its store",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "`files_deleted`: the generation's files were deleted, on request or after its app's retention (`files_deleted_at`); `vendor_file_gone`: the vendor no longer has a file litegen didn't keep (`keep_outputs: false`)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3351,6 +3440,36 @@
                     },
                     "416": {
                         "description": "`range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes */<length>` when the length is known",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "The generation could not be read; retry shortly",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "litegen could not read the file from its store or the app's bucket, or a store answered a range outside the file (`provider_error`); `vendor_file_unreachable`: a file litegen didn't keep could not be fetched from the vendor (not a public address, a network error, a status other than 200, 403, 404 or 410, or over 1 GiB)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`hook_failed`: an operator's hook on this route (its `file_access`, or a `pre_call` or `post_call` whose `routes` name `files`) failed, and its `on_error` is `refuse`",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3427,6 +3546,9 @@
                     "206": {
                         "description": "The bytes one `Range: bytes=\u2026` header asked for, with `Content-Range`; several ranges, or an `If-Range`, get the whole file (200)"
                     },
+                    "307": {
+                        "description": "The file is held by storage litegen does not read back (an S3 image store); follow `Location`"
+                    },
                     "403": {
                         "description": "`invalid_link`, `link_expired` or `link_revoked`",
                         "content": {
@@ -3438,7 +3560,7 @@
                         }
                     },
                     "404": {
-                        "description": "No such generation or asset",
+                        "description": "No such generation or asset, the app's files are `private` (the file route only), or the file is no longer in its store",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3448,7 +3570,7 @@
                         }
                     },
                     "410": {
-                        "description": "`vendor_file_gone`: the vendor no longer has a file litegen didn't keep",
+                        "description": "`files_deleted`: the generation's files were deleted, on request or after its app's retention (`files_deleted_at`); `vendor_file_gone`: the vendor no longer has a file litegen didn't keep (`keep_outputs: false`)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3459,6 +3581,26 @@
                     },
                     "416": {
                         "description": "`range_not_satisfiable`: the range starts past the end of the file; `Content-Range: bytes */<length>` when the length is known",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "The generation, or whether its links were revoked, could not be read; retry shortly",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "litegen could not read the file from its store or the app's bucket, or a store answered a range outside the file (`provider_error`); `vendor_file_unreachable`: a file litegen didn't keep could not be fetched from the vendor (not a public address, a network error, a status other than 200, 403, 404 or 410, or over 1 GiB)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3637,7 +3779,7 @@
                     {
                         "name": "Prefer",
                         "in": "header",
-                        "description": "RFC 7240. `respond-async` answers 202 as soon as the vendor has the job; `wait=N` waits up to N seconds (at most the vendor timeout) and answers 202 if the job is still running then. Honoured only for a model whose vendor runs jobs, a request that keeps its output and isn't an edit litegen finishes itself; otherwise the call is synchronous (`Preference-Applied` absent). See docs/async-images.md.",
+                        "description": "RFC 7240. `respond-async` answers 202 as soon as the vendor has the job; `wait=N` waits up to N seconds (at most the vendor timeout; on a model route, the deployment's `timeout_seconds`) and answers 202 if the job is still running then. Honoured only for a model whose vendor runs jobs (on a model route, every deployment's vendor), a request that keeps its output and isn't an edit litegen finishes itself; otherwise the call is synchronous (`Preference-Applied` absent). See docs/async-images.md.",
                         "required": false,
                         "schema": {
                             "type": [
@@ -4038,7 +4180,7 @@
                         }
                     },
                     "400": {
-                        "description": "An unknown scope, or `invalid_webhook_url`: a `webhook_url` this key may not use. It must be a public address unless, in single-tenant mode, the key is the deployment's own (made with the master key, or by an Owner or Admin of its org; `webhooks.internal_targets`)",
+                        "description": "An unknown scope; `invalid_limits` for an `rpm_limit` of 0 (to stop a key, block it); or `invalid_webhook_url`: a `webhook_url` this key may not use. It must be a public address unless, in single-tenant mode, the key is the deployment's own (made with the master key, or by an Owner or Admin of its org; `webhooks.internal_targets`)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4173,7 +4315,7 @@
                         }
                     },
                     "400": {
-                        "description": "An unknown scope, or `invalid_webhook_url`: a `webhook_url` the key may not use (a public address unless, in single-tenant mode, the key's owner is an Owner or Admin of the deployment's org, or it has none)",
+                        "description": "An unknown scope; `invalid_limits` for an `rpm_limit` of 0 (to stop a key, block it); or `invalid_webhook_url`: a `webhook_url` the key may not use (a public address unless, in single-tenant mode, the key's owner is an Owner or Admin of the deployment's org, or it has none)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4612,7 +4754,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "Paginated webhook deliveries. A delivery's `payload_json` is the webhook as sent when the reader is inside the app's owner scope for its generation (or the app's files are `public`); for any other reader it is the generation as stored now, presented for that reader, or `{}` once it is gone.",
+                        "description": "Paginated webhook delivery attempts, newest first; `delivery_id` names each attempt's delivery. The payload is kept once per delivery, so every attempt of one delivery shows the payload of its latest attempt (each attempt is built when it is sent, its signed links fresh). That `payload_json` is the webhook as sent when the reader is inside the app's owner scope for its generation (or the app's files are `public`); for any other reader it is the generation as stored now, presented for that reader, or `{}` once it is gone.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4623,6 +4765,98 @@
                     },
                     "404": {
                         "description": "Key not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver": {
+            "post": {
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "POST /v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver \u2014 Send one of the key's webhook deliveries again.\nLive: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/webhook-deliveries/{delivery_id}/redeliver -H \"Authorization: Bearer sk_live_...\"`",
+                "operationId": "redeliver_webhook_delivery",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "API key ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    },
+                    {
+                        "name": "delivery_id",
+                        "in": "path",
+                        "description": "The delivery's id, `whd-` and a UUID: `delivery_id` in the list of the key's webhook deliveries",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "The delivery is due again: a fresh series of attempts under the same delivery id, numbered from 1 again in the list, on the full retry schedule. A replica sends its first attempt within about a second, with the key's webhook_url and the address rules of that moment (checked again at send time, as every attempt is). The body is the delivery's state now.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/WebhookDeliveryState"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "`no_webhook_configured`: the key has no webhook_url; or `invalid_webhook_url`: one the key may not use any more (its owner was demoted or left)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`forbidden`: the caller may not read this key's deliveries or send its webhook (`key:test_webhook:own` for one's own key, `key:test_webhook:any`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Key not found, or the key has no delivery with that id (a finished delivery is kept for good, or `webhooks.log_retention_days` once that is set)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`delivery_pending`: the delivery is still being sent; its next attempt is due at `next_attempt_at`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`redeliver_too_soon`: the delivery was redelivered less than a minute ago (`Retry-After` is set)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -5958,6 +6192,115 @@
                 }
             }
         },
+        "/v1/orgs/{id}/invitations": {
+            "get": {
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "GET /v1/orgs/{id}/invitations \u2014 List an org's pending invitations (requires member:invite).",
+                "operationId": "list_invitations",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Organization ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The org's invitations not yet accepted or expired, newest first, without their tokens",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/PendingInvitation"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/orgs/{id}/invitations/{invitation_id}": {
+            "delete": {
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "DELETE /v1/orgs/{id}/invitations/{invitation_id} \u2014 Revoke an invitation (requires invitation:revoke).",
+                "operationId": "revoke_invitation",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Organization ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "invitation_id",
+                        "in": "path",
+                        "description": "Invitation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Revoked: its token no longer accepts"
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No invitation with this id in this org.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`invitation_accepted`: the invitation was already accepted; remove the member instead.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/orgs/{id}/limits": {
             "get": {
                 "tags": [
@@ -6215,10 +6558,27 @@
                 },
                 "responses": {
                     "200": {
-                        "description": "Invitation created"
+                        "description": "Invitation created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/InviteResponse"
+                                }
+                            }
+                        }
                     },
                     "400": {
-                        "description": "Cannot invite owner directly",
+                        "description": "Bad request (`cannot_invite_owner`, `invalid_email`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Not authenticated, or `sign_in_ended`: your sign-in ended while this request ran (a reset, a deactivation or another password change committed), and no invitation was stored.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6228,7 +6588,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "Forbidden: the invited role must be below your own in the organization (an Admin invites Members and Viewers, an Owner Admins too).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6282,7 +6642,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "Forbidden: you must outrank the member to remove them, unless you remove yourself (leave).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6354,7 +6714,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "Forbidden: you must outrank the member's current role, and may not grant a role at or above your own.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -7319,7 +7679,17 @@
                         }
                     },
                     "400": {
-                        "description": "Bad request (e.g. owner role not allowed)",
+                        "description": "Bad request (`cannot_invite_owner`, `invalid_email`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Not authenticated, or `sign_in_ended`: your sign-in ended while this request ran (a reset, a deactivation or another password change committed), and no invitation was stored.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -7329,7 +7699,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "Forbidden: the invited role must be below your own in the organization (an Admin invites Members and Viewers, an Owner Admins too).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -7361,6 +7731,16 @@
                 "responses": {
                     "204": {
                         "description": "Ownership transferred"
+                    },
+                    "400": {
+                        "description": "`transfer_owner_per_org`: in hosted mode each organization has its own Owner; transfer one with `POST /v1/orgs/{id}/transfer-owner`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
                     },
                     "403": {
                         "description": "Forbidden (not owner)",
@@ -7405,7 +7785,7 @@
                 ],
                 "responses": {
                     "204": {
-                        "description": "User deactivated"
+                        "description": "User deactivated: in the same step its sessions end, its apps' OAuth sign-ins and unredeemed codes are revoked, its unused reset links and the ones it issued are deleted, and the pending invitations it sent, in every organization, are revoked (each in the audit log)."
                     },
                     "400": {
                         "description": "Cannot delete owner",
@@ -7418,7 +7798,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "Forbidden (deactivating needs a role above the user's own, so never your own)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -7488,7 +7868,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "Forbidden (a role change needs a role above the user's own, and never grants one at or above yours; deactivating or reactivating needs a role above the user's own, so never your own)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -7499,6 +7879,68 @@
                     },
                     "404": {
                         "description": "User not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/users/{id}/password-reset": {
+            "post": {
+                "tags": [
+                    "Users"
+                ],
+                "summary": "POST /v1/users/{id}/password-reset \u2014 Issue a password reset link for an account (the master key, or a person who outranks the account in every org it belongs to).",
+                "operationId": "issue_password_reset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "User ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The link, shown only in this answer",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PasswordResetLink"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Not authenticated, or `sign_in_ended`: your sign-in ended while this request ran (a reset, a deactivation or another password change committed), and no link was stored.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden: only the master key, or a person who outranks the account in every organization it belongs to; never for your own account (change it with `PATCH /v1/account`, which asks for the current password); for a deactivated account, only one who may reactivate it, since confirming the link reactivates it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`user_not_found`",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -8969,11 +9411,11 @@
                             "string",
                             "null"
                         ],
-                        "description": "The API key ID of the actor. None when the master key was used."
+                        "description": "The API key that acted. Null for the master key, a signed-in person\n(a browser session, or an app signed in with OAuth) and litegen\nitself."
                     },
                     "actor_label": {
                         "type": "string",
-                        "description": "Human-readable actor label: `\"master-key\"` or the key's name."
+                        "description": "Who acted: a signed-in person's email, an API key's id (as in\n`actor_key_id`), `master-key` for the master key, or `system` for\nlitegen itself (a budget alert). Since 2026-11-15 an account's email\nmust be an address, so a new account can't be labelled `master-key`\nor `system`."
                     },
                     "after_json": {
                         "type": [
@@ -9001,7 +9443,7 @@
                             "string",
                             "null"
                         ],
-                        "description": "Tenant (organization) this audit entry belongs to. None falls back to the\ndefault org at the DB layer (single-tenant); set from the caller's active org."
+                        "description": "The organization this entry is filed under: the one whose object the\naction changed, else the one the caller acted in. Absent for an entry\nfiled under no org: in hosted mode, the master key's changes to the\ngateway and to accounts, and an account change by a person who belongs\nto no org. Only the master key reads those."
                     },
                     "target_id": {
                         "type": "string",
@@ -9009,7 +9451,7 @@
                     },
                     "target_type": {
                         "type": "string",
-                        "description": "Target entity type: `\"api_key\"` or `\"generation\"`."
+                        "description": "What the action changed: `api_key`, `generation`, `user`,\n`invitation`, `membership`, `organization`, `application`,\n`provider_credential`, `end_user`, `oauth_client`, a budget\n(`key_limits`, `org_limits`, `app_limits`, `member_limits`,\n`end_user_limits`), or the gateway's `model`, `provider`, `routes` and\n`settings`."
                     }
                 }
             },
@@ -9018,7 +9460,8 @@
                 "required": [
                     "password_enabled",
                     "providers_enabled",
-                    "signup_open"
+                    "signup_open",
+                    "password_min_length"
                 ],
                 "properties": {
                     "mcp": {
@@ -9036,6 +9479,12 @@
                         "type": "boolean",
                         "description": "Whether email/password signup + login is enabled."
                     },
+                    "password_min_length": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "The shortest password signup, invitations, password changes and\nresets accept.",
+                        "minimum": 0
+                    },
                     "providers_enabled": {
                         "type": "array",
                         "items": {
@@ -9045,7 +9494,7 @@
                     },
                     "signup_open": {
                         "type": "boolean",
-                        "description": "Whether self-service signup is open (true in hosted mode)."
+                        "description": "Whether self-service signup is open: always in hosted mode; in\nsingle-tenant mode while no account exists and password signup is on\n(the first signup makes the Owner)."
                     }
                 }
             },
@@ -9360,8 +9809,8 @@
                             "null"
                         ],
                         "format": "int32",
-                        "description": "Requests-per-minute cap; None = unlimited.",
-                        "minimum": 0
+                        "description": "Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to\nstop a key, block it); None = unlimited.",
+                        "minimum": 1
                     },
                     "scopes": {
                         "type": "string",
@@ -9380,7 +9829,7 @@
                             "string",
                             "null"
                         ],
-                        "description": "Webhook URL for async callbacks."
+                        "description": "Webhook URL for async callbacks; `\"\"` or none sets no webhook."
                     }
                 }
             },
@@ -9610,9 +10059,14 @@
                     "enabled",
                     "ttl_seconds",
                     "max_items",
-                    "max_bytes"
+                    "max_bytes",
+                    "charge_hits"
                 ],
                 "properties": {
+                    "charge_hits": {
+                        "type": "boolean",
+                        "description": "Whether a cache hit is charged the cached answer's price (default\ntrue). False makes hits free, as LiteLLM does; either way the hit's log\nrow says `cache_hit`."
+                    },
                     "enabled": {
                         "type": "boolean"
                     },
@@ -10000,6 +10454,62 @@
                     "without_references"
                 ]
             },
+            "GatewaySettingLimits": {
+                "type": "object",
+                "description": "The range of each numeric gateway setting, named as the setting is: what\n`PUT /v1/admin/settings` holds it to, served so a client need not keep a\ncopy. `default_end_user_max_budget_usd` has no upper bound, so it has none.",
+                "required": [
+                    "cost_markup_percent",
+                    "cache_ttl_seconds",
+                    "cache_max_items",
+                    "cache_max_bytes",
+                    "retry_max_retries",
+                    "retry_backoff_ms",
+                    "retry_max_backoff_ms",
+                    "vendor_timeout_seconds",
+                    "circuit_breaker_threshold",
+                    "circuit_breaker_open_for_seconds",
+                    "storage_access_signed_url_ttl_seconds",
+                    "storage_access_retention_days"
+                ],
+                "properties": {
+                    "cache_max_bytes": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "cache_max_items": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "cache_ttl_seconds": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "circuit_breaker_open_for_seconds": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "circuit_breaker_threshold": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "cost_markup_percent": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "retry_backoff_ms": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "retry_max_backoff_ms": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "retry_max_retries": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "storage_access_retention_days": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "storage_access_signed_url_ttl_seconds": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    },
+                    "vendor_timeout_seconds": {
+                        "$ref": "#/components/schemas/SettingRange"
+                    }
+                }
+            },
             "GatewaySettings": {
                 "type": "object",
                 "description": "Gateway-wide settings editable at runtime.",
@@ -10010,6 +10520,13 @@
                             "null"
                         ],
                         "description": "URL that receives budget alerts (soft budget crossed, hard budget hit)."
+                    },
+                    "cache_charge_hits": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether a cache hit is charged the cached answer's price (default\ntrue). False makes hits free, as LiteLLM does; either way the hit's log\nrow says `cache_hit`. Overrides `cache.charge_hits`."
                     },
                     "cache_enabled": {
                         "type": [
@@ -10085,6 +10602,13 @@
                         ],
                         "format": "double",
                         "description": "Default hard budget (USD) for an end user with no limits of its own."
+                    },
+                    "encrypt_provider_credentials": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Encrypt the credentials inside runtime provider configs at rest (the\nkeys are always encrypted): each `extra_headers` value, and the user\ninfo of `api_base` and of the URLs in `options`, are stored with the\nconfig's encrypted keys, and the row keeps `[redacted]` in their place.\nNeeds `LITEGEN__SECRETS_KEY`. Off (the default), they are stored in\nplain text, as versions before 2026-11-15 read them. Unlike the other\nfields, a PUT that leaves it out keeps its stored value; `null` or\n`false` turns it off. Each save of these settings stores every runtime\nprovider config again as this says. Turn it on once every replica runs\nthis version, and off before a rollback."
                     },
                     "retry_backoff_ms": {
                         "type": [
@@ -10193,7 +10717,8 @@
                     "cache_entries",
                     "effective_retries",
                     "effective_vendor_timeout_seconds",
-                    "effective_circuit_breaker"
+                    "effective_circuit_breaker",
+                    "limits"
                 ],
                 "properties": {
                     "cache_entries": {
@@ -10227,6 +10752,10 @@
                         "format": "int64",
                         "description": "The vendor call timeout in force, in seconds.",
                         "minimum": 0
+                    },
+                    "limits": {
+                        "$ref": "#/components/schemas/GatewaySettingLimits",
+                        "description": "The range of each numeric setting, both ends allowed, as `PUT\n/v1/admin/settings` checks them: a value outside its range is a 400\n`invalid_settings`. `retry_max_backoff_ms` must also be at least\n`retry_backoff_ms`."
                     },
                     "settings": {
                         "$ref": "#/components/schemas/GatewaySettings"
@@ -11093,11 +11622,15 @@
             },
             "InviteResponse": {
                 "type": "object",
+                "description": "A new invitation. Its `token` and `invite_url` are shown only in this\nanswer: litegen sends no email, so give one of them to the invitee.",
                 "required": [
                     "id",
                     "email",
                     "role",
-                    "expires_at"
+                    "org_id",
+                    "expires_at",
+                    "token",
+                    "invite_url"
                 ],
                 "properties": {
                     "email": {
@@ -11109,8 +11642,23 @@
                     "id": {
                         "type": "string"
                     },
+                    "invite_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The dashboard's page that accepts it: `/invite/{token}` on the origin\nof `server.public_base_url`; null when it isn't set: build it from\n`token` on the dashboard's origin."
+                    },
+                    "org_id": {
+                        "type": "string",
+                        "description": "The organization the invitee joins on accepting."
+                    },
                     "role": {
                         "type": "string"
+                    },
+                    "token": {
+                        "type": "string",
+                        "description": "Accepts the invitation once, until `expires_at`\n(`POST /v1/auth/invitations/{token}/accept`): whoever holds it joins\nthe org as `role`, so give it only to the invitee."
                     }
                 }
             },
@@ -11593,7 +12141,7 @@
                             "null"
                         ],
                         "format": "int64",
-                        "description": "Size of the stored file.",
+                        "description": "Size of the file in bytes: the stored file's, or for a file litegen\ndidn't keep (`kept: false`) the size the vendor's host reported when\nlitegen checked its link.",
                         "minimum": 0
                     },
                     "url": {
@@ -13195,11 +13743,11 @@
                                         "string",
                                         "null"
                                     ],
-                                    "description": "The API key ID of the actor. None when the master key was used."
+                                    "description": "The API key that acted. Null for the master key, a signed-in person\n(a browser session, or an app signed in with OAuth) and litegen\nitself."
                                 },
                                 "actor_label": {
                                     "type": "string",
-                                    "description": "Human-readable actor label: `\"master-key\"` or the key's name."
+                                    "description": "Who acted: a signed-in person's email, an API key's id (as in\n`actor_key_id`), `master-key` for the master key, or `system` for\nlitegen itself (a budget alert). Since 2026-11-15 an account's email\nmust be an address, so a new account can't be labelled `master-key`\nor `system`."
                                 },
                                 "after_json": {
                                     "type": [
@@ -13227,7 +13775,7 @@
                                         "string",
                                         "null"
                                     ],
-                                    "description": "Tenant (organization) this audit entry belongs to. None falls back to the\ndefault org at the DB layer (single-tenant); set from the caller's active org."
+                                    "description": "The organization this entry is filed under: the one whose object the\naction changed, else the one the caller acted in. Absent for an entry\nfiled under no org: in hosted mode, the master key's changes to the\ngateway and to accounts, and an account change by a person who belongs\nto no org. Only the master key reads those."
                                 },
                                 "target_id": {
                                     "type": "string",
@@ -13235,7 +13783,7 @@
                                 },
                                 "target_type": {
                                     "type": "string",
-                                    "description": "Target entity type: `\"api_key\"` or `\"generation\"`."
+                                    "description": "What the action changed: `api_key`, `generation`, `user`,\n`invitation`, `membership`, `organization`, `application`,\n`provider_credential`, `end_user`, `oauth_client`, a budget\n(`key_limits`, `org_limits`, `app_limits`, `member_limits`,\n`end_user_limits`), or the gateway's `model`, `provider`, `routes` and\n`settings`."
                                 }
                             }
                         }
@@ -13430,9 +13978,14 @@
                                 "media_type",
                                 "cost_usd",
                                 "latency_ms",
-                                "created_at"
+                                "created_at",
+                                "cache_hit"
                             ],
                             "properties": {
+                                "cache_hit": {
+                                    "type": "boolean",
+                                    "description": "Whether this request was answered from the cache (an image's\n`X-Litegen-Cache: hit`): the hit has a row of its own, at what it was\ncharged. False on every other row, older rows included."
+                                },
                                 "cost_usd": {
                                     "type": "number",
                                     "format": "double"
@@ -13526,6 +14079,13 @@
                                 "created_at": {
                                     "type": "string",
                                     "format": "date-time"
+                                },
+                                "delivery_id": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "The delivery this attempt belongs to, `whd-` and a UUID: the\n`X-Litegen-Delivery-Id` the receiver got. Every attempt of one\ndelivery has the same one. `null` on attempts recorded before\nmigration 029."
                                 },
                                 "error_message": {
                                     "type": [
@@ -14094,6 +14654,10 @@
                         "format": "int32",
                         "description": "The most pixels it adds to one side.",
                         "minimum": 0
+                    },
+                    "required": {
+                        "type": "boolean",
+                        "description": "The row grows a canvas and nothing else: a request without `expand`\nis refused with `param_required` (param `expand`) before anything is\nquoted or reserved. Absent (false): `expand` is optional."
                     }
                 }
             },
@@ -14554,6 +15118,13 @@
                         ],
                         "description": "For `output_formats`: how many VENDOR jobs one request may need \u2014 not\nhow many members it may name. Every member of `derivable_values` comes\nout of one source container, so a request costs\n`|requested \\ derivable_values| + (requested \u2229 derivable_values \u2260 \u2205 ? 1 : 0)`\njobs, and more than `max_items` is refused with `param_too_many`.\n`None` means no limit.",
                         "minimum": 0
+                    },
+                    "returned_together": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "For `output_formats`: the containers one vendor job returns together\n(Meshy's rig names a glb and an fbx at once); empty: a job returns the\none container it is asked for. A generation that keeps nothing\n(`keep_outputs: false`) converts nothing, so it can be promised only\nwhat its vendor job returns; anything more is refused, 400\n`format_needs_keeping`."
                     }
                 }
             },
@@ -14604,6 +15175,13 @@
                         "type": "string",
                         "format": "date-time"
                     },
+                    "issued_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Who issued the link: a person's account id, or `None` for the master\nkey (and for the dev flag's self-service tokens, local tests only).\nConfirming re-checks that this issuer may still issue it (review round\n4, findings 4 and 5)."
+                    },
                     "token": {
                         "type": "string"
                     },
@@ -14630,6 +15208,39 @@
                         "type": "string"
                     },
                     "token": {
+                        "type": "string"
+                    }
+                }
+            },
+            "PasswordResetLink": {
+                "type": "object",
+                "description": "A password reset link issued for an account. Shown only in this answer:\nlitegen sends no email, so give `reset_url` or `token` to the account's\nowner.",
+                "required": [
+                    "user_id",
+                    "email",
+                    "token",
+                    "reset_url",
+                    "expires_at"
+                ],
+                "properties": {
+                    "email": {
+                        "type": "string"
+                    },
+                    "expires_at": {
+                        "type": "string"
+                    },
+                    "reset_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The dashboard's page that sets the password: `/reset-password/{token}`\non the origin of `server.public_base_url`; null when it isn't set:\nbuild it from `token` on the dashboard's origin."
+                    },
+                    "token": {
+                        "type": "string",
+                        "description": "Sets the account's password once, until `expires_at` (1 hour), with\n`POST /v1/auth/password-reset/confirm`. Whoever holds it can take over\nthe account, so give it only to its owner."
+                    },
+                    "user_id": {
                         "type": "string"
                     }
                 }
@@ -14674,6 +15285,80 @@
                     }
                 }
             },
+            "PatchProviderConfigRequest": {
+                "type": "object",
+                "description": "Request body for `PATCH /v1/admin/providers/{name}`: a field sent is set,\n`null` clears it, a field left out keeps its stored value. A key\n(`api_key`, `api_keys`, `key_id`, `key_secret`) left out or `null` keeps\nits stored value, and one sent as `\"\"` removes it, so the env/YAML key\napplies again.",
+                "properties": {
+                    "api_base": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "api_key": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "api_keys": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "enabled": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "False takes the provider out of service until re-enabled."
+                    },
+                    "extra_headers": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "key_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "key_secret": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "model_mapping": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "options": {},
+                    "region": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
             "PatchUserRequest": {
                 "type": "object",
                 "properties": {
@@ -14692,6 +15377,46 @@
                                 "$ref": "#/components/schemas/Role"
                             }
                         ]
+                    }
+                }
+            },
+            "PendingInvitation": {
+                "type": "object",
+                "description": "An invitation not yet accepted or expired. Its token is shown only when\nit is made: to send a lost link again, revoke the invitation and invite\nanew.",
+                "required": [
+                    "id",
+                    "email",
+                    "role",
+                    "org_id",
+                    "invited_by",
+                    "created_at",
+                    "expires_at"
+                ],
+                "properties": {
+                    "created_at": {
+                        "type": "string"
+                    },
+                    "email": {
+                        "type": "string"
+                    },
+                    "expires_at": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "invited_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The account that sent it; null when the master key did."
+                    },
+                    "org_id": {
+                        "type": "string"
+                    },
+                    "role": {
+                        "type": "string"
                     }
                 }
             },
@@ -14957,7 +15682,8 @@
                         "type": [
                             "string",
                             "null"
-                        ]
+                        ],
+                        "description": "The api_base in force, with `[redacted]` for its user info\n(`https://[redacted]@host/v1`). Sent back unchanged in a PUT or PATCH,\nit keeps the URL in force."
                     },
                     "enabled": {
                         "type": "boolean"
@@ -14998,7 +15724,9 @@
                     "name": {
                         "type": "string"
                     },
-                    "options": {},
+                    "options": {
+                        "description": "The options in force, with `[redacted]` for the user info of each URL\nin them, as for `api_base`. Sent back unchanged in a PUT or PATCH, such\na URL keeps the one in force."
+                    },
                     "region": {
                         "type": [
                             "string",
@@ -15084,7 +15812,7 @@
             },
             "ProviderSettings": {
                 "type": "object",
-                "description": "Non-secret part of a runtime provider config. Unset fields fall back to the\nprovider's env/YAML config.",
+                "description": "The part of a runtime provider config that isn't a key. Unset fields fall\nback to the provider's env/YAML config. `extra_headers` values may carry a\ngateway's own auth: they are never shown back, and the audit log keeps\nonly their names.",
                 "properties": {
                     "api_base": {
                         "type": [
@@ -15636,7 +16364,14 @@
                     },
                     "needs_first_frame": {
                         "type": "boolean",
-                        "description": "On a video model's `last_frame` role: its vendor ends a clip on a\nlast frame only when the clip starts from a first frame, so a request\nwith a `last_frame` and no `first_frame` (or `init`) image is refused\nwith `ref_role_required` before anything is quoted or reserved.\nAbsent (false): a last frame alone goes to the vendor."
+                        "description": "On a video model's `last_frame` or `reference` role: its vendor takes\nan image of this role only in a clip that starts from a first frame\n(it ends a clip on a last frame only after a first one; Runway's\nKling O3 takes reference images only on image-to-video), so a request\nwith an image of this role and no `first_frame` (or `init`) image is\nrefused with `ref_role_required` before anything is quoted or\nreserved. Absent (false): an image of this role goes to the vendor\nwithout a first frame."
+                    },
+                    "not_with": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Roles this role can't be sent with in one request: its vendor takes\none or the other (Vidu: first/last frames, or reference images), so\na request with an image of this role and one of a role named here is\nrefused with `ref_role_conflict` before anything is quoted or\nreserved. Absent (empty): images of any roles go to the vendor\ntogether."
                     },
                     "required": {
                         "type": "boolean"
@@ -15776,7 +16511,7 @@
                     },
                     "output_kind": {
                         "type": "string",
-                        "description": "\"b64\" | \"url\" | \"error\""
+                        "description": "What `output_value` holds:\n- `b64`: the image, base64 (at most 2 MiB; `output_truncated` says\n  when it was cut);\n- `url`: a link to the output, when the request had one (a job's\n  output is on its generation);\n- `generation`: a cache hit's: the id of the generation whose answer\n  it was served, which holds the image (no copy here);\n- `not_kept`: nothing: the request kept nothing (`keep_outputs: false`);\n- `deleted`: nothing: the output's files were deleted (retention); the\n  prompt and params stay;\n- `error`: nothing: the request failed (`error_message`)."
                     },
                     "output_mime": {
                         "type": [
@@ -15816,9 +16551,14 @@
                     "media_type",
                     "cost_usd",
                     "latency_ms",
-                    "created_at"
+                    "created_at",
+                    "cache_hit"
                 ],
                 "properties": {
+                    "cache_hit": {
+                        "type": "boolean",
+                        "description": "Whether this request was answered from the cache (an image's\n`X-Litegen-Cache: hit`): the hit has a row of its own, at what it was\ncharged. False on every other row, older rows included."
+                    },
                     "cost_usd": {
                         "type": "number",
                         "format": "double"
@@ -16525,7 +17265,7 @@
             },
             "SessionInfo": {
                 "type": "object",
-                "description": "Public session info. `id` is a NON-secret SHA-256 fingerprint of the session\ntoken \u2014 never the raw token. The session row's primary key IS the bearer\ncredential (it's the `litegen_session` cookie value), so returning it\nverbatim would let any response-body capture (e.g. XSS \u2014 which HttpOnly is\nmeant to stop) harvest usable session tokens for all the user's devices.\nRevocation resolves the fingerprint back to the row.",
+                "description": "Public session info. `id` is the SHA-256 hash of the session token, never\nthe token: it is all the database keeps of the session, and sent as the\n`litegen_session` cookie it doesn't sign in. So neither a response body\n(e.g. an XSS, which HttpOnly is meant to stop) nor a copy of the database\nyields a working session. Revoking takes this id.",
                 "required": [
                     "id",
                     "created_at",
@@ -16585,6 +17325,26 @@
                         "items": {
                             "type": "string"
                         }
+                    }
+                }
+            },
+            "SettingRange": {
+                "type": "object",
+                "description": "The lowest and the highest value a setting takes, both allowed.",
+                "required": [
+                    "min",
+                    "max"
+                ],
+                "properties": {
+                    "max": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "min": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
                     }
                 }
             },
@@ -16837,7 +17597,8 @@
                     "status",
                     "cost_usd",
                     "latency_ms",
-                    "tags"
+                    "tags",
+                    "cache_hit"
                 ],
                 "properties": {
                     "app_id": {
@@ -16845,6 +17606,10 @@
                             "string",
                             "null"
                         ]
+                    },
+                    "cache_hit": {
+                        "type": "boolean",
+                        "description": "Whether this request was answered from the cache (an image's\n`X-Litegen-Cache: hit`): the hit has a row of its own, at what it was\ncharged. False on every other row, older rows included."
                     },
                     "cost_usd": {
                         "type": "number",
@@ -17063,14 +17828,15 @@
             },
             "UpdateApiKeyRequest": {
                 "type": "object",
-                "description": "Request body for PATCH /v1/keys/{id}.",
+                "description": "Request body for PATCH /v1/keys/{id}, a JSON merge patch: a field left\nout stays as it is, `null` clears `token_quota`, `rpm_limit`,\n`webhook_url` and `expires_at`, and a value sets it. `name`, `scopes` and\n`is_active` can't be cleared: `null` leaves them as they are.",
                 "properties": {
                     "expires_at": {
                         "type": [
                             "string",
                             "null"
                         ],
-                        "format": "date-time"
+                        "format": "date-time",
+                        "description": "When the key stops working; `null` removes the expiry (it never\nexpires)."
                     },
                     "is_active": {
                         "type": [
@@ -17090,7 +17856,8 @@
                             "null"
                         ],
                         "format": "int32",
-                        "minimum": 0
+                        "description": "Requests-per-minute cap, at least 1 (`400 invalid_limits` for 0: to\nstop a key, block it); `null` removes it (no limit).",
+                        "minimum": 1
                     },
                     "scopes": {
                         "type": [
@@ -17104,13 +17871,15 @@
                             "number",
                             "null"
                         ],
-                        "format": "double"
+                        "format": "double",
+                        "description": "USD budget cap; `null` removes it (no cap)."
                     },
                     "webhook_url": {
                         "type": [
                             "string",
                             "null"
-                        ]
+                        ],
+                        "description": "The key's webhook URL, held to the same address rules as on create;\n`null` or `\"\"` removes it (the key then shows `webhook_url: null`)."
                     }
                 }
             },
@@ -17574,6 +18343,13 @@
                         "type": "string",
                         "format": "date-time"
                     },
+                    "delivery_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The delivery this attempt belongs to, `whd-` and a UUID: the\n`X-Litegen-Delivery-Id` the receiver got. Every attempt of one\ndelivery has the same one. `null` on attempts recorded before\nmigration 029."
+                    },
                     "error_message": {
                         "type": [
                             "string",
@@ -17614,6 +18390,85 @@
                         "type": "string"
                     }
                 }
+            },
+            "WebhookDeliveryState": {
+                "type": "object",
+                "description": "A key's webhook delivery: one terminal webhook of a job, sent until an\nattempt is answered 2xx or its retries run out (docs/management-api.md,\n\"Key webhooks\").",
+                "required": [
+                    "delivery_id",
+                    "generation_id",
+                    "status",
+                    "attempts",
+                    "next_attempt_at",
+                    "created_at"
+                ],
+                "properties": {
+                    "attempts": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "The attempts sent in the current series; a redeliver starts a new\nseries at 0."
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "delivery_id": {
+                        "type": "string",
+                        "description": "`whd-` and a UUID: the `X-Litegen-Delivery-Id` of every attempt."
+                    },
+                    "finished_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When it ended (`delivered` or `failed`)."
+                    },
+                    "generation_id": {
+                        "type": "string",
+                        "description": "The job whose webhook this is."
+                    },
+                    "last_error": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Why the latest attempt failed, or why the delivery can't be sent."
+                    },
+                    "last_status_code": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "The latest attempt's HTTP status, when it got an answer."
+                    },
+                    "next_attempt_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "When the next attempt is due, while `pending`."
+                    },
+                    "redelivered_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When it was last redelivered."
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/WebhookDeliveryStatus"
+                    }
+                }
+            },
+            "WebhookDeliveryStatus": {
+                "type": "string",
+                "description": "Where a webhook delivery stands.",
+                "enum": [
+                    "pending",
+                    "delivered",
+                    "failed"
+                ]
             },
             "WebhookTestResult": {
                 "type": "object",

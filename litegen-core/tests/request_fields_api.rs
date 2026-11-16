@@ -264,3 +264,65 @@ async fn a_field_the_model_passes_through_reaches_the_vendor_from_the_top_level(
     assert_eq!(sent.len(), 1, "one vendor call");
     assert_eq!((sent[0]["user"].as_str(), sent[0]["moderation"].as_str()), (Some("u1"), Some("low")), "{}", sent[0]);
 }
+
+// ─── A value serde can't read names its field (round 3, 2026-11-15) ──────────
+
+/// `(code, param, message)` of a refusal to a body sent as is.
+async fn refused_raw(app: &axum::Router, at: &str, body: &str) -> (StatusCode, Option<String>, Option<String>, String) {
+    let (status, _, resp) = call(app, Request::post(at).header("content-type", "application/json").body(Body::from(body.to_string())).unwrap()).await;
+    let text = |k: &str| resp["error"][k].as_str().map(str::to_string);
+    (status, text("code"), text("param"), text("message").unwrap_or_default())
+}
+
+/// A value serde can't read is a 400 `malformed_request` that names its
+/// field by its path on the wire, in `param` and at the head of the message:
+/// a field of the request's own (`feather_px`), one of the fields every
+/// generation request shares (`n`, read through a flattened part), and one
+/// inside an array's object (`reference_images[0].time_s`). It named none:
+/// `param: null` and a bare "invalid value: integer `-8`, expected u32".
+#[tokio::test]
+async fn a_value_serde_cannot_read_is_refused_naming_its_field() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let image = |field: &str, value: Value| {
+        let mut body = json!({ "model": "mock/image-gen", "prompt": "a red cube" });
+        body[field] = value;
+        body.to_string()
+    };
+    let reference = json!([{ "type": "url", "value": "https://example.com/a.png", "time_s": "soon" }]);
+    let cases = [
+        ("feather_px", image("feather_px", json!(-8)), "invalid value: integer `-8`, expected u32"),
+        ("n", image("n", json!(-8)), "invalid value: integer `-8`, expected u32"),
+        ("reference_images[0].time_s", image("reference_images", reference), "invalid type: string \"soon\", expected f64"),
+    ];
+    for at in ["/v1/images/generations", "/v1/images/cost"] {
+        for (field, body, why) in &cases {
+            let (status, code, param, message) = refused_raw(&app, at, body).await;
+            assert_eq!((status, code.as_deref(), param.as_deref()), (StatusCode::BAD_REQUEST, Some("malformed_request"), Some(*field)), "{at} {field}: {message}");
+            assert_eq!(message, format!("{field}: {why}"), "{at} {field}");
+        }
+    }
+    // The other routes read their bodies the same way.
+    for (at, model) in [
+        ("/v1/videos/generations", "mock/video-gen"),
+        ("/v1/videos/cost", "mock/video-gen"),
+        ("/v1/models3d/generations", "mock/mesh-3d"),
+        ("/v1/models3d/cost", "mock/mesh-3d"),
+    ] {
+        let body = json!({ "model": model, "prompt": "a red cube", "n": -8 }).to_string();
+        let (status, code, param, message) = refused_raw(&app, at, &body).await;
+        assert_eq!((status, code.as_deref(), param.as_deref()), (StatusCode::BAD_REQUEST, Some("malformed_request"), Some("n")), "{at}: {message}");
+    }
+    let body = json!({ "model": "mock/segment-image", "image": "x", "prompts": [], "strict": "yes" }).to_string();
+    let (status, code, param, message) = refused_raw(&app, "/v1/images/segmentations", &body).await;
+    assert_eq!((status, code.as_deref(), param.as_deref()), (StatusCode::BAD_REQUEST, Some("malformed_request"), Some("strict")), "{message}");
+}
+
+/// A body that isn't JSON at all keeps serde_json's line and column, with no
+/// field to name.
+#[tokio::test]
+async fn a_body_that_is_not_json_says_where_it_stopped() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let (status, code, param, message) = refused_raw(&app, "/v1/images/generations", "{\"model\": \"mock/image-gen\",\n \"prompt\": ").await;
+    assert_eq!((status, code.as_deref(), param), (StatusCode::BAD_REQUEST, Some("malformed_request"), None), "{message}");
+    assert!(message.contains("line 2 column"), "{message}");
+}

@@ -344,16 +344,57 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
-    // FU-LASTFRAME: a last frame its vendor makes only after a first frame
-    // is a video model's `last_frame` role, beside a role that starts the
+    // FU-LASTFRAME, catalog-rules: an image its vendor takes only in a clip
+    // that starts from a first frame is a video model's `last_frame` (ended
+    // on only after a first one) or `reference` role (Runway's Kling O3:
+    // references on image-to-video only), beside a role that starts the
     // clip; anywhere else it would refuse what the row can never be sent, or
-    // every last frame.
+    // every such image.
     if let Some(refs) = &m.ref_inputs {
         let starts = refs.roles.contains_key("first_frame") || refs.roles.contains_key("init");
         for (name, role) in &refs.roles {
-            if role.needs_first_frame && !(name == "last_frame" && m.media_type == MediaType::Video && starts) {
+            if role.needs_first_frame && !(matches!(name.as_str(), "last_frame" | "reference") && m.media_type == MediaType::Video && starts) {
                 return Err(bad(format!(
-                    "model '{}' role '{name}' sets needs_first_frame, which only a video model's last_frame role takes, beside a first_frame (or init) role",
+                    "model '{}' role '{name}' sets needs_first_frame, which only a video model's last_frame or reference role takes, beside a first_frame (or init) role",
+                    m.id
+                )));
+            }
+        }
+    }
+
+    // vidu-mix: a role its vendor never takes beside another (`not_with`)
+    // names another role of the row, and neither of the two is required:
+    // then the other could never be sent.
+    if let Some(refs) = &m.ref_inputs {
+        for (name, role) in &refs.roles {
+            for other in &role.not_with {
+                let Some(o) = refs.roles.get(other).filter(|_| other != name) else {
+                    return Err(bad(format!(
+                        "model '{}' role '{name}' names '{other}' in not_with: name another role the model declares",
+                        m.id
+                    )));
+                };
+                if role.required || o.required {
+                    return Err(bad(format!(
+                        "model '{}' role '{name}' names '{other}' in not_with, but one of the two is required, so the other could never be sent",
+                        m.id
+                    )));
+                }
+            }
+        }
+    }
+
+    // catalog-rules: a role that goes only beside a first frame is sent
+    // beside one: a role that starts the clip which it names in `not_with`,
+    // or which names it in its own, is not that frame.
+    if let Some(refs) = &m.ref_inputs {
+        for (name, role) in refs.roles.iter().filter(|(_, r)| r.needs_first_frame) {
+            let beside_one = ["first_frame", "init"].into_iter().any(|start| {
+                refs.roles.get(start).is_some_and(|s| !role.not_with.iter().any(|n| n == start) && !s.not_with.iter().any(|n| n == name))
+            });
+            if !beside_one {
+                return Err(bad(format!(
+                    "model '{}' role '{name}' sets needs_first_frame, but not_with keeps it from every first_frame (or init) role, so it could never be sent",
                     m.id
                 )));
             }
@@ -738,6 +779,22 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
                     "model '{}' output_formats default '{}' is not in enum_values", m.id, d
                 )));
             }
+        }
+        // What a generation that keeps nothing is promised
+        // (`ModelSchema::keep_nothing_refusal`): containers the vendor makes,
+        // its glb among them.
+        for t in &s.returned_together {
+            if !s.enum_values.contains(t) {
+                return Err(bad(format!(
+                    "model '{}' output_formats returned_together '{}' is not in enum_values", m.id, t
+                )));
+            }
+        }
+        if !s.returned_together.is_empty() && !s.returned_together.iter().any(|t| t == DEFAULT_MODEL3D_FORMAT) {
+            return Err(bad(format!(
+                "model '{}' output_formats returned_together must include '{}': a job that returns several containers returns its glb too",
+                m.id, DEFAULT_MODEL3D_FORMAT
+            )));
         }
     }
 

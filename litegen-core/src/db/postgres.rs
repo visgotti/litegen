@@ -41,15 +41,226 @@ pub struct PostgresDatabase {
     clock_offset: chrono::Duration,
 }
 
+/// How long a statement on one of litegen's pooled Postgres connections may
+/// run, and wait for a lock ([`PostgresDatabase::connect`]). Without them a
+/// statement blocked behind another transaction's lock waits for as long as
+/// that transaction runs, holding a pool connection (and in the poller, a
+/// slot) all the while.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StatementLimits {
+    /// `statement_timeout`.
+    pub statement: std::time::Duration,
+    /// `lock_timeout`.
+    pub lock: std::time::Duration,
+}
+
+impl StatementLimits {
+    /// 5 minutes leaves room for the longest statements litegen runs, the
+    /// bulk deletes when an org or an app with many rows is deleted. 30
+    /// seconds is as long as the poller gives a vendor to answer; only a long
+    /// delete, a migration or a transaction left open holds a lock that long.
+    /// The migrations run without either ([`PostgresDatabase::connect`]).
+    pub(crate) const DEFAULT: Self = Self {
+        statement: std::time::Duration::from_secs(5 * 60),
+        lock: std::time::Duration::from_secs(30),
+    };
+
+    /// Set the limits on `conn`, each only where nothing else has set it: a
+    /// limit of the URL's `options`, of `PGOPTIONS`, or of the role, the
+    /// database or the server's configuration wins, a `0` too
+    /// (`pg_settings.source` is `default` only when none set it).
+    async fn apply(self, conn: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "SELECT set_config(name, CASE name WHEN 'statement_timeout' THEN $1 ELSE $2 END, false) \
+             FROM pg_settings WHERE name IN ('statement_timeout', 'lock_timeout') AND source = 'default'",
+        )
+        .bind(format!("{}ms", self.statement.as_millis()))
+        .bind(format!("{}ms", self.lock.as_millis()))
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// No statement limit for the rest of `tx`: deleting an org or an app, whose
+/// statements take as long as its rows are many, and which a limit would
+/// otherwise leave undeletable. `SET LOCAL` ends with the transaction, so the
+/// pooled connection keeps its [`StatementLimits`]; the lock limit stays.
+async fn lift_statement_timeout(tx: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("SET LOCAL statement_timeout = 0").execute(tx).await?;
+    Ok(())
+}
+
+/// Record, in `tx`, each file litegen kept for the generations of org
+/// (`scope` "org") or app ("app") `id` whose files aren't deleted yet, for
+/// `proxy::tenant_files` to delete from litegen's store once their rows are
+/// gone (migration 031), as SQLite's does. The generations are read FOR
+/// UPDATE: a job finishing meanwhile waits for this transaction, and then
+/// finds its row gone, so no generation's files change between this read and
+/// its delete.
+async fn record_tenant_files(tx: &mut sqlx::PgConnection, scope: &str, id: &str) -> Result<(), sqlx::Error> {
+    use futures::TryStreamExt;
+    let column = if scope == "org" { "org_id" } else { "app_id" };
+    let sql = format!("SELECT id, result_url, metadata FROM generations WHERE {column} = $1 AND files_deleted_at IS NULL FOR UPDATE");
+    // Read as a stream: only the URLs are kept, never every row's metadata.
+    let mut files: Vec<(String, String)> = Vec::new();
+    {
+        let mut rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(&sql).bind(id).fetch(&mut *tx);
+        while let Some((generation, result_url, metadata)) = rows.try_next().await? {
+            for url in super::trait_def::kept_file_urls(result_url.as_deref(), metadata.as_deref()) {
+                files.push((generation.clone(), url));
+            }
+        }
+    }
+    insert_tenant_files(tx, scope, id, &files).await
+}
+
+/// Insert `files` (generation, URL) as file deletions of `scope` `tenant`,
+/// due now, as SQLite's does.
+async fn insert_tenant_files(conn: &mut sqlx::PgConnection, scope: &str, tenant: &str, files: &[(String, String)]) -> Result<(), sqlx::Error> {
+    for chunk in files.chunks(super::sqlite::TENANT_FILES_PER_INSERT) {
+        let mut insert = QueryBuilder::new("INSERT INTO tenant_file_deletions (scope, tenant_id, generation_id, url) ");
+        insert.push_values(chunk, |mut row, (generation, url)| {
+            row.push_bind(scope).push_bind(tenant).push_bind(generation.as_str()).push_bind(url.as_str());
+        });
+        insert.build().execute(&mut *conn).await?;
+    }
+    Ok(())
+}
+
+/// How many times an org's or app's delete runs, at most, when rows written
+/// meanwhile get in its way ([`a_row_arrived`]).
+const TENANT_DELETE_TRIES: u32 = 5;
+
+/// Whether `e` is a tenant delete that a row written while it ran got in the
+/// way of: a request in flight committed a row of the org or app (its log
+/// row, say) after the delete's child deletes and before the parent's, which
+/// then hit it (23503), or the two deadlocked (40P01). Run again from the
+/// start, the delete takes that row too.
+fn a_row_arrived(e: &sqlx::Error) -> bool {
+    matches!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("23503") | Some("40P01"))
+}
+
+impl PostgresDatabase {
+    /// One try of `delete_organization`: its rows in one transaction.
+    async fn delete_organization_once(&self, id: &str) -> Result<bool, sqlx::Error> {
+        // Cascade in one transaction, in FK-dependency order. On Postgres the
+        // tenant columns DO carry FKs to organizations/applications without
+        // ON DELETE CASCADE, so a bare `DELETE FROM organizations` fails once the
+        // org has its auto-created default app + owner membership. Delete the
+        // children first (generations references api_keys → before api_keys).
+        let mut tx = self.pool.begin().await?;
+        lift_statement_timeout(&mut tx).await?;
+        for stmt in [
+            "DELETE FROM webhook_deliveries WHERE org_id = $1",
+            "DELETE FROM webhook_outbox WHERE org_id = $1",
+            "DELETE FROM request_artifacts WHERE org_id = $1",
+            // Its requests' spend tags, before the rows they hang off.
+            "DELETE FROM request_log_tags WHERE request_id IN (SELECT id FROM request_logs WHERE org_id = $1)",
+            "DELETE FROM request_logs WHERE org_id = $1",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        // The files its generations kept, recorded before their rows go
+        // (migration 031): deleted from litegen's store after the commit,
+        // until they're gone.
+        record_tenant_files(&mut tx, "org", id).await?;
+        for stmt in [
+            "DELETE FROM generations WHERE org_id = $1",
+            "DELETE FROM api_keys WHERE org_id = $1",
+            "DELETE FROM audit_log WHERE org_id = $1",
+            "DELETE FROM invitations WHERE org_id = $1",
+            "DELETE FROM org_provider_credentials WHERE org_id = $1",
+            "DELETE FROM org_allowed_models WHERE org_id = $1",
+            // Migrations 042/043's triggers delete unused reset links here (see 043's header).
+            "DELETE FROM organization_members WHERE org_id = $1",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        for stmt in [
+            "DELETE FROM app_model_access_ids WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+            "DELETE FROM app_model_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+            "DELETE FROM app_storage_credentials WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+            "DELETE FROM app_file_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        sqlx::query("DELETE FROM applications WHERE org_id = $1").bind(id).execute(&mut *tx).await?;
+        let result = sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// One try of `delete_application`: its rows in one transaction.
+    async fn delete_application_once(&self, id: &str) -> Result<bool, sqlx::Error> {
+        // Cascade in one transaction, in FK-dependency order. The app_id columns
+        // on api_keys/generations/request_logs/request_artifacts/webhook_deliveries
+        // and app_storage_credentials reference applications WITHOUT ON DELETE
+        // CASCADE, so a bare `DELETE FROM applications` fails the FK check once the
+        // app has issued a key or run a generation, leaving used apps permanently
+        // undeletable. Delete the app-scoped children first (generations
+        // references api_keys → before api_keys), mirroring delete_organization.
+        let mut tx = self.pool.begin().await?;
+        lift_statement_timeout(&mut tx).await?;
+        for stmt in [
+            "DELETE FROM webhook_deliveries WHERE app_id = $1",
+            "DELETE FROM webhook_outbox WHERE app_id = $1",
+            "DELETE FROM request_artifacts WHERE app_id = $1",
+            // Its requests' spend tags, before the rows they hang off.
+            "DELETE FROM request_log_tags WHERE request_id IN (SELECT id FROM request_logs WHERE app_id = $1)",
+            "DELETE FROM request_logs WHERE app_id = $1",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        // The files its generations kept, recorded before their rows go, as
+        // delete_organization does.
+        record_tenant_files(&mut tx, "app", id).await?;
+        for stmt in [
+            "DELETE FROM generations WHERE app_id = $1",
+            "DELETE FROM api_keys WHERE app_id = $1",
+            "DELETE FROM app_model_access_ids WHERE app_id = $1",
+            "DELETE FROM app_model_access WHERE app_id = $1",
+            "DELETE FROM app_storage_credentials WHERE app_id = $1",
+            "DELETE FROM app_file_access WHERE app_id = $1",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        let result = sqlx::query("DELETE FROM applications WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+}
+
 impl PostgresDatabase {
     /// Connect to PostgreSQL and run migrations.
+    ///
+    /// The migrations run first, on a connection of their own without
+    /// [`StatementLimits`], so a long one (an index built on a large table)
+    /// is never cut. Every connection of the pool then has the limits.
     pub async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
+        Self::connect_with_limits(database_url, StatementLimits::DEFAULT).await
+    }
+
+    /// [`connect`](Self::connect), with `limits` (tests shorten them).
+    pub(crate) async fn connect_with_limits(database_url: &str, limits: StatementLimits) -> Result<Self, sqlx::Error> {
+        let options: sqlx::postgres::PgConnectOptions = database_url.parse()?;
+        // A pool of one connection, not a bare one: a migration run on a
+        // `&mut PgConnection` makes a future that `tokio::spawn` refuses.
+        let migrating = PgPoolOptions::new().max_connections(1).connect_with(options.clone()).await?;
+        sqlx::migrate!("./migrations/postgres").run(&migrating).await?;
+        migrating.close().await;
+
         let pool = PgPoolOptions::new()
             .max_connections(10)
-            .connect(database_url)
+            .after_connect(move |conn, _meta| Box::pin(async move { limits.apply(conn).await }))
+            .connect_with(options)
             .await?;
-
-        sqlx::migrate!("./migrations/postgres").run(&pool).await?;
         info!("PostgreSQL database connected and migrations applied");
 
         Ok(Self {
@@ -129,6 +340,272 @@ fn metadata_cas_exhausted(id: &str) -> sqlx::Error {
     ))
 }
 
+/// The query that finds the sign-in `from` live (review round 6, finding
+/// 2), with its id bound as `$param`; none for the master key, which always
+/// is. Under READ COMMITTED a plain read would see a snapshot, so it takes a
+/// share lock on the sender's row: a reset, a deactivation or a password
+/// change of that account (each an `UPDATE` of the row, its first write)
+/// that is under way makes the query wait for its commit, then re-check the
+/// row, and fail; one that starts after waits for this transaction's
+/// commit, and its cleanup then sees what was stored. A session's row is
+/// locked too, after the account's (the order those changes write them in,
+/// so the two never deadlock): its own password change re-stamps the session
+/// it keeps, and the re-check then reads that new row, not the one from
+/// before the wait (review round 7, finding 5).
+fn live_sign_in_query(from: crate::db::SignIn<'_>, param: usize) -> Option<(String, &str)> {
+    use crate::db::SignIn;
+    match from {
+        SignIn::MasterKey => None,
+        SignIn::Session(id) => Some((
+            format!(
+                "SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id \
+                 WHERE s.id = ${param} AND u.is_active AND s.sign_in_epoch = u.sign_in_epoch FOR SHARE OF u, s"
+            ),
+            id,
+        )),
+        SignIn::Grant(id) => Some((
+            format!(
+                "SELECT 1 FROM mcp_oauth_grants g JOIN users u ON u.id = g.user_id \
+                 WHERE g.id = ${param} AND g.revoked_at IS NULL AND u.is_active AND g.sign_in_epoch = u.sign_in_epoch FOR SHARE OF u"
+            ),
+            id,
+        )),
+    }
+}
+
+/// The clause that makes an insert (`INSERT … SELECT <values>`) land only
+/// while the sign-in `from` is live ([`live_sign_in_query`]), with its id
+/// bound as `$param`; nothing for the master key.
+fn live_sign_in_guard(from: crate::db::SignIn<'_>, param: usize) -> (String, Option<&str>) {
+    match live_sign_in_query(from, param) {
+        Some((query, id)) => (format!(" WHERE EXISTS ({query})"), Some(id)),
+        None => (String::new(), None),
+    }
+}
+
+/// Delete the pending invitations, in `org_id` or every org, that go to
+/// `email` or that `invited_by` sent, through `executor` (the pool, or a
+/// deactivation's or a confirm's transaction), and return them: the one
+/// statement behind every revoke (review round 6, finding 6).
+async fn revoke_pending_invitations_in<'e, E: sqlx::Executor<'e, Database = sqlx::Postgres>>(
+    executor: E,
+    org_id: Option<&str>,
+    email: Option<&str>,
+    invited_by: Option<&str>,
+) -> Result<Vec<Invitation>, sqlx::Error> {
+    let rows: Vec<InvitationRow> = sqlx::query_as(
+        "DELETE FROM invitations WHERE used_at IS NULL AND ($1::text IS NULL OR org_id = $1) AND (email = $2 OR invited_by = $3) \
+         RETURNING id, email, role, token, invited_by, org_id, expires_at, used_at, created_at",
+    )
+    .bind(org_id)
+    .bind(email)
+    .bind(invited_by)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().map(invitation_from_row).collect())
+}
+
+/// Ends every sign-in `user_id` has, in `tx`: its sessions (all but
+/// `keep_session`), its OAuth grants with their tokens, and its OAuth codes
+/// not yet redeemed, and moves its sign-in epoch on, so a sign-in begun
+/// before and landing after is refused too. Deactivating an account,
+/// confirming a reset and changing one's own password do it in the
+/// transaction that makes the change (review round 3b, S1 and S2; round 4,
+/// findings 2 and 6), so either all of it lands or none. `keep_session` is
+/// re-stamped with the new epoch.
+async fn end_sign_ins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, user_id: &str, keep_session: Option<&str>) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET sign_in_epoch = sign_in_epoch + 1 WHERE id = $1").bind(user_id).execute(&mut **tx).await?;
+    match keep_session {
+        Some(keep) => {
+            sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id <> $2").bind(user_id).bind(keep).execute(&mut **tx).await?;
+            sqlx::query("UPDATE sessions SET sign_in_epoch = (SELECT sign_in_epoch FROM users WHERE id = $1) WHERE id = $2 AND user_id = $1")
+                .bind(user_id)
+                .bind(keep)
+                .execute(&mut **tx)
+                .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(user_id).execute(&mut **tx).await?;
+        }
+    }
+    sqlx::query("UPDATE mcp_oauth_tokens SET revoked_at = NOW() WHERE revoked_at IS NULL AND grant_id IN (SELECT id FROM mcp_oauth_grants WHERE user_id = $1)")
+        .bind(user_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("UPDATE mcp_oauth_grants SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL").bind(user_id).execute(&mut **tx).await?;
+    sqlx::query("DELETE FROM mcp_oauth_requests WHERE user_id = $1 AND consumed_at IS NULL").bind(user_id).execute(&mut **tx).await?;
+    // And the unused links it issued, from a stolen session say (review
+    // round 5, finding 4).
+    sqlx::query("DELETE FROM password_resets WHERE issued_by = $1 AND used_at IS NULL").bind(user_id).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// The account `id` through `executor`: the pool (`get_user_by_id`) or a
+/// transaction (`update_user_with_revoked`'s read-back before its commit).
+async fn fetch_user<'e, E: sqlx::Executor<'e, Database = sqlx::Postgres>>(executor: E, id: &str) -> Result<Option<User>, sqlx::Error> {
+    let row = sqlx::query_as::<_, UserRow>(
+        "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
+         created_at, updated_at, last_login_at, is_active, sign_in_epoch \
+         FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.map(user_from_row))
+}
+
+/// Insert `user` through `executor`: the pool (`create_user`) or the first
+/// signup's transaction (`create_first_owner`).
+async fn insert_user<'e, E: sqlx::Executor<'e, Database = sqlx::Postgres>>(executor: E, user: &User) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO users
+            (id, email, password_hash, role, oauth_github_id, oauth_google_id,
+             created_at, updated_at, last_login_at, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        "#,
+    )
+    .bind(&user.id)
+    .bind(&user.email)
+    .bind(&user.password_hash)
+    .bind(user.role.as_str())
+    .bind(&user.oauth_github_id)
+    .bind(&user.oauth_google_id)
+    .bind(user.created_at)
+    .bind(user.updated_at)
+    .bind(user.last_login_at)
+    .bind(user.is_active)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Insert `o` through `executor`: the pool (`create_organization`) or a
+/// transaction (`create_org_with_owner`).
+async fn insert_organization<'e, E: sqlx::Executor<'e, Database = sqlx::Postgres>>(executor: E, o: &Organization) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO organizations (id, name, slug, plan, status, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(&o.id)
+    .bind(&o.name)
+    .bind(&o.slug)
+    .bind(&o.plan)
+    .bind(&o.status)
+    .bind(o.created_at)
+    .bind(o.updated_at)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Insert `a` through `executor`: the pool (`create_application`) or a
+/// transaction (`create_org_with_owner`).
+async fn insert_application<'e, E: sqlx::Executor<'e, Database = sqlx::Postgres>>(executor: E, a: &Application) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO applications (id, org_id, name, slug, status, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(&a.id)
+    .bind(&a.org_id)
+    .bind(&a.name)
+    .bind(&a.slug)
+    .bind(&a.status)
+    .bind(a.created_at)
+    .bind(a.updated_at)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Claim an `Idempotency-Key` ([`DatabaseStore::idempotency_begin_held`]),
+/// the record held by `held_by` for `lease`. A record in progress is free once
+/// its lease lapsed; one with no lease (an older replica's, or one from before
+/// migration 030) once it is older than `IDEMPOTENCY_IN_PROGRESS_STALE`.
+async fn begin_idempotency(
+    db: &PostgresDatabase,
+    scope: &str,
+    key: &str,
+    request_hash: &str,
+    held_by: &str,
+    lease: chrono::Duration,
+) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
+    use crate::db::IdempotencyBegin;
+    // Every time here is the database's clock (`now()`), never this
+    // replica's: a replica whose clock runs fast would otherwise judge
+    // another's in-flight run stale and run the request again. No extra
+    // round trip: the purge and the insert use `now()` themselves, and the
+    // record is read with it.
+    let offset = db.clock_offset_secs();
+    // Opportunistic purge: the index on created_at keeps this cheap.
+    sqlx::query("DELETE FROM idempotency_keys WHERE created_at < now() + make_interval(secs => $1)")
+        .bind(offset - crate::db::IDEMPOTENCY_TTL.num_milliseconds() as f64 / 1000.0)
+        .execute(&db.pool)
+        .await?;
+    for _ in 0..4 {
+        let inserted = sqlx::query(
+            "INSERT INTO idempotency_keys (scope, idem_key, request_hash, state, created_at, held_by, held_until) \
+             VALUES ($1, $2, $3, 'in_progress', now() + make_interval(secs => $4), $5, now() + make_interval(secs => $4 + $6)) \
+             ON CONFLICT (scope, idem_key) DO NOTHING",
+        )
+        .bind(scope)
+        .bind(key)
+        .bind(request_hash)
+        .bind(offset)
+        .bind(held_by)
+        .bind(lease.num_milliseconds() as f64 / 1000.0)
+        .execute(&db.pool)
+        .await?;
+        if inserted.rows_affected() > 0 {
+            return Ok(IdempotencyBegin::Started);
+        }
+        #[allow(clippy::type_complexity)]
+        let row: Option<(String, String, Option<i64>, Option<String>, Option<Vec<u8>>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, Option<bool>)> = sqlx::query_as(
+            "SELECT request_hash, state, CAST(response_status AS BIGINT), response_headers, response_body, created_at, \
+                    now() + make_interval(secs => $3), held_until < now() + make_interval(secs => $3) \
+             FROM idempotency_keys WHERE scope = $1 AND idem_key = $2",
+        )
+        .bind(scope)
+        .bind(key)
+        .bind(offset)
+        .fetch_optional(&db.pool)
+        .await?;
+        let Some((hash, state, status, headers, body, created_at, now, lapsed)) = row else { continue };
+        // In progress: a leased record until its lease lapses, one with
+        // no lease (NULL) for the stale window.
+        let abandoned = match lapsed {
+            Some(lapsed) => lapsed,
+            None => now - created_at > crate::db::IDEMPOTENCY_IN_PROGRESS_STALE,
+        };
+        let expired = now - created_at > crate::db::IDEMPOTENCY_TTL || (state == "in_progress" && abandoned);
+        if expired {
+            // Only the record we looked at: a fresh one a racer just made stays.
+            sqlx::query("DELETE FROM idempotency_keys WHERE scope = $1 AND idem_key = $2 AND created_at = $3")
+                .bind(scope)
+                .bind(key)
+                .bind(created_at)
+                .execute(&db.pool)
+                .await?;
+            continue;
+        }
+        if hash != request_hash {
+            return Ok(IdempotencyBegin::Conflict);
+        }
+        if state != "completed" {
+            return Ok(IdempotencyBegin::InProgress);
+        }
+        let headers: Vec<(String, String)> = headers
+            .and_then(|h| serde_json::from_str(&h).ok())
+            .unwrap_or_default();
+        return Ok(IdempotencyBegin::Replay(crate::db::StoredResponse {
+            status: status.unwrap_or(200).clamp(100, 599) as u16,
+            headers,
+            body: body.unwrap_or_default(),
+        }));
+    }
+    Err(sqlx::Error::Protocol(format!("idempotency key {key} kept changing under four claim attempts")))
+}
+
 #[async_trait]
 impl DatabaseStore for PostgresDatabase {
     fn management(&self) -> Option<&dyn crate::management::store::ManagementStore> {
@@ -136,6 +613,10 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     fn mcp_oauth(&self) -> Option<&dyn crate::mcp::oauth::store::McpOAuthStore> {
+        Some(self)
+    }
+
+    fn reservations(&self) -> Option<&dyn crate::management::reservations::ReservationStore> {
         Some(self)
     }
 
@@ -218,94 +699,40 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
-    async fn idempotency_begin(&self, scope: &str, key: &str, request_hash: &str) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
-        use crate::db::IdempotencyBegin;
-        // Every time here is the database's clock (`now()`), never this
-        // replica's: a replica whose clock runs fast would otherwise judge
-        // another's in-flight run stale and run the request again. No extra
-        // round trip: the purge and the insert use `now()` themselves, and the
-        // record is read with it.
-        let offset = self.clock_offset_secs();
-        // Opportunistic purge: the index on created_at keeps this cheap.
-        sqlx::query("DELETE FROM idempotency_keys WHERE created_at < now() + make_interval(secs => $1)")
-            .bind(offset - crate::db::IDEMPOTENCY_TTL.num_milliseconds() as f64 / 1000.0)
-            .execute(&self.pool)
-            .await?;
-        for _ in 0..4 {
-            let inserted = sqlx::query(
-                "INSERT INTO idempotency_keys (scope, idem_key, request_hash, state, created_at) \
-                 VALUES ($1, $2, $3, 'in_progress', now() + make_interval(secs => $4)) ON CONFLICT (scope, idem_key) DO NOTHING",
-            )
-            .bind(scope)
-            .bind(key)
-            .bind(request_hash)
-            .bind(offset)
-            .execute(&self.pool)
-            .await?;
-            if inserted.rows_affected() > 0 {
-                return Ok(IdempotencyBegin::Started);
-            }
-            #[allow(clippy::type_complexity)]
-            let row: Option<(String, String, Option<i64>, Option<String>, Option<Vec<u8>>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                "SELECT request_hash, state, CAST(response_status AS BIGINT), response_headers, response_body, created_at, \
-                        now() + make_interval(secs => $3) \
-                 FROM idempotency_keys WHERE scope = $1 AND idem_key = $2",
-            )
-            .bind(scope)
-            .bind(key)
-            .bind(offset)
-            .fetch_optional(&self.pool)
-            .await?;
-            let Some((hash, state, status, headers, body, created_at, now)) = row else { continue };
-            let expired = now - created_at > crate::db::IDEMPOTENCY_TTL
-                || (state == "in_progress" && now - created_at > crate::db::IDEMPOTENCY_IN_PROGRESS_STALE);
-            if expired {
-                // Only the record we looked at: a fresh one a racer just made stays.
-                sqlx::query("DELETE FROM idempotency_keys WHERE scope = $1 AND idem_key = $2 AND created_at = $3")
-                    .bind(scope)
-                    .bind(key)
-                    .bind(created_at)
-                    .execute(&self.pool)
-                    .await?;
-                continue;
-            }
-            if hash != request_hash {
-                return Ok(IdempotencyBegin::Conflict);
-            }
-            if state != "completed" {
-                return Ok(IdempotencyBegin::InProgress);
-            }
-            let headers: Vec<(String, String)> = headers
-                .and_then(|h| serde_json::from_str(&h).ok())
-                .unwrap_or_default();
-            return Ok(IdempotencyBegin::Replay(crate::db::StoredResponse {
-                status: status.unwrap_or(200).clamp(100, 599) as u16,
-                headers,
-                body: body.unwrap_or_default(),
-            }));
-        }
-        Err(sqlx::Error::Protocol(format!("idempotency key {key} kept changing under four claim attempts")))
+    async fn idempotency_begin_held(
+        &self,
+        scope: &str,
+        key: &str,
+        request_hash: &str,
+        held_by: &str,
+        lease: chrono::Duration,
+    ) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
+        begin_idempotency(self, scope, key, request_hash, held_by, lease).await
     }
 
-    async fn idempotency_complete(&self, scope: &str, key: &str, response: &crate::db::StoredResponse) -> Result<(), sqlx::Error> {
+    async fn idempotency_complete_held(&self, scope: &str, key: &str, held_by: &str, response: &crate::db::StoredResponse) -> Result<(), sqlx::Error> {
+        // Only the record this request holds: after its lease lapsed, a
+        // retry's record has another holder.
         sqlx::query(
             "UPDATE idempotency_keys SET state = 'completed', response_status = $1, response_headers = $2, response_body = $3 \
-             WHERE scope = $4 AND idem_key = $5",
+             WHERE scope = $4 AND idem_key = $5 AND held_by = $6",
         )
         .bind(i32::from(response.status))
         .bind(serde_json::to_string(&response.headers).unwrap_or_else(|_| "[]".into()))
         .bind(&response.body)
         .bind(scope)
         .bind(key)
+        .bind(held_by)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn idempotency_release(&self, scope: &str, key: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM idempotency_keys WHERE scope = $1 AND idem_key = $2 AND state = 'in_progress'")
+    async fn idempotency_release_held(&self, scope: &str, key: &str, held_by: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM idempotency_keys WHERE scope = $1 AND idem_key = $2 AND state = 'in_progress' AND held_by = $3")
             .bind(scope)
             .bind(key)
+            .bind(held_by)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -651,6 +1078,21 @@ impl DatabaseStore for PostgresDatabase {
         Ok(renewed.rows_affected())
     }
 
+    async fn note_poll_skip_warning(&self, id: &str, mark: i64) -> Result<bool, sqlx::Error> {
+        // One guarded statement: of pollers racing at one mark, the row lock
+        // lets one change it; the others see the mark and change nothing.
+        let noted = sqlx::query(
+            "UPDATE generations SET poll_skip_warned_mark = $2 \
+             WHERE id = $1 AND status IN ('pending', 'processing') \
+               AND (poll_skip_warned_mark IS NULL OR poll_skip_warned_mark < $2)",
+        )
+            .bind(id)
+            .bind(mark)
+            .execute(&self.pool)
+            .await?;
+        Ok(noted.rows_affected() > 0)
+    }
+
     async fn clock_now(&self) -> Result<chrono::DateTime<chrono::Utc>, sqlx::Error> {
         sqlx::query_scalar("SELECT now() + make_interval(secs => $1)")
             .bind(self.clock_offset_secs())
@@ -754,7 +1196,7 @@ impl DatabaseStore for PostgresDatabase {
 
         let rows = sqlx::query_as::<_, RequestLogRow>(
             r#"
-            SELECT id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at
+            SELECT id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at, cache_hit
             FROM request_logs
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
@@ -844,6 +1286,8 @@ impl DatabaseStore for PostgresDatabase {
         scopes: &str,
         webhook_url: Option<&str>,
     ) -> Result<ApiKey, sqlx::Error> {
+        // "" is no webhook (review 2026-11-15 round 2, finding 4).
+        let webhook_url = webhook_url.filter(|u| !u.is_empty());
         let id = Uuid::new_v4();
         let now = chrono::Utc::now();
         // Back-compat method: untenanted keys land in the default org/app so they
@@ -925,9 +1369,9 @@ impl DatabaseStore for PostgresDatabase {
         let mut q = sqlx::query(&sql);
         if let Some(ref v) = req.name { q = q.bind(v); }
         if let Some(v) = req.token_quota { q = q.bind(v); }
-        if let Some(v) = req.rpm_limit { q = q.bind(v as i32); }
+        if let Some(v) = req.rpm_limit { q = q.bind(v.map(|v| v as i32)); }
         if let Some(ref v) = req.scopes { q = q.bind(v); }
-        if let Some(ref v) = req.webhook_url { q = q.bind(v); }
+        if let Some(ref v) = req.webhook_url { q = q.bind(v.as_deref().filter(|u| !u.is_empty())); }
         if let Some(v) = req.expires_at { q = q.bind(v); }
         if let Some(v) = req.is_active { q = q.bind(v); }
         q = q.bind(id.to_string());
@@ -1231,12 +1675,13 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     async fn insert_audit_log(&self, entry: &AuditLogEntry) -> Result<(), sqlx::Error> {
+        // `org_id` as the server filed it (`api::audit::audit_org`): NULL is no org.
         sqlx::query(
             r#"
             INSERT INTO audit_log
                 (id, actor_key_id, actor_label, action, target_type, target_id,
                  before_json, after_json, org_id, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, $10), NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
             "#,
         )
         .bind(&entry.id)
@@ -1248,10 +1693,27 @@ impl DatabaseStore for PostgresDatabase {
         .bind(&entry.before_json)
         .bind(&entry.after_json)
         .bind(&entry.org_id)
-        .bind(crate::api::middleware::DEFAULT_ORG_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn move_master_key_audit_entries_to_no_org(&self, org_id: &str, actions: &[&str]) -> Result<u64, sqlx::Error> {
+        if actions.is_empty() {
+            return Ok(0);
+        }
+        // The master key's entries: no key, and the label every writer gives it.
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(
+            "UPDATE audit_log SET org_id = NULL WHERE actor_key_id IS NULL AND actor_label = 'master-key' AND org_id = ",
+        );
+        qb.push_bind(org_id.to_string());
+        qb.push(" AND action IN (");
+        let mut listed = qb.separated(", ");
+        for action in actions {
+            listed.push_bind(action.to_string());
+        }
+        listed.push_unseparated(")");
+        Ok(qb.build().execute(&self.pool).await?.rows_affected())
     }
 
     async fn list_audit_log(
@@ -1317,8 +1779,10 @@ impl DatabaseStore for PostgresDatabase {
             r#"
             INSERT INTO webhook_deliveries
                 (id, key_id, generation_id, url, attempt_number, status_code, success,
-                 response_body, error_message, payload_json, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+                 response_body, error_message, payload_json, created_at, delivery_id, org_id, app_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11,
+                    COALESCE((SELECT org_id FROM webhook_outbox WHERE id = $11), (SELECT org_id FROM generations WHERE id = $3)),
+                    COALESCE((SELECT app_id FROM webhook_outbox WHERE id = $11), (SELECT app_id FROM generations WHERE id = $3)))
             "#,
         )
         .bind(&delivery.id)
@@ -1331,6 +1795,7 @@ impl DatabaseStore for PostgresDatabase {
         .bind(&delivery.response_body)
         .bind(&delivery.error_message)
         .bind(&delivery.payload_json)
+        .bind(&delivery.delivery_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1351,11 +1816,16 @@ impl DatabaseStore for PostgresDatabase {
         .fetch_one(&self.pool)
         .await?;
 
+        // An outbox delivery's attempts keep no copy of its payload: each
+        // shows the delivery's, its latest attempt's (migration 029).
         let rows = sqlx::query_as::<_, WebhookDeliveryRow>(
-            "SELECT id, key_id, generation_id, url, attempt_number, status_code, success, \
-             response_body, error_message, payload_json, created_at \
-             FROM webhook_deliveries WHERE key_id = $1 \
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            "SELECT d.id, d.key_id, d.generation_id, d.url, d.attempt_number, d.status_code, d.success, \
+             d.response_body, d.error_message, \
+             CASE WHEN d.payload_json = '' AND o.payload_json IS NOT NULL THEN o.payload_json ELSE d.payload_json END AS payload_json, \
+             d.created_at, d.delivery_id \
+             FROM webhook_deliveries d LEFT JOIN webhook_outbox o ON o.id = d.delivery_id \
+             WHERE d.key_id = $1 \
+             ORDER BY d.created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(key_id)
         .bind(per_page as i64)
@@ -1365,6 +1835,318 @@ impl DatabaseStore for PostgresDatabase {
 
         let deliveries = rows.into_iter().map(webhook_delivery_from_row).collect();
         Ok((deliveries, total.0))
+    }
+
+    // ─── Webhook outbox (migration 029) ──────────────────────────────────
+    // Every time is the database's (`now()`), as the poll claims' are.
+
+    fn keeps_webhook_outbox(&self) -> bool {
+        true
+    }
+
+    async fn webhook_outbox_of(&self, generation_id: &str) -> Result<Option<crate::db::OutboxRecord>, sqlx::Error> {
+        let sql = format!("SELECT {} FROM webhook_outbox WHERE generation_id = $1", super::sqlite::WEBHOOK_OUTBOX_COLS);
+        let row = sqlx::query_as::<_, super::sqlite::WebhookOutboxRow>(&sql).bind(generation_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(super::sqlite::webhook_outbox_from_row))
+    }
+
+    async fn claim_webhook_delivery_of(
+        &self,
+        generation_id: &str,
+        claimant: &str,
+        hold: chrono::Duration,
+    ) -> Result<Option<crate::db::OutboxDelivery>, sqlx::Error> {
+        let row = sqlx::query_as::<_, super::sqlite::OutboxClaimRow>(
+            "UPDATE webhook_outbox \
+             SET claimed_by = $2, claimed_until = now() + make_interval(secs => $3) \
+             WHERE generation_id = $1 AND status = 'pending' AND attempts = 0 \
+               AND (claimed_until IS NULL OR claimed_until < now()) \
+             RETURNING id, generation_id, key_id, org_id, attempts, redelivered_at IS NOT NULL AS redelivered",
+        )
+        .bind(generation_id)
+        .bind(claimant)
+        .bind(hold.num_milliseconds() as f64 / 1000.0)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Into::into))
+    }
+
+    async fn claim_due_webhook_deliveries(
+        &self,
+        claimant: &str,
+        limit: u32,
+        per_org: u32,
+        hold: chrono::Duration,
+    ) -> Result<Vec<crate::db::OutboxDelivery>, sqlx::Error> {
+        // Ranked within each org (a window function, which can't share a
+        // SELECT with FOR UPDATE), the deliveries `claimant` holds already
+        // counted; then the chosen rows are locked with SKIP LOCKED, so a
+        // row another claimer is taking right now goes to nobody here, and
+        // re-checked, so one another claimer took since this statement began
+        // is left out. Concurrent claims never wait on or share a delivery.
+        let rows = sqlx::query_as::<_, super::sqlite::OutboxClaimRow>(
+            "WITH held AS ( \
+                 SELECT COALESCE(org_id, '') AS org, COUNT(*) AS n FROM webhook_outbox \
+                 WHERE claimed_by = $1 AND status = 'pending' AND claimed_until >= now() \
+                 GROUP BY 1 \
+             ), ranked AS ( \
+                 SELECT o.id AS ranked_id, o.next_attempt_at AS due_at, o.created_at AS made_at, \
+                        ROW_NUMBER() OVER (PARTITION BY COALESCE(o.org_id, '') ORDER BY o.next_attempt_at, o.created_at, o.id) \
+                          + COALESCE(h.n, 0) AS place \
+                 FROM webhook_outbox o LEFT JOIN held h ON h.org = COALESCE(o.org_id, '') \
+                 WHERE o.status = 'pending' AND o.next_attempt_at <= now() \
+                   AND (o.claimed_until IS NULL OR o.claimed_until < now()) \
+             ), chosen AS ( \
+                 SELECT ranked_id FROM ranked WHERE place <= $4 ORDER BY due_at, made_at, ranked_id LIMIT $3 \
+             ), locked AS MATERIALIZED ( \
+                 SELECT o.id AS locked_id FROM webhook_outbox o \
+                 WHERE o.id IN (SELECT ranked_id FROM chosen) \
+                   AND o.status = 'pending' AND (o.claimed_until IS NULL OR o.claimed_until < now()) \
+                 FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE webhook_outbox w \
+             SET claimed_by = $1, claimed_until = now() + make_interval(secs => $2) \
+             FROM locked \
+             WHERE w.id = locked.locked_id \
+             RETURNING w.id, w.generation_id, w.key_id, w.org_id, w.attempts, w.redelivered_at IS NOT NULL AS redelivered",
+        )
+        .bind(claimant)
+        .bind(hold.num_milliseconds() as f64 / 1000.0)
+        .bind(limit as i64)
+        .bind(per_org as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn webhook_delivery_due(&self) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM webhook_outbox \
+             WHERE status = 'pending' AND next_attempt_at <= now() AND (claimed_until IS NULL OR claimed_until < now()))",
+        )
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    async fn webhook_answered_for(&self, generation_id: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE generation_id = $1 AND success = 1)")
+            .bind(generation_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    async fn renew_webhook_claims(&self, claimant: &str, ids: &[String], hold: chrono::Duration) -> Result<u64, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let renewed = sqlx::query(
+            "UPDATE webhook_outbox SET claimed_until = now() + make_interval(secs => $3) \
+             WHERE claimed_by = $1 AND id = ANY($2) AND status = 'pending'",
+        )
+        .bind(claimant)
+        .bind(ids.to_vec())
+        .bind(hold.num_milliseconds() as f64 / 1000.0)
+        .execute(&self.pool)
+        .await?;
+        Ok(renewed.rows_affected())
+    }
+
+    async fn release_webhook_claims(&self, claimant: &str, keep: &[String]) -> Result<u64, sqlx::Error> {
+        let freed = sqlx::query(
+            "UPDATE webhook_outbox SET claimed_by = NULL, claimed_until = NULL \
+             WHERE claimed_by = $1 AND status = 'pending' AND NOT (id = ANY($2))",
+        )
+        .bind(claimant)
+        .bind(keep.to_vec())
+        .execute(&self.pool)
+        .await?;
+        Ok(freed.rows_affected())
+    }
+
+    async fn finish_webhook_attempt(&self, id: &str, claimant: &str, attempt: &crate::db::OutboxAttempt<'_>) -> Result<bool, sqlx::Error> {
+        let after = attempt.outcome.retry_after().map(|d| d.num_milliseconds() as f64 / 1000.0);
+        let done = sqlx::query(
+            "UPDATE webhook_outbox \
+             SET status = $3, attempts = $4, \
+                 next_attempt_at = CASE WHEN $5::float8 IS NULL THEN next_attempt_at ELSE now() + make_interval(secs => $5::float8) END, \
+                 claimed_by = NULL, claimed_until = NULL, \
+                 last_status_code = $6, last_error = $7, payload_json = COALESCE($8, payload_json), \
+                 finished_at = CASE WHEN $3 = 'pending' THEN NULL ELSE now() END \
+             WHERE id = $1 AND claimed_by = $2 AND status = 'pending'",
+        )
+        .bind(id)
+        .bind(claimant)
+        .bind(attempt.outcome.status())
+        .bind(attempt.attempts)
+        .bind(after)
+        .bind(attempt.status_code)
+        .bind(attempt.error)
+        .bind(attempt.payload_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn redeliver_webhook_delivery(&self, key_id: &str, delivery_id: &str, cooldown: chrono::Duration) -> Result<crate::db::Redelivery, sqlx::Error> {
+        let sql = format!(
+            "UPDATE webhook_outbox \
+             SET status = 'pending', attempts = 0, next_attempt_at = now(), \
+                 claimed_by = NULL, claimed_until = NULL, last_status_code = NULL, last_error = NULL, finished_at = NULL, \
+                 redelivered_at = now() \
+             WHERE id = $1 AND key_id = $2 AND status IN ('delivered', 'failed') \
+               AND (redelivered_at IS NULL OR redelivered_at <= now() - make_interval(secs => $3)) \
+             RETURNING {}",
+            super::sqlite::WEBHOOK_OUTBOX_COLS
+        );
+        let redelivered = sqlx::query_as::<_, super::sqlite::WebhookOutboxRow>(&sql)
+            .bind(delivery_id)
+            .bind(key_id)
+            .bind(cooldown.num_milliseconds() as f64 / 1000.0)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(row) = redelivered {
+            return Ok(crate::db::Redelivery::Redelivered(super::sqlite::webhook_outbox_from_row(row)));
+        }
+        let sql = format!("SELECT {} FROM webhook_outbox WHERE id = $1 AND key_id = $2", super::sqlite::WEBHOOK_OUTBOX_COLS);
+        let row = sqlx::query_as::<_, super::sqlite::WebhookOutboxRow>(&sql).bind(delivery_id).bind(key_id).fetch_optional(&self.pool).await?;
+        Ok(crate::db::trait_def::redelivery_refused(row.map(super::sqlite::webhook_outbox_from_row), cooldown))
+    }
+
+    async fn purge_webhook_log(&self, days: u32, limit: u32) -> Result<crate::db::WebhookLogPurged, sqlx::Error> {
+        let days = i32::try_from(days).unwrap_or(i32::MAX);
+        let deliveries = sqlx::query(
+            "DELETE FROM webhook_outbox WHERE id IN ( \
+                 SELECT id FROM webhook_outbox \
+                 WHERE finished_at < now() - make_interval(days => $1) AND status IN ('delivered', 'failed') LIMIT $2)",
+        )
+        .bind(days)
+        .bind(i64::from(limit))
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        let attempts = sqlx::query(
+            "DELETE FROM webhook_deliveries WHERE id IN ( \
+                 SELECT id FROM webhook_deliveries WHERE created_at < now() - make_interval(days => $1) LIMIT $2)",
+        )
+        .bind(days)
+        .bind(i64::from(limit))
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(crate::db::WebhookLogPurged { deliveries, attempts })
+    }
+
+    async fn purge_request_artifacts(&self, before: chrono::DateTime<chrono::Utc>, limit: u32) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "DELETE FROM request_artifacts WHERE request_id IN ( \
+                 SELECT request_id FROM request_artifacts WHERE created_at < $1 ORDER BY created_at LIMIT $2)",
+        )
+        .bind(before)
+        .bind(i64::from(limit))
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    async fn purge_request_logs(&self, before: chrono::DateTime<chrono::Utc>, limit: u32) -> Result<u64, sqlx::Error> {
+        // Their tags go by the foreign key (migration 037, ON DELETE CASCADE).
+        let done = sqlx::query(
+            "DELETE FROM request_logs WHERE id IN ( \
+                 SELECT id FROM request_logs WHERE created_at < $1 ORDER BY created_at LIMIT $2)",
+        )
+        .bind(before)
+        .bind(i64::from(limit))
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    // ─── A deleted org's or app's files (migration 031) ──────────────────
+
+    async fn claim_tenant_file_deletions(
+        &self,
+        of: Option<(&str, &str)>,
+        limit: u32,
+        hold: chrono::Duration,
+    ) -> Result<Vec<crate::db::TenantFileDeletion>, sqlx::Error> {
+        // The due rows are locked with SKIP LOCKED, so a row another claim is
+        // taking right now goes to nobody here, and the lock re-checks that
+        // each is still due, so one another claim took since this statement
+        // began is left out. Concurrent claims never wait on or share a row.
+        let (scope, tenant) = of.unzip();
+        let rows = sqlx::query_as::<_, super::sqlite::TenantFileDeletionRow>(
+            "WITH due AS MATERIALIZED ( \
+                 SELECT id FROM tenant_file_deletions \
+                 WHERE next_attempt_at <= now() \
+                   AND ($1::text IS NULL OR (scope = $1 AND tenant_id = $2)) \
+                 ORDER BY next_attempt_at, id \
+                 LIMIT $4 \
+                 FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE tenant_file_deletions t \
+             SET attempts = t.attempts + 1, next_attempt_at = now() + make_interval(secs => $3) \
+             FROM due \
+             WHERE t.id = due.id \
+             RETURNING t.id, t.scope, t.tenant_id, t.generation_id, t.url, t.attempts",
+        )
+        .bind(scope)
+        .bind(tenant)
+        .bind(hold.num_milliseconds() as f64 / 1000.0)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn finish_tenant_file_deletion(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let done = sqlx::query("DELETE FROM tenant_file_deletions WHERE id = $1").bind(id).execute(&self.pool).await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn retry_tenant_file_deletion(&self, id: i64, attempts: i32, after: chrono::Duration, error: &str) -> Result<bool, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE tenant_file_deletions SET next_attempt_at = now() + make_interval(secs => $3), last_error = $4 \
+             WHERE id = $1 AND attempts = $2",
+        )
+        .bind(id)
+        .bind(attempts)
+        .bind(after.num_milliseconds() as f64 / 1000.0)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn record_tenant_file_deletions(&self, scope: &str, tenant_id: &str, generation_id: &str, urls: &[String]) -> Result<(), sqlx::Error> {
+        let files: Vec<(String, String)> = urls.iter().map(|url| (generation_id.to_string(), url.clone())).collect();
+        let mut conn = self.pool.acquire().await?;
+        insert_tenant_files(&mut conn, scope, tenant_id, &files).await
+    }
+
+    async fn forget_request_rows(&self, generation_id: Option<&str>, request_id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        for stmt in [
+            "DELETE FROM request_artifacts WHERE request_id = $1",
+            "DELETE FROM request_log_tags WHERE request_id = $1",
+            "DELETE FROM request_logs WHERE id = $1",
+        ] {
+            sqlx::query(stmt).bind(request_id).execute(&mut *tx).await?;
+        }
+        if let Some(generation_id) = generation_id {
+            sqlx::query("DELETE FROM generations WHERE id = $1").bind(generation_id).execute(&mut *tx).await?;
+        }
+        tx.commit().await
+    }
+
+    /// request_logs, request_artifacts and generations reference their org
+    /// and app (migration 008), and request_log_tags its log row (037).
+    fn request_rows_reference_their_tenant(&self) -> bool {
+        true
+    }
+
+    async fn mark_cache_hit(&self, request_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE request_logs SET cache_hit = TRUE WHERE id = $1").bind(request_id).execute(&self.pool).await?;
+        Ok(())
     }
 
     async fn ping(&self) -> Result<(), sqlx::Error> {
@@ -1428,33 +2210,13 @@ impl DatabaseStore for PostgresDatabase {
     // ─── Users ──────────────────────────────────────────────────────────
 
     async fn create_user(&self, user: &User) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO users
-                (id, email, password_hash, role, oauth_github_id, oauth_google_id,
-                 created_at, updated_at, last_login_at, is_active)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            "#,
-        )
-        .bind(&user.id)
-        .bind(&user.email)
-        .bind(&user.password_hash)
-        .bind(user.role.as_str())
-        .bind(&user.oauth_github_id)
-        .bind(&user.oauth_google_id)
-        .bind(user.created_at)
-        .bind(user.updated_at)
-        .bind(user.last_login_at)
-        .bind(user.is_active)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        insert_user(&self.pool, user).await
     }
 
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
+             created_at, updated_at, last_login_at, is_active, sign_in_epoch \
              FROM users WHERE email = $1"
         )
         .bind(email)
@@ -1464,15 +2226,7 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
-        let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
-             FROM users WHERE id = $1"
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(user_from_row))
+        fetch_user(&self.pool, id).await
     }
 
     async fn get_user_by_oauth(&self, provider: &str, oauth_id: &str) -> Result<Option<User>, sqlx::Error> {
@@ -1483,7 +2237,7 @@ impl DatabaseStore for PostgresDatabase {
         };
         let sql = format!(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
+             created_at, updated_at, last_login_at, is_active, sign_in_epoch \
              FROM users WHERE {} = $1",
             col
         );
@@ -1501,11 +2255,26 @@ impl DatabaseStore for PostgresDatabase {
         is_active: Option<bool>,
         password_hash: Option<&str>,
     ) -> Result<Option<User>, sqlx::Error> {
+        Ok(self.update_user_with_revoked(id, role, is_active, password_hash, None).await?.map(|(user, _)| user))
+    }
+
+    async fn update_user_with_revoked(
+        &self,
+        id: &str,
+        role: Option<Role>,
+        is_active: Option<bool>,
+        password_hash: Option<&str>,
+        member_org: Option<&str>,
+    ) -> Result<Option<(User, Vec<Invitation>)>, sqlx::Error> {
         let mut sets: Vec<String> = Vec::new();
         let mut param_idx: usize = 1;
 
         if role.is_some() { sets.push(format!("role = ${}", param_idx)); param_idx += 1; }
         if is_active.is_some() { sets.push(format!("is_active = ${}", param_idx)); param_idx += 1; }
+        // Reactivating moves the sign-in epoch on (review round 5, finding
+        // 2): a session stamped while the account was deactivated doesn't
+        // come back with it. (The right side reads the row before the write.)
+        if is_active == Some(true) { sets.push("sign_in_epoch = CASE WHEN is_active THEN sign_in_epoch ELSE sign_in_epoch + 1 END".to_string()); }
         if password_hash.is_some() { sets.push(format!("password_hash = ${}", param_idx)); param_idx += 1; }
         sets.push("updated_at = NOW()".to_string());
 
@@ -1516,11 +2285,55 @@ impl DatabaseStore for PostgresDatabase {
         if let Some(ph) = password_hash { q = q.bind(ph); }
         q = q.bind(id);
 
-        let result = q.execute(&self.pool).await?;
+        let mut tx = self.pool.begin().await?;
+        // The account's row first (review of round 8): every change that
+        // touches an account's memberships or links locks the account's row
+        // before them (a confirm, a transfer of ownership, a link's issue for
+        // its issuer), so none of them deadlocks with this. Gone: nothing to
+        // change.
+        if sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE").bind(id).fetch_optional(&mut *tx).await?.is_none() {
+            return Ok(None);
+        }
+        // The role in `member_org` too (review round 7, finding 3), where the
+        // single-tenant permissions come from, in this transaction: a failure
+        // leaves both roles as they were. Never an Owner's: an account made
+        // the Owner since the caller checked stays the Owner, and this fails
+        // with nothing written, so a retry is refused as the Owner's.
+        if let (Some(r), Some(org)) = (role, member_org) {
+            let moved = sqlx::query("UPDATE organization_members SET role = $1 WHERE org_id = $2 AND user_id = $3 AND role <> 'owner'")
+                .bind(r.as_str())
+                .bind(org)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            if moved.rows_affected() == 0 {
+                return Err(sqlx::Error::RowNotFound);
+            }
+        }
+        // Migrations 042/043's triggers delete the account's unused reset
+        // links, and the ones it issued, when this changes its role or writes
+        // is_active false.
+        let result = q.execute(&mut *tx).await?;
         if result.rows_affected() == 0 {
             return Ok(None);
         }
-        self.get_user_by_id(id).await
+        // Deactivating ends what the account was signed in with, in the
+        // transaction that deactivates it (review round 3b, S1), and revokes
+        // the pending invitations it sent, in every org (SEC-INVITES), in the
+        // same transaction (review round 6, finding 2). The row's lock, taken
+        // by the UPDATE above, makes an invitation sent from the account's
+        // session meanwhile wait for this commit (and then be refused), or
+        // land before the revoke reads.
+        let mut revoked = Vec::new();
+        if is_active == Some(false) {
+            end_sign_ins(&mut tx, id, None).await?;
+            revoked = revoke_pending_invitations_in(&mut *tx, None, None, Some(id)).await?;
+        }
+        // Read back before the commit (review round 7, finding 3): after it,
+        // nothing can fail and leave the revokes without their audit entries.
+        let user = fetch_user(&mut *tx, id).await?.ok_or(sqlx::Error::RowNotFound)?;
+        tx.commit().await?;
+        Ok(Some((user, revoked)))
     }
 
     async fn touch_last_login(&self, id: &str) -> Result<(), sqlx::Error> {
@@ -1538,10 +2351,45 @@ impl DatabaseStore for PostgresDatabase {
         Ok(row.0)
     }
 
+    async fn create_first_owner(&self, user: &User, org_id: &str) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // Under READ COMMITTED two first signups would each count no
+        // account, so the claim on the one `first_owner` row (migration 034)
+        // decides: the second's insert waits for the first's transaction,
+        // then conflicts (under a stricter isolation, it fails instead).
+        // Returning before the commit rolls everything back.
+        let claimed = sqlx::query("INSERT INTO first_owner (id, user_id) VALUES (1, $1) ON CONFLICT (id) DO NOTHING")
+            .bind(&user.id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if claimed == 0 {
+            return Ok(false);
+        }
+        // Accounts made before the claim existed close the signup too.
+        let (accounts,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users").fetch_one(&mut *tx).await?;
+        if accounts > 0 {
+            return Ok(false);
+        }
+        insert_user(&mut *tx, user).await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
+        sqlx::query(
+            "INSERT INTO organization_members (org_id, user_id, role, created_at) \
+             VALUES ($1, $2, $3, NOW())",
+        )
+        .bind(org_id)
+        .bind(&user.id)
+        .bind(Role::Owner.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
         let rows = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active \
+             created_at, updated_at, last_login_at, is_active, sign_in_epoch \
              FROM users ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)
@@ -1566,9 +2414,11 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn transfer_owner(&self, new_owner_id: &str) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'admin', updated_at = NOW() WHERE role = 'owner'")
             .execute(&mut *tx)
             .await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'owner', updated_at = NOW() WHERE id = $1")
             .bind(new_owner_id)
             .execute(&mut *tx)
@@ -1580,11 +2430,13 @@ impl DatabaseStore for PostgresDatabase {
     // ─── Sessions ───────────────────────────────────────────────────────
 
     async fn create_session(&self, s: &Session) -> Result<(), sqlx::Error> {
+        // Kept by its token's hash (migration 044), stamped with the epoch
+        // the account has now (migration 043).
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent, csrf_token) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)"
+            "INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent, csrf_token, sign_in_epoch) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE((SELECT sign_in_epoch FROM users WHERE id = $2), 0))"
         )
-        .bind(&s.id)
+        .bind(crate::auth::tokens::token_hash(&s.id))
         .bind(&s.user_id)
         .bind(s.created_at)
         .bind(s.expires_at)
@@ -1594,6 +2446,60 @@ impl DatabaseStore for PostgresDatabase {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn create_session_at_epoch(&self, s: &Session, epoch: i64) -> Result<(), sqlx::Error> {
+        // Kept by its token's hash (migration 044).
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent, csrf_token, sign_in_epoch) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        )
+        .bind(crate::auth::tokens::token_hash(&s.id))
+        .bind(&s.user_id)
+        .bind(s.created_at)
+        .bind(s.expires_at)
+        .bind(&s.ip)
+        .bind(&s.user_agent)
+        .bind(&s.csrf_token)
+        .bind(epoch)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn sign_in_epoch(&self, user_id: &str) -> Result<Option<i64>, sqlx::Error> {
+        sqlx::query_scalar("SELECT sign_in_epoch FROM users WHERE id = $1").bind(user_id).fetch_optional(&self.pool).await
+    }
+
+    async fn session_epoch(&self, id: &str) -> Result<Option<i64>, sqlx::Error> {
+        sqlx::query_scalar("SELECT sign_in_epoch FROM sessions WHERE id = $1").bind(id).fetch_optional(&self.pool).await
+    }
+
+    async fn change_own_password(&self, user_id: &str, password_hash: &str, verified_hash: &str, keep_session: &str) -> Result<crate::db::PasswordChange, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // Only while nothing moved since the current password was checked
+        // (review round 5, finding 1): the account still holds the hash it was
+        // checked against, is active, and is at the sending session's epoch,
+        // all in this one statement. A reset, a deactivation or another
+        // change that committed meanwhile makes it write nothing.
+        let changed = sqlx::query(
+            "UPDATE users SET password_hash = $1, updated_at = NOW() \
+             WHERE id = $2 AND password_hash = $3 AND is_active \
+             AND sign_in_epoch = (SELECT sign_in_epoch FROM sessions WHERE id = $4 AND user_id = $2)",
+        )
+        .bind(password_hash)
+        .bind(user_id)
+        .bind(verified_hash)
+        .bind(keep_session)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed == 0 {
+            return Ok(crate::db::PasswordChange::SignInEnded);
+        }
+        end_sign_ins(&mut tx, user_id, Some(keep_session)).await?;
+        tx.commit().await?;
+        Ok(crate::db::PasswordChange::Done)
     }
 
     async fn get_session(&self, id: &str) -> Result<Option<Session>, sqlx::Error> {
@@ -1607,9 +2513,16 @@ impl DatabaseStore for PostgresDatabase {
         Ok(row.map(session_from_row))
     }
 
-    async fn get_session_with_user(&self, id: &str) -> Result<Option<(Session, Option<User>)>, sqlx::Error> {
-        let sql = format!("SELECT {SESSION_USER_COLS} FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE s.id = $1");
-        let row = sqlx::query_as::<_, SessionUserRow>(&sql).bind(id).fetch_optional(&self.pool).await?;
+    async fn get_session_with_user(&self, cookie: &str) -> Result<Option<(Session, Option<User>)>, sqlx::Error> {
+        // Found by the cookie's hash, never the cookie itself (migration
+        // 044). A session stamped with an epoch the account has moved past (a
+        // reset, deactivation or password change committed after its sign-in
+        // began) is no session (review round 4, finding 2).
+        let sql = format!(
+            "SELECT {SESSION_USER_COLS} FROM sessions s LEFT JOIN users u ON u.id = s.user_id \
+             WHERE s.id = $1 AND (u.id IS NULL OR u.sign_in_epoch = s.sign_in_epoch)"
+        );
+        let row = sqlx::query_as::<_, SessionUserRow>(&sql).bind(crate::auth::tokens::token_hash(cookie)).fetch_optional(&self.pool).await?;
         Ok(row.map(session_user_from_row))
     }
 
@@ -1639,8 +2552,9 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn list_user_sessions(&self, user_id: &str) -> Result<Vec<Session>, sqlx::Error> {
         let rows = sqlx::query_as::<_, SessionRow>(
-            "SELECT id, user_id, created_at, expires_at, ip, user_agent, csrf_token \
-             FROM sessions WHERE user_id = $1 ORDER BY created_at DESC"
+            "SELECT s.id, s.user_id, s.created_at, s.expires_at, s.ip, s.user_agent, s.csrf_token \
+             FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.user_id = $1 AND s.sign_in_epoch = u.sign_in_epoch ORDER BY s.created_at DESC"
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -1664,29 +2578,41 @@ impl DatabaseStore for PostgresDatabase {
     // ─── Invitations ────────────────────────────────────────────────────
 
     async fn create_invitation(&self, inv: &Invitation) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO invitations (id, email, role, token, invited_by, org_id, expires_at, used_at, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
-        )
-        .bind(&inv.id)
-        .bind(&inv.email)
-        .bind(inv.role.as_str())
-        .bind(&inv.token)
-        .bind(&inv.invited_by)
-        .bind(&inv.org_id)
-        .bind(inv.expires_at)
-        .bind(inv.used_at)
-        .bind(inv.created_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        self.create_invitation_from(inv, crate::db::SignIn::MasterKey).await.map(|_| ())
+    }
+
+    async fn create_invitation_from(&self, inv: &Invitation, from: crate::db::SignIn<'_>) -> Result<bool, sqlx::Error> {
+        // Only the token's hash is kept (migration 041), in both columns. The
+        // sender's sign-in is checked in this statement (review round 6,
+        // finding 2).
+        let hash = crate::auth::tokens::token_hash(&inv.token);
+        let (guard, sign_in) = live_sign_in_guard(from, 10);
+        let sql = format!(
+            "INSERT INTO invitations (id, email, role, token, token_hash, invited_by, org_id, expires_at, used_at, created_at) \
+             SELECT $1, $2, $3, $4, $4, $5, $6, $7, $8, $9{guard}"
+        );
+        let mut q = sqlx::query(&sql)
+            .bind(&inv.id)
+            .bind(&inv.email)
+            .bind(inv.role.as_str())
+            .bind(&hash)
+            .bind(&inv.invited_by)
+            .bind(&inv.org_id)
+            .bind(inv.expires_at)
+            .bind(inv.used_at)
+            .bind(inv.created_at);
+        if let Some(id) = sign_in {
+            q = q.bind(id);
+        }
+        Ok(q.execute(&self.pool).await?.rows_affected() == 1)
     }
 
     async fn get_invitation(&self, token: &str) -> Result<Option<Invitation>, sqlx::Error> {
         let row = sqlx::query_as::<_, InvitationRow>(
             "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
-             FROM invitations WHERE token = $1"
+             FROM invitations WHERE token_hash = $1 OR (token_hash IS NULL AND token = $2)"
         )
+        .bind(crate::auth::tokens::token_hash(token))
         .bind(token)
         .fetch_optional(&self.pool)
         .await?;
@@ -1695,12 +2621,56 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn mark_invitation_used(&self, token: &str) -> Result<bool, sqlx::Error> {
         let res = sqlx::query(
-            "UPDATE invitations SET used_at = NOW() WHERE token = $1 AND used_at IS NULL",
+            "UPDATE invitations SET used_at = NOW() \
+             WHERE (token_hash = $1 OR (token_hash IS NULL AND token = $2)) AND used_at IS NULL",
         )
+        .bind(crate::auth::tokens::token_hash(token))
         .bind(token)
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    async fn invitation_accepted(&self, org_id: &str, id: &str) -> Result<bool, sqlx::Error> {
+        let row: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM invitations WHERE id = $1 AND org_id = $2 AND used_at IS NOT NULL")
+            .bind(id)
+            .bind(org_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn accept_invitation(&self, token: &str, new_user: Option<&User>, user_id: &str, org_id: &str, role: Role) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // Consumed first: a concurrent revoke or acceptance waits on the row
+        // and then finds it consumed, or ran before and left nothing.
+        let consumed = sqlx::query(
+            "UPDATE invitations SET used_at = NOW() \
+             WHERE (token_hash = $1 OR (token_hash IS NULL AND token = $2)) AND used_at IS NULL",
+        )
+        .bind(crate::auth::tokens::token_hash(token))
+        .bind(token)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if consumed == 0 {
+            return Ok(false);
+        }
+        if let Some(user) = new_user {
+            insert_user(&mut *tx, user).await?;
+        }
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
+        sqlx::query(
+            "INSERT INTO organization_members (org_id, user_id, role, created_at) VALUES ($1, $2, $3, NOW()) \
+             ON CONFLICT (org_id, user_id) DO NOTHING",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn delete_invitation(&self, id: &str) -> Result<(), sqlx::Error> {
@@ -1711,17 +2681,8 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
-    async fn revoke_pending_invitations(&self, org_id: Option<&str>, email: Option<&str>, invited_by: Option<&str>) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(
-            "DELETE FROM invitations WHERE used_at IS NULL AND ($1::text IS NULL OR org_id = $1) \
-             AND (email = $2 OR invited_by = $3)",
-        )
-        .bind(org_id)
-        .bind(email)
-        .bind(invited_by)
-        .execute(&self.pool)
-        .await?;
-        Ok(res.rows_affected())
+    async fn revoke_pending_invitations(&self, org_id: Option<&str>, email: Option<&str>, invited_by: Option<&str>) -> Result<Vec<Invitation>, sqlx::Error> {
+        revoke_pending_invitations_in(&self.pool, org_id, email, invited_by).await
     }
 
     async fn list_invitations(&self) -> Result<Vec<Invitation>, sqlx::Error> {
@@ -1734,32 +2695,158 @@ impl DatabaseStore for PostgresDatabase {
         Ok(rows.into_iter().map(invitation_from_row).collect())
     }
 
+    async fn list_unused_invitations(&self, org_id: &str) -> Result<Vec<Invitation>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, InvitationRow>(
+            "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
+             FROM invitations WHERE org_id = $1 AND used_at IS NULL ORDER BY created_at DESC"
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(invitation_from_row).collect())
+    }
+
+    async fn revoke_invitation(&self, org_id: &str, id: &str) -> Result<Option<Invitation>, sqlx::Error> {
+        let row = sqlx::query_as::<_, InvitationRow>(
+            "DELETE FROM invitations WHERE id = $1 AND org_id = $2 AND used_at IS NULL \
+             RETURNING id, email, role, token, invited_by, org_id, expires_at, used_at, created_at"
+        )
+        .bind(id)
+        .bind(org_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(invitation_from_row))
+    }
+
     // ─── Password Resets ────────────────────────────────────────────────
 
     async fn create_password_reset(&self, r: &PasswordReset) -> Result<(), sqlx::Error> {
+        self.create_password_reset_from(r, crate::db::SignIn::MasterKey).await.map(|_| ())
+    }
+
+    async fn create_password_reset_from(&self, r: &PasswordReset, from: crate::db::SignIn<'_>) -> Result<bool, sqlx::Error> {
+        // Only the token's hash is kept (migration 041). In one transaction,
+        // each step taking its locks in the order every account change takes
+        // them (the account's row, then its memberships and links: review of
+        // round 8), so none of them deadlocks with this:
+        //  1. The issuer's sign-in is checked live, under a share lock on its
+        //     row (review round 6, finding 2): its reset, deactivation,
+        //     password change, role change or transfer of ownership locks that
+        //     row first, then deletes the links it issued.
+        //  2. The account's older unused links are voided, which locks them
+        //     before anything locks the account's row (review round 7,
+        //     finding 4): a confirm locks its link, then that row.
+        //  3. The new link goes in. Its foreign key takes a key-share lock on
+        //     the account's row, which a confirm holding the row makes wait
+        //     here, not in a cycle.
+        // The issuer is never the account (`issue_password_reset` refuses
+        // one's own), so the share lock in 1 is never on the row a confirm
+        // locks in 2. A refused link changes nothing.
+        let hash = crate::auth::tokens::token_hash(&r.token);
+        let mut tx = self.pool.begin().await?;
+        if let Some((query, id)) = live_sign_in_query(from, 1) {
+            if sqlx::query(&query).bind(id).fetch_optional(&mut *tx).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        sqlx::query("DELETE FROM password_resets WHERE user_id = $1 AND used_at IS NULL")
+            .bind(&r.user_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
-            "INSERT INTO password_resets (token, user_id, expires_at, used_at, created_at) \
-             VALUES ($1, $2, $3, $4, $5)"
+            "INSERT INTO password_resets (token, user_id, expires_at, used_at, created_at, issued_by) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
-        .bind(&r.token)
+        .bind(&hash)
         .bind(&r.user_id)
         .bind(r.expires_at)
         .bind(r.used_at)
         .bind(r.created_at)
-        .execute(&self.pool)
+        .bind(&r.issued_by)
+        .execute(&mut *tx)
         .await?;
-        Ok(())
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn get_password_reset(&self, token: &str) -> Result<Option<PasswordReset>, sqlx::Error> {
         let row = sqlx::query_as::<_, PasswordResetRow>(
-            "SELECT token, user_id, expires_at, used_at, created_at \
+            "SELECT token, user_id, expires_at, used_at, created_at, issued_by \
              FROM password_resets WHERE token = $1"
         )
-        .bind(token)
+        .bind(crate::auth::tokens::token_hash(token))
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(password_reset_from_row))
+    }
+
+    async fn confirm_password_reset(&self, token: &str, password_hash: &str, mode: crate::config::Mode) -> Result<crate::db::ResetConfirm, sqlx::Error> {
+        use crate::db::ResetConfirm;
+        let mut tx = self.pool.begin().await?;
+        let hash = crate::auth::tokens::token_hash(token);
+        // The account's row first, locked until the commit (review of round
+        // 8): every change that touches an account's links or memberships
+        // locks the account's row before them, so a deactivation or a role
+        // write waits for this confirm, or this one for it, and none of them
+        // deadlocks with it. (A new link's foreign key takes a key-share lock
+        // on the row, which this one lets through.)
+        let Some(user_id): Option<String> = sqlx::query_scalar("SELECT user_id FROM password_resets WHERE token = $1 AND used_at IS NULL")
+            .bind(&hash)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(ResetConfirm::Unusable);
+        };
+        let Some(active): Option<bool> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = $1 FOR NO KEY UPDATE").bind(&user_id).fetch_optional(&mut *tx).await? else {
+            return Ok(ResetConfirm::Unusable);
+        };
+        // Then the single-use CAS; returning before the commit undoes it. A
+        // newer link issued meanwhile voided this one.
+        let claimed: Option<(String, Option<String>)> = sqlx::query_as(
+            "UPDATE password_resets SET used_at = NOW() WHERE token = $1 AND used_at IS NULL AND user_id = $2 RETURNING user_id, issued_by",
+        )
+        .bind(&hash)
+        .bind(&user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((user_id, issued_by)) = claimed else { return Ok(ResetConfirm::Unusable) };
+        // The issuer may still issue this link, now (review round 4,
+        // findings 4 and 5); the master key's links carry no issuer.
+        if let Some(issuer) = issued_by {
+            let issuer_active: Option<bool> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = $1").bind(&issuer).fetch_optional(&mut *tx).await?;
+            let roles_of = |rows: Vec<(String, String)>| rows.into_iter().filter_map(|(org, role)| Role::parse(&role).map(|r| (org, r))).collect::<Vec<_>>();
+            let issuer_roles: Vec<(String, String)> = sqlx::query_as("SELECT org_id, role FROM organization_members WHERE user_id = $1").bind(&issuer).fetch_all(&mut *tx).await?;
+            let account_roles: Vec<(String, String)> = sqlx::query_as("SELECT org_id, role FROM organization_members WHERE user_id = $1").bind(&user_id).fetch_all(&mut *tx).await?;
+            let may = crate::auth::permissions::issuer_may_still_issue(
+                issuer_active == Some(true),
+                &roles_of(issuer_roles),
+                &roles_of(account_roles),
+                active,
+                mode,
+                crate::api::middleware::DEFAULT_ORG_ID,
+            );
+            if !may {
+                return Ok(ResetConfirm::IssuerRevoked);
+            }
+        }
+        // A deactivated account is reactivated (review round 3b, S1): its
+        // deactivation deleted the links issued before it, so this one came
+        // from someone who may reactivate it.
+        sqlx::query("UPDATE users SET password_hash = $1, is_active = TRUE, updated_at = NOW() WHERE id = $2")
+            .bind(password_hash)
+            .bind(&user_id)
+            .execute(&mut *tx)
+            .await?;
+        // Whoever held the old password, or a session, an app or a code it
+        // signed in, is out, in this transaction: a failure leaves the link
+        // usable, and no answer leaves a sign-in behind (round 3b, S2).
+        end_sign_ins(&mut tx, &user_id, None).await?;
+        // A reset (the recovery of an account someone else may hold) also
+        // revokes the pending invitations it sent, a stand-in a thief invited
+        // say, handed back for the audit log (review round 5, finding 3).
+        let revoked = revoke_pending_invitations_in(&mut *tx, None, None, Some(&user_id)).await?;
+        tx.commit().await?;
+        Ok(ResetConfirm::Done { user_id, reactivated: !active, revoked_invitations: revoked })
     }
 
     async fn mark_password_reset_used(&self, token: &str) -> Result<bool, sqlx::Error> {
@@ -1768,7 +2855,7 @@ impl DatabaseStore for PostgresDatabase {
         let res = sqlx::query(
             "UPDATE password_resets SET used_at = NOW() WHERE token = $1 AND used_at IS NULL",
         )
-        .bind(token)
+        .bind(crate::auth::tokens::token_hash(token))
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
@@ -1807,20 +2894,29 @@ impl DatabaseStore for PostgresDatabase {
     // ─── Organizations ──────────────────────────────────────────────────
 
     async fn create_organization(&self, o: &Organization) -> Result<(), sqlx::Error> {
+        insert_organization(&self.pool, o).await
+    }
+
+    async fn create_org_with_owner(&self, org: &Organization, app: &Application, owner: crate::db::OrgOwner<'_>) -> Result<(), sqlx::Error> {
+        // One transaction: returning on an error before the commit rolls
+        // back whatever was written.
+        let mut tx = self.pool.begin().await?;
+        if let crate::db::OrgOwner::New(user) = owner {
+            insert_user(&mut *tx, user).await?;
+        }
+        insert_organization(&mut *tx, org).await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query(
-            "INSERT INTO organizations (id, name, slug, plan, status, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO organization_members (org_id, user_id, role, created_at) \
+             VALUES ($1, $2, $3, NOW())",
         )
-        .bind(&o.id)
-        .bind(&o.name)
-        .bind(&o.slug)
-        .bind(&o.plan)
-        .bind(&o.status)
-        .bind(o.created_at)
-        .bind(o.updated_at)
-        .execute(&self.pool)
+        .bind(&org.id)
+        .bind(owner.user_id())
+        .bind(Role::Owner.as_str())
+        .execute(&mut *tx)
         .await?;
-        Ok(())
+        insert_application(&mut *tx, app).await?;
+        tx.commit().await
     }
 
     async fn get_organization(&self, id: &str) -> Result<Option<Organization>, sqlx::Error> {
@@ -1880,41 +2976,13 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     async fn delete_organization(&self, id: &str) -> Result<bool, sqlx::Error> {
-        // Cascade in one transaction, in FK-dependency order. On Postgres the
-        // tenant columns DO carry FKs to organizations/applications without
-        // ON DELETE CASCADE, so a bare `DELETE FROM organizations` fails once the
-        // org has its auto-created default app + owner membership. Delete the
-        // children first (generations references api_keys → before api_keys).
-        let mut tx = self.pool.begin().await?;
-        for stmt in [
-            "DELETE FROM webhook_deliveries WHERE org_id = $1",
-            "DELETE FROM request_artifacts WHERE org_id = $1",
-            "DELETE FROM request_logs WHERE org_id = $1",
-            "DELETE FROM generations WHERE org_id = $1",
-            "DELETE FROM api_keys WHERE org_id = $1",
-            "DELETE FROM audit_log WHERE org_id = $1",
-            "DELETE FROM invitations WHERE org_id = $1",
-            "DELETE FROM org_provider_credentials WHERE org_id = $1",
-            "DELETE FROM org_allowed_models WHERE org_id = $1",
-            "DELETE FROM organization_members WHERE org_id = $1",
-        ] {
-            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        let mut tries = 1;
+        loop {
+            match self.delete_organization_once(id).await {
+                Err(e) if tries < TENANT_DELETE_TRIES && a_row_arrived(&e) => tries += 1,
+                done => return done,
+            }
         }
-        for stmt in [
-            "DELETE FROM app_model_access_ids WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
-            "DELETE FROM app_model_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
-            "DELETE FROM app_storage_credentials WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
-            "DELETE FROM app_file_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
-        ] {
-            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
-        }
-        sqlx::query("DELETE FROM applications WHERE org_id = $1").bind(id).execute(&mut *tx).await?;
-        let result = sqlx::query("DELETE FROM organizations WHERE id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(result.rows_affected() > 0)
     }
 
     // ─── Members ────────────────────────────────────────────────────────
@@ -1925,6 +2993,7 @@ impl DatabaseStore for PostgresDatabase {
         user_id: &str,
         role: Role,
     ) -> Result<(), sqlx::Error> {
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query(
             "INSERT INTO organization_members (org_id, user_id, role, created_at) \
              VALUES ($1, $2, $3, NOW())",
@@ -1971,6 +3040,7 @@ impl DatabaseStore for PostgresDatabase {
         user_id: &str,
         role: Role,
     ) -> Result<(), sqlx::Error> {
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE organization_members SET role = $1 WHERE org_id = $2 AND user_id = $3")
             .bind(role.as_str())
             .bind(org_id)
@@ -1981,6 +3051,7 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     async fn remove_org_member(&self, org_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("DELETE FROM organization_members WHERE org_id = $1 AND user_id = $2")
             .bind(org_id)
             .bind(user_id)
@@ -2000,11 +3071,13 @@ impl DatabaseStore for PostgresDatabase {
             .bind(org_id)
             .execute(&mut *tx)
             .await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = $1 AND role = 'owner'")
             .bind(org_id)
             .execute(&mut *tx)
             .await?;
         let promoted =
+            // Migrations 042/043's triggers delete unused reset links here (see 043's header).
             sqlx::query("UPDATE organization_members SET role = 'owner' WHERE org_id = $1 AND user_id = $2")
                 .bind(org_id)
                 .bind(new_owner_user_id)
@@ -2030,11 +3103,22 @@ impl DatabaseStore for PostgresDatabase {
             .bind(org_id)
             .execute(&mut *tx)
             .await?;
+        // The account rows written below, before the memberships, whose 043
+        // trigger deletes the old Owner's issued links (review of round 8):
+        // every change that touches an account's links locks the account's
+        // row first, so none of them deadlocks with this (a link the old
+        // Owner's session was issuing did). In id order.
+        sqlx::query("SELECT id FROM users WHERE role = 'owner' OR id = $1 ORDER BY id FOR NO KEY UPDATE")
+            .bind(new_owner_user_id)
+            .execute(&mut *tx)
+            .await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = $1 AND role = 'owner'")
             .bind(org_id)
             .execute(&mut *tx)
             .await?;
         let promoted =
+            // Migrations 042/043's triggers delete unused reset links here (see 043's header).
             sqlx::query("UPDATE organization_members SET role = 'owner' WHERE org_id = $1 AND user_id = $2")
                 .bind(org_id)
                 .bind(new_owner_user_id)
@@ -2044,10 +3128,12 @@ impl DatabaseStore for PostgresDatabase {
             // Not a member: dropping the tx rolls the demotion back.
             return Err(sqlx::Error::RowNotFound);
         }
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'admin', updated_at = NOW() WHERE role = 'owner' AND id <> $1")
             .bind(new_owner_user_id)
             .execute(&mut *tx)
             .await?;
+        // Migrations 042/043's triggers delete unused reset links here (see 043's header).
         sqlx::query("UPDATE users SET role = 'owner', updated_at = NOW() WHERE id = $1")
             .bind(new_owner_user_id)
             .execute(&mut *tx)
@@ -2058,20 +3144,7 @@ impl DatabaseStore for PostgresDatabase {
     // ─── Applications ───────────────────────────────────────────────────
 
     async fn create_application(&self, a: &Application) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO applications (id, org_id, name, slug, status, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&a.id)
-        .bind(&a.org_id)
-        .bind(&a.name)
-        .bind(&a.slug)
-        .bind(&a.status)
-        .bind(a.created_at)
-        .bind(a.updated_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        insert_application(&self.pool, a).await
     }
 
     async fn get_application(&self, id: &str) -> Result<Option<Application>, sqlx::Error> {
@@ -2116,33 +3189,13 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     async fn delete_application(&self, id: &str) -> Result<bool, sqlx::Error> {
-        // Cascade in one transaction, in FK-dependency order. The app_id columns
-        // on api_keys/generations/request_logs/request_artifacts/webhook_deliveries
-        // and app_storage_credentials reference applications WITHOUT ON DELETE
-        // CASCADE, so a bare `DELETE FROM applications` fails the FK check once the
-        // app has issued a key or run a generation, leaving used apps permanently
-        // undeletable. Delete the app-scoped children first (generations
-        // references api_keys → before api_keys), mirroring delete_organization.
-        let mut tx = self.pool.begin().await?;
-        for stmt in [
-            "DELETE FROM webhook_deliveries WHERE app_id = $1",
-            "DELETE FROM request_artifacts WHERE app_id = $1",
-            "DELETE FROM request_logs WHERE app_id = $1",
-            "DELETE FROM generations WHERE app_id = $1",
-            "DELETE FROM api_keys WHERE app_id = $1",
-            "DELETE FROM app_model_access_ids WHERE app_id = $1",
-            "DELETE FROM app_model_access WHERE app_id = $1",
-            "DELETE FROM app_storage_credentials WHERE app_id = $1",
-            "DELETE FROM app_file_access WHERE app_id = $1",
-        ] {
-            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        let mut tries = 1;
+        loop {
+            match self.delete_application_once(id).await {
+                Err(e) if tries < TENANT_DELETE_TRIES && a_row_arrived(&e) => tries += 1,
+                done => return done,
+            }
         }
-        let result = sqlx::query("DELETE FROM applications WHERE id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(result.rows_affected() > 0)
     }
 
     // ─── Provider Credentials (org-scoped) ─────────────────────────────
@@ -2359,6 +3412,17 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn clear_artifact_output(&self, request_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE request_artifacts SET output_kind = 'deleted', output_value = NULL, output_truncated = FALSE \
+             WHERE request_id = $1 AND output_kind IN ('b64', 'url')",
+        )
+        .bind(request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn note_files_delete_failed(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE generations SET files_delete_attempted_at = now() WHERE id = $1 AND files_deleted_at IS NULL")
             .bind(id)
@@ -2387,14 +3451,13 @@ impl DatabaseStore for PostgresDatabase {
             }
         }
         sqlx::query("DELETE FROM request_artifacts WHERE request_id = $1").bind(id).execute(&self.pool).await?;
+        // The artifacts of the cache hits it answered name it, and carry its
+        // prompt and params: the same request.
+        sqlx::query("DELETE FROM request_artifacts WHERE output_kind = 'generation' AND output_value = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
-    }
-
-    async fn generations_with_kept_files(&self, scope: &str, id: &str) -> Result<Vec<Generation>, sqlx::Error> {
-        let column = if scope == "org" { "org_id" } else { "app_id" };
-        let sql = format!("SELECT {} FROM generations WHERE {column} = $1 AND files_deleted_at IS NULL", GENERATION_COLS);
-        let rows = sqlx::query_as::<_, GenerationRow>(&sql).bind(id).fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(generation_from_row).collect())
     }
 
     async fn revoke_links(&self, scope: &str, scope_id: &str, at: chrono::DateTime<chrono::Utc>) -> Result<(), sqlx::Error> {
@@ -2537,6 +3600,8 @@ impl DatabaseStore for PostgresDatabase {
         webhook_url: Option<&str>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<ApiKey, sqlx::Error> {
+        // "" is no webhook (review 2026-11-15 round 2, finding 4).
+        let webhook_url = webhook_url.filter(|u| !u.is_empty());
         let id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO api_keys \
@@ -2820,15 +3885,19 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn list_audit_log_for_tenant_filtered(
         &self,
-        org_id: &str,
+        org: crate::db::AuditLogOrg<'_>,
         filter: &crate::db::TenantAuditFilter<'_>,
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<AuditLogEntry>, u64), sqlx::Error> {
         use sqlx::QueryBuilder;
         const COLS: &str = "id, actor_key_id, actor_label, action, target_type, target_id, before_json, after_json, created_at, org_id";
-        let mut cb = QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM audit_log WHERE org_id = ");
-        cb.push_bind(org_id.to_string());
+        // One org's entries, or those filed under no org (`org_id` NULL).
+        let mut cb = QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM audit_log WHERE org_id ");
+        match org {
+            crate::db::AuditLogOrg::Org(o) => cb.push("= ").push_bind(o.to_string()),
+            crate::db::AuditLogOrg::NoOrg => cb.push("IS NULL"),
+        };
         if let Some(a) = filter.actor_key_id { cb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
         if let Some(a) = filter.action { cb.push(" AND action = ").push_bind(a.to_string()); }
         if let Some(f) = filter.from { cb.push(" AND created_at >= ").push_bind(f); }
@@ -2836,8 +3905,11 @@ impl DatabaseStore for PostgresDatabase {
         let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
 
         let offset = crate::api::pagination::offset(page, per_page) as i64;
-        let mut qb = QueryBuilder::<sqlx::Postgres>::new(format!("SELECT {COLS} FROM audit_log WHERE org_id = "));
-        qb.push_bind(org_id.to_string());
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(format!("SELECT {COLS} FROM audit_log WHERE org_id "));
+        match org {
+            crate::db::AuditLogOrg::Org(o) => qb.push("= ").push_bind(o.to_string()),
+            crate::db::AuditLogOrg::NoOrg => qb.push("IS NULL"),
+        };
         if let Some(a) = filter.actor_key_id { qb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
         if let Some(a) = filter.action { qb.push(" AND action = ").push_bind(a.to_string()); }
         if let Some(f) = filter.from { qb.push(" AND created_at >= ").push_bind(f); }

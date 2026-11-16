@@ -421,8 +421,10 @@ models:
         mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }
     extra_allowlist: [magic_prompt, enable_copyright_detection]
     extra_params:
-      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi-v2.txt); magic_prompt's values are unstated.
-      magic_prompt: { kind: string }
+      # From Ideogram's OpenAPI (drift snapshot ideogram/openapi-v2.txt): magic_prompt is
+      # `MagicPromptMode`, "enum": ["auto", "on", "off"], "default": "auto".
+      # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (/v2/image/generate/ideogram-4-5, 2026-11-16)
+      magic_prompt: { kind: string, enum_values: ["auto", "on", "off"] }
       enable_copyright_detection: { kind: bool }
     tags: [text-to-image, image-to-image, inpainting]
 
@@ -432,9 +434,12 @@ models:
   # (multipart, synchronous by default), answered in the same `data[]` shape as
   # Ideogram 4.5. Fields: prompt ("passed to the model as written"), images
   # ("max 10, max 25MB each; JPEG, PNG, or WEBP"; the edited one first),
-  # aspect_ratio, resolution_tier, seed, num_images (litegen sends 1). Not async
-  # or webhook_url.
-  # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-03)
+  # aspect_ratio, resolution_tier, num_images (litegen sends 1). Not async
+  # or webhook_url. No seed: the request body is prompt, images, aspect_ratio,
+  # resolution_tier, num_images, async, webhook_url; `seed` is a response field
+  # only ("seed (integer, required) — Random seed", under "## Response").
+  # @see https://developer.ideogram.ai/v2/api-reference/images/generate/nano-banana-2.md (2026-11-16)
+  # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-16)
   # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-09)
   - id: ideogram/nano-banana-2
     provider: ideogram
@@ -461,7 +466,6 @@ models:
         allowed: ["1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "21:9", "4:1", "1:4", "8:1", "1:8"]
       # resolution_tier "1K","2K","4K" (1K when none is asked).
       resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
-      seed: { kind: seed, min: 0, max: 2147483647 }
     ref_inputs:
       max_total: 10
       default_role: init
@@ -491,7 +495,6 @@ models:
         kind: aspect_ratio
         allowed: ["1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "21:9"]
       resolution: { kind: string, enum_values: ["1K", "2K", "4K"], default: "1K" }
-      seed: { kind: seed, min: 0, max: 2147483647 }
     ref_inputs:
       max_total: 10
       default_role: init
@@ -563,8 +566,10 @@ models:
   # different endpoints, so they aren't mixed; `reference_audios` and
   # `webhook_url` are not sent. Prices: "Billed per second of output at the
   # provider's list rate" (US$ micros in the catalog). Not carried: Kling 4.0
-  # (priced at /v2/video/generate/kling-4, but in neither the spec nor the
-  # docs) and the Seedance 2.0 video edit (no endpoint documented).
+  # (`POST /v2/video/generate/kling-4`, one multipart endpoint for every mode,
+  # in the v2 spec as of 2026-11-16; video/ideogram.rs routes only
+  # `{model}-{mode}-to-video`) and the Seedance 2.0 video edit (no endpoint
+  # documented).
   # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json (2026-11-10)
   # @see https://ideogram.ai/api/usage-pricing/catalog (2026-11-10)
   - id: ideogram/kling-3-standard
@@ -666,7 +671,10 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: "`image` is required" (ideogram.rs refuses `end_image` alone).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both: they go to different endpoints (image-to-video, reference-to-video), so a
+        # mix is refused before it is quoted (ideogram.rs refuses it too: "frames and reference images go to
+        # different endpoints: send one or the other").
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     # prompt_expansion_mode "disabled" | "fast" | "balanced" | "quality": on
     # reference to video only (refused on the other two).
     extra_allowlist: [prompt_expansion_mode]
@@ -711,7 +719,8 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: "`image` is required" (ideogram.rs refuses `end_image` alone).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both, as on ideogram/minimax-h3 (ideogram.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
 
@@ -754,6 +763,7 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         # A last frame needs a first: "`image` is required" (ideogram.rs refuses `end_image` alone).
         last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
-        reference: { required: false, min_count: 0, max_count: 9 }
+        # Frames or references, not both, as on ideogram/minimax-h3 (ideogram.rs refuses the mix too).
+        reference: { required: false, min_count: 0, max_count: 9, not_with: [first_frame, last_frame] }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]

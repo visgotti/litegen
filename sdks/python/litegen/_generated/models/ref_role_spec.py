@@ -1,6 +1,7 @@
 from typing import (
     Any,
     Dict,
+    List,
     Type,
     TypeVar,
     Union,
@@ -27,11 +28,20 @@ class RefRoleSpec:
             to bound its clip: the longest clip it makes or prices.
         native_grow (Union[Unset, bool]): The mask role's vendor grows masks itself (Stability's `grow_mask`):
             `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
-        needs_first_frame (Union[Unset, bool]): On a video model's `last_frame` role: its vendor ends a clip on a
-            last frame only when the clip starts from a first frame, so a request
-            with a `last_frame` and no `first_frame` (or `init`) image is refused
-            with `ref_role_required` before anything is quoted or reserved.
-            Absent (false): a last frame alone goes to the vendor.
+        needs_first_frame (Union[Unset, bool]): On a video model's `last_frame` or `reference` role: its vendor takes
+            an image of this role only in a clip that starts from a first frame
+            (it ends a clip on a last frame only after a first one; Runway's
+            Kling O3 takes reference images only on image-to-video), so a request
+            with an image of this role and no `first_frame` (or `init`) image is
+            refused with `ref_role_required` before anything is quoted or
+            reserved. Absent (false): an image of this role goes to the vendor
+            without a first frame.
+        not_with (Union[Unset, List[str]]): Roles this role can't be sent with in one request: its vendor takes
+            one or the other (Vidu: first/last frames, or reference images), so
+            a request with an image of this role and one of a role named here is
+            refused with `ref_role_conflict` before anything is quoted or
+            reserved. Absent (empty): images of any roles go to the vendor
+            together.
         required (Union[Unset, bool]):
         time_step_s (Union[None, Unset, float]): The `keyframe` role's time grid, when the vendor takes only multiples
             of it (PixVerse: whole seconds). A time off it is refused.
@@ -44,6 +54,7 @@ class RefRoleSpec:
     max_time_s: Union[None, Unset, float] = UNSET
     native_grow: Union[Unset, bool] = UNSET
     needs_first_frame: Union[Unset, bool] = UNSET
+    not_with: Union[Unset, List[str]] = UNSET
     required: Union[Unset, bool] = UNSET
     time_step_s: Union[None, Unset, float] = UNSET
     timing: Union[KeyframeTiming, None, Unset] = UNSET
@@ -70,6 +81,10 @@ class RefRoleSpec:
         native_grow = self.native_grow
 
         needs_first_frame = self.needs_first_frame
+
+        not_with: Union[Unset, List[str]] = UNSET
+        if not isinstance(self.not_with, Unset):
+            not_with = self.not_with
 
         required = self.required
 
@@ -102,6 +117,8 @@ class RefRoleSpec:
             field_dict["native_grow"] = native_grow
         if needs_first_frame is not UNSET:
             field_dict["needs_first_frame"] = needs_first_frame
+        if not_with is not UNSET:
+            field_dict["not_with"] = not_with
         if required is not UNSET:
             field_dict["required"] = required
         if time_step_s is not UNSET:
@@ -148,6 +165,8 @@ class RefRoleSpec:
 
         needs_first_frame = d.pop("needs_first_frame", UNSET)
 
+        not_with = cast(List[str], d.pop("not_with", UNSET))
+
         required = d.pop("required", UNSET)
 
         def _parse_time_step_s(data: object) -> Union[None, Unset, float]:
@@ -183,6 +202,7 @@ class RefRoleSpec:
             max_time_s=max_time_s,
             native_grow=native_grow,
             needs_first_frame=needs_first_frame,
+            not_with=not_with,
             required=required,
             time_step_s=time_step_s,
             timing=timing,

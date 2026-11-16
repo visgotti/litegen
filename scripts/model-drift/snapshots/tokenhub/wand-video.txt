@@ -1,0 +1,60 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值 | 支持能力 | 视频时长（秒） | 清晰度档位 |
+| WAND-Vega-Video-1.0-Lite | wand-vega-video-1.0-lite | 文生 / 首尾帧生 / 参考生 | 4 ~ 15 | 768P、1080P、2K、4K |
+
+## 视频生成 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/vega-videos/tasks
+
+## 视频生成 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型名称。取值： wand-vega-video-1.0-lite |
+| content | 是 | array[object] | 多模态输入数组。必须包含至少 1 个 type=text 元素（生成需要文本提示词）。详细见下方 content 数组元素参数。 |
+| resolution | 否 | string | 视频分辨率。 Lite 取值：768P、1080P、2K、4K |
+| ratio | 否 | string | 画面宽高比。 取值：21:9、16:9、4:3、1:1、3:4、9:16、adaptive（默认）。 其中 adaptive 表示由模型或输入素材自动决定。 |
+| duration | 否 | integer | 视频时长（秒）。 取值：4 ~ 15 的整数，默认 5。 |
+| options | 否 | object | 高级 / 扩展参数集合。整体可缺省；未传或空对象等价于全部字段缺省，各字段单独也可缺省。 |
+
+## 视频生成 › 2. 输入参数 › options 对象字段
+| 参数名 | 必选 | 类型 | 描述 |
+| options.return_last_frame | 否 | boolean | 是否返回生成视频的尾帧图片。取值：true / false，默认 false。传 true 时，若模型确实产出了尾帧，查询接口会在 content.last_frame_url 返回其临时下载地址；未产出则该字段缺省。 |
+
+## 视频生成 › 2. 输入参数 › content 数组元素参数
+| 参数名 | 必选 | 类型 | 描述 |
+| type | 是 | string | 元素类型。取值：text、image_url、video_url、audio_url。 |
+| text | 条件必选 | string | 文本提示词。type=text 时必填且不可为空串。存在多个 text 元素时按数组顺序拼接为完整提示词。 |
+| image_url | 条件必选 | object | 图片素材。type=image_url 时必填，结构 {"url": "..."}，其中 url 不可为空串。 |
+| video_url | 条件必选 | object | 视频素材。type=video_url 时必填，结构 {"url": "..."}，其中 url 不可为空串。 |
+| audio_url | 条件必选 | object | 音频素材。type=audio_url 时必填，结构 {"url": "..."}，其中 url 不可为空串。 |
+| role | 条件必选 | string | 素材用途，type 为 image_url / video_url / audio_url 时必填（type=text 不使用该字段）。 取值：first_frame、last_frame、reference_image、reference_video、reference_audio。 type=image_url：首帧取 first_frame，尾帧取 last_frame，参考图片取 reference_image； type=video_url：固定 reference_video； type=audio_url：固定 reference_audio。 |
+| type | role | 实际用途 |
+| image_url | first_frame | 首帧图片 |
+| image_url | last_frame | 尾帧图片 |
+| image_url | reference_image | 参考图片 |
+| video_url | reference_video（固定） | 参考视频 |
+| audio_url | reference_audio（固定） | 参考音频 |
+| text | 不使用 | - |
+
+## 视频生成 › 6. 输出参数
+| 参数名 | 类型 | 说明 |
+| id | string | 任务 ID，用于轮询查询任务状态。 |
+| model | string | 回显提交时的 model 取值。 |
+| status | string | 任务状态。提交成功恒为 queued。 |
+
+## 查询任务结果 › 1. 接口描述
+GET https://tokenhub.tencentmaas.com/v1/wand/vega-videos/tasks/{id}
+
+## 查询任务结果 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| id | 是 | string | 任务 ID（路径参数），即提交任务时返回的 id。 |
+
+## 查询任务结果 › 4. 输出参数
+| 参数名 | 类型 | 说明 |
+| id | string | 任务 ID。 |
+| model | string | 回显提交时的 model 取值，不是实际出片模型。 |
+| status | string | 任务状态。取值：queued（排队中）、running（生成中）、succeeded（生成成功）、failed（生成失败）。 |
+| content | object | 任务生成结果内容，仅在 status=succeeded 时返回。 |
+| content.video_url | string | 生成视频的下载地址。临时地址，有效期 12 小时，请及时下载转存。 |
+| content.last_frame_url | string | 生成视频的尾帧图片地址。仅在 options.return_last_frame=true 时返回。 |
+| error | object | 任务失败信息，仅在 status=failed 时返回。 |
+| error.code | string | 任务级错误码。取值：InternalError、TaskTimeout 等。 |
+| error.message | string | 失败原因描述，便于定位问题。 |

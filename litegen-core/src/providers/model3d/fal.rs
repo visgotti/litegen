@@ -465,8 +465,9 @@ fn model3d_content_type_or(format: &str, declared: &str, served: &str) -> String
 ///
 /// litegen derives the other containers locally, so one is all a vendor ever
 /// needs to produce. A requested container the vendor's own export should
-/// supply (`model3d_convert::prefers_vendor_native`: fbx, usdz, anything not
-/// derivable) wins when the endpoint offers it — asking for glb when the caller
+/// supply (`model3d_convert::asks_vendor_for`: fbx, usdz, anything not
+/// derivable; with `format_source: glb`, only what litegen cannot derive)
+/// wins when the endpoint offers it — asking for glb when the caller
 /// wanted an underivable fbx would deliver a glb, and the completion guard would
 /// then fail a generation the vendor could have fulfilled, after it was billed.
 /// Otherwise GLB: the conversion source carrying the most.
@@ -1008,7 +1009,8 @@ impl FalModel3dProvider {
         //
         // The endpoint returns every container it makes; the job records the
         // ones to download: glb, plus a promised one only the vendor's own
-        // export carries in full (`prefers_vendor_native`: fbx).
+        // export carries in full (`asks_vendor_for`: fbx, unless
+        // `format_source: glb` has litegen make it from the glb).
         let mut want = vec![DEFAULT_MODEL3D_FORMAT.to_string()];
         for (format, _) in op.outputs {
             if *format != DEFAULT_MODEL3D_FORMAT
@@ -1031,13 +1033,15 @@ impl FalModel3dProvider {
 
     /// The containers an operation's result names that the job wants,
     /// downloaded. glb is the deliverable; a wanted fbx that will not download
-    /// is derived from it instead.
+    /// is derived from it instead. For a job that keeps nothing (`links_only`)
+    /// each link is only checked, and nothing is derived: a dead one fails it.
     async fn collect_operation(
         &self,
         op: &OperationSpec,
         handle: &Model3dGenerationHandle,
         result: &Value,
         mut meta: HashMap<String, Value>,
+        links_only: bool,
     ) -> Result<Model3dGenerationPollResult, ProviderError> {
         let want: Vec<String> = handle
             .stage_context
@@ -1063,17 +1067,18 @@ impl FalModel3dProvider {
                 }
                 continue;
             };
-            match self.fetch_asset(url).await {
-                Ok((bytes, served_ct)) => files.push(Model3dFile {
+            match self.fetch_or_check(url, links_only).await {
+                Ok(got) => files.push(Model3dFile {
                     kind: Model3dAssetKind::Mesh,
                     format: format.to_string(),
-                    content_type: model3d_content_type_or(format, declared_ct, &served_ct),
-                    bytes,
+                    content_type: model3d_content_type_or(format, declared_ct, &got.content_type),
+                    bytes: got.bytes,
                     polycount: None,
                     width: None,
                     height: None,
                     manifest: None,
                     source_url: Some(url.to_string()),
+                    size_bytes: got.size_bytes,
                 }),
                 Err(AssetError::Transient(e)) => return Err(e),
                 Err(AssetError::Gone(why)) if primary => {
@@ -1083,6 +1088,14 @@ impl FalModel3dProvider {
                         Vec::new(),
                         meta,
                     ))
+                }
+                // Keeping nothing, litegen derives nothing: the container the
+                // caller asked for can only be the vendor's own.
+                Err(AssetError::Gone(why)) if links_only => {
+                    let error = format!(
+                        "fal 3d {field} could not be downloaded: {why}; this generation keeps nothing (keep_outputs: false), so litegen can't make it from the glb"
+                    );
+                    return Ok(finished(GenerationStatus::Failed, Some(error), Vec::new(), meta));
                 }
                 Err(AssetError::Gone(why)) => {
                     tracing::warn!(field = %field, reason = %why, "fal 3d: a vendor container would not download; litegen derives it");
@@ -1097,15 +1110,17 @@ impl FalModel3dProvider {
 
     /// Download one asset into memory, refusing anything over the size limit
     /// before buffering it, and anything that does not resolve to a public
-    /// address before connecting.
+    /// address before connecting; or, for a job that keeps nothing
+    /// (`links_only`), only check its link, under the same rules
+    /// ([`download::fetch_or_check`](super::download::fetch_or_check)).
     ///
     /// fal hands back URLs, not bytes, and litegen's contract is that a
     /// provider returns BYTES: several vendors expire download URLs within
     /// minutes of success, so deferring the fetch to rehost would be a race
     /// lost intermittently, and only in production. No API key is sent — the
     /// CDN URLs are public, and the key must never reach another host.
-    async fn fetch_asset(&self, url: &str) -> Result<(Vec<u8>, String), AssetError> {
-        super::download::fetch_asset(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "fal 3d").await
+    async fn fetch_or_check(&self, url: &str, links_only: bool) -> Result<super::download::Fetched, AssetError> {
+        super::download::fetch_or_check(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "fal 3d", links_only).await
     }
 }
 
@@ -1348,8 +1363,9 @@ impl Model3dProvider for FalModel3dProvider {
     }
 
     /// Once the run COMPLETED without an error, `gate` decides whether this
-    /// observer reads the result and downloads its files. The result is read
-    /// after the gate, so its links are fresh however long the gate took.
+    /// observer reads the result and downloads its files, or for a job that
+    /// keeps nothing only checks their links. The result is read after the
+    /// gate, so its links are fresh however long the gate took.
     async fn poll_status_gated(
         &self,
         handle: &Model3dGenerationHandle,
@@ -1434,11 +1450,15 @@ impl Model3dProvider for FalModel3dProvider {
             ));
         }
 
-        if gate.ask().await == crate::providers::Fetch::StandAside {
+        let answer = gate.ask().await;
+        if answer == crate::providers::Fetch::StandAside {
             let mut aside = finished(GenerationStatus::Completed, None, Vec::new(), meta);
             crate::proxy::model3d_deliver::stand_aside(&mut aside);
             return Ok(aside);
         }
+        // Keeping nothing, the links are handed out: each is checked, no file
+        // is downloaded.
+        let links_only = matches!(answer, crate::providers::Fetch::LinksOnly { .. });
 
         let result = self.queue_get(&job.response_url, &api_key, "result").await?;
         if !result.status.is_success() {
@@ -1465,7 +1485,7 @@ impl Model3dProvider for FalModel3dProvider {
         };
 
         if let Some(op) = resolve_operation(&handle.model) {
-            return self.collect_operation(&op, handle, &result, meta).await;
+            return self.collect_operation(&op, handle, &result, meta, links_only).await;
         }
 
         // Every endpoint here names it `model_mesh`; some fal 3D variants say
@@ -1483,7 +1503,7 @@ impl Model3dProvider for FalModel3dProvider {
             ));
         };
 
-        let (bytes, served_ct) = match self.fetch_asset(mesh_url).await {
+        let mesh = match self.fetch_or_check(mesh_url, links_only).await {
             Ok(v) => v,
             Err(AssetError::Transient(e)) => return Err(e),
             Err(AssetError::Gone(why)) => {
@@ -1495,12 +1515,12 @@ impl Model3dProvider for FalModel3dProvider {
                 ))
             }
         };
-        let content_type = if mesh_ct.is_empty() { served_ct } else { mesh_ct.to_string() };
+        let content_type = if mesh_ct.is_empty() { mesh.content_type } else { mesh_ct.to_string() };
         let mut files = vec![Model3dFile {
             kind: Model3dAssetKind::Mesh,
             format: format_of(mesh_url, &content_type),
             content_type,
-            bytes,
+            bytes: mesh.bytes,
             // No fal 3D endpoint reports a triangle count, and the request's
             // target_polycount is the ask, not the result.
             polycount: None,
@@ -1508,6 +1528,7 @@ impl Model3dProvider for FalModel3dProvider {
             height: None,
             manifest: None,
             source_url: Some(mesh_url.to_string()),
+            size_bytes: mesh.size_bytes,
         }];
 
         // Rodin returns its PBR maps separately, as fal `Image`s — the only
@@ -1516,21 +1537,22 @@ impl Model3dProvider for FalModel3dProvider {
         if let Some(textures) = result.get("textures").and_then(Value::as_array) {
             for t in textures {
                 let Some((url, declared_ct)) = file_url(t) else { continue };
-                match self.fetch_asset(url).await {
-                    Ok((bytes, served_ct)) => {
+                match self.fetch_or_check(url, links_only).await {
+                    Ok(texture) => {
                         let content_type =
-                            if declared_ct.is_empty() { served_ct } else { declared_ct.to_string() };
+                            if declared_ct.is_empty() { texture.content_type } else { declared_ct.to_string() };
                         let dimension = |k: &str| t.get(k).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
                         files.push(Model3dFile {
                             kind: Model3dAssetKind::Texture,
                             format: format_of(url, &content_type),
                             content_type,
-                            bytes,
+                            bytes: texture.bytes,
                             polycount: None,
                             width: dimension("width"),
                             height: dimension("height"),
                             manifest: None,
                             source_url: Some(url.to_string()),
+                            size_bytes: texture.size_bytes,
                         });
                     }
                     Err(AssetError::Transient(e)) => {
@@ -2397,6 +2419,119 @@ mod tests {
         assert_eq!(done.files.len(), 1, "the mesh is the deliverable; the map is a bonus");
     }
 
+    /// A delivery gate for a job that keeps nothing: check the links.
+    struct LinksOnly;
+
+    #[async_trait]
+    impl crate::providers::FetchGate for LinksOnly {
+        async fn ask(&self) -> crate::providers::Fetch {
+            crate::providers::Fetch::LinksOnly { waited: std::time::Duration::ZERO }
+        }
+    }
+
+    /// Mount `at` answering a one-byte range with `size` as the file's total,
+    /// and a plain GET with a whole (1 MiB) file.
+    async fn mount_file(server: &MockServer, at: &str, size: u64) {
+        Mock::given(method("GET"))
+            .and(path(at.to_string()))
+            .and(header_is("range", "bytes=0-0"))
+            .respond_with(ResponseTemplate::new(206).insert_header("content-range", format!("bytes 0-0/{size}")).set_body_bytes(b"x".to_vec()))
+            .mount(server)
+            .await;
+        mount_get(server, at, ResponseTemplate::new(200).set_body_bytes(vec![0u8; 1 << 20])).await;
+    }
+
+    /// The requests the files under `prefix` got: each path and its Range.
+    async fn file_requests(server: &MockServer, prefix: &str) -> Vec<(String, Option<String>)> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|q| q.url.path().starts_with(prefix))
+            .map(|q| (q.url.path().to_string(), q.headers.get("range").and_then(|v| v.to_str().ok()).map(str::to_string)))
+            .collect()
+    }
+
+    /// Keeping nothing, the caller gets fal's own links: the mesh and each
+    /// texture are checked with a one-byte GET, none is downloaded, and each
+    /// file's size comes from its check.
+    #[tokio::test]
+    async fn a_job_that_keeps_nothing_checks_each_link_and_downloads_nothing() {
+        let server = MockServer::start().await;
+        let files = server.uri() + "/files";
+        mount_get(&server, &status_path(RODIN, "kn"), ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" }))).await;
+        mount_get(
+            &server,
+            &result_path(RODIN, "kn"),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "model_mesh": { "url": format!("{files}/m.glb"), "content_type": "application/octet-stream" },
+                "textures": [{ "url": format!("{files}/t.png"), "content_type": "image/png", "width": 1024, "height": 1024 }],
+            })),
+        )
+        .await;
+        mount_file(&server, "/files/m.glb", 9_437_184).await;
+        mount_file(&server, "/files/t.png", 2_097_152).await;
+        let r = provider(&server).poll_status_gated(&handle("fal/hyper3d-rodin", RODIN, "kn", &server), &LinksOnly).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        let got: Vec<(Model3dAssetKind, String, Option<u64>, usize)> =
+            r.files.iter().map(|f| (f.kind, f.source_url.clone().unwrap_or_default(), f.size_bytes, f.bytes.len())).collect();
+        assert_eq!(
+            got,
+            [
+                (Model3dAssetKind::Mesh, format!("{files}/m.glb"), Some(9_437_184), 0),
+                (Model3dAssetKind::Texture, format!("{files}/t.png"), Some(2_097_152), 0),
+            ],
+            "each vendor link with its size, and no bytes"
+        );
+        let one_byte = Some("bytes=0-0".to_string());
+        assert_eq!(
+            file_requests(&server, "/files/").await,
+            [("/files/m.glb".to_string(), one_byte.clone()), ("/files/t.png".to_string(), one_byte)],
+            "one one-byte GET per file"
+        );
+    }
+
+    /// Keeping nothing changes no outcome: a dead mesh link fails the job, and
+    /// a failure that may pass is asked again at the next poll.
+    #[tokio::test]
+    async fn a_job_that_keeps_nothing_fails_or_retries_by_its_mesh_links_answer() {
+        let server = MockServer::start().await;
+        mount_completed_with_mesh(&server, "fal-ai/trellis", "g", ResponseTemplate::new(404)).await;
+        let failed = provider(&server).poll_status_gated(&handle("fal/trellis", "fal-ai/trellis", "g", &server), &LinksOnly).await.unwrap();
+        assert_eq!(failed.status, GenerationStatus::Failed);
+        assert!(failed.error.unwrap_or_default().contains("could not be downloaded"));
+
+        let server = MockServer::start().await;
+        mount_completed_with_mesh(&server, "fal-ai/trellis", "t", ResponseTemplate::new(503)).await;
+        let busy = provider(&server).poll_status_gated(&handle("fal/trellis", "fal-ai/trellis", "t", &server), &LinksOnly).await;
+        assert!(busy.unwrap_err().is_retryable());
+    }
+
+    /// A texture whose link is dead is left out, as one that will not
+    /// download is: the mesh is the deliverable.
+    #[tokio::test]
+    async fn a_job_that_keeps_nothing_skips_a_texture_whose_link_is_dead() {
+        let server = MockServer::start().await;
+        let files = server.uri() + "/files";
+        mount_get(&server, &status_path(RODIN, "tx"), ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" }))).await;
+        mount_get(
+            &server,
+            &result_path(RODIN, "tx"),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "model_mesh": { "url": format!("{files}/m.glb") },
+                "textures": [{ "url": format!("{files}/gone.png") }],
+            })),
+        )
+        .await;
+        mount_file(&server, "/files/m.glb", 4_096).await;
+        mount_get(&server, "/files/gone.png", ResponseTemplate::new(404)).await;
+        let r = provider(&server).poll_status_gated(&handle("fal/hyper3d-rodin", RODIN, "tx", &server), &LinksOnly).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        let got: Vec<(Model3dAssetKind, Option<u64>)> = r.files.iter().map(|f| (f.kind, f.size_bytes)).collect();
+        assert_eq!(got, [(Model3dAssetKind::Mesh, Some(4_096))]);
+    }
+
     #[tokio::test]
     async fn asset_urls_must_resolve_to_a_public_address() {
         // The default provider refuses a result pointing inside the deployment
@@ -2419,7 +2554,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut p = provider(&server);
         p.public_assets_only = true;
-        match p.fetch_asset("https://litegen-asset-host.invalid/m.glb").await {
+        match p.fetch_or_check("https://litegen-asset-host.invalid/m.glb", false).await {
             Err(AssetError::Transient(e)) => assert!(e.is_retryable(), "{e}"),
             Err(AssetError::Gone(why)) => panic!("a lookup failure was treated as permanent: {why}"),
             Ok(_) => panic!("an unresolvable host cannot be fetched"),
@@ -2669,6 +2804,58 @@ mod tests {
             assert_eq!(done.files[0].bytes, rig);
             assert_eq!(done.metadata.get("rig_task_id"), Some(&json!("meshy-rig-9")));
         }
+    }
+
+    /// A finished fal Meshy rig whose job wants glb and fbx, at
+    /// `/cdn/rigged_character.{glb,fbx}` on `server`.
+    async fn finished_rig_wanting_glb_and_fbx(server: &MockServer) -> Model3dGenerationHandle {
+        let file = |name: &str| json!({ "url": format!("{}/cdn/{name}", server.uri()), "file_name": name, "content_type": "application/octet-stream" });
+        let app = "/fal-ai/meshy/requests/rig-1";
+        mount_get(server, &format!("{app}/status"), ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" }))).await;
+        mount_get(server, app, ResponseTemplate::new(200).set_body_json(json!({
+            "rigged_character_glb": file("rigged_character.glb"),
+            "rigged_character_fbx": file("rigged_character.fbx"),
+            "rig_task_id": "meshy-rig-9",
+        })))
+        .await;
+        let mut h = handle("fal/meshy-rig", "fal-ai/meshy/rigging", "rig-1", server);
+        h.stage_context.as_mut().unwrap()["want"] = json!(["glb", "fbx"]);
+        h
+    }
+
+    /// Keeping nothing, a rig's glb and fbx are checked with a one-byte GET
+    /// each, not downloaded.
+    #[tokio::test]
+    async fn a_rig_that_keeps_nothing_checks_each_container_link() {
+        let server = MockServer::start().await;
+        let h = finished_rig_wanting_glb_and_fbx(&server).await;
+        mount_file(&server, "/cdn/rigged_character.glb", 6_291_456).await;
+        mount_file(&server, "/cdn/rigged_character.fbx", 8_388_608).await;
+        let r = provider(&server).poll_status_gated(&h, &LinksOnly).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Completed, "{:?}", r.error);
+        let got: Vec<(String, Option<u64>, usize)> = r.files.iter().map(|f| (f.format.clone(), f.size_bytes, f.bytes.len())).collect();
+        assert_eq!(got, [("glb".to_string(), Some(6_291_456), 0), ("fbx".to_string(), Some(8_388_608), 0)]);
+        let one_byte = Some("bytes=0-0".to_string());
+        assert_eq!(
+            file_requests(&server, "/cdn/").await,
+            [("/cdn/rigged_character.glb".to_string(), one_byte.clone()), ("/cdn/rigged_character.fbx".to_string(), one_byte)],
+            "one one-byte GET per file"
+        );
+        assert_eq!(r.metadata.get("rig_task_id"), Some(&json!("meshy-rig-9")));
+    }
+
+    /// Keeping nothing, litegen derives nothing, so a rig's requested fbx
+    /// whose link is dead fails the job instead of being made from the glb.
+    #[tokio::test]
+    async fn a_rig_that_keeps_nothing_fails_when_a_requested_fbx_link_is_dead() {
+        let server = MockServer::start().await;
+        let h = finished_rig_wanting_glb_and_fbx(&server).await;
+        mount_file(&server, "/cdn/rigged_character.glb", 6_291_456).await;
+        mount_get(&server, "/cdn/rigged_character.fbx", ResponseTemplate::new(404)).await;
+        let r = provider(&server).poll_status_gated(&h, &LinksOnly).await.unwrap();
+        assert_eq!(r.status, GenerationStatus::Failed, "delivered {:?}", r.files.iter().map(|f| f.format.as_str()).collect::<Vec<_>>());
+        let error = r.error.unwrap_or_default();
+        assert!(error.contains("rigged_character_fbx") && error.contains("keeps nothing"), "{error}");
     }
 
     #[test]

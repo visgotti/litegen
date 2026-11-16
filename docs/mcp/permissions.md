@@ -103,7 +103,7 @@ leaves it working. Revoke it on the **Keys** page.
 The deployment's master key is the platform admin.
 
 - In single-tenant mode it acts inside the default organization and sees
-  everything a key can, plus the gateway tools.
+  everything a key can, plus the gateway, user and organization tools.
 - In hosted mode it belongs to no organization. On `/mcp` it sees only the
   model catalog, because every other AI tool acts inside an organization;
   on `/admin/mcp` it sees the gateway, user and organization tools. Use an

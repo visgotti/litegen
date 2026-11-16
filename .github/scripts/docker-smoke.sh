@@ -204,7 +204,9 @@ C=${P}-nokey
 CURRENT=$C
 docker run -d --name "$C" "$IMAGE" > /dev/null
 check "C2: no master key on 0.0.0.0: exits 1" equals "$(exit_code "$C")" 1
-refuses() { docker logs "$C" 2>&1 | grep -q "refusing to start"; }
+# The whole log first: under pipefail, `docker logs | grep -q` fails whenever
+# grep stops reading at the match while docker logs is still writing (SIGPIPE).
+refuses() { local log; log=$(docker logs "$C" 2>&1); [[ $log == *"refusing to start"* ]]; }
 check "C2: and says why" refuses
 docker rm -fv "$C" > /dev/null 2>&1
 

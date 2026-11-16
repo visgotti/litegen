@@ -1212,7 +1212,86 @@ async fn deactivated_person_access_token_is_refused() {
     let rpc = mcp.rpc("tools/list", json!({})).await;
     assert_eq!(rpc.status, StatusCode::UNAUTHORIZED, "{}", rpc.body);
     assert!(www_authenticate(&rpc).contains(r#"error="invalid_token""#));
-    assert!(rpc.body.contains("can no longer act in its organization"), "{}", rpc.body);
+    // Deactivating revokes the account's grants and their tokens in the same
+    // transaction (review round 3b, S1), so the token itself is dead, not
+    // only refused while the account is inactive: reactivating doesn't bring
+    // it back.
+    assert!(rpc.body.contains("the access token is unknown, expired or revoked"), "{}", rpc.body);
+    db.update_user(&user_id, None, Some(true), None).await.unwrap();
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED, "still revoked after reactivation");
+}
+
+/// A hosted app over a database file, and a second connection to it: a test
+/// moves an account's sign-in epoch on by hand, as a reset (or a
+/// deactivation, or a password change) committing mid-flight would.
+async fn app_on_file() -> (axum::Router, sqlx::SqlitePool, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}/litegen.db?mode=rwc", dir.path().display());
+    let db = std::sync::Arc::new(litegen::db::sqlite::SqliteDatabase::connect(&url).await.unwrap());
+    let app = harness::app_over_with(db, dir.path(), public, Some(mcp_support::MASTER_KEY), Mode::Hosted).await;
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    (app, pool, dir)
+}
+
+async fn move_sign_in_epoch_on(pool: &sqlx::SqlitePool, user_id: &str) {
+    sqlx::query("UPDATE users SET sign_in_epoch = sign_in_epoch + 1 WHERE id = ?").bind(user_id).execute(pool).await.unwrap();
+}
+
+/// Review round 4, finding 2: an approval that decides while a reset commits
+/// writes its code after the reset deleted the person's codes, under the old
+/// sign-in epoch. That code no longer redeems.
+#[tokio::test]
+async fn a_code_approved_while_a_reset_commits_is_refused() {
+    let (app, pool, _dir) = app_on_file().await;
+    let flow = Flow::new(&app).await;
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    let (user_id, _) = whoami(&app, &flow.session).await;
+    move_sign_in_epoch_on(&pool, &user_id).await;
+    let (status, _, body) = form_post(&app, "/oauth/token", &exchange(&flow.client, &code)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_grant", "{body}");
+}
+
+/// Review round 4, finding 2: a redemption that makes its grant while a
+/// reset commits (after the reset revoked the person's grants) makes it
+/// under the old sign-in epoch. Its tokens and its refresh stop working.
+#[tokio::test]
+async fn a_grant_made_while_a_reset_commits_stops_working() {
+    let (app, pool, _dir) = app_on_file().await;
+    let flow = Flow::new(&app).await;
+    let (access, refresh) = flow.tokens(&app, &["ai:read"]).await;
+    let mcp = Mcp::new(&app, "/mcp").bearer(&access);
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::OK);
+    let (user_id, _) = whoami(&app, &flow.session).await;
+    move_sign_in_epoch_on(&pool, &user_id).await;
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED, "the access token");
+    let (status, _, body) = form_post(&app, "/oauth/token", &refresh_with(&flow.client, &refresh)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "the refresh token: {body}");
+}
+
+/// Review round 6, finding 4: a code approved before a reset, replayed
+/// after it (by whoever kept it), revokes nothing newer: the grant the
+/// person's app was given after the reset keeps working. A replay still
+/// revokes the grant of its own sign-in (`code_reuse_revokes_grant`).
+#[tokio::test]
+async fn a_code_replayed_after_a_reset_leaves_the_newer_grant() {
+    let (app, pool, _dir) = app_on_file().await;
+    let flow = Flow::new(&app).await;
+    let old_code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    let (status, _, body) = form_post(&app, "/oauth/token", &exchange(&flow.client, &old_code)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // A reset moves the person's sign-in epoch on; they sign in again (here
+    // their session moves with it) and approve their app anew.
+    let (user_id, _) = whoami(&app, &flow.session).await;
+    move_sign_in_epoch_on(&pool, &user_id).await;
+    sqlx::query("UPDATE sessions SET sign_in_epoch = sign_in_epoch + 1 WHERE user_id = ?").bind(&user_id).execute(&pool).await.unwrap();
+    let (access, _) = flow.tokens(&app, &["ai:read"]).await;
+    let mcp = Mcp::new(&app, "/mcp").bearer(&access);
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::OK, "the new grant works");
+
+    let (status, _, body) = form_post(&app, "/oauth/token", &exchange(&flow.client, &old_code)).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_grant")), "the old code is spent: {body}");
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::OK, "and its replay leaves the newer grant working");
 }
 
 #[tokio::test]

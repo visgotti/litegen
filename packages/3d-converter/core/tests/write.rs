@@ -49,7 +49,7 @@ fn hosted_lit(
     (fbx_light_units, usd_light_units): (litegen_mesh::LightUnits, litegen_mesh::LightUnits),
     choices: litegen_mesh::WriteOptions,
 ) -> litegen_mesh::SceneWrite {
-    let read_options = litegen_mesh::ReadOptions { fbx_color_space: fbx_colors, fbx_light_units, usd_light_units };
+    let read_options = litegen_mesh::ReadOptions { fbx_color_space: fbx_colors, fbx_light_units, usd_light_units, draco: litegen_mesh::DracoOptions::default() };
     let read = litegen_mesh::read_scene_with(bytes, from, &litegen_mesh::NoSidecars, read_options).unwrap();
     let mut scene = read.scene;
     if let Some((unit_m, z_up)) = read_as {
@@ -383,7 +383,7 @@ fn convert_takes_one_fbx_colour_space_for_both_ends() {
 
 /// mesh's read of `bytes` with these light units, as one file.
 fn mesh_read(bytes: &[u8], from: MeshFormat, fbx: litegen_mesh::LightUnits, usd: litegen_mesh::LightUnits) -> Scene {
-    let options = litegen_mesh::ReadOptions { fbx_color_space: litegen_mesh::FbxColorSpace::Srgb, fbx_light_units: fbx, usd_light_units: usd };
+    let options = litegen_mesh::ReadOptions { fbx_color_space: litegen_mesh::FbxColorSpace::Srgb, fbx_light_units: fbx, usd_light_units: usd, draco: litegen_mesh::DracoOptions::default() };
     litegen_mesh::read_scene_with(bytes, from, &litegen_mesh::NoSidecars, options).unwrap().scene
 }
 

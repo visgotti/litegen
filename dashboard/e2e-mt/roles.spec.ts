@@ -46,10 +46,10 @@ async function invited(owner: Page, browser: Browser, role: 'member' | 'viewer')
   await owner.getByTestId('invite-email').fill(email);
   await owner.getByTestId('invite-role').selectOption(role);
   await owner.getByTestId('invite-send').click();
-  const token = (await owner.getByTestId('invite-dev-token').textContent({ timeout: 15_000 }))!.trim();
-  await owner.getByTestId('invite-dev-token-close').click();
+  const link = await owner.getByTestId('invite-link').inputValue({ timeout: 15_000 });
+  await owner.getByTestId('invite-close').click();
   const page = await (await browser.newContext()).newPage();
-  await page.goto(`http://127.0.0.1:5274/invite/${token}`);
+  await page.goto(link);
   await expect(page.getByTestId('accept-email')).toContainText(email, { timeout: 15_000 });
   await page.getByTestId('accept-password').fill(PW);
   await page.getByTestId('accept-confirm-password').fill(PW);
@@ -67,16 +67,16 @@ async function servedMe(page: Page): Promise<{ orgs: { id: string; name: string;
   return res.json();
 }
 
-/** The Owner on `owner` invites `email` (an account that exists) to the org; the invitation's token. */
+/** The Owner on `owner` invites `email` (an account that exists) to the org; the invitation's link. */
 async function inviteAgain(owner: Page, email: string): Promise<string> {
   await owner.goto('/members');
   await owner.getByTestId('members-invite-btn').click();
   await owner.getByTestId('invite-email').fill(email);
   await owner.getByTestId('invite-role').selectOption('member');
   await owner.getByTestId('invite-send').click();
-  const token = (await owner.getByTestId('invite-dev-token').textContent({ timeout: 15_000 }))!.trim();
-  await owner.getByTestId('invite-dev-token-close').click();
-  return token;
+  const link = await owner.getByTestId('invite-link').inputValue({ timeout: 15_000 });
+  await owner.getByTestId('invite-close').click();
+  return link;
 }
 
 test("a hosted Owner is not offered the deployment's own settings: its org's served permissions hold none", async ({ page }) => {
@@ -133,8 +133,8 @@ test('an account in no organization can make one, or join one by an invitation',
     await expect(joiner.page.getByTestId('account-sessions-table')).toBeVisible();
 
     // The other is invited again, opens the link and proves its password: it is back in the org.
-    const token = await inviteAgain(page, joiner.email);
-    await joiner.page.goto(`http://127.0.0.1:5274/invite/${token}`);
+    const link = await inviteAgain(page, joiner.email);
+    await joiner.page.goto(link);
     await expect(joiner.page.getByTestId('accept-email')).toContainText(joiner.email, { timeout: 15_000 });
     await joiner.page.getByTestId('accept-password').fill(PW);
     await joiner.page.getByTestId('accept-confirm-password').fill(PW);

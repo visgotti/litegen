@@ -15,6 +15,9 @@ class SpendLogEntry:
     """One request in the spend log, with its attribution.
 
     Attributes:
+        cache_hit (bool): Whether this request was answered from the cache (an image's
+            `X-Litegen-Cache: hit`): the hit has a row of its own, at what it was
+            charged. False on every other row, older rows included.
         cost_usd (float):
         created_at (datetime.datetime):
         id (str):
@@ -31,6 +34,7 @@ class SpendLogEntry:
         user_id (Union[None, Unset, str]):
     """
 
+    cache_hit: bool
     cost_usd: float
     created_at: datetime.datetime
     id: str
@@ -48,6 +52,8 @@ class SpendLogEntry:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        cache_hit = self.cache_hit
+
         cost_usd = self.cost_usd
 
         created_at = self.created_at.isoformat()
@@ -100,6 +106,7 @@ class SpendLogEntry:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "cache_hit": cache_hit,
                 "cost_usd": cost_usd,
                 "created_at": created_at,
                 "id": id,
@@ -127,6 +134,8 @@ class SpendLogEntry:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
+        cache_hit = d.pop("cache_hit")
+
         cost_usd = d.pop("cost_usd")
 
         created_at = isoparse(d.pop("created_at"))
@@ -191,6 +200,7 @@ class SpendLogEntry:
         user_id = _parse_user_id(d.pop("user_id", UNSET))
 
         spend_log_entry = cls(
+            cache_hit=cache_hit,
             cost_usd=cost_usd,
             created_at=created_at,
             id=id,

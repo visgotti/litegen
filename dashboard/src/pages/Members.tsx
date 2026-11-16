@@ -3,6 +3,11 @@ import { client } from '../sdk-client';
 import { LiteGenAPIError } from '@litegen/sdk';
 import type { MemberView } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
+import InviteLinkPanel from '../components/InviteLinkPanel';
+import PendingInvitations from '../components/PendingInvitations';
+import ResetLinkModal from '../components/ResetLinkModal';
+import { resetLinkOf } from '../components/password-reset';
+import { inviteLinkOf } from '../components/invitations';
 import { useTenant } from '../context/tenant';
 
 const ROLE_OPTIONS = ['admin', 'member', 'viewer'] as const;
@@ -37,7 +42,12 @@ export default function Members() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<string>('member');
   const [inviteLoading, setInviteLoading] = useState(false);
-  const [inviteDevToken, setInviteDevToken] = useState<string | null>(null);
+  // The invitation just made: its link is shown once, to copy (no email is sent).
+  const [invited, setInvited] = useState<{ email: string; link: string; expiresAt: string } | null>(null);
+  // Bumped after an invite, so the pending list loads again.
+  const [invitationsVersion, setInvitationsVersion] = useState(0);
+  // A password reset link just made for a member: shown once, to hand over.
+  const [resetLink, setResetLink] = useState<{ email: string; link: string; expiresAt: string } | null>(null);
 
   // Inline role edit: userId being edited
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
@@ -46,6 +56,7 @@ export default function Members() {
   // Each control is offered on the permission it takes in the active org, as
   // /v1/auth/me serves it (the master key's login holds none here, as before).
   const canInvite = activePermissions.includes('member:invite');
+  const canRevokeInvitations = activePermissions.includes('invitation:revoke');
   const canEditRoles = activePermissions.includes('member:write');
   const canRemove = activePermissions.includes('member:remove');
   const canTransfer = activePermissions.includes('org:transfer_owner');
@@ -69,23 +80,18 @@ export default function Members() {
     e.preventDefault();
     if (!activeOrg) return;
     setInviteLoading(true);
-    setInviteDevToken(null);
+    setInvited(null);
     try {
       const resp = await client.orgs.members.invite(activeOrg, {
         email: inviteEmail,
         role: inviteRole as Role,
       });
-      const respAny = resp as { _dev_token?: string };
-      if (respAny._dev_token) {
-        setInviteDevToken(respAny._dev_token);
-      } else {
-        showToast('Invitation sent', 'info');
-        setShowInviteModal(false);
-        setInviteEmail('');
-      }
+      setInvited({ email: resp.email, link: inviteLinkOf(resp, window.location.origin), expiresAt: resp.expires_at });
+      setInviteEmail('');
+      setInvitationsVersion(v => v + 1);
       await fetchMembers();
     } catch (err) {
-      if (err instanceof LiteGenAPIError) showToast(err.message ?? 'Failed to send invitation', 'error');
+      if (err instanceof LiteGenAPIError) showToast(err.message ?? 'Failed to create the invitation', 'error');
     } finally {
       setInviteLoading(false);
     }
@@ -112,6 +118,17 @@ export default function Members() {
       showToast('Ownership transferred', 'info');
     } catch (err) {
       if (err instanceof LiteGenAPIError) showToast(err.message ?? 'Transfer failed', 'error');
+    }
+  };
+
+  // Who may make one is the server's to say (an Owner or Admin who outranks
+  // the member in every org it belongs to): a refusal is toasted.
+  const handleResetPassword = async (userId: string) => {
+    try {
+      const r = await client.users.passwordResetLink(userId);
+      setResetLink({ email: r.email, link: resetLinkOf(r, window.location.origin), expiresAt: r.expires_at });
+    } catch (err) {
+      if (err instanceof LiteGenAPIError) showToast(err.message ?? 'Could not make a reset link', 'error');
     }
   };
 
@@ -142,7 +159,7 @@ export default function Members() {
           <button
             className="btn btn-primary"
             data-testid="members-invite-btn"
-            onClick={() => { setShowInviteModal(true); setInviteDevToken(null); }}
+            onClick={() => { setShowInviteModal(true); setInvited(null); }}
           >
             + Invite member
           </button>
@@ -154,26 +171,16 @@ export default function Members() {
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }} onClick={e => { if (e.target === e.currentTarget) setShowInviteModal(false); }}>
-          <div style={{ width: 400, background: '#161b22', border: '1px solid #30363d', borderRadius: 12, padding: 28 }}>
+        }} onClick={e => {
+          // A link on show is not shown again: only Done closes it.
+          if (e.target === e.currentTarget && !invited) setShowInviteModal(false);
+        }}>
+          <div data-testid="invite-modal" style={{ width: 440, background: '#161b22', border: '1px solid #30363d', borderRadius: 12, padding: 28 }}>
             <h3 style={{ margin: '0 0 20px', color: '#e6edf3', fontSize: 18 }}>Invite member</h3>
 
-            {inviteDevToken ? (
-              <div>
-                <div style={{ padding: '12px 16px', background: '#1a4731', border: '1px solid #3fb950', borderRadius: 8, marginBottom: 16 }}>
-                  <div style={{ color: '#3fb950', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Invitation sent!</div>
-                  <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 4 }}>Dev token (share invitation link):</div>
-                  <code
-                    data-testid="invite-dev-token"
-                    style={{ display: 'block', color: '#e6edf3', fontSize: 12, wordBreak: 'break-all', background: '#0d1117', padding: '8px 10px', borderRadius: 6 }}
-                  >
-                    {inviteDevToken}
-                  </code>
-                </div>
-                <button className="btn btn-secondary" data-testid="invite-dev-token-close" onClick={() => { setShowInviteModal(false); setInviteDevToken(null); setInviteEmail(''); }}>
-                  Close
-                </button>
-              </div>
+            {invited ? (
+              <InviteLinkPanel email={invited.email} link={invited.link} expiresAt={invited.expiresAt}
+                onClose={() => { setShowInviteModal(false); setInvited(null); }} />
             ) : (
               <form onSubmit={handleInvite} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <div>
@@ -205,7 +212,7 @@ export default function Members() {
                 </div>
                 <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
                   <button className="btn btn-primary" data-testid="invite-send" type="submit" disabled={inviteLoading}>
-                    {inviteLoading ? 'Sending…' : 'Send invitation'}
+                    {inviteLoading ? 'Creating…' : 'Create invitation link'}
                   </button>
                   <button className="btn btn-secondary" type="button" onClick={() => setShowInviteModal(false)}>
                     Cancel
@@ -293,6 +300,17 @@ export default function Members() {
                           Transfer owner
                         </button>
                       )}
+                      {canEditRoles && m.role !== 'owner' && (
+                        <button
+                          className="btn btn-secondary"
+                          data-testid={`member-reset-password-${m.email}`}
+                          onClick={() => handleResetPassword(m.user_id)}
+                          title="Make a link that sets a new password for this member"
+                          style={{ fontSize: 12, padding: '4px 10px' }}
+                        >
+                          Reset password
+                        </button>
+                      )}
                       {canRemove && m.role !== 'owner' && (
                         <button
                           className="btn btn-secondary"
@@ -314,6 +332,13 @@ export default function Members() {
           )}
         </div>
       )}
+
+      {resetLink && (
+        <ResetLinkModal email={resetLink.email} link={resetLink.link} expiresAt={resetLink.expiresAt} onClose={() => setResetLink(null)} />
+      )}
+
+      {/* Listing takes member:invite, as the server checks it. */}
+      {canInvite && <PendingInvitations orgId={activeOrg} canRevoke={canRevokeInvitations} version={invitationsVersion} />}
     </div>
   );
 }

@@ -10,6 +10,7 @@ import { decimalsOf, formatNumber } from './price-format.mjs';
 /** @typedef {import('../config/models.generated').ModelLifecycle} ModelLifecycle */
 /** @typedef {import('../config/models.generated').ModelParam} ModelParam */
 /** @typedef {import('../config/models.generated').AspectRatioFrames} AspectRatioFrames */
+/** @typedef {import('../config/models.generated').ModelRefRole} ModelRefRole */
 
 /**
  * @param {number} min
@@ -68,10 +69,14 @@ export function formatBytes(bytes, locale) {
  * The limits of one param, as litegen enforces them: a string's length, how
  * many entries a list takes, a source mesh's size, triangles (a quad counts
  * as two) and what it must have, a palette's colours, a segmentation's
- * masks, an expand's pixels per side, a layout's one word per text box. A
+ * masks, an expand's pixels per side (and that the row requires it), a
+ * layout's one word per text box. A
  * source mesh's `formats` are the containers its vendor takes, not a limit:
  * litegen converts any other mesh it reads (proxy/model3d_source.rs
- * `prepare`).
+ * `prepare`). A format set's `returnedTogether` are the containers one vendor
+ * job returns together: a generation that keeps nothing converts nothing, so
+ * it gets only what its job returns (schema.rs `keep_nothing_refusal`, 400
+ * `format_needs_keeping`).
  * @param {ModelParam} p
  * @param {Translate} t
  * @param {string} locale
@@ -90,8 +95,49 @@ export function paramLimitsText(p, t, locale) {
   if (p.forced) out.push(t('forcedPalette'));
   if (p.maxMasks !== undefined) out.push(t('maxMasks', { n: String(p.maxMasks) }));
   if (p.maxPx !== undefined) out.push(t('maxPx', { n: formatNumber(p.maxPx, locale) }));
+  if (p.required) out.push(t('paramRequired'));
   if (p.singleWordText) out.push(t('singleWordText'));
+  if (p.returnedTogether && p.returnedTogether.length > 0) {
+    out.push(t('returnedTogether', { formats: new Intl.ListFormat(locale, { type: 'conjunction' }).format(p.returnedTogether) }));
+  }
   return out;
+}
+
+/**
+ * The roles a model never takes together, one line per role that names any
+ * in its `notWith`: validator.rs `check_refs` refuses a request with images of
+ * both (400 `ref_role_conflict`, in either mode, before anything is quoted).
+ * @param {ModelRefRole[]} roles
+ * @param {Translate} t
+ * @param {string} locale
+ * @returns {string[]}
+ */
+export function notWithText(roles, t, locale) {
+  const list = new Intl.ListFormat(locale, { type: 'disjunction' });
+  return roles.filter((r) => r.notWith && r.notWith.length > 0).map((r) => t('refNotWith', { role: r.name, roles: list.format(r.notWith ?? []) }));
+}
+
+/** The roles validator.rs `check_video_request` starts a clip from (`starts_from_a_frame`). */
+const START_ROLES = ['first_frame', 'init'];
+
+/**
+ * Images its vendor takes only in a clip that starts from a first frame, one
+ * line per role that sets `needsFirstFrame`, naming the row's roles that start
+ * a clip: a last frame it ends a clip on only after a first one, or reference
+ * images it takes only on image-to-video (Runway's Kling O3). validator.rs
+ * `check_video_request` refuses either sent without one (400
+ * `ref_role_required`, in either mode, before anything is quoted).
+ * @param {ModelRefRole[]} roles
+ * @param {Translate} t
+ * @param {string} locale
+ * @returns {string[]}
+ */
+export function needsFirstFrameText(roles, t, locale) {
+  const starts = START_ROLES.filter((s) => roles.some((r) => r.name === s));
+  const list = new Intl.ListFormat(locale, { type: 'disjunction' });
+  return roles
+    .filter((r) => r.needsFirstFrame)
+    .map((r) => t(r.name === 'reference' ? 'refReferenceNeedsFirstFrame' : 'refNeedsFirstFrame', { role: r.name, roles: list.format(starts) }));
 }
 
 /**

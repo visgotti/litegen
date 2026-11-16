@@ -118,6 +118,47 @@ export function resolvesViaGeneration(artifact: RequestArtifact): boolean {
 }
 
 /**
+ * What the Visual tab says for an artifact that holds no output of its own,
+ * or `null` when the tab shows one. The server keeps no copy for either:
+ *
+ * - `generation`: a cache hit, whose answer was an earlier generation's;
+ *   `output_value` is that generation's id, and the generation holds the image.
+ * - `deleted`: the output's files were deleted (retention), and the request
+ *   log's copy with them; the prompt and params stay.
+ */
+export function artifactNote(artifact: RequestArtifact): { testId: string; text: string } | null {
+  if (artifact.output_kind === 'generation') {
+    return { testId: 'trace-visual-from-cache', text: `Served from the cache: generation ${artifact.output_value}` };
+  }
+  if (artifact.output_kind === 'deleted') {
+    return {
+      testId: 'trace-visual-deleted',
+      text: 'Deleted: the files of this output were deleted, so litegen keeps no copy of it. The prompt and params stay.',
+    };
+  }
+  return null;
+}
+
+/**
+ * The generation the trace panel's "Delete files" deletes, and what it asks
+ * first. A request's own generation has its id. A cache hit has none of its
+ * own: its answer was an earlier generation's (`output_value`), so it deletes
+ * that one, and the server removes the log entries of every request served
+ * from it.
+ */
+export function deleteTarget(logId: string, artifact: RequestArtifact | null): { generationId: string; confirm: string } {
+  if (artifact?.output_kind === 'generation' && artifact.output_value) {
+    const id = artifact.output_value;
+    return {
+      generationId: id,
+      confirm: `This request was served from the cache, from generation ${id}. Delete that generation's files and prompt? `
+        + 'The log entries of the requests served from it go too. Billing records stay.',
+    };
+  }
+  return { generationId: logId, confirm: "Delete this generation's files and its prompt? Its billing record stays." };
+}
+
+/**
  * Whether a video generation's result is actually an image (an animated GIF,
  * e.g. mock/visual-video-gen), which must go in an `<img>` to animate — the
  * same special case `VisualTab` makes from `output_mime`. A generation row

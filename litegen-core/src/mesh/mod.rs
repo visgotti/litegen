@@ -680,6 +680,76 @@ pub struct ReadOptions {
     pub fbx_light_units: LightUnits,
     /// The units a USD file's light strengths are stored in.
     pub usd_light_units: LightUnits,
+    /// How a glTF's Draco-compressed primitives are read.
+    pub draco: DracoOptions,
+}
+
+/// How a glTF reader takes a Draco-compressed primitive
+/// (`KHR_draco_mesh_compression`): whether it decodes one at all, and the
+/// ceilings on one primitive's decode.
+///
+/// A Draco stream's size bounds nothing (a constant attribute codes to a few
+/// bytes whatever its count), so each ceiling is absolute. The stream's header
+/// states its counts before any data, and they are held to `max_points`,
+/// `max_faces` and `max_faces_per_point` before anything decodes; the decoder
+/// holds the attributes to `max_decoded_bytes`; and the decoded counts are
+/// held to the limits again. A primitive past one is
+/// [`MeshError::Unsupported`], naming the limit. A stream whose header
+/// carries metadata gives no counts at a place the header fixes, so it is
+/// held only by the decoder's limits and the decoded counts.
+///
+/// [`Default`] is the reader's own: Draco on, the scene's vertex cap in
+/// points and its index cap's worth of faces (4,000,000 each), 24,000,000
+/// decoded bytes and 5 faces a point. `draco.rs` gives the reasons for the
+/// last two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DracoOptions {
+    /// Decode Draco primitives. Off, a primitive that carries the extension
+    /// is refused, Unsupported, naming [`Self::disabled_by`]; one without it
+    /// reads as ever.
+    pub enabled: bool,
+    /// What turned decoding off, in the caller's words (a setting's name,
+    /// say), named in the refusal while `enabled` is false. Empty names
+    /// nothing.
+    pub disabled_by: &'static str,
+    /// Points one primitive may declare or decode. Past the scene's vertex
+    /// cap ([`glb::MAX_MERGED_VERTICES`]) the scene refuses first.
+    pub max_points: usize,
+    /// Faces (triangles) one primitive may declare or decode. Past a third of
+    /// the scene's index cap ([`glb::MAX_MERGED_INDICES`]) the scene refuses
+    /// first.
+    pub max_faces: usize,
+    /// Bytes of decoded attribute values one primitive may hold, each value
+    /// at the width the stream types it.
+    pub max_decoded_bytes: usize,
+    /// Faces a point one primitive's header may declare (what it decodes to,
+    /// for a stream with metadata).
+    pub max_faces_per_point: usize,
+}
+
+impl Default for DracoOptions {
+    fn default() -> Self {
+        DracoOptions {
+            enabled: true,
+            disabled_by: "",
+            max_points: glb::MAX_MERGED_VERTICES,
+            max_faces: glb::MAX_MERGED_INDICES / 3,
+            max_decoded_bytes: draco::MAX_DECODED_BYTES,
+            max_faces_per_point: draco::MAX_FACES_PER_POINT,
+        }
+    }
+}
+
+impl DracoOptions {
+    /// The limits `draco.rs` holds one decode to.
+    fn decode_limits(self) -> draco::Limits {
+        draco::Limits {
+            max_points: self.max_points,
+            max_faces: self.max_faces,
+            max_bytes: self.max_decoded_bytes,
+            max_faces_per_point: self.max_faces_per_point,
+        }
+    }
 }
 
 impl WriteOptions {
@@ -776,11 +846,11 @@ pub fn read_scene_with(bytes: &[u8], from: MeshFormat, sidecars: &dyn Sidecars, 
     check_size(bytes)?;
     let (scene, warnings) = match from {
         MeshFormat::Glb => {
-            let o = glb::read_scene(bytes, sidecars)?;
+            let o = glb::read_scene_with(bytes, sidecars, opts.draco)?;
             (o.scene, o.warnings)
         }
         MeshFormat::Gltf => {
-            let o = glb::read_gltf_scene(bytes, sidecars)?;
+            let o = glb::read_gltf_scene_with(bytes, sidecars, opts.draco)?;
             (o.scene, o.warnings)
         }
         MeshFormat::Obj => {
@@ -959,6 +1029,7 @@ pub fn convert_scene(
             fbx_color_space: opts.fbx_color_space,
             fbx_light_units: opts.fbx_light_units,
             usd_light_units: opts.usd_light_units,
+            ..ReadOptions::default()
         },
     )?;
     write_scene(&read.scene, to, opts)

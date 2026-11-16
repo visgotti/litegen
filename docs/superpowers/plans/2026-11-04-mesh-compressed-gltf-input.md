@@ -26,10 +26,17 @@ ID ("Ruling B22", "(B46)"). The build differs from the steps below in these plac
     1,494 MB per Draco primitive, under convert.rs's ~1.7 GB per conversion slot.
 
   Still open:
-  - a faces-per-point pre-check (B39);
   - a RED test for the ceiling;
   - the ceiling's final numbers in draco.rs's module doc;
   - the fix round's scoped re-review.
+
+  B39, the faces-per-point pre-check, was done on 2026-11-16: the header's faces per
+  point are checked before decoding, 5 by default (real meshes have about 2, a
+  double-sided one that shares its vertices about 4, and each face per point more adds
+  about 0.53 GB to a decode's worst case, extrapolated: about 3.1 GB at 5, 2.0 at 3), and
+  every Draco limit, with Draco itself, became a server setting (`mesh.draco`,
+  `docs/gateway-settings.md`) that the converter, delivery and an operation's source mesh
+  all read under. Its ledger is `.superpowers/sdd/2026-11-16-release/draco.md`.
 
   The whole-item final review read this code (see below).
 - **draco-core's features** are `["decoder", "edgebreaker_valence_decode"]` (B29), not
@@ -273,8 +280,18 @@ what it costs if it's wrong.
   1,494 MB per Draco primitive. *If wrong:* Draco meshes past ~500k points with
   POSITION, NORMAL, TEXCOORD_0 and TANGENT, or ~750k without TANGENT, are refused by
   name.
-- **B39 (open).** Faces per point are bounded before decoding. *If wrong:* a
-  non-manifold or very high-genus Draco mesh past the rule is refused by name.
+- **B39 (done 2026-11-16).** Faces per point are bounded before decoding: the header's
+  face count over its point count (an EdgeBreaker stream's vertices), sequential and
+  EdgeBreaker alike, and a stream with metadata on its decoded counts. 5 by default,
+  `mesh.draco.max_faces_per_point`, 1 to 64. It was 3 at first, the release controller's
+  call, since every real stream here declares at most 1.96. The round-9 code review
+  raised it to 5: a double-sided mesh that shares its vertices declares about 4, and 3
+  would refuse such a vendor file after the vendor has billed. Hosted deployments that
+  accept uploads from untrusted users can lower it to 3 (about 2.0 GB worst case,
+  extrapolated) at the cost of double-sided meshes. *If wrong:* a non-manifold or very
+  high-genus Draco mesh past 5 is refused by name until an operator raises the limit; at
+  5 a decode may reach about 3.1 GB by extrapolation from B38's numbers, unmeasured, past
+  the ~1.7 GB a conversion plans for.
 - **B40.** config_conformance's adapter scan reads only `.rs` files, so the mock's data
   folder isn't read as a file. *If wrong:* nothing; one filter line in a test helper.
 - **B41.** Task 4 is parked, with its fix round's scoped re-review open. *If wrong:* the

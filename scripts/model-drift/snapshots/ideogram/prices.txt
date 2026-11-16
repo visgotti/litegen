@@ -1,0 +1,29 @@
+## seedance_2 (/v2/video/generate/seedance-2-text-to-video)
+480p: rate=70000
+720p: rate=160000
+## seedance_2_reference (/v2/video/generate/seedance-2-reference-to-video)
+480p: images=70000 video=96000 reference=43400
+720p: images=160000 video=219000 reference=99200
+## seedance_2_5 (/v2/video/generate/seedance-2-5-text-to-video)
+480p: rate=103000
+720p: rate=231000
+1080p: rate=614000
+## seedance_2_5_reference (/v2/video/generate/seedance-2-5-reference-to-video)
+480p: images=103000 video=131000 reference=63860
+720p: images=231000 video=295000 reference=143220
+1080p: images=614000 video=734000 reference=380680
+## minimax_h3 (/v2/video/generate/minimax-h3-text-to-video)
+480P: rate=50000
+768P: rate=80000
+2K: rate=130000
+4K: rate=160000
+## minimax_h3_reference (/v2/video/generate/minimax-h3-reference-to-video)
+480P: images=50000 video=50000 reference=130000
+768P: images=80000 video=80000 reference=130000
+2K: images=130000 video=130000 reference=130000
+4K: images=160000 video=160000 reference=160000
+## kling_3_standard (/v2/video/generate/kling-3-standard-text-to-video)
+1080p: silent=84000 audio=126000
+## kling_4 (/v2/video/generate/kling-4)
+720p: standard=157000 video=188000 reference=94000
+1080p: standard=235000 video=282000 reference=141000
