@@ -10,9 +10,11 @@
  *   node deploy.js landing     Static-export the Next.js site -> Cloudflare Pages.
  *   node deploy.js all         provision -> proxy -> web -> landing  (full redeploy).
  *
- * Flags:  --dry-run   Print intended actions; make no real API/SSH/registry calls.
+ * Flags:  --dry-run            Print intended actions; make no real API/SSH/registry calls.
+ *         --deploy-env=<file>  Load this deploy env file instead of .env.deploy.
  *
  * Config comes from .env.deploy (gitignored). See .env.deploy.template.
+ * LITEGEN_SHARED_STACK in that file switches on shared-host mode (deploy/shared-host.js).
  */
 
 const { execSync, spawnSync } = require('child_process');
@@ -20,12 +22,19 @@ const { NodeSSH } = require('node-ssh');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
+const sharedHost = require('./deploy/shared-host');
 
 const ROOT = __dirname;
 // Which deploy-config file to load. Defaults to .env.deploy (the litegen.ai
 // instance). Set LITEGEN_DEPLOY_ENV=.env.deploy.<name> to drive a SEPARATE,
 // isolated instance (own droplet, domain, secrets) without touching the default.
-const ENV_FILE = path.resolve(ROOT, process.env.LITEGEN_DEPLOY_ENV || '.env.deploy');
+// --deploy-env=<file> does the same from the command line and wins over both.
+const DEPLOY_ENV_FLAG = '--deploy-env=';
+const deployEnvArg = process.argv.slice(2).find((a) => a.startsWith(DEPLOY_ENV_FLAG));
+const ENV_FILE = path.resolve(
+  ROOT,
+  deployEnvArg ? deployEnvArg.slice(DEPLOY_ENV_FLAG.length) : process.env.LITEGEN_DEPLOY_ENV || '.env.deploy',
+);
 const DRY_RUN = process.argv.includes('--dry-run');
 
 // This machine trusts a system/corporate CA that Node's bundled store lacks,
@@ -40,6 +49,12 @@ if (!process.execArgv.includes('--use-system-ca') && !process.env.__LITEGEN_REEX
   process.exit(r.status === null ? 1 : r.status);
 }
 
+// A named file that is missing must not fall through to whatever the real env holds.
+if (deployEnvArg && !fs.existsSync(ENV_FILE)) {
+  console.error(`✖ Deploy env file not found: ${ENV_FILE}`);
+  process.exit(1);
+}
+
 // ── Load .env.deploy (real env always wins) ──────────────────────────────
 if (fs.existsSync(ENV_FILE)) {
   for (const line of fs.readFileSync(ENV_FILE, 'utf8').split('\n')) {
@@ -52,6 +67,17 @@ if (fs.existsSync(ENV_FILE)) {
     if (!process.env[key]) process.env[key] = val;
   }
 }
+
+// Shared-host mode: null unless the env file sets LITEGEN_SHARED_STACK. With it
+// null, REMOTE_DIR is /opt/litegen and every remote command is the single-host one.
+let SHARED;
+try {
+  SHARED = sharedHost.resolveSharedConfig(process.env);
+} catch (err) {
+  console.error(`✖ ${err.message}`);
+  process.exit(1);
+}
+const REMOTE_DIR = SHARED ? SHARED.remoteDir : '/opt/litegen';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function env(key) { return process.env[key] || ''; }
@@ -256,6 +282,11 @@ const DROPLET_NAME = env('DROPLET_NAME') || 'litegen-proxy';
 const DROPLET_TAG = 'litegen';
 
 async function provision() {
+  // The shared host is built separately and is not tagged as a LiteGen droplet, so
+  // the lookup below would miss it and create (and bill) a new one.
+  if (SHARED) {
+    throw new Error(`shared stack ${SHARED.stack} runs on an existing host; set DO_DROPLET_IP instead of provisioning`);
+  }
   required('DO_API_KEY');
   console.log('\n=== Provisioning DigitalOcean droplet ===');
 
@@ -354,11 +385,15 @@ async function deployProxy() {
       await sshExec(ssh, `echo ${ghToken} | docker login ghcr.io -u ${ghUser} --password-stdin`, 'ghcr login (droplet)');
     }
 
-    await sshExec(ssh, 'mkdir -p /opt/litegen', 'mkdir /opt/litegen');
+    await sshExec(ssh, `mkdir -p ${REMOTE_DIR}`, `mkdir ${REMOTE_DIR}`);
 
     // Compose file (quoted heredoc — no shell expansion of ${...}).
     const composeBody = fs.readFileSync(path.join(ROOT, 'deploy', 'docker-compose.prod.yml'), 'utf8');
-    await sshExec(ssh, `cat > /opt/litegen/docker-compose.prod.yml << 'COMPOSEEOF'\n${composeBody}\nCOMPOSEEOF`, 'write compose');
+    await sshExec(ssh, `cat > ${REMOTE_DIR}/docker-compose.prod.yml << 'COMPOSEEOF'\n${composeBody}\nCOMPOSEEOF`, 'write compose');
+    if (SHARED) {
+      const overlayBody = fs.readFileSync(path.join(ROOT, 'deploy', 'docker-compose.shared.yml'), 'utf8');
+      await sshExec(ssh, `cat > ${REMOTE_DIR}/docker-compose.shared.yml << 'COMPOSEEOF'\n${overlayBody}\nCOMPOSEEOF`, 'write shared compose overlay');
+    }
 
     // Substitution .env beside the compose. Provider keys passed through if set.
     const envLines = [
@@ -384,16 +419,19 @@ async function deployProxy() {
     ]) {
       if (env(k)) envLines.push(`${k}=${env(k)}`);
     }
+    if (SHARED) envLines.push(`LITEGEN_EDGE_ALIAS=${SHARED.apiAlias}`);
     await sshExec(ssh,
-      `cat > /opt/litegen/.env << 'ENVEOF'\n${envLines.join('\n')}\nENVEOF\nchmod 600 /opt/litegen/.env`,
+      `cat > ${REMOTE_DIR}/.env << 'ENVEOF'\n${envLines.join('\n')}\nENVEOF\nchmod 600 ${REMOTE_DIR}/.env`,
       'write droplet .env');
 
     // ondroplet: image is already local — skip the registry pull.
+    const composeCmd = SHARED ? sharedHost.composeCommand(SHARED) : 'docker compose --env-file .env -f docker-compose.prod.yml';
     const pullStep = mode === 'ghcr'
-      ? 'docker compose --env-file .env -f docker-compose.prod.yml pull && '
+      ? `${composeCmd} pull && `
       : '';
+    if (SHARED) await sshExec(ssh, sharedHost.noPublishedPortsCheck(SHARED), 'refuse any published host port');
     await sshExec(ssh,
-      `cd /opt/litegen && ${pullStep}docker compose --env-file .env -f docker-compose.prod.yml up -d`,
+      `cd ${REMOTE_DIR} && ${pullStep}${composeCmd} up -d`,
       'compose up');
 
     // Health check.
@@ -401,13 +439,13 @@ async function deployProxy() {
     let healthy = false;
     if (!DRY_RUN) {
       for (let i = 0; i < 40; i++) {
-        const res = await ssh.execCommand('curl -sf http://127.0.0.1:4000/health/live');
+        const res = await ssh.execCommand(SHARED ? sharedHost.healthCommand(SHARED) : 'curl -sf http://127.0.0.1:4000/health/live');
         if (res.code === 0) { healthy = true; break; }
         await sleep(3000);
       }
       if (!healthy) {
         console.error('  ✗ Health check did not pass within 120s — dumping logs:');
-        await sshExec(ssh, 'cd /opt/litegen && docker compose -f docker-compose.prod.yml logs --tail 80', 'compose logs');
+        await sshExec(ssh, `cd ${REMOTE_DIR} && ${SHARED ? composeCmd : 'docker compose -f docker-compose.prod.yml'} logs --tail 80`, 'compose logs');
         // Abort with a non-zero exit instead of falsely reporting success. In
         // `deployAll` this also stops the subsequent web/landing steps from
         // shipping a fresh dashboard bundle pointed at a backend that is down.
@@ -416,8 +454,13 @@ async function deployProxy() {
       console.log('  Proxy is healthy.');
     }
 
-    await sshExec(ssh, 'docker image prune -af --filter "until=168h" >/dev/null 2>&1 || true', 'prune old images');
-    console.log(`\n  Proxy live at http://${host}:4000  (Authorization: Bearer <LITEGEN__MASTER_KEY>)`);
+    if (SHARED) {
+      await sshExec(ssh, sharedHost.imageCleanupCommand(image, Date.now()), 'remove old images of this repository');
+      console.log(`\n  Proxy live on the edge network as ${SHARED.apiAlias}:4000`);
+    } else {
+      await sshExec(ssh, 'docker image prune -af --filter "until=168h" >/dev/null 2>&1 || true', 'prune old images');
+      console.log(`\n  Proxy live at http://${host}:4000  (Authorization: Bearer <LITEGEN__MASTER_KEY>)`);
+    }
   } finally {
     if (ssh) ssh.dispose();
   }
@@ -473,14 +516,14 @@ async function buildOnDroplet(ssh, host, imageSha, imageLatest) {
   // Pack only what the Dockerfile COPYs (never litegen-core/target/).
   const ctx = '/tmp/litegen-ctx.tgz';
   run(`COPYFILE_DISABLE=1 tar czf ${ctx} -C ${JSON.stringify(ROOT)} Dockerfile litegen-core/Cargo.toml litegen-core/Cargo.lock litegen-core/src litegen-core/migrations models`);
-  await sshExec(ssh, 'rm -rf /opt/litegen/build && mkdir -p /opt/litegen/build', 'reset build dir');
+  await sshExec(ssh, `rm -rf ${REMOTE_DIR}/build && mkdir -p ${REMOTE_DIR}/build`, 'reset build dir');
   console.log('  [scp] uploading build context...');
-  if (!DRY_RUN) { await ssh.putFile(ctx, '/opt/litegen/ctx.tgz'); fs.unlinkSync(ctx); }
-  await sshExec(ssh, 'tar xzf /opt/litegen/ctx.tgz -C /opt/litegen/build', 'extract build context');
+  if (!DRY_RUN) { await ssh.putFile(ctx, `${REMOTE_DIR}/ctx.tgz`); fs.unlinkSync(ctx); }
+  await sshExec(ssh, `tar xzf ${REMOTE_DIR}/ctx.tgz -C ${REMOTE_DIR}/build`, 'extract build context');
 
   // Detached build (survives SSH drops); status + log land in the build dir.
   await sshExec(ssh,
-    `cd /opt/litegen/build && rm -f build.status build.log && \
+    `cd ${REMOTE_DIR}/build && rm -f build.status build.log && \
      setsid sh -c 'docker build -t ${imageSha} -t ${imageLatest} . > build.log 2>&1; echo $? > build.status' < /dev/null > /dev/null 2>&1 &`,
     'start detached build');
   if (DRY_RUN) return;
@@ -508,10 +551,10 @@ async function waitForImage(host, ssh, imageSha) {
   console.log('  Building on droplet (polling every 15s, up to ~45m)...');
   for (let i = 0; i < 180; i++) {
     await sleep(15000);
-    const status = await readRemoteFile(host, '/opt/litegen/build/build.status');
+    const status = await readRemoteFile(host, `${REMOTE_DIR}/build/build.status`);
     if (status !== null && status.trim() !== '') {
       if (status.trim() === '0') { console.log('  On-droplet build complete.'); return; }
-      const log = (await readRemoteFile(host, '/opt/litegen/build/build.log')) || '';
+      const log = (await readRemoteFile(host, `${REMOTE_DIR}/build/build.log`)) || '';
       throw new Error(`On-droplet build failed (exit ${status.trim()}). Last lines:\n` + log.split('\n').slice(-40).join('\n'));
     }
     if (await remoteImageExists(host, imageSha)) { console.log('  Image is present on droplet.'); return; }
@@ -532,13 +575,22 @@ async function deployWeb() {
 
   const dashboardDir = path.join(ROOT, 'dashboard');
   const dashboardTgz = '/tmp/litegen-dashboard-dist.tgz';
-  const remoteDashboardTgz = '/opt/litegen/litegen-dashboard-dist.tgz';
+  const remoteDashboardTgz = `${REMOTE_DIR}/litegen-dashboard-dist.tgz`;
 
   const landingDir = path.join(ROOT, 'apps', 'landing');
   const landingOut = path.join(landingDir, 'out');
   const landingFallbackDir = '/tmp/litegen-landing-fallback';
   const landingTgz = '/tmp/litegen-landing-dist.tgz';
-  const remoteLandingTgz = '/opt/litegen/litegen-landing-dist.tgz';
+  const remoteLandingTgz = `${REMOTE_DIR}/litegen-landing-dist.tgz`;
+
+  // Rendered before the builds: a Caddyfile shared mode cannot carry fails in
+  // seconds instead of after a full dashboard + landing build.
+  const sharedSiteCaddyfile = SHARED
+    ? sharedHost.renderSiteCaddyfile(
+      fs.readFileSync(path.join(ROOT, 'deploy', env('LITEGEN_CADDYFILE') || 'Caddyfile'), 'utf8'),
+      SHARED,
+    )
+    : null;
 
   // ── Build dashboard (Vite SPA → dashboard/dist) ──
   console.log(`\n=== Building dashboard (VITE_API_URL=${apiBase}) ===`);
@@ -628,6 +680,23 @@ async function deployWeb() {
   console.log(`\n=== Shipping dashboard-dist + landing-dist + Caddyfile + web compose to ${host} ===`);
   let ssh = DRY_RUN ? null : await sshConnect(host);
   try {
+    if (SHARED) {
+      // No compose and no per-stack Caddy here: the edge Caddy serves the site.
+      await sshExec(ssh, `mkdir -p ${REMOTE_DIR} ${SHARED.siteDir}`, `mkdir ${REMOTE_DIR} ${SHARED.siteDir}`);
+      console.log(`  [scp] ${dashboardTgz} -> ${remoteDashboardTgz}`);
+      if (!DRY_RUN) { await ssh.putFile(dashboardTgz, remoteDashboardTgz); }
+      console.log(`  [scp] ${landingTgz} -> ${remoteLandingTgz}`);
+      if (!DRY_RUN) { await ssh.putFile(landingTgz, remoteLandingTgz); }
+      await sshExec(ssh,
+        `cat > ${SHARED.siteDir}/Caddyfile.next << 'SITEEOF'\n${sharedSiteCaddyfile}SITEEOF`,
+        'write candidate site Caddyfile');
+      await sshExec(ssh,
+        sharedHost.sitePublishScript(SHARED, { dashboardTgz: remoteDashboardTgz, landingTgz: remoteLandingTgz }),
+        'validate + reload edge Caddy, then swap in static files');
+      console.log(`\n  Site published to ${SHARED.siteDir}  (dashboard API base ${apiBase})`);
+      return;
+    }
+
     await sshExec(ssh, 'mkdir -p /opt/litegen', 'mkdir /opt/litegen');
 
     console.log(`  [scp] ${dashboardTgz} -> ${remoteDashboardTgz}`);
@@ -723,17 +792,17 @@ const TARGETS = {
 };
 
 async function deployAll() {
-  await provision();
+  if (!SHARED) await provision();
   await deployProxy();
   await deployWeb();
   await deployLanding();
 }
 
 async function main() {
-  const target = process.argv[2];
+  const target = process.argv.slice(2).find((a) => !a.startsWith(DEPLOY_ENV_FLAG));
   if (!target || target === '-h' || target === '--help') {
     console.log(`
-  Usage: node deploy.js <target> [--dry-run]
+  Usage: node deploy.js <target> [--dry-run] [--deploy-env=<file>]
 
   Targets:
     provision   ${TARGETS.provision.desc}

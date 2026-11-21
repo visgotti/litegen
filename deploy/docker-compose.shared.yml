@@ -1,0 +1,19 @@
+# Shared-host overlay, layered on docker-compose.prod.yml when the deploy env file
+# sets LITEGEN_SHARED_STACK. The stack publishes no host ports; the edge Caddy
+# reaches the API over the external `edge` network under a per-stack alias. The
+# database stays on the stack's private default network.
+#
+# Compose also adds the service name (`litegen`) as an alias on every network, so
+# on `edge` that name is ambiguous between stacks. Always use the per-stack alias.
+services:
+  litegen:
+    ports: !reset []
+    networks:
+      default:
+      edge:
+        aliases:
+          - ${LITEGEN_EDGE_ALIAS:?LITEGEN_EDGE_ALIAS must be set}
+
+networks:
+  edge:
+    external: true
